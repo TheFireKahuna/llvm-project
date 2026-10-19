@@ -65,7 +65,8 @@ struct RelaxEdit {
     // added to the displacement.
     Index,
     // A load of a pointer of an image's data that becomes lea of base plus
-    // delta, base holding the pointer of other data of that image.
+    // delta, or on ARM64 an add of delta to base, base holding the pointer of
+    // other data of that image.
     Anchor,
     // No-operations that align what follows, as coverage describes.
     Align,

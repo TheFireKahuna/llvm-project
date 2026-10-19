@@ -539,6 +539,16 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     break;
   }
   case RelaxEdit::Anchor: {
+    // On ARM64, add or sub xd, base, #imm, shifted by 12 where the distance's
+    // low 12 bits are zero.
+    if (sc->getArch() == Triple::aarch64) {
+      uint32_t size = e.delta < 0 ? -int64_t(e.delta) : e.delta;
+      uint32_t insn = (e.delta < 0 ? 0xD1000000 : 0x91000000) |
+                      uint32_t(e.base) << 5 | (read32le(old) & 31);
+      insn |= size > 0xFFF ? 1 << 22 | (size >> 12) << 10 : size << 10;
+      write32le(buf, insn);
+      break;
+    }
     // REX.W with the load's REX.R and base's REX.B, then lea r64, [base +
     // disp], whose displacement is 8 bits in the shorter form. base is not
     // RSP or R12, whose operand would need a SIB byte.

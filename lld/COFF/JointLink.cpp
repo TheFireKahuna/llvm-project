@@ -904,17 +904,28 @@ static const Layout *getLayout(COFFLinkerContext &ctx, StringRef dll,
   return &*it->second;
 }
 
-// The import of data from another image that the load of its pointer at off,
-// in x86-64 form, mov r64, [rip + __imp_X], reads; with the register it fills.
+// The import of data from another image that the load of its pointer at off
+// reads, with the register it fills: on x86-64 mov r64, [rip + __imp_X], whose
+// displacement is at off, and on ARM64 ldr x, [x, :lo12:__imp_X] at off.
 static DefinedImportData *getLoadedImport(SectionChunk *sc, uint32_t off,
                                           unsigned *reg) {
   ArrayRef<uint8_t> data = sc->getContents();
-  if (off < 3 || off + 4 > data.size() || (data[off - 3] & 0xF8) != 0x48 ||
-      data[off - 2] != 0x8B || (data[off - 1] & 0xC7) != 0x05)
-    return nullptr;
-  *reg = (data[off - 3] & 4) << 1 | (data[off - 1] >> 3 & 7);
+  bool arm64 = sc->getArch() == Triple::aarch64;
+  if (arm64) {
+    if (off % 4 || off + 4 > data.size() ||
+        (support::endian::read32le(data.data() + off) & 0xFFC00000) != 0xF9400000)
+      return nullptr;
+    *reg = support::endian::read32le(data.data() + off) & 31;
+  } else {
+    if (off < 3 || off + 4 > data.size() || (data[off - 3] & 0xF8) != 0x48 ||
+        data[off - 2] != 0x8B || (data[off - 1] & 0xC7) != 0x05)
+      return nullptr;
+    *reg = (data[off - 3] & 4) << 1 | (data[off - 1] >> 3 & 7);
+  }
+  uint16_t type =
+      arm64 ? IMAGE_REL_ARM64_PAGEOFFSET_12L : IMAGE_REL_AMD64_REL32;
   for (const coff_relocation &rel : sc->getRelocs())
-    if (rel.VirtualAddress == off && rel.Type == IMAGE_REL_AMD64_REL32) {
+    if (rel.VirtualAddress == off && rel.Type == type) {
       auto *imp = dyn_cast_or_null<DefinedImportData>(
           sc->file->getSymbol(rel.SymbolTableIndex));
       if (imp && imp->file->hdr->getType() == IMPORT_DATA &&
@@ -926,7 +937,8 @@ static DefinedImportData *getLoadedImport(SectionChunk *sc, uint32_t off,
 }
 
 bool bindJointAnchors(COFFLinkerContext &ctx) {
-  if (ctx.jointMembers.empty() || ctx.config.machine != AMD64)
+  if (ctx.jointMembers.empty() ||
+      (ctx.config.machine != AMD64 && ctx.config.machine != ARM64))
     return false;
   llvm::TimeTraceScope timeScope("Bind joint-link anchors");
   StringMap<std::optional<Layout>> layouts;
@@ -950,7 +962,8 @@ bool bindJointAnchors(COFFLinkerContext &ctx) {
           valueOnly.contains({a.section, a.load}) ||
           !(imp = getLoadedImport(sc, a.offset, &reg)) ||
           !(anchor = getLoadedImport(sc, a.load, &anchorReg)) ||
-          anchorReg != a.reg || (a.reg & 7) == 4 || anchor == imp ||
+          anchorReg != a.reg || anchor == imp ||
+          (ctx.config.machine == AMD64 && (a.reg & 7) == 4) ||
           !imp->getDLLName().equals_insensitive(anchor->getDLLName()) ||
           !ctx.jointMembers.contains(imp->getDLLName().lower()))
         continue;
@@ -961,9 +974,13 @@ bool bindJointAnchors(COFFLinkerContext &ctx) {
       auto from = layout->rvas.find(anchor->getExternalName());
       if (to == layout->rvas.end() || from == layout->rvas.end())
         continue;
-      ctx.jointAnchors.push_back({sc, a.offset, imp,
-                                  int32_t(int64_t(to->second) - from->second),
-                                  a.reg});
+      // An ARM64 add or sub takes 12 bits, shifted or not.
+      int64_t delta = int64_t(to->second) - from->second;
+      uint64_t size = delta < 0 ? -delta : delta;
+      if (ctx.config.machine == ARM64 && size > 0xFFF &&
+          (size & 0xFFF || size > 0xFFF000))
+        continue;
+      ctx.jointAnchors.push_back({sc, a.offset, imp, int32_t(delta), a.reg});
       identities.try_emplace(imp->getDLLName(), layout->identity);
       done = a.offset;
       doneSection = a.section;
@@ -1010,10 +1027,15 @@ void addJointAnchorEdits(COFFLinkerContext &ctx) {
   for (const COFFLinkerContext::JointAnchor &a : ctx.jointAnchors) {
     if (!a.chunk->live)
       continue;
-    // The shorter lea, with an 8-bit distance, where the chunk is resized.
-    uint16_t size =
-        a.chunk->file->isCovered(a.chunk) && isInt<8>(a.delta) ? 4 : 7;
-    RelaxEdit e(a.offset - 3, 7, size, RelaxEdit::Anchor);
+    // The shorter lea, with an 8-bit distance, where the chunk is resized;
+    // on ARM64, an add or sub in the ldr's place.
+    bool arm64 = a.chunk->getArch() == Triple::aarch64;
+    uint16_t size = arm64 || (a.chunk->file->isCovered(a.chunk) &&
+                              isInt<8>(a.delta))
+                        ? 4
+                        : 7;
+    RelaxEdit e(arm64 ? a.offset : a.offset - 3, arm64 ? 4 : 7, size,
+                RelaxEdit::Anchor);
     e.base = a.reg;
     e.delta = a.delta;
     addEdit(a.chunk, e);
