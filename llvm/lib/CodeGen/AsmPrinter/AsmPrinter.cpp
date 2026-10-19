@@ -2849,6 +2849,14 @@ void AsmPrinter::emitGlobalAlias(const Module &M, const GlobalAlias &GA) {
   }
 
   emitVisibility(Name, GA.getVisibility());
+  // An external alias at the address of a definition in a COMDAT is another
+  // name for it, which a COFF linker shares with it if it has default
+  // visibility. An alias inside the definition names a part of it, and shares
+  // its binding.
+  if (GA.hasExternalLinkage() && GA.hasDefaultVisibility() && GA.hasComdat() &&
+      GA.getAliasee()->stripPointerCasts() == BaseObject &&
+      TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    OutStreamer->emitCOFFLinkBinding(Name, COFF::LinkBindingDefault);
 
   const MCExpr *Expr = lowerConstant(GA.getAliasee());
 
