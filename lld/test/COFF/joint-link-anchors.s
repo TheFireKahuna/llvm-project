@@ -2,9 +2,11 @@
 ## In a joint link, a load of the import pointer of a member DLL's data whose
 ## pointer the register of a load of the pointer of other data of that DLL
 ## holds becomes an lea of the distance between the data, which the DLL's
-## import library records with its layout. The DLL exports its identity, named
-## after that layout, and the importer imports it; the import that only such
-## loads read is left out. A pointer to data of another image, or one the
+## import library records with its layout. The DLL exports an identity named
+## after that layout, beside the one the merge names, and the importer imports
+## both; the import that only such loads read is left out. The layout's
+## identity has a prefix of its own, since it takes its name after the export
+## table is sorted. A pointer to data of another image, or one the
 ## register does not hold, is still loaded.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
@@ -25,6 +27,7 @@
 # RUN: llvm-readobj --coff-exports a.dll > out.txt
 # RUN: llvm-readobj --coff-imports app.exe >> out.txt
 # RUN: FileCheck --check-prefix=EXPORTS --input-file=out.txt %s
+# EXPORTS:      Name: __llvm_layout$[[LAYOUT:[0-9a-f]{16}]]
 # EXPORTS:      Name: __llvm_private$[[ID:[0-9a-f]{16}]]
 # EXPORTS:      Name: x
 # EXPORTS-NEXT: RVA: 0x[[#%x,X:]]
@@ -33,6 +36,7 @@
 # EXPORTS:      Name: a.dll
 # EXPORTS-NEXT: ImportLookupTableRVA:
 # EXPORTS-NEXT: ImportAddressTableRVA:
+# EXPORTS-NEXT: Symbol: __llvm_layout$[[LAYOUT]] (0)
 # EXPORTS-NEXT: Symbol: __llvm_private$[[ID]] (0)
 # EXPORTS-NEXT: Symbol: x (0)
 # EXPORTS-NEXT: }
@@ -43,8 +47,10 @@
 # EXPORTS-NEXT: }
 # RUN: llvm-nm a.lib | FileCheck --check-prefix=LIB %s
 # LIB-NOT: __llvm_private
+# LIB-NOT: __llvm_layout${{[0-9a-f]+}}
 # LIB:     __llvm_layout$a.dll
 # LIB-NOT: __llvm_private
+# LIB-NOT: __llvm_layout${{[0-9a-f]+}}
 
 # RUN: llvm-objdump -d --no-show-raw-insn app.exe | FileCheck --check-prefix=CODE %s
 # CODE:      movq {{.*}}(%rip), %rcx

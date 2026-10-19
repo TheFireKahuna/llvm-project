@@ -48,56 +48,62 @@
 # RUN: lld-link -import-slots -entry:main -subsystem:console tool.obj \
 # RUN:   -out:tool.exe -lldjoint:facts/tool.exe.jfacts
 
-## a.dll, which b.dll imports from, keeps v for the others and offers it. As
-## it keeps an entity of its own, it imports the identity of b.dll, which it
-## imports from, so that a b.dll that starts to keep one of them fails to load
-## beside it; b.dll, which keeps none, imports none.
-# RUN: llvm-readobj --coff-imports --coff-exports a.dll > a.txt
-# RUN: llvm-readobj --coff-exports b.dll >> a.txt
-# RUN: FileCheck --check-prefix=A %s < a.txt
-# A:      Name: b.dll
-# A-NEXT: ImportLookupTableRVA:
-# A-NEXT: ImportAddressTableRVA:
-# A-NEXT: Symbol: __llvm_private$[[BID:[0-9a-f]{16}]] (0)
-# A-NEXT: Symbol: bf (0)
-# A-NEXT: }
-# A:      Name: __llvm_private$
-# A:      Name: af
-# A:      Name: v
-# A:      File: b.dll
-# A:      Name: __llvm_private$[[BID]]
+## a.dll, which b.dll imports from, keeps v for the others and offers it.
+## Every member that another imports from exports the identity the merge gives
+## it, and every member imports the identity of each member it imports from.
+## No member imports two data from a.dll, which so exports no identity named
+## after its layout.
+# RUN: llvm-readobj --coff-imports --coff-exports a.dll b.dll app.exe \
+# RUN:   tool.exe | FileCheck %s
+# CHECK:      File: a.dll
+# CHECK:      Name: b.dll
+# CHECK-NEXT: ImportLookupTableRVA:
+# CHECK-NEXT: ImportAddressTableRVA:
+# CHECK-NEXT: Symbol: __llvm_private$[[BID:[0-9a-f]{16}]] (0)
+# CHECK-NEXT: Symbol: bf (0)
+# CHECK-NEXT: }
+# CHECK:      Name: __llvm_private$[[AID:[0-9a-f]{16}]]
+# CHECK-NOT:  Name: __llvm_private
+# CHECK:      Name: af
+# CHECK:      Name: v
 
-# RUN: llvm-readobj --coff-imports --coff-exports b.dll | \
-# RUN:   FileCheck --check-prefix=B %s
-# B:      Name: a.dll
-# B-NEXT: ImportLookupTableRVA:
-# B-NEXT: ImportAddressTableRVA:
-# B-NEXT: Symbol: af (0)
-# B-NEXT: Symbol: v (0)
-# B-NEXT: }
-# B:      Name: bf
-# B:      Name: v
-# B-NEXT: ForwardedTo: a.v
+# CHECK:      File: b.dll
+# CHECK:      Name: a.dll
+# CHECK-NEXT: ImportLookupTableRVA:
+# CHECK-NEXT: ImportAddressTableRVA:
+# CHECK-NEXT: Symbol: __llvm_private$[[AID]] (0)
+# CHECK-NEXT: Symbol: af (0)
+# CHECK-NEXT: Symbol: v (0)
+# CHECK-NEXT: }
+# CHECK:      Name: __llvm_private$[[BID]]
+# CHECK:      Name: bf
+# CHECK:      Name: v
+# CHECK-NEXT: ForwardedTo: a.v
 
-# RUN: llvm-readobj --coff-imports app.exe | FileCheck --check-prefix=APP %s
-# APP:      Name: a.dll
-# APP-NEXT: ImportLookupTableRVA:
-# APP-NEXT: ImportAddressTableRVA:
-# APP-NEXT: Symbol: v (0)
-# APP-NEXT: }
-# APP:      Name: b.dll
-# APP-NEXT: ImportLookupTableRVA:
-# APP-NEXT: ImportAddressTableRVA:
-# APP-NEXT: Symbol: bf (0)
-# APP-NEXT: }
+# CHECK:      File: app.exe
+# CHECK:      Name: a.dll
+# CHECK-NEXT: ImportLookupTableRVA:
+# CHECK-NEXT: ImportAddressTableRVA:
+# CHECK-NEXT: Symbol: __llvm_private$[[AID]] (0)
+# CHECK-NEXT: Symbol: v (0)
+# CHECK-NEXT: }
+# CHECK:      Name: b.dll
+# CHECK-NEXT: ImportLookupTableRVA:
+# CHECK-NEXT: ImportAddressTableRVA:
+# CHECK-NEXT: Symbol: __llvm_private$[[BID]] (0)
+# CHECK-NEXT: Symbol: bf (0)
+# CHECK-NEXT: }
+# CHECK-NOT:  Export {
 
-# RUN: llvm-readobj --coff-imports tool.exe | FileCheck --check-prefix=TOOL %s
-# TOOL:      Name: a.dll
-# TOOL-NEXT: ImportLookupTableRVA:
-# TOOL-NEXT: ImportAddressTableRVA:
-# TOOL-NEXT: Symbol: af (0)
-# TOOL-NEXT: Symbol: v (0)
-# TOOL-NEXT: }
+# CHECK:      File: tool.exe
+# CHECK:      Name: a.dll
+# CHECK-NEXT: ImportLookupTableRVA:
+# CHECK-NEXT: ImportAddressTableRVA:
+# CHECK-NEXT: Symbol: __llvm_private$[[AID]] (0)
+# CHECK-NEXT: Symbol: af (0)
+# CHECK-NEXT: Symbol: v (0)
+# CHECK-NEXT: }
+# CHECK-NOT:  Export {
 
 #--- a.s
   .linkbindings

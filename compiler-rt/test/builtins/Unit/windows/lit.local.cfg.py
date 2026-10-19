@@ -26,6 +26,10 @@ config.environment["PATH"] = os.pathsep.join(
     [config.compiler_rt_libdir, config.environment.get("PATH", "")]
 )
 config.substitutions.append(("%wincrt_libdir", config.compiler_rt_libdir))
+# A joint link's merge runs the linker alone, with no inputs from the driver.
+config.substitutions.append(
+    ("%lld_link", os.path.join(config.llvm_tools_dir, "lld-link"))
+)
 
 
 # The Windows SDK's private ntdllp.lib imports some of the runtime's functions

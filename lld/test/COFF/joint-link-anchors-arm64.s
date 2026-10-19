@@ -27,7 +27,8 @@
 # CHECK-NEXT: ldr x4, [x4, #0x{{[0-9a-f]+}}]
 # CHECK-NEXT: ret
 
-# IMPORTS:      Symbol: __llvm_private${{[0-9a-f]+}} (0)
+# IMPORTS:      Symbol: __llvm_layout${{[0-9a-f]+}} (0)
+# IMPORTS-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
 # IMPORTS-NEXT: Symbol: far (0)
 # IMPORTS-NEXT: Symbol: odd (0)
 # IMPORTS-NEXT: Symbol: x (0)

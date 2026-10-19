@@ -24,6 +24,7 @@
 # B:      Name: a.dll
 # B-NEXT: ImportLookupTableRVA:
 # B-NEXT: ImportAddressTableRVA:
+# B-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
 # B-NEXT: Symbol: af (0)
 # B-NEXT: Symbol: v (0)
 # B-NEXT: }

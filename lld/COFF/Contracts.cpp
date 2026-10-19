@@ -66,6 +66,7 @@ bool lld::coff::isContractWitnessName(StringRef name) {
   return name.starts_with(getWitnessPrefix(false)) ||
          name.starts_with(getWitnessPrefix(true)) ||
          name.starts_with("__llvm_private$") ||
+         name.starts_with("__llvm_layout$") ||
          (isTypeInfoName(name) && name.contains(qualifiedTypeInfoTag));
 }
 
@@ -216,9 +217,8 @@ Error lld::coff::readContractRequirements(ObjFile *file,
   return Error::success();
 }
 
-// Whether file defines an exported symbol (bitcode: the pre-LTO symbols).
-static bool definesExport(COFFLinkerContext &ctx, InputFile *file,
-                          const DenseSet<Symbol *> &exported) {
+bool lld::coff::definesExport(COFFLinkerContext &ctx, InputFile *file,
+                              const DenseSet<Symbol *> &exported) {
   if (auto *bitcode = dyn_cast<BitcodeFile>(file)) {
     const BitVector &defined = ctx.contracts.bitcodeDefinitions.lookup(file);
     for (auto [i, sym] : llvm::enumerate(bitcode->getSymbols()))
@@ -373,26 +373,15 @@ void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
         }
         std::string name = getWitnessName(c->data, c->locator, c->digest);
         // A member of the image's joint link vouches for the contracts its
-        // facts list through its identity, which covers them, in place of a
-        // witness.
+        // facts list through its identity, which covers them and which the
+        // image imports, in place of a witness.
         if (auto sib = ctx.jointSiblings.find(dll);
             sib != ctx.jointSiblings.end()) {
           StringRef digest = sib->second.provides.lookup(
               (getWitnessPrefix(c->data) + c->locator).str());
-          if (digest.empty())
-            continue;
-          if (digest != c->digest) {
-            if (bound.insert("__imp_" + name + "$" + dll).second)
-              reportMismatch(ctx, c, file, imp);
-            continue;
-          }
-          if (!bound.insert(sib->second.identity).second)
-            continue;
-          Symbol *s = ctx.symtab.find(sib->second.identity);
-          if (auto *lazy = dyn_cast_or_null<LazyArchive>(s))
-            ctx.symtab.loadImportMember(lazy);
-          else if (auto *w = dyn_cast_or_null<DefinedImportData>(s))
-            w->file->live = true;
+          if (!digest.empty() && digest != c->digest &&
+              bound.insert("__imp_" + name + "$" + dll).second)
+            reportMismatch(ctx, c, file, imp);
           continue;
         }
         bool vouched = false;

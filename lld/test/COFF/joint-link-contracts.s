@@ -15,6 +15,13 @@
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium c.s -o c.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium helper.s \
 # RUN:   -o helper.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium d.s -o d.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium both.s -o both.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium usea.s -o usea.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium used.s -o used.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium inner.s -o inner.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium inner2.s \
+# RUN:   -o inner2.obj
 
 # RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
 # RUN:   -lldjointscan:a.jscan
@@ -83,13 +90,42 @@
 # RUN:   -lldjoint:skew/b.dll.jfacts 2>&1 | FileCheck --check-prefix=SKEW %s
 # SKEW: error: ABI mismatch for 'T': skew.obj was compiled with a different layout than a.dll exports (needed because skew.obj uses g)
 
-## Two members joined by an import that provide different layouts of one type
-## are an error at the merge.
+## Two members that one member loads, joined by an import or not, that provide
+## different layouts of one type are an error at the merge; two executables,
+## which share no process, may differ.
 # RUN: lld-link -import-slots -dll -noentry c.obj -out:c.dll \
 # RUN:   -lldjointscan:c.jscan
 # RUN: not lld-link -lldjointmerge -out:conflict a.jscan c.jscan 2>&1 | \
 # RUN:   FileCheck --check-prefix=CONFLICT %s
 # CONFLICT: error: ABI contract mismatch for the type with locator Z7E5CzMxeVE: c.dll and a.dll were compiled with different layouts
+# RUN: lld-link -import-slots -dll -noentry d.obj -out:d.dll \
+# RUN:   -lldjointscan:d.jscan
+# RUN: lld-link -import-slots -entry:main -subsystem:console both.obj \
+# RUN:   -out:both.exe -lldjointscan:both.jscan
+# RUN: not lld-link -lldjointmerge -out:conflict a.jscan d.jscan both.jscan \
+# RUN:   2>&1 | FileCheck --check-prefix=LOADED %s
+# LOADED: error: ABI contract mismatch for the type with locator Z7E5CzMxeVE: a.dll and d.dll were compiled with different layouts
+# RUN: lld-link -import-slots -entry:main -subsystem:console usea.obj \
+# RUN:   -out:usea.exe -lldjointscan:usea.jscan
+# RUN: lld-link -import-slots -entry:main -subsystem:console used.obj \
+# RUN:   -out:used.exe -lldjointscan:used.jscan
+# RUN: lld-link -lldjointmerge -out:apart a.jscan d.jscan usea.jscan \
+# RUN:   used.jscan
+
+## Only the contracts of what other images may bind enter a member's identity:
+## another layout of a type that only an object with nothing to export uses
+## leaves the identity alone.
+# RUN: lld-link -import-slots -dll -noentry a.obj inner.obj -out:a.dll \
+# RUN:   -lldjointscan:a.jscan
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:inner1 a.jscan b.jscan
+# RUN: lld-link -import-slots -dll -noentry a.obj inner2.obj -out:a.dll \
+# RUN:   -lldjointscan:a.jscan
+# RUN: lld-link -lldjointmerge -out:inner2 a.jscan b.jscan
+# RUN: llvm-nm inner1/b.dll.jfacts | grep 'T __imp___llvm_private' > in1.txt
+# RUN: llvm-nm inner2/b.dll.jfacts | grep 'T __imp___llvm_private' > in2.txt
+# RUN: diff in1.txt in2.txt
 
 ## The scan reads a bitcode member's contracts from its linker options, before
 ## LTO.
@@ -155,6 +191,52 @@ cf:
   retq
   .section .drectve,"yn"
   .ascii " -export:cf /abiprovide:Z7E5CzMxeVE8PHy8_T19vf4-fr7_P3-_w"
+
+#--- d.s
+  .text
+  .globl h
+h:
+  retq
+  .section .drectve,"yn"
+  .ascii " -export:h /abiprovide:Z7E5CzMxeVE8PHy8_T19vf4-fr7_P3-_w"
+
+#--- both.s
+  .text
+  .globl main
+main:
+  callq *__imp_g(%rip)
+  callq *__imp_h(%rip)
+  retq
+
+#--- usea.s
+  .text
+  .globl main
+main:
+  callq *__imp_g(%rip)
+  retq
+
+#--- used.s
+  .text
+  .globl main
+main:
+  callq *__imp_h(%rip)
+  retq
+
+#--- inner.s
+  .text
+  .globl i
+i:
+  retq
+  .section .drectve,"yn"
+  .ascii " /abiprovide:PwFGDH9_sEQEBESExQVFhcYGRobHB0eHw"
+
+#--- inner2.s
+  .text
+  .globl i
+i:
+  retq
+  .section .drectve,"yn"
+  .ascii " /abiprovide:PwFGDH9_sEQ8PHy8_T19vf4-fr7_P3-_w"
 
 #--- helper.s
   .text

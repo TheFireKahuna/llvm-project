@@ -41,15 +41,16 @@
 # RUN:   count 0
 # LOG: Keeping __imp_f for f, which the image gives up
 
-## lib.dll keeps exporting its own f and g, imports f from no descriptor, and
-## reaches it through its cell in .sealed: g's call through the import's thunk,
-## its lea as a load, its data word from the fill's list.
+## lib.dll keeps exporting its own f and g, imports f, and app.exe's identity,
+## from no descriptor, and reaches f through its cell in .sealed: g's call
+## through the import's thunk, its lea as a load, its data word from the fill's
+## list.
 # RUN: llvm-readobj --coff-imports --coff-exports --sections lib.dll > lib.txt
 # RUN: llvm-objdump -d lib.dll >> lib.txt
 # RUN: llvm-objdump -s -j .rdata lib.dll >> lib.txt
 # RUN: FileCheck --check-prefix=LIB --input-file=lib.txt %s
 # LIB:      Name: .sealed
-# LIB-NEXT: VirtualSize: 0x8
+# LIB-NEXT: VirtualSize: 0x10
 # LIB-NEXT: VirtualAddress: 0x5000
 # LIB-NOT:  Name: app.exe
 # LIB:      Name: f
@@ -61,13 +62,15 @@
 # LIB-NEXT: callq 0x[[#%x,THUNK:]]
 # LIB-NEXT: movq {{.*}}(%rip), %rax # 0x180005000
 # LIB:      [[#%x,THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x180005000
-## The residual word {.data, cell, addend} and the cell {cell, name, from the
-## executable}, after the list's 40-byte header.
+## The residual word {.data, cell, addend} and the cells {cell, name, from the
+## executable} of f and of the identity, after the list's 40-byte header.
 # LIB:      180002020 01000000 00000000 00300000 00500000
 # LIB-NEXT: 180002030 00000000 00000000 00500000 {{[0-9a-f]+}}
-# LIB-NEXT: 180002040 00000000 66000000
+# LIB-NEXT: 180002040 00000000 08500000 {{[0-9a-f]+}} 00000000
+# LIB-NEXT: 180002050 66005f5f 6c6c766d 5f707269 76617465
 
-## user.dll imports f from the executable and g from lib.dll.
+## user.dll imports f from the executable and g from lib.dll, with the
+## identities of both.
 # RUN: llvm-readobj --coff-imports --sections user.dll | \
 # RUN:   FileCheck --check-prefix=USER %s
 # USER:      Name: .sealed
@@ -75,6 +78,7 @@
 # USER:      Name: lib.dll
 # USER-NEXT: ImportLookupTableRVA:
 # USER-NEXT: ImportAddressTableRVA:
+# USER-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
 # USER-NEXT: Symbol: g (0)
 # USER-NEXT: }
 # USER-NOT:  Name: app.exe

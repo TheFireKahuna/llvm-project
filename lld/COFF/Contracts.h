@@ -12,6 +12,7 @@
 #include "lld/Common/LLVM.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
@@ -67,6 +68,10 @@ void addContractProvides(COFFLinkerContext &ctx, InputFile *file,
 // Reads an object's required contracts from its link records, or the error.
 llvm::Error readContractRequirements(ObjFile *file, ArrayRef<uint8_t> payload);
 
+// Whether file defines one of syms (bitcode: the pre-LTO symbols).
+bool definesExport(COFFLinkerContext &ctx, InputFile *file,
+                   const llvm::DenseSet<Symbol *> &syms);
+
 // Exports a witness for each contract the image's exported definitions
 // provide; a type_info object it owns is exported under its qualified name.
 void addContractWitnessExports(COFFLinkerContext &ctx);
@@ -77,8 +82,8 @@ bool isContractWitness(COFFLinkerContext &ctx, const Defined *sym);
 Defined *getContractWitnessByte(COFFLinkerContext &ctx);
 
 // Whether name names a witness, which code never calls: a plain witness, a
-// type_info name qualified by its type's contract, or a joint link member's
-// identity.
+// type_info name qualified by its type's contract, or one of a joint link
+// member's identities.
 bool isContractWitnessName(StringRef name);
 
 // Imports the witness of each contract the image's code requires of a DLL that

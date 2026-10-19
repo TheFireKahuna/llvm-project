@@ -26,6 +26,7 @@
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA:
 # CHECK-NEXT: Symbol: _ZTV1K (0)
+# CHECK-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
 # CHECK-NEXT: }
 # CHECK:      Name: _ZTV1K
 # CHECK-NEXT: ForwardedTo: a._ZTV1K
