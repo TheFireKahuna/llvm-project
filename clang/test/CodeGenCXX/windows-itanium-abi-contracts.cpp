@@ -29,7 +29,8 @@
 // code uses, as the abi.requirements metadata. A pointer in a covered class's
 // layout adds its pointee, one level deep, where the code uses its layout. A
 // thread-local variable's contracts are its record's, through which another
-// image reaches it.
+// image reaches it. An alias of a variable with vague linkage provides and
+// requires the contract of its own type, as the variable does.
 
 #define API __attribute__((visibility("default")))
 #define HIDDEN __attribute__((visibility("hidden")))
@@ -65,6 +66,7 @@ API extern int table[4];
 extern "C" API int cdata;
 API extern thread_local int tls;
 inline int vague = 3;
+extern int vaguealias __attribute__((alias("vague")));
 
 // Exported definitions.
 struct Exported { double d; Imported *p; API void g(); };
@@ -82,16 +84,16 @@ int use(Named *n, Sized *s, Grows *gr, CStruct *cs) {
   Dyn d;
   DynFinal df;
   return i.x + i.impl->a + counter + table[2] + vague + cdata + gr->v + cs->c +
-         int(sizeof(Sized)) + tls + d.d + df.e;
+         int(sizeof(Sized)) + tls + d.d + df.e + vaguealias;
 }
 
 // Exported's own layout and Imported's, which its pointer reaches and the code
 // uses; the layouts of Dyn and DynFinal, whose inline constructors may be
-// offered; the type of the inline variable.
+// offered; the types of the inline variable and its alias.
 // CHECK: !abi.requirements = !{
 // CHECK: !llvm.linker.options = !{![[#P:]], ![[#PD:]], ![[#ABI:]]}
 // CHECK-DAG: ![[#P]] = !{!"/abiprovide:{{[[:alnum:]_-]+,[[:alnum:]_-]+,[[:alnum:]_-]+,[[:alnum:]_-]+}}"}
-// CHECK-DAG: ![[#PD]] = !{!"/abiprovidedata:{{[[:alnum:]_-]+}}"}
+// CHECK-DAG: ![[#PD]] = !{!"/abiprovidedata:{{[[:alnum:]_-]+,[[:alnum:]_-]+}}"}
 // CHECK-DAG: ![[#ABI]] = !{!"/FAILIFMISMATCH:\22_WIN_ITANIUM_CXX_ABI=1\22"}
 
 // CHECK-DAG: !{ptr @_ZN8ImportedC1Ev, ![[#IMPORTED:]], ![[#IMPL:]]}
@@ -107,6 +109,7 @@ int use(Named *n, Sized *s, Grows *gr, CStruct *cs) {
 // CHECK-DAG: !{ptr @counter, !{{[0-9]+}}}
 // CHECK-DAG: !{ptr @table, !{{[0-9]+}}}
 // CHECK-DAG: !{ptr @vague, !{{[0-9]+}}}
+// CHECK-DAG: !{ptr @vaguealias, !{{[0-9]+}}}
 // CHECK-DAG: !{ptr @"tls$tls", !{{[0-9]+}}}
 // CTYPES-DAG: !{ptr @takesC, ![[#C:]]}
 // CTYPES-DAG: ![[#C]] = !{!"7CStruct", !"{{.+}}"}

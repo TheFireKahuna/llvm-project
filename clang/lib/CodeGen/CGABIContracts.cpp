@@ -501,6 +501,14 @@ static std::string formatProvideRow(StringRef Identity,
          llvm::encodeBase64URL(Digest);
 }
 
+// Whether GV has vague linkage, as an alias in the COMDAT of a definition with
+// vague linkage does: it moves with the definition.
+static bool isWeakForLinker(const llvm::GlobalValue *GV) {
+  const llvm::GlobalObject *GO = GV->getAliaseeObject();
+  return GV->isWeakForLinker() ||
+         (GO && GO != GV && GO->isWeakForLinker() && GO->hasComdat());
+}
+
 void CodeGenABIContracts::emit() {
   // A record whose layout the code uses also uses the layouts of its bases
   // and of the records it holds by value.
@@ -572,7 +580,7 @@ void CodeGenABIContracts::emit() {
                    (VD && !GV->isDSOLocal() &&
                     !CGM.getCodeGenOpts().DirectAccessExternalData);
     else
-      ImportForm = VD && GV->isWeakForLinker() && GV->hasDefaultVisibility() &&
+      ImportForm = VD && isWeakForLinker(GV) && GV->hasDefaultVisibility() &&
                    !GV->isDSOLocal();
     if (ImportForm && (Datum || !Related.empty()))
       Require(GV, Related, Datum);
@@ -582,7 +590,7 @@ void CodeGenABIContracts::emit() {
     // about.
     if (GV->isDeclarationForLinker() ||
         !(GV->hasDLLExportStorageClass() ||
-          (GV->isWeakForLinker() && GV->hasDefaultVisibility())))
+          (isWeakForLinker(GV) && GV->hasDefaultVisibility())))
       continue;
     addCoveredRecords(Related, /*UsedOnly=*/false, ProvidedTypes);
     if (Datum) {

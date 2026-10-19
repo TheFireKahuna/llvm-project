@@ -15,7 +15,8 @@
 /// its COMDAT, so that the linker discards it with a copy that a DLL's
 /// instance preempts, and the variable is kept through the link as the key of
 /// its initializer. A thread-local one is reached through its record alike.
-/// Hidden variables, and definitions with unique linkage, stay dso_local.
+/// An alias of it is in its COMDAT and is reached the same way. Hidden
+/// variables and aliases, and definitions with unique linkage, stay dso_local.
 
 int f();
 struct S { int n; S() : n(f()) {} };
@@ -28,9 +29,12 @@ inline int *loc() { static int x = f(); return &x; }
 inline thread_local int tls = 4;
 __attribute__((visibility("hidden"))) inline int hidden = 5;
 int strong = 6;
+extern int ivalias __attribute__((alias("iv")));
+extern int hiddenalias __attribute__((alias("iv"), visibility("hidden")));
 
 int use() {
-  return s.n + iv + A<int>::m.n + *loc() + tls + hidden + strong;
+  return s.n + iv + A<int>::m.n + *loc() + tls + hidden + strong + ivalias +
+         hiddenalias;
 }
 
 // CHECK-DAG: @s = linkonce_odr global %struct.S zeroinitializer, comdat
@@ -43,6 +47,8 @@ int use() {
 // CHECK-DAG: @tls = linkonce_odr thread_local global i32 4, comdat
 // CHECK-DAG: @hidden = linkonce_odr hidden global i32 5, comdat
 // CHECK-DAG: @strong = dso_local global i32 6
+// CHECK-DAG: @ivalias = alias i32, ptr @iv
+// CHECK-DAG: @hiddenalias = hidden alias i32, ptr @iv
 // CHECK-DAG: @llvm.global_ctors = appending global [2 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @__cxx_global_var_init, ptr @s }, { i32, ptr, ptr } { i32 65535, ptr @__cxx_global_var_init.1, ptr @_ZN1AIiE1mE }]
 // CHECK-DAG: @llvm.used = appending global [2 x ptr] [ptr @s, ptr @_ZN1AIiE1mE]
 
@@ -57,6 +63,8 @@ int use() {
 // ASM-DAG:   movq __imp_tls$tls(%rip),
 // ASM-DAG:   addl hidden(%rip),
 // ASM-DAG:   addl strong(%rip),
+// ASM-DAG:   movq __imp_ivalias(%rip),
+// ASM-DAG:   addl hiddenalias(%rip),
 
 // INIT:      .section .text,"xr",associative,s
 // INIT-NOT:  .section

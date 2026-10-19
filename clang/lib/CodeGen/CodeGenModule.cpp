@@ -1050,6 +1050,16 @@ void CodeGenModule::checkAliases() {
           cast<llvm::GlobalAlias>(Alias)->setAliasee(Aliasee);
       }
     }
+    // On Windows Itanium and NT-POSIX an alias of a variable that another
+    // image's instance may preempt is in the variable's COMDAT, which moves
+    // with it, so code reaches it through its import pointer as it reaches
+    // the variable. Only now is the variable known to be defined.
+    if (const auto *Var =
+            dyn_cast_or_null<llvm::GlobalVariable>(Alias->getAliaseeObject());
+        Var && !Var->isDSOLocal() && Var->hasComdat() &&
+        Alias->hasDefaultVisibility() &&
+        getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      Alias->setDSOLocal(false);
     // ifunc resolvers are usually implemented to run before sanitizer
     // initialization. Disable instrumentation to prevent the ordering issue.
     if (IsIFunc)
