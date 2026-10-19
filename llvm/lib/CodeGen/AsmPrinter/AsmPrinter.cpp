@@ -1807,14 +1807,27 @@ void AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + MF.getName());
   if (!TM.getTargetTriple().isOSBinFormatCOFF())
     emitLinkage(&F, FnSym);
-  OutStreamer->emitLabel(FnSym);
   const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
+  bool IsMemberTag = false;
   if (!VfnMD) {
     VfnMD = F.getMetadata("kcfi_member_tag");
-    // A linker tells a membership tag from a second type by the records.
-    if (VfnMD)
-      OutStreamer->emitCOFFKCFIMemberTag(FnSym);
+    IsMemberTag = VfnMD;
   }
+
+  // Control Flow Guard suppresses an export only at a 16-byte aligned entry,
+  // so the prefix and any patchable-function-prefix nops after it are padded
+  // to end at one, as x86 pads them. Only AArch64 emits a marker prefix as
+  // data, and its nops are 4 bytes.
+  uint64_t PrefixBytes =
+      (VfnMD ? 16 : 12) +
+      4 * F.getFnAttributeAsParsedInteger("patchable-function-prefix");
+  emitAlignment(Align(16));
+  emitNops(offsetToAlignment(PrefixBytes, Align(16)) / 4);
+
+  OutStreamer->emitLabel(FnSym);
+  // A linker tells a membership tag from a second type by the records.
+  if (IsMemberTag)
+    OutStreamer->emitCOFFKCFIMemberTag(FnSym);
   if (VfnMD)
     OutStreamer->emitIntValue(
         mdconst::extract<ConstantInt>(VfnMD->getOperand(0))->getZExtValue(), 4);
