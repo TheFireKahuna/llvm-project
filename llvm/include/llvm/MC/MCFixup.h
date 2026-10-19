@@ -48,11 +48,12 @@ enum {
 /// emitter knows. Object writers that describe instructions to the linker read
 /// it.
 enum class MCFixupUse : uint8_t {
-  Unknown, ///< Not described.
-  Call,    ///< An indirect call through the pointer at the address.
-  Jump,    ///< An indirect jump through the pointer at the address.
-  Load,    ///< A load of the pointer at the address into a register.
-  Address, ///< The address itself, computed into a register.
+  Unknown,       ///< Not described.
+  Call,          ///< An indirect call through the pointer at the address.
+  Jump,          ///< An indirect jump through the pointer at the address.
+  Load,          ///< A load of the pointer at the address into a register.
+  Address,       ///< The address itself, computed into a register.
+  AddressOffset, ///< The address plus a constant, computed into a register.
 };
 
 /// Encode information on a single operation to perform on a byte

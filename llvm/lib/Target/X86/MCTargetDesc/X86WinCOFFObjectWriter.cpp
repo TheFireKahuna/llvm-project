@@ -85,6 +85,8 @@ X86WinCOFFObjectWriter::getLinkSiteForm(const MCFixup &Fixup,
                : COFF::LinkSiteLoad;
   case MCFixupUse::Address:
     return COFF::LinkSiteAddress;
+  case MCFixupUse::AddressOffset:
+    return COFF::LinkSiteAddressOffset;
   }
   llvm_unreachable("unknown fixup use");
 }

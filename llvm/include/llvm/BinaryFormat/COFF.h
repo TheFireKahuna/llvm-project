@@ -471,6 +471,7 @@ enum LinkSiteForm : uint8_t {
   LinkSiteAddress,        // lea r64, [rip+X], with any prefixes
   LinkSiteJumpOnePrefix,  // jmp [rip+X] after one prefix byte, such as REX.W
   LinkSiteLoadREX2,       // mov r64, [rip+X], with a REX2 prefix
+  LinkSiteAddressOffset,  // lea r64, [rip+X+K], K not 0, with any prefixes
 };
 
 // The facts that the data of a site in a LinkRecordSites group gives, each a

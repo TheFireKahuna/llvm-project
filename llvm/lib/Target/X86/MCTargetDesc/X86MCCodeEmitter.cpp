@@ -679,11 +679,20 @@ void X86MCCodeEmitter::emitMemModRMByte(
                   -ImmSize);
     // Say how the instruction uses the address of a symbol, which the fixup
     // kind does not tell apart, for object writers that pass it on to the
-    // linker. An address with an offset is not the symbol's. Neither is a
-    // segment-relative or 32-bit one: a rewrite keeps the instruction's
-    // prefixes, which would then apply to the new form.
-    if (DescribeSites && Fixups.size() != NumFixups && Disp.isExpr() &&
-        isa<MCSymbolRefExpr>(Disp.getExpr()) && BaseReg == X86::RIP &&
+    // linker. An address with an offset is not the symbol's, so only lea says
+    // it computes one. Neither is a segment-relative or 32-bit one: a rewrite
+    // keeps the instruction's prefixes, which would then apply to the new
+    // form.
+    const MCExpr *Target = Disp.isExpr() ? Disp.getExpr() : nullptr;
+    bool Offset = false;
+    if (auto *E = dyn_cast_or_null<MCBinaryExpr>(Target);
+        E && E->getOpcode() == MCBinaryExpr::Add &&
+        isa<MCConstantExpr>(E->getRHS())) {
+      Target = E->getLHS();
+      Offset = true;
+    }
+    if (DescribeSites && Fixups.size() != NumFixups &&
+        isa_and_nonnull<MCSymbolRefExpr>(Target) && BaseReg == X86::RIP &&
         !MI.getOperand(Op + X86::AddrSegmentReg).getReg()) {
       MCFixupUse Use = MCFixupUse::Unknown;
       switch (Opcode) {
@@ -700,9 +709,11 @@ void X86MCCodeEmitter::emitMemModRMByte(
         Use = MCFixupUse::Load;
         break;
       case X86::LEA64r:
-        Use = MCFixupUse::Address;
+        Use = Offset ? MCFixupUse::AddressOffset : MCFixupUse::Address;
         break;
       }
+      if (Offset && Use != MCFixupUse::AddressOffset)
+        Use = MCFixupUse::Unknown;
       // The fixup's offset still counts from the start of the instruction.
       Fixups.back().setUse(Use, Fixups.back().getOffset());
     }
