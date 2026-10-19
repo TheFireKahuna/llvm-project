@@ -360,6 +360,31 @@ void writeJointSummary(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   os << formatv("{0:2}", toJSON(getSummary(ctx, args))) << "\n";
 }
 
+static constexpr StringLiteral scanMarkPrefix = "__llvm_jointscan$";
+
+bool mayWriteJointScanImportLibrary(StringRef path) {
+  ErrorOr<std::unique_ptr<MemoryBuffer>> mb = MemoryBuffer::getFile(
+      path, /*IsText=*/false, /*RequiresNullTerminator=*/false);
+  if (!mb)
+    return true;
+  Expected<std::unique_ptr<Archive>> archive = Archive::create(**mb);
+  if (!archive) {
+    consumeError(archive.takeError());
+    return false;
+  }
+  for (const Archive::Symbol &sym : (*archive)->symbols())
+    if (sym.getName().starts_with(scanMarkPrefix))
+      return true;
+  return false;
+}
+
+void addJointScanMark(COFFLinkerContext &ctx, StringRef dllName,
+                      std::vector<NewArchiveMember> &members,
+                      std::vector<uint8_t> &buffer) {
+  members.push_back(createLinkRecordMember(
+      ctx, dllName, (scanMarkPrefix + dllName.lower()).str(), {}, buffer));
+}
+
 void addJointScanOffers(COFFLinkerContext &ctx) {
   SymbolTable &symtab = ctx.symtab;
   DenseSet<StringRef> exported;
@@ -661,12 +686,13 @@ void Merge::run(StringRef dir) {
         continue;
       auto [it, inserted] =
           entityOf.try_emplace(d.names.front(), entities.size());
+      unsigned e = it->second;
       if (inserted) {
         entities.push_back({d.names.front(), d.code, {}, false});
         for (const std::string &name : ArrayRef(d.names).drop_front())
-          entityOf.try_emplace(name, it->second);
+          entityOf.try_emplace(name, e);
       }
-      entities[it->second].keepers.push_back({m, &d});
+      entities[e].keepers.push_back({m, &d});
     }
   auto keeperDef = [](const Entity &e, unsigned m) -> const Definition * {
     for (auto &[k, d] : e.keepers)

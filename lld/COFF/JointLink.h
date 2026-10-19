@@ -30,6 +30,15 @@ void writeJointSummary(COFFLinkerContext &ctx,
                        const llvm::opt::InputArgList &args);
 void addJointScanOffers(COFFLinkerContext &ctx);
 
+// The scan writes the import library at path where none is there, or where a
+// scan wrote it, which the member that marks it says, but never over a final
+// link's: the scans of the members that read it then resolve as their final
+// links will.
+bool mayWriteJointScanImportLibrary(llvm::StringRef path);
+void addJointScanMark(COFFLinkerContext &ctx, llvm::StringRef dllName,
+                      std::vector<llvm::NewArchiveMember> &members,
+                      std::vector<uint8_t> &buffer);
+
 // Under /lldjoint, checks the member's link, resolved but for LTO, against the
 // summary its fact file was merged from, and keeps the entities the member
 // keeps for the other members.

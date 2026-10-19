@@ -1252,11 +1252,13 @@ void LinkerDriver::createImportLibrary(bool asLib) {
     getExports(*ctx.hybridSymtab, nativeExports);
 
   std::string path = getImplibPath();
-  std::vector<uint8_t> rangeRecord, vagueRecord, layoutRecord;
+  std::vector<uint8_t> rangeRecord, vagueRecord, layoutRecord, scanMark;
   if (!asLib && ctx.config.jointScan.empty()) {
     addKCFIRangeRecord(ctx, libName, extra, rangeRecord);
     addVagueEntityRecord(ctx, libName, extra, vagueRecord);
     addJointLayoutRecord(ctx, libName, extra, layoutRecord);
+  } else if (!asLib) {
+    addJointScanMark(ctx, libName, extra, scanMark);
   }
 
   if (!ctx.config.incremental) {
@@ -3350,13 +3352,14 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachSymtab([&](SymbolTable &symtab) { addVersionedExports(symtab); });
 
   // A joint link's scan stops here, before LTO, and writes the import library
-  // its siblings' scans may read, unless one is already there: it holds the
-  // exports and the observable vague entities the member keeps, as offers.
+  // its siblings' scans may read, unless a final link wrote the one there: it
+  // holds the exports and the observable vague entities the member keeps, as
+  // offers.
   if (!config->jointScan.empty()) {
     writeJointSummary(ctx, args);
     if ((config->dll || !ctx.symtab.exports.empty()) && !config->noimplib &&
         (!config->mingw || !config->implib.empty()) &&
-        !sys::fs::exists(getImplibPath())) {
+        mayWriteJointScanImportLibrary(getImplibPath())) {
       addJointScanOffers(ctx);
       ctx.symtab.offerOverridableDefaults();
       ctx.symtab.fixupExports();
