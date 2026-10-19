@@ -64,14 +64,14 @@
                    "/wrap:exit /wrap:_exit /wrap:_Exit /wrap:quick_exit "      \
                    "/wrap:_beginthread /wrap:_beginthreadex "                  \
                    "/wrap:_endthread /wrap:_endthreadex /wrap:rand_s "         \
-                   "/wrap:raise /wrap:abort"                                   \
+                   "/wrap:raise /wrap:abort /wrap:_assert /wrap:_wassert"     \
                    WINCRT_SPAWN_NAMES(WINCRT_WRAP_NAME)                        \
                    WINCRT_NTDLL_FORMATTED_IO(WINCRT_WRAP_NAME)                 \
                    WINCRT_SHARED_IMPORTS(WINCRT_WRAP_NAME)                     \
                    WINCRT_SHARED_IMPORTS_RENAMED(WINCRT_WRAP_NAME)))
 
 // The parts of wincrt that serve the whole process: the termination
-// registries, exit, exec, raise, abort, the thread start and rand_s.
+// registries, exit, exec, raise, abort, assert, the thread start and rand_s.
 // Every image imports them from clang_rt.wincrt_dynamic.dll, which exports
 // them, so that registration is process-wide and finalization per image; a
 // program linked with -static keeps them in the executable, from
@@ -94,6 +94,10 @@ __declspec(dllimport) LONG WINAPI __wincrt_AppPolicyGetProcessTerminationMethod(
     HANDLE, AppPolicyProcessTerminationMethod *);
 __declspec(dllimport) LONG WINAPI __wincrt_AppPolicyGetThreadInitializationType(
     HANDLE, AppPolicyThreadInitializationType *);
+__declspec(dllimport) LONG WINAPI
+__wincrt_AppPolicyGetWindowingModel(HANDLE, AppPolicyWindowingModel *);
+__declspec(dllimport) LONG WINAPI __wincrt_AppPolicyGetShowDeveloperDiagnostic(
+    HANDLE, AppPolicyShowDeveloperDiagnostic *);
 
 // Defined by the builtins: the table bounds and the image's DSO handle.
 extern const _PIFV __xi_a[], __xi_z[];

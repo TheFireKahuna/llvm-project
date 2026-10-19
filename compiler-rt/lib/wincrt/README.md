@@ -22,6 +22,7 @@ The builtins define the bounds of the `.CRT$X??` tables, `__dso_handle` and
 | C registration | `atexit`, `_onexit`, `onexit`, `at_quick_exit` | `atexit.cpp` |
 | Process exit | `__wrap_exit`, `__wrap__exit`, `__wrap__Exit`, `__wrap_quick_exit`, which every entry point's `/wrap` makes `exit`, `_exit`, `_Exit` and `quick_exit` | `exit.cpp`, `entry_*.cpp` |
 | Signals | `__wrap_raise` and `__wrap_abort`, wrapping the Universal CRT's | `signal.cpp` |
+| Assertions | `__wrap__assert` and `__wrap__wassert`, replacing the Universal CRT's | `assert.cpp` |
 | Process replacement | `__wrap__execv`, `__wrap__spawnv` and the other exec and spawn functions, wide, narrow and under their traditional names, wrapping the Universal CRT's | `exec.cpp` |
 | Threads | `__wrap__beginthread`, `__wrap__beginthreadex`, `__wrap__endthread`, `__wrap__endthreadex`, wrapping the Universal CRT's | `thread.cpp` |
 | Random numbers | `__wrap_rand_s`, wrapping the Universal CRT's | `rand_s.cpp` |
@@ -121,6 +122,18 @@ calls its own `_exit(0)`. Their wrappers spawn the overlay with `_P_NOWAIT`,
 which the Universal CRT handles identically up to that point, and then call
 the DLL's `_exit(0)`; every other mode is the Universal CRT's. The variadic
 forms pass their argument list on as the vector forms' array.
+
+`_assert` and `_wassert` report a failed assertion as the Universal CRT's do,
+to standard error in a console program and otherwise in a dialog, but the
+Universal CRT's end the program through its own `abort` and `_exit`, and show
+the dialog through `user32.dll` after reading two app model policies through
+`kernel.appcore.dll`. The DLL's read the policies from `kernelbase.dll`, end
+the program through its own `abort` and `_exit`, and raise the dialog with
+`NtRaiseHardError` as a service notification, which the session's
+`csrss.exe` displays: the process loads no `user32.dll` and never becomes a
+GUI process. The answer maps as the Universal CRT's does: Abort raises
+`SIGABRT` and exits with code 3, Retry breaks into a debugger, Ignore returns,
+and a dialog that cannot be shown aborts.
 
 The same DLL wraps `_beginthread`, `_beginthreadex`, `_endthread` and
 `_endthreadex`, whose Universal CRT forms read the app model's thread

@@ -4,3 +4,5 @@ EXPORTS
     ; wincrt's imports of them name kernel32.dll whatever else is linked.
     __wincrt_AppPolicyGetProcessTerminationMethod EXPORTAS AppPolicyGetProcessTerminationMethod
     __wincrt_AppPolicyGetThreadInitializationType EXPORTAS AppPolicyGetThreadInitializationType
+    __wincrt_AppPolicyGetWindowingModel EXPORTAS AppPolicyGetWindowingModel
+    __wincrt_AppPolicyGetShowDeveloperDiagnostic EXPORTAS AppPolicyGetShowDeveloperDiagnostic

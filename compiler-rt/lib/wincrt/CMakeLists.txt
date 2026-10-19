@@ -39,6 +39,7 @@ set(WINCRT_SOURCES
 # clang_rt.wincrt_dynamic.dll, and which clang_rt.wincrt_static.lib holds for a
 # program linked with -static.
 set(WINCRT_ATEXIT_SOURCES
+  assert.cpp
   cxa_atexit.cpp
   cxa_thread_atexit.cpp
   exec.cpp
