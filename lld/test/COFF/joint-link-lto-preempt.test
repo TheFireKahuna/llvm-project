@@ -1,0 +1,142 @@
+# REQUIRES: x86
+## A member linked from bitcode gives up what its merge has another member
+## keep before its LTO: LTO compiles no copy of the dynamically initialized data
+## a.dll, declared first, keeps, nor its guard or initializer, and keeps the
+## address-significant function for its calls while its address-takes reach
+## a.dll's; so does ThinLTO.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium rt.s -o rt.obj
+# RUN: llvm-as b.ll -o b.obj
+# RUN: opt -module-summary b.ll -o b-thin.obj
+
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjointscan:a.jscan
+# RUN: lld-link -import-slots -dll -noentry b.obj rt.obj -out:b.dll \
+# RUN:   -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:facts a.jscan b.jscan
+# RUN: lld-link -import-slots -dll -noentry b.obj rt.obj -out:b.dll \
+# RUN:   -lldjoint:facts/b.dll.jfacts -lldsavetemps
+# RUN: FileCheck --check-prefix=RES --input-file=b.dll.resolution.txt \
+# RUN:   -DIN=b.obj %s
+# RUN: llvm-readobj --sections --symbols b.dll.lto.obj | \
+# RUN:   FileCheck --check-prefix=OBJ %s
+# RUN: llvm-readobj --coff-imports b.dll | FileCheck --check-prefix=IMP %s
+
+# RES-DAG: -r=[[IN]],v,{{$}}
+# RES-DAG: -r=[[IN]],_ZGV1v,{{$}}
+# RES-DAG: -r=[[IN]],_Z1fv,plx
+
+# OBJ-NOT: .CRT$XCU
+# OBJ-NOT: Name: __cxx_global_var_init
+# OBJ-NOT: Name: _ZGV1v
+# OBJ:     Name: _Z1fv
+# OBJ-NOT: Name: _ZGV1v
+# OBJ-NOT: .CRT$XCU
+
+# IMP:      Name: a.dll
+# IMP-NEXT: ImportLookupTableRVA:
+# IMP-NEXT: ImportAddressTableRVA:
+# IMP-NEXT: Symbol: _Z1fv (0)
+# IMP-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
+# IMP-NEXT: Symbol: v (0)
+# IMP-NEXT: }
+
+# RUN: lld-link -import-slots -dll -noentry b-thin.obj rt.obj -out:b.dll \
+# RUN:   -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:thin a.jscan b.jscan
+# RUN: lld-link -import-slots -dll -noentry b-thin.obj rt.obj -out:b.dll \
+# RUN:   -lldjoint:thin/b.dll.jfacts -lldsavetemps
+# RUN: FileCheck --check-prefix=RES --input-file=b.dll.resolution.txt \
+# RUN:   -DIN=b-thin.obj %s
+# RUN: llvm-readobj --sections --symbols b.dll.lto.b-thin.obj | \
+# RUN:   FileCheck --check-prefix=OBJ %s
+# RUN: llvm-readobj --coff-imports b.dll | FileCheck --check-prefix=IMP %s
+
+#--- a.s
+  .section .data,"dw",discard,v
+  .globl v
+v:
+  .long 0
+
+  .section .bss,"bw",discard,_ZGV1v
+  .globl _ZGV1v
+_ZGV1v:
+  .quad 0
+
+  .section .text,"xr",discard,_Z1fv
+  .globl _Z1fv
+_Z1fv:
+  movl $7, %eax
+  retq
+
+  .text
+  .globl af
+af:
+  retq
+
+  .section .drectve,"yni"
+  .ascii " -export:af"
+
+#--- rt.s
+  .text
+  .globl ext
+ext:
+  movl $1, %eax
+  retq
+  .globl __cxa_guard_acquire
+__cxa_guard_acquire:
+  xorl %eax, %eax
+  retq
+  .globl __cxa_guard_release
+__cxa_guard_release:
+  retq
+
+#--- b.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+$v = comdat any
+$_ZGV1v = comdat any
+$_Z1fv = comdat any
+
+@v = linkonce_odr global i32 0, comdat, align 4
+@_ZGV1v = linkonce_odr global i64 0, comdat, align 8
+@llvm.global_ctors = appending global [1 x { i32, ptr, ptr }] [{ i32, ptr, ptr } { i32 65535, ptr @__cxx_global_var_init, ptr @v }]
+
+define internal void @__cxx_global_var_init() comdat($v) {
+entry:
+  %0 = load atomic i8, ptr @_ZGV1v acquire, align 8
+  %uninit = icmp eq i8 %0, 0
+  br i1 %uninit, label %check, label %end
+check:
+  %1 = call i32 @__cxa_guard_acquire(ptr @_ZGV1v)
+  %acquired = icmp ne i32 %1, 0
+  br i1 %acquired, label %init, label %end
+init:
+  %2 = call i32 @ext()
+  store i32 %2, ptr @v, align 4
+  call void @__cxa_guard_release(ptr @_ZGV1v)
+  br label %end
+end:
+  ret void
+}
+
+declare i32 @__cxa_guard_acquire(ptr)
+declare void @__cxa_guard_release(ptr)
+declare i32 @ext()
+
+define dllexport i64 @bf() {
+  %v = load i32, ptr @v, align 4
+  %call = call i32 @_Z1fv()
+  %sum = add i32 %v, %call
+  %sext = sext i32 %sum to i64
+  %addr = ptrtoint ptr @_Z1fv to i64
+  %r = add i64 %sext, %addr
+  ret i64 %r
+}
+
+define linkonce_odr i32 @_Z1fv() comdat {
+  ret i32 7
+}

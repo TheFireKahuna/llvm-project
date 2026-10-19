@@ -1,10 +1,11 @@
 # REQUIRES: x86
 ## The diagnostics of a joint link: members whose link lines differ in an
-## option of the whole program; a member given twice; an entity that no member
-## can keep for the others without an initialization cycle; link lines that
-## name each other's import libraries; a final link whose inputs changed since
-## its scan, or given another member's facts; and a member linked without
-## -import-slots.
+## option of the whole program, but not in one that changes nothing written; a
+## member given twice; an entity that no member can keep for the others without
+## an initialization cycle; link lines that name each other's import libraries;
+## a final link whose inputs changed since its scan, or given another member's
+## facts, or that writes ThinLTO index files for separate backends; and a member
+## linked without -import-slots.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
@@ -24,6 +25,15 @@
 # RUN: not lld-link -lldjointmerge -out:facts a.jscan b-noref.jscan 2>&1 | \
 # RUN:   FileCheck --check-prefix=OPTION %s
 # OPTION: error: b.dll's link line has /opt:noref, which a.dll's lacks; a joint link's members share every option but those of their own inputs and outputs
+
+## How ThinLTO's backends run and how many changes nothing a link writes.
+# RUN: lld-link -import-slots -dll -noentry extra.obj -out:x.dll \
+# RUN:   -opt:lldltojobs=2 -thinlto-distributor:dist.exe \
+# RUN:   -thinlto-remote-compiler:clang.exe -lto-obj-path:x.lto.obj \
+# RUN:   -lldjointscan:x.jscan
+# RUN: lld-link -lldjointmerge -out:dist a.jscan x.jscan
+# RUN: lld-link -import-slots -dll -noentry extra.obj -out:x.dll \
+# RUN:   -opt:lldltojobs=4 -lldjoint:dist/x.dll.jfacts
 
 # RUN: not lld-link -lldjointmerge -out:facts a.jscan a.jscan 2>&1 | \
 # RUN:   FileCheck --check-prefix=TWICE %s
@@ -52,6 +62,10 @@
 # RUN: not lld-link -import-slots -dll -noentry a.obj -out:a.dll \
 # RUN:   -lldjoint:facts/b.dll.jfacts 2>&1 | FileCheck --check-prefix=OTHER %s
 # OTHER: error: facts/b.dll.jfacts: holds no joint-link facts for a.dll
+# RUN: not lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -thinlto-index-only -lldjoint:facts/b.dll.jfacts 2>&1 | \
+# RUN:   FileCheck --check-prefix=INDEX %s
+# INDEX: error: -thinlto-index-only: a joint link's member runs its ThinLTO backends in its final link; distribute them with -thinlto-distributor
 
 # RUN: not lld-link -dll -noentry a.obj -out:a.dll -lldjointscan:a.jscan 2>&1 | \
 # RUN:   FileCheck --check-prefix=SLOTS %s

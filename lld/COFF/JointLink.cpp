@@ -234,13 +234,29 @@ getLinkWideOptions(COFFLinkerContext &ctx, const opt::InputArgList &args) {
       OPT_vctoolsversion, OPT_winsdkdir, OPT_winsdkversion, OPT_diasdkdir,
       OPT_vfsoverlay, OPT_lldltocache, OPT_lldltocachepolicy, OPT_reproduce,
       OPT_linkrepro, OPT_linkreprofullpathrsp, OPT_lldsavetemps,
-      OPT_lldsavetemps_colon};
+      OPT_lldsavetemps_colon, OPT_lto_obj_path, OPT_thinlto_distributor,
+      OPT_thinlto_distributor_arg, OPT_thinlto_remote_compiler,
+      OPT_thinlto_remote_compiler_prepend_arg, OPT_thinlto_remote_compiler_arg,
+      OPT_thinlto_emit_imports_files, OPT_thinlto_prefix_replace,
+      OPT_thinlto_object_suffix_replace};
   std::vector<std::string> options;
   for (const opt::Arg *arg : args) {
     if (llvm::is_contained(memberOptions, arg->getOption().getID()))
       continue;
     std::string s = arg->getOption().getName().str();
-    s += join(arg->getValues(), ",");
+    if (arg->getOption().matches(OPT_opt)) {
+      // How many jobs ThinLTO runs changes nothing written.
+      SmallVector<StringRef, 4> values;
+      StringRef(arg->getValue()).split(values, ',');
+      llvm::erase_if(values, [](StringRef v) {
+        return v.starts_with_insensitive("lldltojobs=");
+      });
+      if (values.empty())
+        continue;
+      s += join(values, ",");
+    } else {
+      s += join(arg->getValues(), ",");
+    }
     options.push_back(StringRef(s).lower());
   }
   options.push_back(

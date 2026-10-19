@@ -1,0 +1,70 @@
+# REQUIRES: x86
+## A joint link's facts are inputs of its members' LTO, so ThinLTO's cache
+## keeps a member's code apart for each owner its merge chooses. a.dll and
+## b.dll keep v; the first declared keeps it for both. b.dll reads it directly
+## where it keeps it and through its import of a.dll's otherwise, from the
+## cache too once each was compiled.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
+# RUN: opt -module-hash -module-summary b.ll -o b.obj
+
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjointscan:a.jscan
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:ab a.jscan b.jscan
+# RUN: lld-link -lldjointmerge -out:ba b.jscan a.jscan
+
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjoint:ab/b.dll.jfacts -lldltocache:cache
+# RUN: llvm-objdump -d --no-show-raw-insn b.dll | \
+# RUN:   FileCheck --check-prefix=IMPORT %s
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjoint:ba/b.dll.jfacts -lldltocache:cache
+# RUN: llvm-objdump -d --no-show-raw-insn b.dll | \
+# RUN:   FileCheck --check-prefix=DIRECT %s
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjoint:ab/b.dll.jfacts -lldltocache:cache
+# RUN: llvm-objdump -d --no-show-raw-insn b.dll | \
+# RUN:   FileCheck --check-prefix=IMPORT %s
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjoint:ba/b.dll.jfacts -lldltocache:cache
+# RUN: llvm-objdump -d --no-show-raw-insn b.dll | \
+# RUN:   FileCheck --check-prefix=DIRECT %s
+# RUN: ls cache | count 3
+
+# IMPORT:      <bf>:
+# IMPORT-NEXT: movq {{.*}}(%rip), %rax
+# IMPORT-NEXT: movl (%rax), %eax
+
+# DIRECT:      <bf>:
+# DIRECT-NEXT: movl {{.*}}(%rip), %eax
+
+#--- a.s
+  .section .data,"dw",discard,v
+  .globl v
+v:
+  .long 1
+
+  .text
+  .globl af
+af:
+  movq __imp_v(%rip), %rax
+  retq
+
+  .section .drectve,"yni"
+  .ascii " -export:af"
+
+#--- b.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+$v = comdat any
+
+@v = linkonce_odr global i32 1, comdat, align 4
+
+define dllexport i32 @bf() {
+  %v = load i32, ptr @v, align 4
+  ret i32 %v
+}

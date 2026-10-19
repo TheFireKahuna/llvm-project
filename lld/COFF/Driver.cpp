@@ -2740,6 +2740,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if ((!config->jointScan.empty() || !config->jointFacts.empty()) &&
       !config->importSlots)
     Err(ctx) << "a joint link's members link with -import-slots";
+  // A member's final link checks its facts against its inputs, which a later
+  // link of the objects the backends write would not have.
+  if (!config->jointFacts.empty() && config->thinLTOIndexOnly)
+    Err(ctx) << "-thinlto-index-only: a joint link's member runs its ThinLTO "
+                "backends in its final link; distribute them with "
+                "-thinlto-distributor";
   config->startStopSymbols =
       args.hasFlag(OPT_start_stop_symbols, OPT_start_stop_symbols_no, false);
   config->boundarySymbols =
