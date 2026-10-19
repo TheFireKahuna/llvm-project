@@ -7,7 +7,8 @@
 ; provided by another image, whether it is declared or defined weakly, and is
 ; reached through its import pointer rather than a stub. So is an extern_weak
 ; variable, which the object keeps a weak external, so that the linker binds
-; the pointer to zero when the variable is absent.
+; the pointer to zero when the variable is absent. So is an alias in the COMDAT
+; of a weakly defined variable, which moves with it.
 
 $comdatvar = comdat any
 
@@ -16,6 +17,8 @@ $comdatvar = comdat any
 @weakvar = extern_weak global i32
 @comdatvar = linkonce_odr global i32 1, comdat
 @strongvar = global i32 2
+@comdatalias = alias i32, ptr @comdatvar
+@strongalias = alias i32, ptr @strongvar
 @tlsvar = external thread_local global i32
 
 define i32 @getVar() {
@@ -50,6 +53,23 @@ define i32 @getComdatVar() {
 ; MSVC-LABEL:  getComdatVar:
 ; MSVC:          movl comdatvar(%rip), %eax
   %v = load i32, ptr @comdatvar
+  ret i32 %v
+}
+
+define i32 @getComdatAlias() {
+; CHECK-LABEL: getComdatAlias:
+; CHECK:         movq __imp_comdatalias(%rip), %rax
+; CHECK:         movl (%rax), %eax
+; MSVC-LABEL:  getComdatAlias:
+; MSVC:          movl comdatalias(%rip), %eax
+  %v = load i32, ptr @comdatalias
+  ret i32 %v
+}
+
+define i32 @getStrongAlias() {
+; CHECK-LABEL: getStrongAlias:
+; CHECK:         movl strongalias(%rip), %eax
+  %v = load i32, ptr @strongalias
   ret i32 %v
 }
 

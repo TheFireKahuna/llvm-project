@@ -237,9 +237,11 @@ bool TargetMachine::shouldAssumeDSOLocal(const GlobalValue *GV) const {
     // through its import pointer, which the linker replaces with the direct
     // address when the variable is in the image. A thread-local variable is
     // reached through the record of its image's TLS index and its offset, on
-    // the targets that have one.
+    // the targets that have one. An alias of such a definition is in its
+    // COMDAT, so it moves with it.
     if (TT.isWindowsItaniumOrNTPOSIXEnvironment()) {
-      const auto *Var = dyn_cast<GlobalVariable>(GV);
+      const auto *Var =
+          dyn_cast_or_null<GlobalVariable>(GV->getAliaseeObject());
       if (Var && (!Var->isThreadLocal() || TT.isX86_64() || TT.isAArch64()) &&
           (Var->isDeclarationForLinker() || Var->isWeakForLinker()))
         return false;
