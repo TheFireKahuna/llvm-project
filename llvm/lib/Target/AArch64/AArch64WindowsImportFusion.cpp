@@ -131,7 +131,7 @@ static bool isData(const GlobalValue *GV) {
 // Whether GV is data that never changes and whose every definition holds the
 // same value, so that a copy of it in any image reads as the data itself does.
 static bool isImmutableData(const GlobalValue *GV) {
-  const auto *Var = dyn_cast<GlobalVariable>(GV);
+  const auto *Var = dyn_cast_or_null<GlobalVariable>(GV->getAliaseeObject());
   return Var && Var->isConstant() && Var->hasDefinitiveInitializer() &&
          (Var->isWeakForLinker() || Var->hasAvailableExternallyLinkage());
 }

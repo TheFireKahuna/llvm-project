@@ -11,6 +11,7 @@
 ; can make the pair take the address of the image's own copy where another
 ; image provides the data. Its address must not escape, nor be written back,
 ; and a volatile read keeps the load as it is, as does data that may change.
+; A read through an alias of the data reads the copy as well.
 
 ; NONE-NOT: .linkvalueonly
 
@@ -19,6 +20,7 @@ $mut = comdat any
 @tbl = linkonce_odr constant [4 x i32] [i32 1, i32 2, i32 3, i32 4], comdat
 @mut = linkonce_odr global [4 x i32] [i32 1, i32 2, i32 3, i32 4], comdat
 @sink = external global ptr
+@tblalias = alias [4 x i32], ptr @tbl
 
 ; CHECK-LABEL: indexed:
 ; CHECK:       .Lpage[[#N:]]:
@@ -28,6 +30,18 @@ $mut = comdat any
 ; CHECK-NEXT:  ldr w0, [x8, x0, lsl #2]
 define i32 @indexed(i64 %i) {
   %p = getelementptr inbounds [4 x i32], ptr @tbl, i64 0, i64 %i
+  %v = load i32, ptr %p
+  ret i32 %v
+}
+
+; CHECK-LABEL: aliased:
+; CHECK:       .Lpage[[#N:]]:
+; CHECK-NEXT:  adrp x8, __imp_tblalias
+; CHECK-NEXT:  .linkvalueonly .Lpage[[#N]]
+; CHECK-NEXT:  ldr x8, [x8, :lo12:__imp_tblalias]
+; CHECK-NEXT:  ldr w0, [x8, x0, lsl #2]
+define i32 @aliased(i64 %i) {
+  %p = getelementptr inbounds [4 x i32], ptr @tblalias, i64 0, i64 %i
   %v = load i32, ptr %p
   ret i32 %v
 }

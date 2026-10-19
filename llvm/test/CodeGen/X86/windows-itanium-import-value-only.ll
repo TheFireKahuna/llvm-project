@@ -15,7 +15,7 @@
 ; another image provides the data. Its address must not escape: a store or a
 ; return of it keeps the load as it is, as does a volatile read, and data that
 ; may change is never described. An atomic read of data that nothing writes
-; reads the copy as well.
+; reads the copy as well, and so does a read through an alias of the data.
 
 ; NONE-NOT: .linkvalueonly
 
@@ -24,6 +24,7 @@ $mut = comdat any
 @tbl = linkonce_odr constant [4 x i32] [i32 1, i32 2, i32 3, i32 4], comdat
 @mut = linkonce_odr global [4 x i32] [i32 1, i32 2, i32 3, i32 4], comdat
 @ext = external constant [4 x i32]
+@tblalias = alias [4 x i32], ptr @tbl
 @sink = external global ptr
 
 ; CHECK-LABEL: indexed:
@@ -32,6 +33,16 @@ $mut = comdat any
 ; CHECK-NEXT:  movl (%[[R]],%{{[a-z0-9]+}},4), %eax
 define i32 @indexed(i64 %i) {
   %p = getelementptr inbounds [4 x i32], ptr @tbl, i64 0, i64 %i
+  %v = load i32, ptr %p
+  ret i32 %v
+}
+
+; CHECK-LABEL: aliased:
+; CHECK:       .linkvalueonly
+; CHECK-NEXT:  movq __imp_tblalias(%rip), %[[R:[a-z0-9]+]]
+; CHECK-NEXT:  movl (%[[R]],%{{[a-z0-9]+}},4), %eax
+define i32 @aliased(i64 %i) {
+  %p = getelementptr inbounds [4 x i32], ptr @tblalias, i64 0, i64 %i
   %v = load i32, ptr %p
   ret i32 %v
 }

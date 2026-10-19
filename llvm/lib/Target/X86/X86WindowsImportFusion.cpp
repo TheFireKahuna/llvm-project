@@ -230,7 +230,8 @@ static bool isDataPointer(const MachineOperand &Pointer) {
 static bool isImmutableData(const MachineOperand &Pointer) {
   if (Pointer.isSymbol())
     return false;
-  const auto *GV = dyn_cast<GlobalVariable>(Pointer.getGlobal());
+  const auto *GV =
+      dyn_cast_or_null<GlobalVariable>(Pointer.getGlobal()->getAliaseeObject());
   return GV && GV->isConstant() && GV->hasDefinitiveInitializer() &&
          (GV->isWeakForLinker() || GV->hasAvailableExternallyLinkage());
 }
