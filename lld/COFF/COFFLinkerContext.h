@@ -246,6 +246,17 @@ public:
     llvm::StringMap<llvm::StringRef> provides;
   };
   llvm::StringMap<JointSibling> jointSiblings;
+  // The ordinals the merge gives the exports other members import, by export
+  // name, each with whether no other image names it, so it needs no name; and
+  // the addresses inside the image's data that other members' static data
+  // holds, each a name the image exports at an offset from it.
+  struct JointOrdinal {
+    llvm::StringRef name;
+    uint16_t ordinal;
+    bool unnamed;
+  };
+  std::vector<JointOrdinal> jointOrdinals;
+  std::vector<std::pair<llvm::StringRef, uint64_t>> jointInteriors;
 
   // The changes the linker makes to the code of each section chunk it
   // changes, and how it lays out the code of each it resizes.

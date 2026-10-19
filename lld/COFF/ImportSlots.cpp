@@ -250,8 +250,7 @@ static RelaxEdit getRetarget(const SectionChunk *sc, const coff_relocation &rel,
 
 // The addend of the reference at rel in code: a REL32's displacement, or an
 // ARM64 adrp's immediate, which the link adds to the target.
-static int64_t getCodeAddend(const SectionChunk *sc,
-                             const coff_relocation &rel) {
+int64_t getCodeAddend(const SectionChunk *sc, const coff_relocation &rel) {
   uint32_t insn = read32le(sc->getContents().data() + rel.VirtualAddress);
   if (sc->getArch() == Triple::aarch64)
     return rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21

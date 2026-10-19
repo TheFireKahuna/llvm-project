@@ -33,8 +33,9 @@
 # RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
 # RUN:   -lldjoint:facts/b.dll.jfacts
 
-## b.dll imports a.dll's identity and no witness; a.dll exports both, and its
-## import library holds the witness but not the identity.
+## b.dll imports a.dll's identity and no witness, and g by the ordinal the
+## merge gives it; a.dll exports both, and its import library holds the
+## witness but not the identity.
 # RUN: llvm-readobj --coff-imports b.dll > b.txt
 # RUN: llvm-nm a.lib >> b.txt
 # RUN: FileCheck --check-prefix=B %s < b.txt
@@ -42,7 +43,7 @@
 # B-NEXT: ImportLookupTableRVA:
 # B-NEXT: ImportAddressTableRVA:
 # B-NEXT: Symbol: __llvm_private$[[ID:[0-9a-f]{16}]] (0)
-# B-NEXT: Symbol: g (0)
+# B-NEXT: Symbol: (1)
 # B-NEXT: }
 # B-NOT:  __llvm_private
 # B:      __imp___abiw$Z7E5CzMxeVE$AAECAwQFBgcICQoLDA0ODw$a.dll

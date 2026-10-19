@@ -33,53 +33,65 @@
 # RUN:   -out:app.exe -lldjoint:facts/app.exe.jfacts
 
 ## a.dll, declared first, keeps K's vtable and type_info and D's vtable, which
-## it exports privately, and the runs of K and D. D's run ends past its
-## vtable, which the export directory, first in .rdata, never follows.
+## it exports privately with no name, and the runs of K and D. D's run ends
+## past its vtable, which the export directory, first in .rdata, never follows.
 # RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=A %s
-# RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=NOFWD %s
 # RUN: llvm-nm a.lib | FileCheck --check-prefix=ALIB %s
-# A-DAG: Name: _ZTI1K
-# A-DAG: Name: _ZTV1D
-# A-DAG: Name: _ZTV1D$ap16
-# A-DAG: Name: _ZTV1K
-# A-DAG: Name: _ZTV1K$ap16
-# A-DAG: Name: __llvm_vtr$[[D:.*]]e
-# A-DAG: Name: __llvm_vtr$[[D]]m
-# A-DAG: Name: __llvm_vtr$[[K:.*]]e
-# A-DAG: Name: __llvm_vtr$[[K]]m
-# NOFWD-NOT: ForwardedTo:
+# A:      Ordinal: 1
+# A-NEXT: Name: _ZTI1K
+# A:      Ordinal: 2
+# A-NEXT: Name: {{$}}
+# A:      Ordinal: 3
+# A-NEXT: Name: _ZTV1D$ap16
+# A:      Ordinal: 4
+# A-NEXT: Name: _ZTV1K
+# A:      Ordinal: 5
+# A-NEXT: Name: _ZTV1K$ap16
+# A:      Ordinal: 6
+# A-NEXT: Name: __llvm_vtr$[[K:.*]]e
+# A-NEXT: RVA:
+# A:      Ordinal: 7
+# A-NEXT: Name: __llvm_vtr$[[K]]m
+# A-NEXT: RVA:
+# A:      Ordinal: 8
+# A-NEXT: Name: __llvm_vtr$[[D:.*]]e
+# A-NEXT: RVA:
+# A:      Ordinal: 9
+# A-NEXT: Name: __llvm_vtr$[[D]]m
+# A-NEXT: RVA:
+# A-NOT:  ForwardedTo:
 # ALIB:     __imp__ZTV1K
 # ALIB-NOT: __imp__ZTV1D
 
-## b.dll imports what its code reads, a.dll's identity, which covers the names
-## it exports for b.dll alone, and the three words of the run of each class
-## its checks read, consecutive; its exports of K's forward, and it exports
-## nothing of D's.
+## b.dll imports by ordinal what its code reads, a.dll's identity by name,
+## which covers the ordinals, and the three words of the run of each class its
+## checks read, consecutive; its exports of K's forward to their ordinals, and
+## it exports nothing of D's.
 # RUN: llvm-readobj --coff-imports --coff-exports b.dll > b.txt
 # RUN: llvm-objdump -d b.dll >> b.txt
 # RUN: FileCheck --check-prefix=B %s < b.txt
 # B:      Name: a.dll
 # B-NEXT: ImportLookupTableRVA:
 # B-NEXT: ImportAddressTableRVA: 0x[[#%X,IAT:]]
-# B-NEXT: Symbol: _ZTI1K (0)
-# B-NEXT: Symbol: _ZTV1D$ap16 (0)
-# B-NEXT: Symbol: _ZTV1K (0)
-# B-NEXT: Symbol: _ZTV1K$ap16 (0)
+# B-NEXT: Symbol: (1)
+# B-NEXT: Symbol: (3)
+# B-NEXT: Symbol: (4)
+# B-NEXT: Symbol: (5)
 # B-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
-# B-NEXT: Symbol: _ZTV1D$ap16 (0)
-# B-NEXT: Symbol: __llvm_vtr$[[BD:.+]]e (0)
-# B-NEXT: Symbol: __llvm_vtr$[[BD]]m (0)
-# B-NEXT: Symbol: _ZTV1K$ap16 (0)
-# B-NEXT: Symbol: __llvm_vtr$[[BK:.+]]e (0)
-# B-NEXT: Symbol: __llvm_vtr$[[BK]]m (0)
+# B-NEXT: Symbol: (3)
+# B-NEXT: Symbol: (8)
+# B-NEXT: Symbol: (9)
+# B-NEXT: Symbol: (5)
+# B-NEXT: Symbol: (6)
+# B-NEXT: Symbol: (7)
 # B-NEXT: }
 # B:      Name: _ZTI1K
-# B-NEXT: ForwardedTo: a._ZTI1K
+# B-NEXT: ForwardedTo: a.#1
 # B-NOT:  Name: _ZTV1D
 # B:      Name: _ZTV1K
-# B-NEXT: ForwardedTo: a._ZTV1K
+# B-NEXT: ForwardedTo: a.#4
 # B:      Name: _ZTV1K$ap16
-# B-NEXT: ForwardedTo: a._ZTV1K$ap16
+# B-NEXT: ForwardedTo: a.#5
 
 ## b.dll's constructions of D and K load the address point a.dll exports, and
 ## its checks read the runs' words; C's copy stays.
@@ -97,7 +109,7 @@
 # APP:      Name: a.dll
 # APP-NEXT: ImportLookupTableRVA:
 # APP-NEXT: ImportAddressTableRVA:
-# APP-NEXT: Symbol: _ZTV1D (0)
+# APP-NEXT: Symbol: (2)
 # APP-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
 # APP-NEXT: }
 

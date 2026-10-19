@@ -1,0 +1,77 @@
+# REQUIRES: x86
+## The scan reads a bitcode member's interior addresses from the directives
+## clang adds to its linker options, before LTO writes its data: a.dll exports
+## arr+8 for b.dll, whose LTO object holds it, and b.dll imports it by ordinal.
+## A directive whose constant is gone leaves an export that nothing imports,
+## the safe direction. So does ThinLTO.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
+# RUN: llvm-as b.ll -o b.obj
+# RUN: opt -module-summary b.ll -o b-thin.obj
+
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjointscan:a.jscan
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:facts a.jscan b.jscan
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjoint:facts/a.dll.jfacts
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjoint:facts/b.dll.jfacts
+# RUN: llvm-readobj --coff-exports a.dll > out.txt
+# RUN: llvm-readobj --coff-imports b.dll >> out.txt
+# RUN: FileCheck --input-file=out.txt %s
+
+# RUN: lld-link -import-slots -dll -noentry b-thin.obj -out:b.dll \
+# RUN:   -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:thin a.jscan b.jscan
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjoint:thin/a.dll.jfacts
+# RUN: lld-link -import-slots -dll -noentry b-thin.obj -out:b.dll \
+# RUN:   -lldjoint:thin/b.dll.jfacts
+# RUN: llvm-readobj --coff-exports a.dll > thin.txt
+# RUN: llvm-readobj --coff-imports b.dll >> thin.txt
+# RUN: FileCheck --input-file=thin.txt %s
+
+# CHECK:      Ordinal: 1
+# CHECK-NEXT: Name: arr
+# CHECK-NEXT: RVA: 0x[[#%X,ARR:]]
+# CHECK:      Ordinal: 2
+# CHECK-NEXT: Name: {{$}}
+# CHECK-NEXT: RVA: 0x[[#%X,ARR+12]]
+# CHECK:      Ordinal: 3
+# CHECK-NEXT: Name: {{$}}
+# CHECK-NEXT: RVA: 0x[[#%X,ARR+8]]
+# CHECK-NOT:  Name: __llvm_layout
+# CHECK:      Name: a.dll
+# CHECK-NEXT: ImportLookupTableRVA:
+# CHECK-NEXT: ImportAddressTableRVA:
+# CHECK-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
+# CHECK-NEXT: }
+# CHECK:      Name: a.dll
+# CHECK-NEXT: ImportLookupTableRVA:
+# CHECK-NEXT: ImportAddressTableRVA:
+# CHECK-NEXT: Symbol: (3)
+# CHECK-NEXT: }
+
+#--- a.s
+  .section .data,"dw",one_only,arr
+  .globl arr
+  .p2align 4
+arr:
+  .long 1, 2, 3, 4
+
+  .section .drectve,"yni"
+  .ascii " -export:arr,DATA"
+
+#--- b.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+@arr = external global [4 x i32]
+@p = dllexport constant ptr getelementptr (i8, ptr @arr, i64 8)
+
+!llvm.linker.options = !{!0, !1}
+!0 = !{!"/INTERIOR:arr,8"}
+!1 = !{!"/INTERIOR:arr,12"}

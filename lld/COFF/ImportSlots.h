@@ -53,6 +53,10 @@ inline constexpr uint32_t vagueOfferTableMagic = 0x4F7A1D2B;
 std::optional<int64_t> getAddressWordAddend(SectionChunk *sc,
                                             const coff_relocation &rel);
 
+// The addend that the instruction rel relocates holds where it is the address
+// of a symbol plus an offset: x86-64 rel32 and ARM64 adrp.
+int64_t getCodeAddend(const SectionChunk *sc, const coff_relocation &rel);
+
 // A word of static data holding an address inside an import whose DLL exports
 // no name: the import's address plus addend. sym names the word's relocation.
 // A word in read-only data that stays in its section is written in place, and

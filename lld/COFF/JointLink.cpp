@@ -29,6 +29,7 @@
 #include "JointLink.h"
 #include "COFFLinkerContext.h"
 #include "Driver.h"
+#include "ImportSlots.h"
 #include "InputFiles.h"
 #include "Relax.h"
 #include "SymbolTable.h"
@@ -97,9 +98,18 @@ struct Run {
   std::string cls, start;
 };
 
+// An export by its name, with the ordinal its link line gives it, if any.
 struct NamedExport {
   std::string name;
   bool data = false;
+  int64_t ordinal = 0;
+};
+
+// An address that the member's static data holds offset bytes into what name
+// names, which another member may define.
+struct Demand {
+  std::string name;
+  int64_t offset = 0;
 };
 
 struct Import {
@@ -128,6 +138,9 @@ struct Summary {
   // The witnesses of the contracts provided by its inputs that define what
   // other images may bind: an export or an observable vague entity.
   std::vector<std::string> provides;
+  std::vector<Demand> demands;
+  // The ordinals its link line gives exports that have no name.
+  std::vector<int64_t> ordinals;
 };
 
 using Digest = std::array<uint8_t, 16>;
@@ -149,7 +162,11 @@ json::Value toJSON(const Run &r) {
   return json::Object{{"class", r.cls}, {"start", r.start}};
 }
 json::Value toJSON(const NamedExport &e) {
-  return json::Object{{"name", e.name}, {"data", e.data}};
+  return json::Object{
+      {"name", e.name}, {"data", e.data}, {"ordinal", e.ordinal}};
+}
+json::Value toJSON(const Demand &d) {
+  return json::Object{{"name", d.name}, {"offset", d.offset}};
 }
 json::Value toJSON(const Import &i) {
   return json::Object{{"name", i.name}, {"dll", i.dll}};
@@ -168,7 +185,9 @@ json::Value toJSON(const Summary &s) {
                       {"addressTaken", s.addressTaken},
                       {"interposing", s.interposing},
                       {"interposable", s.interposable},
-                      {"provides", s.provides}};
+                      {"provides", s.provides},
+                      {"demands", s.demands},
+                      {"ordinals", s.ordinals}};
 }
 
 bool fromJSON(const json::Value &v, Definition &d, json::Path p) {
@@ -183,7 +202,14 @@ bool fromJSON(const json::Value &v, Run &r, json::Path p) {
 }
 bool fromJSON(const json::Value &v, NamedExport &e, json::Path p) {
   json::ObjectMapper o(v, p);
-  return o && o.map("name", e.name) && o.map("data", e.data);
+  return o && o.map("name", e.name) && o.map("data", e.data) &&
+         o.mapOptional("ordinal", e.ordinal) && e.ordinal >= 0 &&
+         e.ordinal <= UINT16_MAX;
+}
+bool fromJSON(const json::Value &v, Demand &d, json::Path p) {
+  json::ObjectMapper o(v, p);
+  return o && o.map("name", d.name) && o.map("offset", d.offset) &&
+         d.offset > 0;
 }
 bool fromJSON(const json::Value &v, Import &i, json::Path p) {
   json::ObjectMapper o(v, p);
@@ -206,7 +232,9 @@ bool fromJSON(const json::Value &v, Summary &s, json::Path p) {
          o.mapOptional("addressTaken", s.addressTaken) &&
          o.mapOptional("interposing", s.interposing) &&
          o.mapOptional("interposable", s.interposable) &&
-         o.mapOptional("provides", s.provides);
+         o.mapOptional("provides", s.provides) &&
+         o.mapOptional("demands", s.demands) &&
+         o.mapOptional("ordinals", s.ordinals);
 }
 } // namespace
 
@@ -539,6 +567,46 @@ static std::string getMemberName(COFFLinkerContext &ctx) {
   return std::string(name);
 }
 
+// The addresses inside data that another member may define which the member's
+// static data holds: of what it leaves undefined, imports or may give up for
+// another member's instance. An object's relocations say so, the place in a
+// word or an instruction holding the offset; bitcode says so in directives,
+// since LTO writes its data later. Code reaches what it imports through the
+// import's pointer, but may reach a definition the member gives up directly.
+static std::vector<Demand> getDemands(COFFLinkerContext &ctx,
+                                      const StringSet<> &givable) {
+  SymbolTable &symtab = ctx.symtab;
+  std::set<std::pair<std::string, int64_t>> found;
+  for (auto [name, offset] : symtab.interiorDemands)
+    found.insert({name.str(), int64_t(offset)});
+  for (ObjFile *f : ctx.objFileInstances) {
+    if (&f->symtab != &symtab)
+      continue;
+    for (Chunk *chunk : f->getChunks()) {
+      auto *sc = dyn_cast<SectionChunk>(chunk);
+      if (!sc || sc->header->Characteristics & IMAGE_SCN_MEM_DISCARDABLE)
+        continue;
+      bool code = sc->header->Characteristics & IMAGE_SCN_MEM_EXECUTE;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        int64_t offset = code ? getCodeAddend(sc, rel)
+                         : sc->isAddressWord(rel)
+                             ? getAddressWordAddend(sc, rel).value_or(0)
+                             : 0;
+        Symbol *sym = offset > 0 ? f->getSymbol(rel.SymbolTableIndex) : nullptr;
+        if (!sym || sym->getName().starts_with("__imp_"))
+          continue;
+        bool given = givable.contains(sym->getName());
+        if (given || (!code && !isa<DefinedRegular>(sym)))
+          found.insert({sym->getName().str(), offset});
+      }
+    }
+  }
+  std::vector<Demand> demands;
+  for (auto &[name, offset] : found)
+    demands.push_back({name, offset});
+  return demands;
+}
+
 static Summary getSummary(COFFLinkerContext &ctx,
                           const opt::InputArgList &args) {
   SymbolTable &symtab = ctx.symtab;
@@ -547,16 +615,20 @@ static Summary getSummary(COFFLinkerContext &ctx,
   s.dll = ctx.config.dll;
   s.machine = ctx.config.machine;
   s.options = getLinkWideOptions(ctx, args);
-  for (const Export &e : symtab.exports)
+  for (const Export &e : symtab.exports) {
     if (!e.isPrivate && !e.noname)
       s.exports.push_back({(!e.exportAs.empty() ? e.exportAs
                             : e.extName.empty() ? e.name
                                                 : e.extName)
                                .str(),
-                           e.data});
+                           e.data, e.ordinal});
+    else if (e.ordinal)
+      s.ordinals.push_back(e.ordinal);
+  }
   llvm::sort(s.exports, [](const NamedExport &a, const NamedExport &b) {
     return a.name < b.name;
   });
+  llvm::sort(s.ordinals);
   s.definitions = getDefinitions(symtab);
   // What nothing defines yet; an import-form reference to a definition is the
   // image's own.
@@ -587,6 +659,7 @@ static Summary getSummary(COFFLinkerContext &ctx,
   llvm::sort(s.imports, [](const Import &a, const Import &b) {
     return std::tie(a.name, a.dll) < std::tie(b.name, b.dll);
   });
+  s.demands = getDemands(ctx, defined);
   // Only a vtable with default visibility has address-point names; its first
   // starts its class's run.
   std::map<std::string, uint64_t> starts;
@@ -762,7 +835,8 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   std::vector<StringRef> kept, privateExports, runs, unsuppressed;
   StringRef identity;
   bool anchored = false;
-  std::vector<std::pair<StringRef, std::vector<StringRef>>> preempted;
+  std::vector<std::pair<StringRef, std::vector<std::pair<StringRef, uint16_t>>>>
+      preempted;
   std::vector<std::pair<StringRef, std::vector<StringRef>>> interposed;
   std::vector<StringRef> interposing;
   struct Sibling {
@@ -790,7 +864,10 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
         for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
           auto &[from, group] = preempted.emplace_back();
           from = data.getBytes(c, data.getULEB128(c));
-          getStrings(group);
+          for (uint64_t j = 0, k = data.getULEB128(c); c && j != k; ++j) {
+            StringRef name = data.getBytes(c, data.getULEB128(c));
+            group.push_back({name, uint16_t(data.getULEB128(c))});
+          }
         }
         getStrings(runs);
         getStrings(unsuppressed);
@@ -809,6 +886,15 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
           getStrings(names);
         }
         getStrings(interposing);
+        for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
+          StringRef name = data.getBytes(c, data.getULEB128(c));
+          uint16_t ordinal = data.getULEB128(c);
+          ctx.jointOrdinals.push_back({name, ordinal, bool(data.getU8(c))});
+        }
+        for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
+          StringRef name = data.getBytes(c, data.getULEB128(c));
+          ctx.jointInteriors.push_back({name, data.getULEB128(c)});
+        }
         if (c && data.eof(c))
           digest = d;
         consumeError(c.takeError());
@@ -850,7 +936,7 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   // once liveness is decided; LTO keeps it until then, as it keeps data a DLL
   // offers.
   for (auto &[from, group] : preempted) {
-    for (StringRef name : group) {
+    for (auto [name, ordinal] : group) {
       // The owner's import library, on the link line, may hold the import.
       Symbol *imp = symtab.find(("__imp_" + name).str());
       if (auto *data = dyn_cast_or_null<DefinedImportData>(imp)) {
@@ -860,13 +946,15 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
                    << "'s";
       } else if (!imp || isa<Undefined>(imp) || imp->isLazy()) {
         ctx.driver.addFile(make<ImportFile>(
-            ctx, makeShortImport(ctx.config.machine, from, name, IMPORT_DATA,
-                                 IMPORT_NAME)));
+            ctx,
+            makeShortImport(ctx.config.machine, from, name, IMPORT_DATA,
+                            ordinal ? IMPORT_ORDINAL : IMPORT_NAME, ordinal)));
       }
       if (Symbol *sym = symtab.find(name))
         sym->isUsedInRegularObj = true;
     }
-    if (Symbol *sym = group.empty() ? nullptr : symtab.find(group.front()))
+    if (Symbol *sym =
+            group.empty() ? nullptr : symtab.find(group.front().first))
       symtab.jointPreempted.insert(sym);
   }
   for (StringRef start : runs)
@@ -1002,7 +1090,8 @@ public:
         unsuppressed(summaries.size()), grants(summaries.size()),
         interposed(summaries.size()), interposing(summaries.size()),
         deps(summaries.size()), identities(summaries.size()),
-        anchored(summaries.size()) {}
+        anchored(summaries.size()), interiors(summaries.size()),
+        ordinals(summaries.size()), unnamed(summaries.size()) {}
   void run(StringRef dir);
 
 private:
@@ -1010,6 +1099,10 @@ private:
   void addImport(unsigned to, StringRef name, unsigned from, bool code);
   int chooseOwner(const Entity &e);
   bool checkLinkLines(const std::vector<SmallVector<unsigned, 4>> &libs);
+  void bindInteriors(const std::vector<StringSet<>> &dataExports,
+                     const std::vector<StringSet<>> &exported);
+  void assignOrdinals();
+  uint16_t getOrdinal(unsigned from, StringRef name) const;
   void checkContracts();
   void setIdentities();
   void writeFacts(StringRef dir, unsigned m, const Digest &digest);
@@ -1046,6 +1139,13 @@ private:
   std::vector<std::set<unsigned>> deps;
   std::vector<std::string> identities;
   BitVector anchored;
+  // The addresses inside its data that a DLL exports for the others, each a
+  // name and an offset from it; and the ordinals of what the others import
+  // from it, by export name, with those that need no name, which only the
+  // others import.
+  std::vector<std::vector<std::pair<std::string, int64_t>>> interiors;
+  std::vector<std::map<std::string, uint16_t>> ordinals;
+  std::vector<std::set<std::string>> unnamed;
 };
 } // namespace
 
@@ -1128,6 +1228,101 @@ bool Merge::checkLinkLines(const std::vector<SmallVector<unsigned, 4>> &libs) {
   return ok;
 }
 
+// A member's static data holds the address an offset into data it imports
+// from a DLL member, or gives up for its instance, through an import of that
+// address, which the loader writes whole: an address-point or subobject name
+// the DLL exports already, or else one it exports for the others alone. That
+// is the address ELF's dynamic relocation writes, the symbol's plus the
+// addend, past the end of an array or into padding as well.
+void Merge::bindInteriors(const std::vector<StringSet<>> &dataExports,
+                          const std::vector<StringSet<>> &exported) {
+  std::vector<std::set<std::string>> named(summaries.size());
+  for (unsigned m = 0; m != summaries.size(); ++m) {
+    StringMap<unsigned> suppliers;
+    for (const FactImport &i : imports[m])
+      suppliers.try_emplace(i.name, i.from);
+    for (const auto &[from, group] : preempted[m])
+      for (const std::string &name : group)
+        suppliers.try_emplace(name, from);
+    for (const Demand &d : summaries[m].demands) {
+      auto it = suppliers.find(d.name);
+      if (it == suppliers.end() || !summaries[it->second].dll ||
+          !dataExports[it->second].contains(d.name))
+        continue;
+      unsigned from = it->second;
+      std::string name;
+      for (StringRef kind : {"$so", "$ap"})
+        if (std::string n = (d.name + kind + Twine(d.offset)).str();
+            exported[from].contains(n)) {
+          name = std::move(n);
+          break;
+        }
+      if (name.empty()) {
+        name = (d.name + "$so" + Twine(d.offset)).str();
+        if (named[from].insert(name).second) {
+          interiors[from].push_back({d.name, d.offset});
+          unnamed[from].insert(name);
+        }
+      }
+      addImport(m, name, from, /*code=*/false);
+    }
+  }
+}
+
+// What a member imports from a DLL member it imports by ordinal, which the
+// merge gives each such export in the order of their names, keeping those the
+// DLL's link line gives and the lowest free for the rest, so that the loader
+// finds each with no search of the DLL's names. A member that is not linked
+// by this merge, outside the set, imports them by name. An executable's
+// exports bind at run time, by name.
+void Merge::assignOrdinals() {
+  unsigned n = summaries.size();
+  std::vector<std::set<std::string>> names(n);
+  for (unsigned m = 0; m != n; ++m) {
+    for (const FactImport &i : imports[m])
+      names[i.from].insert(i.name);
+    for (const auto &[from, group] : preempted[m])
+      names[from].insert(group.begin(), group.end());
+    for (const auto &[from, run] : runImports[m]) {
+      names[from].insert(run->start);
+      names[from].insert(getVTableRunWordName(run->cls, 'e'));
+      names[from].insert(getVTableRunWordName(run->cls, 'm'));
+    }
+  }
+  for (unsigned d = 0; d != n; ++d) {
+    if (!summaries[d].dll)
+      continue;
+    std::set<int64_t> taken(summaries[d].ordinals.begin(),
+                            summaries[d].ordinals.end());
+    StringMap<uint16_t> given;
+    for (const NamedExport &e : summaries[d].exports)
+      if (e.ordinal) {
+        taken.insert(e.ordinal);
+        given[e.name] = e.ordinal;
+      }
+    int64_t next = 1;
+    for (const std::string &name : names[d]) {
+      if (uint16_t o = given.lookup(name)) {
+        ordinals[d][name] = o;
+        continue;
+      }
+      while (taken.count(next))
+        ++next;
+      if (next > UINT16_MAX) {
+        Err(ctx) << summaries[d].name << " has more exports the other members "
+                 << "import than ordinals";
+        return;
+      }
+      ordinals[d][name] = next++;
+    }
+  }
+}
+
+uint16_t Merge::getOrdinal(unsigned from, StringRef name) const {
+  auto it = ordinals[from].find(name.str());
+  return it == ordinals[from].end() ? 0 : it->second;
+}
+
 // The contracts of the members that one member loads through its imports
 // agree, as those of one image's objects must; members that never share a
 // process, such as two executables, may differ.
@@ -1183,6 +1378,8 @@ void Merge::setIdentities() {
     add('p', privateExports[m]);
     add('r', runExports[m]);
     add('u', unsuppressed[m]);
+    for (auto &[name, ordinal] : ordinals[m])
+      hash.update(("o " + name + " " + Twine(ordinal) + "\n").str());
   };
   // Tarjan's algorithm yields each group of members that import from each
   // other after every group they import from, whose hashes it then covers.
@@ -1249,7 +1446,8 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
   for (const FactImport &i : imports[m])
     members.push_back(createImportMember(
         summaries[i.from].name, ctx.config.machine, i.name,
-        i.code ? IMPORT_CODE : IMPORT_DATA, buffers.emplace_back()));
+        i.code ? IMPORT_CODE : IMPORT_DATA, buffers.emplace_back(), "",
+        getOrdinal(i.from, i.name)));
   // The identity of each member the member imports from, under a name of that
   // member alone, imported as code so that a delay-load descriptor can hold
   // it.
@@ -1264,13 +1462,15 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
       VTableRangeStartPrefix, VTableRangeEndPrefix, VTableRangeMaskPrefix};
   for (const auto &[from, run] : runImports[m]) {
     std::string dll = StringRef(summaries[from].name).lower();
-    for (int w : {0, 1, 2})
+    for (int w : {0, 1, 2}) {
+      std::string word =
+          w == 0 ? run->start
+                 : getVTableRunWordName(run->cls, w == 1 ? 'e' : 'm');
       members.push_back(createImportMember(
           summaries[from].name, ctx.config.machine,
           (runPrefixes[w] + run->cls + "$" + dll).str(), IMPORT_DATA,
-          buffers.emplace_back(),
-          w == 0 ? StringRef(run->start)
-                 : getVTableRunWordName(run->cls, w == 1 ? 'e' : 'm')));
+          buffers.emplace_back(), word, getOrdinal(from, word)));
+    }
   }
 
   std::string payload(digest.begin(), digest.end());
@@ -1294,8 +1494,10 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
   for (const auto &[from, group] : preempted[m]) {
     putString(summaries[from].name);
     encodeULEB128(group.size(), os);
-    for (const std::string &name : group)
+    for (const std::string &name : group) {
       putString(name);
+      encodeULEB128(getOrdinal(from, name), os);
+    }
   }
   encodeULEB128(runExports[m].size(), os);
   for (const std::string &start : runExports[m])
@@ -1331,6 +1533,17 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
   encodeULEB128(interposing[m].size(), os);
   for (const std::string &name : interposing[m])
     putString(name);
+  encodeULEB128(ordinals[m].size(), os);
+  for (auto &[name, ordinal] : ordinals[m]) {
+    putString(name);
+    encodeULEB128(ordinal, os);
+    os << char(unnamed[m].count(name));
+  }
+  encodeULEB128(interiors[m].size(), os);
+  for (auto &[name, offset] : interiors[m]) {
+    putString(name);
+    encodeULEB128(offset, os);
+  }
   members.push_back(createLinkRecordMember(ctx, s.name, getFactsSymbol(s.name),
                                            {{LinkRecordJointFacts, payload}},
                                            buffers.emplace_back()));
@@ -1635,6 +1848,34 @@ void Merge::run(StringRef dir) {
       names.erase(llvm::unique(names), names.end());
     }
 
+  // What each member exports for the others, and which of it is data: its
+  // exports, the entities it keeps, which it offers, and the names it exports
+  // for the others alone, which need no name in its export table.
+  std::vector<StringSet<>> dataExports(n), exported(n);
+  for (unsigned m = 0; m != n; ++m) {
+    for (const NamedExport &e : summaries[m].exports) {
+      exported[m].insert(e.name);
+      if (e.data)
+        dataExports[m].insert(e.name);
+    }
+    for (const std::string &name : privateExports[m]) {
+      exported[m].insert(name);
+      dataExports[m].insert(name);
+      unnamed[m].insert(name);
+    }
+  }
+  for (auto [i, owner] : llvm::enumerate(owners))
+    if (owner >= 0)
+      for (const std::string &name : keeperDef(entities[i], owner)->names) {
+        exported[owner].insert(name);
+        if (!entities[i].code)
+          dataExports[owner].insert(name);
+      }
+  bindInteriors(dataExports, exported);
+  assignOrdinals();
+  if (errorCount())
+    return;
+
   // What each member's final link imports from, which identities follow:
   // never a member that only owner choice or a redirected import reached, so
   // that no identity adds a load dependency the program lacks.
@@ -1652,12 +1893,16 @@ void Merge::run(StringRef dir) {
     return;
   setIdentities();
   // An anchor derives a pointer to one of a DLL's data from the pointer to
-  // another, so only a DLL that a member imports two data from, by any means,
-  // exports the identity that names its layout.
+  // another, so only a DLL that a member's code may import two data from, by
+  // any means, exports the identity that names its layout; no code loads an
+  // address inside data.
   for (unsigned m = 0; m != n; ++m) {
     std::map<unsigned, unsigned> data;
-    for (const FactImport &i : imports[m])
-      data[i.from] += !i.code;
+    for (const FactImport &i : imports[m]) {
+      StringRef name = i.name;
+      data[i.from] +=
+          !i.code && !isInteriorName(name, name.take_front(name.rfind('$')));
+    }
     for (const auto &[from, group] : preempted[m])
       data[from] += group.size();
     for (const auto &[from, run] : runImports[m])
@@ -1714,6 +1959,69 @@ static std::string getLayoutSymbol(StringRef dll) {
   return "__llvm_layout$" + dll.lower();
 }
 
+// The image exports each address inside its data that another member's static
+// data holds, offset bytes from an export, under the name the merge gave it.
+// The address names a place in the export's section, which so stays its own.
+void addJointInteriorExports(COFFLinkerContext &ctx) {
+  SymbolTable &symtab = ctx.symtab;
+  for (auto [name, offset] : ctx.jointInteriors) {
+    Symbol *sym = nullptr;
+    for (const Export &e : symtab.exports)
+      if ((e.extName.empty() ? e.name : e.extName) == name &&
+          e.exportAs.empty())
+        sym = e.sym ? e.sym : symtab.find(e.name);
+    if (!sym)
+      sym = symtab.find(name);
+    auto *d = dyn_cast_or_null<DefinedRegular>(sym);
+    uint64_t at = d ? d->getValue() + offset : 0;
+    if (!d || !d->getChunk()->live || at > UINT32_MAX) {
+      Err(ctx) << "cannot export the address " << offset << " bytes into "
+               << name << ", which another member of the joint link holds: "
+               << (!d                ? "the image does not define it"
+                   : at > UINT32_MAX ? "it is too far from it"
+                                     : "the image does not keep it");
+      continue;
+    }
+    d->getChunk()->ineligibleForICF = true;
+    Export e;
+    e.name = saver().save(name + "$so" + Twine(offset));
+    e.sym = make<DefinedSynthetic>(e.name, d->getChunk(), at);
+    e.symbolName = e.name;
+    e.data = true;
+    e.isPrivate = true;
+    e.source = ExportSource::Export;
+    symtab.exports.push_back(e);
+  }
+}
+
+// The image's exports that other members import take the ordinals the merge
+// gave them, and those only they import have no name.
+void assignJointOrdinals(COFFLinkerContext &ctx) {
+  if (ctx.jointOrdinals.empty())
+    return;
+  DenseMap<StringRef, Export *> byName;
+  for (Export &e : ctx.symtab.exports)
+    byName.try_emplace(e.exportName, &e);
+  for (const COFFLinkerContext::JointOrdinal &o : ctx.jointOrdinals) {
+    Export *e = byName.lookup(o.name);
+    if (!e) {
+      Err(ctx) << o.name << " is imported by ordinal by another member of the "
+               << "joint link, but the image does not export it";
+      continue;
+    }
+    if (e->ordinal && e->ordinal != o.ordinal) {
+      Err(ctx) << o.name << " is exported with ordinal " << e->ordinal
+               << ", but the joint-link facts give it " << o.ordinal
+               << "; rerun the scan and the merge";
+      continue;
+    }
+    e->ordinal = o.ordinal;
+    // A name that an import library holds, for images outside the set, stays.
+    if (o.unnamed && e->isPrivate && e->qualifiedName.empty())
+      e->noname = true;
+  }
+}
+
 // A DLL member whose data another member may reach through an anchor exports
 // its identity, which names its layout: the addresses of its data exports. The
 // name is decided once the layout is, so it takes the export's place in the
@@ -1768,11 +2076,14 @@ void checkExportAddresses(COFFLinkerContext &ctx) {
 void finalizeJointIdentity(COFFLinkerContext &ctx) {
   if (!ctx.jointIdentity)
     return;
+  // An export with no name is listed under its symbol's, by which the members
+  // that import it by ordinal know it.
   for (const Export &e : ctx.symtab.exports)
-    if (e.data && !e.noname && e.forwardTo.empty() &&
-        e.exportName != *ctx.jointIdentity)
-      if (auto *d = dyn_cast_or_null<DefinedRegular>(e.sym))
-        ctx.jointLayout.push_back({e.exportName, d->getRVA()});
+    if (e.data && e.forwardTo.empty() && e.exportName != *ctx.jointIdentity &&
+        (isa_and_nonnull<DefinedRegular>(e.sym) ||
+         (e.noname && isa_and_nonnull<DefinedSynthetic>(e.sym))))
+      ctx.jointLayout.push_back(
+          {e.noname ? e.name : e.exportName, cast<Defined>(e.sym)->getRVA()});
   llvm::sort(ctx.jointLayout);
   // The first 64 bits of the SHA-256 of the format, the machine and the
   // exports with their addresses, in lowercase hexadecimal.
@@ -1889,6 +2200,12 @@ bool bindJointAnchors(COFFLinkerContext &ctx) {
   llvm::TimeTraceScope timeScope("Bind joint-link anchors");
   StringMap<std::optional<Layout>> layouts;
   MapVector<StringRef, StringRef> identities;
+  // An import by ordinal is listed under the name it imports.
+  auto getKey = [](DefinedImportData *d) {
+    return d->getExternalName().empty()
+               ? d->getName().drop_front(strlen("__imp_"))
+               : d->getExternalName();
+  };
   for (ObjFile *file : ctx.objFileInstances) {
     ArrayRef<ObjFile::LinkAnchor> anchors = file->getLinkAnchors();
     if (anchors.empty())
@@ -1916,8 +2233,8 @@ bool bindJointAnchors(COFFLinkerContext &ctx) {
       const Layout *layout = getLayout(ctx, imp->getDLLName(), layouts);
       if (!layout)
         continue;
-      auto to = layout->rvas.find(imp->getExternalName());
-      auto from = layout->rvas.find(anchor->getExternalName());
+      auto to = layout->rvas.find(getKey(imp));
+      auto from = layout->rvas.find(getKey(anchor));
       if (to == layout->rvas.end() || from == layout->rvas.end())
         continue;
       // An ARM64 add or sub takes 12 bits, shifted or not.

@@ -27,18 +27,19 @@
 # RUN: llvm-readobj --coff-exports a.dll > out.txt
 # RUN: llvm-readobj --coff-imports app.exe >> out.txt
 # RUN: FileCheck --check-prefix=EXPORTS --input-file=out.txt %s
-# EXPORTS:      Name: __llvm_layout$[[LAYOUT:[0-9a-f]{16}]]
-# EXPORTS:      Name: __llvm_private$[[ID:[0-9a-f]{16}]]
-# EXPORTS:      Name: x
+# EXPORTS:      Ordinal: 1
+# EXPORTS-NEXT: Name: x
 # EXPORTS-NEXT: RVA: 0x[[#%x,X:]]
 # EXPORTS:      Name: y
 # EXPORTS-NEXT: RVA: 0x[[#%x,X+8]]
+# EXPORTS:      Name: __llvm_layout$[[LAYOUT:[0-9a-f]{16}]]
+# EXPORTS:      Name: __llvm_private$[[ID:[0-9a-f]{16}]]
 # EXPORTS:      Name: a.dll
 # EXPORTS-NEXT: ImportLookupTableRVA:
 # EXPORTS-NEXT: ImportAddressTableRVA:
 # EXPORTS-NEXT: Symbol: __llvm_layout$[[LAYOUT]] (0)
 # EXPORTS-NEXT: Symbol: __llvm_private$[[ID]] (0)
-# EXPORTS-NEXT: Symbol: x (0)
+# EXPORTS-NEXT: Symbol: (1)
 # EXPORTS-NEXT: }
 # EXPORTS:      Name: b.dll
 # EXPORTS-NEXT: ImportLookupTableRVA:

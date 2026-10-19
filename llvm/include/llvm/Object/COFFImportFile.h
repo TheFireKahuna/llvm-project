@@ -166,14 +166,12 @@ LLVM_ABI NewArchiveMember createLinkerFacts(StringRef ImportName,
 /// \p ImportName, as data or code as \p Type says, for the import library of
 /// another image that forwards its export of \p Sym there: a linker that reads
 /// it binds the import to the image that holds \p Sym. With \p ExportAs, the
-/// import binds that export instead. The member refers to \p Buffer, which
-/// holds it.
-LLVM_ABI NewArchiveMember createImportMember(StringRef ImportName,
-                                             COFF::MachineTypes Machine,
-                                             StringRef Sym,
-                                             COFF::ImportType Type,
-                                             std::vector<uint8_t> &Buffer,
-                                             StringRef ExportAs = "");
+/// import binds that export instead, and with a non-zero \p Ordinal, the
+/// export of that ordinal. The member refers to \p Buffer, which holds it.
+LLVM_ABI NewArchiveMember createImportMember(
+    StringRef ImportName, COFF::MachineTypes Machine, StringRef Sym,
+    COFF::ImportType Type, std::vector<uint8_t> &Buffer,
+    StringRef ExportAs = "", uint16_t Ordinal = 0);
 
 } // namespace object
 } // namespace llvm

@@ -2649,11 +2649,10 @@ MachineTypes DLLFile::getMachineType() const {
   return machine == ARM64X ? ARM64 : machine;
 }
 
-MemoryBufferRef lld::coff::makeShortImport(MachineTypes machine,
-                                           StringRef dllName,
-                                           StringRef symbolName,
-                                           ImportType importType,
-                                           ImportNameType nameType) {
+MemoryBufferRef
+lld::coff::makeShortImport(MachineTypes machine, StringRef dllName,
+                           StringRef symbolName, ImportType importType,
+                           ImportNameType nameType, uint16_t ordinal) {
   size_t impSize = dllName.size() + symbolName.size() + 2; // +2 for NULs
   size_t size = sizeof(coff_import_header) + impSize;
   char *buf = bAlloc().Allocate<char>(size);
@@ -2664,7 +2663,7 @@ MemoryBufferRef lld::coff::makeShortImport(MachineTypes machine,
   imp->Sig2 = 0xFFFF;
   imp->Machine = static_cast<uint16_t>(machine);
   imp->SizeOfData = impSize;
-  imp->OrdinalHint = 0; // Only linking by name
+  imp->OrdinalHint = ordinal;
   imp->TypeInfo = (nameType << 2) | importType;
 
   // Write symbol name and DLL name.

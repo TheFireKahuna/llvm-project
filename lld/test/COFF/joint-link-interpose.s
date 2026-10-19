@@ -53,10 +53,10 @@
 # LIB-NEXT: VirtualSize: 0x10
 # LIB-NEXT: VirtualAddress: 0x5000
 # LIB-NOT:  Name: app.exe
-# LIB:      Name: f
-# LIB-NEXT: RVA: 0x1000
 # LIB:      Name: g
 # LIB-NEXT: RVA: 0x1010
+# LIB:      Name: f
+# LIB-NEXT: RVA: 0x1000
 # LIB:      <f>:
 # LIB:      <g>:
 # LIB-NEXT: callq 0x[[#%x,THUNK:]]
@@ -69,8 +69,8 @@
 # LIB-NEXT: 1800020c0 00000000 08500000 {{[0-9a-f]+}} 00000000
 # LIB-NEXT: 1800020d0 66005f5f 6c6c766d 5f707269 76617465
 
-## user.dll imports f from the executable and g from lib.dll, with the
-## identities of both.
+## user.dll imports f from the executable, by name, which binds at run time,
+## and g from lib.dll, by ordinal, with the identities of both.
 # RUN: llvm-readobj --coff-imports --sections user.dll | \
 # RUN:   FileCheck --check-prefix=USER %s
 # USER:      Name: .sealed
@@ -79,7 +79,7 @@
 # USER-NEXT: ImportLookupTableRVA:
 # USER-NEXT: ImportAddressTableRVA:
 # USER-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
-# USER-NEXT: Symbol: g (0)
+# USER-NEXT: Symbol: (1)
 # USER-NEXT: }
 # USER-NOT:  Name: app.exe
 

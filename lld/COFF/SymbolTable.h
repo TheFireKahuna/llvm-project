@@ -368,6 +368,10 @@ public:
   // another member's, which their imports preempt, and the symbols preempted
   // so, which the image does not offer.
   llvm::DenseSet<StringRef> exactCastVTables;
+  // The addresses inside data another image may define that the image's
+  // static data holds, by name and offset, from /interior: directives, which
+  // a joint link's merge reads from bitcode before LTO.
+  llvm::DenseSet<std::pair<StringRef, uint64_t>> interiorDemands;
   llvm::SetVector<Symbol *> jointPreempted;
   llvm::DenseSet<Symbol *> jointGivenUp;
   // As a DLL member of one, the functions it exports whose definitions the

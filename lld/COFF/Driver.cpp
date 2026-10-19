@@ -693,6 +693,18 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_exactcast:
       file->symtab.exactCastVTables.insert(arg->getValue());
       break;
+    case OPT_interior: {
+      // name,offset: the image's static data holds the address offset bytes
+      // into name, which another image may define.
+      auto [name, offset] = StringRef(arg->getValue()).rsplit(',');
+      uint64_t k;
+      if (name.empty() || offset.getAsInteger(10, k) || !k)
+        Err(ctx) << file
+                 << ": malformed /interior: directive: " << arg->getValue();
+      else
+        file->symtab.interiorDemands.insert({name, k});
+      break;
+    }
     case OPT_nodefaultlib:
       ctx.config.noDefaultLibs.insert(findLib(arg->getValue()).lower());
       break;
@@ -3583,11 +3595,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   bindVTableOwnerRuns(ctx);
   checkVersionScriptGlobals();
   // So does one whose identity its layout names.
+  addJointInteriorExports(ctx);
   bool implibAfterImage = addJointIdentityExport(ctx);
   if (config->dll || !ctx.symtab.exports.empty() ||
       (ctx.config.machine == ARM64X && !ctx.hybridSymtab->exports.empty())) {
     llvm::TimeTraceScope timeScope("Create .lib exports");
     ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.fixupExports(); });
+    assignJointOrdinals(ctx);
     if (!config->noimplib && (!config->mingw || !config->implib.empty())) {
       if (ctx.kcfi.rangeExports[0])
         implibAfterImage = true;

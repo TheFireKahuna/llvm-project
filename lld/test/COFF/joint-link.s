@@ -50,9 +50,11 @@
 
 ## a.dll, which b.dll imports from, keeps v for the others and offers it.
 ## Every member that another imports from exports the identity the merge gives
-## it, and every member imports the identity of each member it imports from.
-## No member imports two data from a.dll, which so exports no identity named
-## after its layout.
+## it, and every member imports the identity of each member it imports from,
+## by name, and what else it imports from a DLL member by the ordinal the merge
+## gives it, the export keeping its name for images outside the set; so does a
+## forwarder. No member imports two data from a.dll, which so exports no
+## identity named after its layout.
 # RUN: llvm-readobj --coff-imports --coff-exports a.dll b.dll app.exe \
 # RUN:   tool.exe | FileCheck %s
 # CHECK:      File: a.dll
@@ -60,38 +62,41 @@
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA:
 # CHECK-NEXT: Symbol: __llvm_private$[[BID:[0-9a-f]{16}]] (0)
-# CHECK-NEXT: Symbol: bf (0)
+# CHECK-NEXT: Symbol: (1)
 # CHECK-NEXT: }
+# CHECK:      Ordinal: 1
+# CHECK-NEXT: Name: af
+# CHECK:      Ordinal: 2
+# CHECK-NEXT: Name: v
 # CHECK:      Name: __llvm_private$[[AID:[0-9a-f]{16}]]
 # CHECK-NOT:  Name: __llvm_private
-# CHECK:      Name: af
-# CHECK:      Name: v
 
 # CHECK:      File: b.dll
 # CHECK:      Name: a.dll
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA:
 # CHECK-NEXT: Symbol: __llvm_private$[[AID]] (0)
-# CHECK-NEXT: Symbol: af (0)
-# CHECK-NEXT: Symbol: v (0)
+# CHECK-NEXT: Symbol: (1)
+# CHECK-NEXT: Symbol: (2)
 # CHECK-NEXT: }
+# CHECK:      Ordinal: 1
+# CHECK-NEXT: Name: bf
 # CHECK:      Name: __llvm_private$[[BID]]
-# CHECK:      Name: bf
 # CHECK:      Name: v
-# CHECK-NEXT: ForwardedTo: a.v
+# CHECK-NEXT: ForwardedTo: a.#2
 
 # CHECK:      File: app.exe
 # CHECK:      Name: a.dll
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA:
 # CHECK-NEXT: Symbol: __llvm_private$[[AID]] (0)
-# CHECK-NEXT: Symbol: v (0)
+# CHECK-NEXT: Symbol: (2)
 # CHECK-NEXT: }
 # CHECK:      Name: b.dll
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA:
 # CHECK-NEXT: Symbol: __llvm_private$[[BID]] (0)
-# CHECK-NEXT: Symbol: bf (0)
+# CHECK-NEXT: Symbol: (1)
 # CHECK-NEXT: }
 # CHECK-NOT:  Export {
 
@@ -100,8 +105,8 @@
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA:
 # CHECK-NEXT: Symbol: __llvm_private$[[AID]] (0)
-# CHECK-NEXT: Symbol: af (0)
-# CHECK-NEXT: Symbol: v (0)
+# CHECK-NEXT: Symbol: (1)
+# CHECK-NEXT: Symbol: (2)
 # CHECK-NEXT: }
 # CHECK-NOT:  Export {
 

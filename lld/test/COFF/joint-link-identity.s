@@ -54,20 +54,20 @@
 # R1-NEXT: ImportLookupTableRVA:
 # R1-NEXT: ImportAddressTableRVA:
 # R1-NEXT: Symbol: __llvm_private$[[B]] (0)
-# R1-NEXT: Symbol: bf (0)
+# R1-NEXT: Symbol: (1)
 # R1-NEXT: }
 # R1:      File: r1/app.exe
 # R1:      Name: a.dll
 # R1-NEXT: ImportLookupTableRVA:
 # R1-NEXT: ImportAddressTableRVA:
 # R1-NEXT: Symbol: __llvm_private$[[A]] (0)
-# R1-NEXT: Symbol: af (0)
+# R1-NEXT: Symbol: (1)
 # R1-NEXT: }
 # R1:      Name: c.dll
 # R1-NEXT: ImportLookupTableRVA:
 # R1-NEXT: ImportAddressTableRVA:
 # R1-NEXT: Symbol: __llvm_private$[[C]] (0)
-# R1-NEXT: Symbol: cf (0)
+# R1-NEXT: Symbol: (1)
 # R1-NEXT: }
 
 ## a.dll now defines w too and keeps it for b.dll, which imports it.
@@ -87,7 +87,7 @@
 # BIMP-NEXT: ImportLookupTableRVA:
 # BIMP-NEXT: ImportAddressTableRVA:
 # BIMP-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
-# BIMP-NEXT: Symbol: w (0)
+# BIMP-NEXT: Symbol: (2)
 # BIMP-NEXT: }
 
 ## Each of the three identities differs between the merges, and each importer

@@ -331,7 +331,11 @@ static void reportMismatch(COFFLinkerContext &ctx,
            << describe(ctx, c->data, c->identity, c->locator) << ": " << file
            << " was compiled with a different layout than " << imp->getDLLName()
            << " exports (needed because " << file << " uses "
-           << maybeDemangleSymbol(ctx, imp->getExternalName()) << ")";
+           << maybeDemangleSymbol(
+                  ctx, imp->getExternalName().empty()
+                           ? imp->getName().drop_front(strlen("__imp_"))
+                           : imp->getExternalName())
+           << ")";
 }
 
 // The import that a reference to sym binds to, if any.

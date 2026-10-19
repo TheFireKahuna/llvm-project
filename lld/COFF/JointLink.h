@@ -64,6 +64,12 @@ void warnInterposingDefinitions(COFFLinkerContext &ctx);
 void mergeJointLink(COFFLinkerContext &ctx,
                     const llvm::opt::InputArgList &args);
 
+// The addresses inside the image's data that other members' static data holds,
+// which it exports with no name; and the ordinals of what other members import
+// from it, once its exports have their names.
+void addJointInteriorExports(COFFLinkerContext &ctx);
+void assignJointOrdinals(COFFLinkerContext &ctx);
+
 // The identity export the merge gives a member that others import from; and a
 // DLL member's identity export, which a member that derives a pointer from
 // another of the DLL's imports from it, named after the DLL's layout once that

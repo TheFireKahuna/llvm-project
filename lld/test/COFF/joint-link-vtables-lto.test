@@ -1,8 +1,8 @@
 # REQUIRES: x86
 ## The scan reads which vtables exact casts compare from a bitcode member's
 ## linker options, before LTO: b.dll gives up its copy of D's vtable for
-## a.dll's, which LTO keeps and a.dll exports under a name its import library
-## does not hold.
+## a.dll's, which LTO keeps and a.dll exports with no name, by the ordinal
+## b.dll imports, and so not in its import library.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-as a.ll -o a.obj
@@ -21,12 +21,16 @@
 # RUN: llvm-readobj --coff-imports b.dll | FileCheck --check-prefix=B %s
 # RUN: llvm-objdump -s -j .rdata b.dll | FileCheck --check-prefix=BDATA %s
 
-# A-DAG: Name: _ZTV1D
-# A-DAG: Name: _ZTV1D$ap16
+# A:      Ordinal: 1
+# A-NEXT: Name: {{$}}
+# A:      Ordinal: 2
+# A-NEXT: Name: _ZTV1D$ap16
 # ALIB-NOT: _ZTV1D
 
 # B:     Name: a.dll
-# B:     Symbol: _ZTV1D
+# B-NEXT: ImportLookupTableRVA:
+# B-NEXT: ImportAddressTableRVA:
+# B-NEXT: Symbol: (1)
 
 ## b.dll keeps no copy.
 # BDATA-NOT: 0b0b0b0b

@@ -18,16 +18,18 @@
 # RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=A %s
 # RUN: llvm-readobj --coff-imports b.dll | FileCheck --check-prefix=B %s
 
-# A: Name: af
-# A: Name: f
-# A: Name: v
+# A:      Ordinal: 1
+# A-NEXT: Name: f
+# A:      Ordinal: 2
+# A-NEXT: Name: v
+# A:      Name: af
 
 # B:      Name: a.dll
 # B-NEXT: ImportLookupTableRVA:
 # B-NEXT: ImportAddressTableRVA:
 # B-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
-# B-NEXT: Symbol: f (0)
-# B-NEXT: Symbol: v (0)
+# B-NEXT: Symbol: (1)
+# B-NEXT: Symbol: (2)
 # B-NEXT: }
 
 #--- a.ll

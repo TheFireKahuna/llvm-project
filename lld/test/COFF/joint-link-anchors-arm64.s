@@ -29,11 +29,11 @@
 
 # IMPORTS:      Symbol: __llvm_layout${{[0-9a-f]+}} (0)
 # IMPORTS-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
-# IMPORTS-NEXT: Symbol: far (0)
-# IMPORTS-NEXT: Symbol: odd (0)
-# IMPORTS-NEXT: Symbol: x (0)
-# IMPORTS-NEXT: Symbol: y (0)
-# IMPORTS-NEXT: Symbol: z (0)
+# IMPORTS-NEXT: Symbol: (1)
+# IMPORTS-NEXT: Symbol: (2)
+# IMPORTS-NEXT: Symbol: (3)
+# IMPORTS-NEXT: Symbol: (4)
+# IMPORTS-NEXT: Symbol: (5)
 
 #--- a.s
   .data

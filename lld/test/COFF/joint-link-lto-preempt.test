@@ -38,9 +38,9 @@
 # IMP:      Name: a.dll
 # IMP-NEXT: ImportLookupTableRVA:
 # IMP-NEXT: ImportAddressTableRVA:
-# IMP-NEXT: Symbol: _Z1fv (0)
+# IMP-NEXT: Symbol: (1)
 # IMP-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
-# IMP-NEXT: Symbol: v (0)
+# IMP-NEXT: Symbol: (3)
 # IMP-NEXT: }
 
 # RUN: lld-link -import-slots -dll -noentry b-thin.obj rt.obj -out:b.dll \
