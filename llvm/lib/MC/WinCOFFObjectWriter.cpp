@@ -1809,6 +1809,20 @@ uint64_t WinCOFFWriter::writeObject() {
       encodeULEB128(COFF::LinkSiteValueOnly, DataOS);
       encodeULEB128(Page, DataOS);
     }
+    // A load that may derive its pointer names the load whose register gives
+    // it, a load of the same section.
+    for (const WinCOFFObjectWriter::LinkAnchor &Anchor : OWriter.LinkAnchors) {
+      if (IsUndefined(Anchor.Load))
+        continue;
+      auto [Sec, Index] = FindSite(Anchor.Site);
+      auto [LoadSec, LoadIndex] = FindSite(Anchor.Load);
+      if (!Sec || Sec != LoadSec || !IsLoad(Sec, Index) ||
+          !IsLoad(LoadSec, LoadIndex) || Anchor.Register > 31)
+        continue;
+      raw_svector_ostream DataOS(SiteData[{Sec, LinkSites[Sec][Index].Offset}]);
+      encodeULEB128(COFF::LinkSiteAnchor, DataOS);
+      encodeULEB128(uint64_t(LoadIndex) << 5 | Anchor.Register, DataOS);
+    }
 
     SmallString<0> Sites;
     raw_svector_ostream SitesOS(Sites);
@@ -2081,6 +2095,7 @@ void WinCOFFObjectWriter::reset() {
   LinkFusedAccesses.clear();
   LinkFusedAdds.clear();
   LinkValueOnlyLoads.clear();
+  LinkAnchors.clear();
   LinkTailJumps.clear();
   LinkCoverageValues.clear();
   ObjWriter->reset();

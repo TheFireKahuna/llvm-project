@@ -197,6 +197,17 @@ public:
     const MCSymbol *Page;
   };
 
+  /// A load of the import pointer of data, the instruction at Site, whose
+  /// pointer the register numbered Register, as the instruction encoding
+  /// numbers it, may give: it holds the pointer that the load at Load loaded,
+  /// of other data, which the object's link-only records carry
+  /// (COFF::LinkSiteAnchor).
+  struct LinkAnchor {
+    const MCSymbol *Site;
+    const MCSymbol *Load;
+    unsigned Register;
+  };
+
   /// A value at Offset in Field that depends on where the code of Target, a
   /// section whose code a linker may resize, lies, which the object's
   /// link-only records carry (COFF::LinkRecordCoverage): A - B + Constant for
@@ -240,6 +251,7 @@ private:
   SmallVector<LinkFusedAccess, 0> LinkFusedAccesses;
   SmallVector<LinkFusedAdd, 0> LinkFusedAdds;
   SmallVector<LinkValueOnly, 0> LinkValueOnlyLoads;
+  SmallVector<LinkAnchor, 0> LinkAnchors;
   // Where the jumps begin that end their functions, which the object's
   // link-only records list (COFF::LinkRecordTailJumps) where each ends its
   // section too.
@@ -309,6 +321,7 @@ public:
   void addLinkValueOnly(const LinkValueOnly &Load) {
     LinkValueOnlyLoads.push_back(Load);
   }
+  void addLinkAnchor(const LinkAnchor &Anchor) { LinkAnchors.push_back(Anchor); }
   void addLinkTailJump(const MCSymbol *Site) { LinkTailJumps.push_back(Site); }
   void addLinkCoverageValue(const LinkCoverageValue &Value) {
     LinkCoverageValues.push_back(Value);

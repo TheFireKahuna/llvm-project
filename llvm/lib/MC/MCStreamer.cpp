@@ -1304,6 +1304,7 @@ void MCStreamer::emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) {
 void MCStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load, MCRegister Reg) {}
 void MCStreamer::emitCOFFLinkFusedIndex(const MCSymbol *Load, MCRegister Reg) {}
 void MCStreamer::emitCOFFLinkValueOnly(const MCSymbol *Page) {}
+void MCStreamer::emitCOFFLinkAnchor(const MCSymbol *Load, MCRegister Reg) {}
 void MCStreamer::emitCOFFLinkTailJump() {}
 
 /// EmitRawText - If this file is backed by an assembly streamer, this dumps

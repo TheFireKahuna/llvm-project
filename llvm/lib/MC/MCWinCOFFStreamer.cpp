@@ -428,6 +428,15 @@ void MCWinCOFFStreamer::emitCOFFLinkValueOnly(const MCSymbol *Page) {
   getWriter().addLinkValueOnly({Site, Page});
 }
 
+// So does a load that may derive its pointer from another's register.
+void MCWinCOFFStreamer::emitCOFFLinkAnchor(const MCSymbol *Load,
+                                           MCRegister Reg) {
+  MCSymbol *Site = getContext().createTempSymbol();
+  emitLabel(Site);
+  getWriter().addLinkAnchor(
+      {Site, Load, getContext().getRegisterInfo()->getEncodingValue(Reg)});
+}
+
 void MCWinCOFFStreamer::emitCommonSymbol(MCSymbol *S, uint64_t Size,
                                          Align ByteAlignment) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);

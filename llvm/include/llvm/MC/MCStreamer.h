@@ -700,6 +700,12 @@ public:
   /// load the pointer's page begins, and is null elsewhere.
   virtual void emitCOFFLinkValueOnly(const MCSymbol *Page);
 
+  /// Tells the linker that \p Reg holds, on every path to the next
+  /// instruction, a load of the import pointer of data, the pointer that the
+  /// load at \p Load loaded, of other data, from which the linker may derive
+  /// the pointer where both data are in one image.
+  virtual void emitCOFFLinkAnchor(const MCSymbol *Load, MCRegister Reg);
+
   /// Tells the linker that the next instruction, a jump to a function, ends
   /// its function, so that a linker that places the function's target right
   /// after it may leave the jump out.

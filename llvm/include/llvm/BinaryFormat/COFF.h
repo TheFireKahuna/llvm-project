@@ -577,6 +577,17 @@ enum LinkSiteFact : uint8_t {
   // As LinkSiteAccessedRead, for instructions that LinkSiteFusedIndex
   // describes.
   LinkSiteIndexedRead = 9,
+  // On a site of form LinkSiteLoad, a load of the import pointer of data,
+  // register reg holds, on every path to the site, the pointer that the load
+  // at the site with index load gave it, of other data:
+  //
+  //   value := load << 5 | reg
+  //
+  // with reg numbered as the instruction encoding numbers it, so that a linker
+  // that finds both data in one image, which keeps the distance between them,
+  // may make the site an lea of the distance from reg. A site may have one
+  // such fact for each of several loads.
+  LinkSiteAnchor = 10,
 };
 
 // The prefix of a fused access that holds the high bit of its base register.

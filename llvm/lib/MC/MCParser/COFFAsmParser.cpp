@@ -104,6 +104,8 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkfusedadd");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedAccess>(
         ".linkfusedindex");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedAccess>(
+        ".linkanchor");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkValueOnly>(
         ".linkvalueonly");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkTailJump>(
@@ -869,6 +871,7 @@ bool COFFAsmParser::parseDirectiveLinkFusedRead(StringRef, SMLoc) {
 ///  ::= .linkfusedaccess load, register
 ///  ::= .linkfusedadd load, register
 ///  ::= .linkfusedindex load, register
+///  ::= .linkanchor load, register
 bool COFFAsmParser::parseDirectiveLinkFusedAccess(StringRef Directive, SMLoc) {
   MCSymbol *Load;
   if (getParser().parseSymbol(Load))
@@ -885,6 +888,8 @@ bool COFFAsmParser::parseDirectiveLinkFusedAccess(StringRef Directive, SMLoc) {
     getStreamer().emitCOFFLinkFusedAdd(Load, Reg);
   else if (Directive == ".linkfusedindex")
     getStreamer().emitCOFFLinkFusedIndex(Load, Reg);
+  else if (Directive == ".linkanchor")
+    getStreamer().emitCOFFLinkAnchor(Load, Reg);
   else
     getStreamer().emitCOFFLinkFusedAccess(Load, Reg);
   return false;
