@@ -738,6 +738,12 @@ void SymbolTable::preemptWeakData() {
       if (joint)
         jointGivenUp.insert(m);
     }
+    // An image that reaches the data through this one needs its guard too.
+    if (auto *gi = dyn_cast_or_null<DefinedImportData>(
+            impSymbol(getSharedGuardName(d)));
+        !joint && gi && !llvm::is_contained(imports, gi) &&
+        gi->getDLLName().equals_insensitive(imp->getDLLName()))
+      forwardedGuards.insert(gi);
     for (SectionChunk *c : chunks) {
       c->live = false;
       for (const coff_relocation &rel : c->getRelocs())
@@ -1078,6 +1084,8 @@ void SymbolTable::addOffers() {
   for (Symbol *s : preemptedData)
     if (!jointGivenUp.contains(s))
       offer(s, /*data=*/true, cast<DefinedImportData>(s));
+  for (DefinedImportData *g : forwardedGuards)
+    offer(g, /*data=*/true, g);
   for (Symbol *sym : weakData) {
     auto *d = dyn_cast<DefinedRegular>(sym);
     if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))

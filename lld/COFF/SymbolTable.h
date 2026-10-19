@@ -228,6 +228,9 @@ public:
 
   // Imports preemptWeakData's discarded sections refer to; dropped if unused.
   llvm::DenseSet<ImportFile *> preemptedGroupImports;
+  // The guards of preempted data that liveness discarded, which the image
+  // offers with the data as it forwards it.
+  llvm::SetVector<DefinedImportData *> forwardedGuards;
 
   // Under -import-slots, the leaders of the default-visibility function COMDAT
   // groups whose addresses objects take, which a DLL may offer, and the count

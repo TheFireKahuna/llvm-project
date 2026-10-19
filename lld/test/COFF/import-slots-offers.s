@@ -49,15 +49,19 @@
 # NONE-NOT: Name: {{iv|f}}
 # HOST: Name: iv
 
-## A DLL that imports iv and its guard from a.dll forwards them, and its
-## import library names a.dll for them.
+## A DLL that imports iv from a.dll forwards it, and its guard, whose copy
+## nothing in the DLL uses, and its import library names a.dll for them.
 # RUN: lld-link -import-slots -dll -noentry b.obj a.lib -out:b.dll \
 # RUN:   -implib:b.lib -verbose 2>&1 | FileCheck --check-prefix=PREEMPT %s
 # RUN: llvm-readobj --coff-exports b.dll | FileCheck --check-prefix=FWD %s
 # RUN: llvm-nm b.lib | FileCheck --check-prefix=LIB %s
 # PREEMPT: Preempting iv in b.obj with its instance in a.dll
+# FWD:      Name: _ZGV2iv
+# FWD-NEXT: ForwardedTo: a._ZGV2iv
 # FWD:      Name: iv
 # FWD-NEXT: ForwardedTo: a.iv
+# LIB:      a.dll:
+# LIB-NEXT: {{0+}} D __imp__ZGV2iv
 # LIB:      a.dll:
 # LIB-NEXT: {{0+}} D __imp_iv
 # LIB-NOT:  __imp_iv
@@ -137,6 +141,12 @@ main:
 iv:
   .linkbinding iv, default
   .quad 1
+
+  .section .bss,"bw",discard,_ZGV2iv
+  .globl _ZGV2iv
+_ZGV2iv:
+  .linkbinding _ZGV2iv, default
+  .quad 0
 
   .data
   .globl bstrong
