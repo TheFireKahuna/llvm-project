@@ -40,6 +40,17 @@
 #define WINCRT_INCLUDE(Name)                                                   \
   __pragma(comment(linker, "/include:" WINCRT_STRINGIFY(Name)))
 
+// The exec and spawn functions, wide and narrow, and the traditional names
+// of the narrow ones, which wincrt defines again (exec.cpp).
+#define WINCRT_SPAWN_FORMS(X, Prefix)                                          \
+  X(Prefix##execl) X(Prefix##execle) X(Prefix##execlp) X(Prefix##execlpe)      \
+  X(Prefix##execv) X(Prefix##execve) X(Prefix##execvp) X(Prefix##execvpe)      \
+  X(Prefix##spawnl) X(Prefix##spawnle) X(Prefix##spawnlp)                      \
+  X(Prefix##spawnlpe) X(Prefix##spawnv) X(Prefix##spawnve)                     \
+  X(Prefix##spawnvp) X(Prefix##spawnvpe)
+#define WINCRT_SPAWN_NAMES(X)                                                  \
+  WINCRT_SPAWN_FORMS(X, _) WINCRT_SPAWN_FORMS(X, _w) WINCRT_SPAWN_FORMS(X, )
+
 // Every entry object wraps the Universal CRT functions that wincrt defines
 // again, so that each reference to them in the image, the Universal CRT's
 // import included, reaches wincrt's definitions. It wraps the formatted I/O
@@ -54,15 +65,17 @@
                    "/wrap:_beginthread /wrap:_beginthreadex "                  \
                    "/wrap:_endthread /wrap:_endthreadex /wrap:rand_s "         \
                    "/wrap:raise /wrap:abort"                                   \
+                   WINCRT_SPAWN_NAMES(WINCRT_WRAP_NAME)                        \
                    WINCRT_NTDLL_FORMATTED_IO(WINCRT_WRAP_NAME)                 \
                    WINCRT_SHARED_IMPORTS(WINCRT_WRAP_NAME)                     \
                    WINCRT_SHARED_IMPORTS_RENAMED(WINCRT_WRAP_NAME)))
 
 // The parts of wincrt that serve the whole process: the termination
-// registries, exit, raise, abort, the thread start and rand_s. Every image
-// imports them from clang_rt.wincrt_dynamic.dll, which exports them, so that
-// registration is process-wide and finalization per image; a program linked
-// with -static keeps them in the executable, from clang_rt.wincrt_static.lib.
+// registries, exit, exec, raise, abort, the thread start and rand_s.
+// Every image imports them from clang_rt.wincrt_dynamic.dll, which exports
+// them, so that registration is process-wide and finalization per image; a
+// program linked with -static keeps them in the executable, from
+// clang_rt.wincrt_static.lib.
 #ifdef COMPILER_RT_SHARED_LIB
 #define WINCRT_ATEXIT_API __attribute__((visibility("default")))
 #else

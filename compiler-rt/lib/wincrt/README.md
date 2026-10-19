@@ -22,6 +22,7 @@ The builtins define the bounds of the `.CRT$X??` tables, `__dso_handle` and
 | C registration | `atexit`, `_onexit`, `onexit`, `at_quick_exit` | `atexit.cpp` |
 | Process exit | `__wrap_exit`, `__wrap__exit`, `__wrap__Exit`, `__wrap_quick_exit`, which every entry point's `/wrap` makes `exit`, `_exit`, `_Exit` and `quick_exit` | `exit.cpp`, `entry_*.cpp` |
 | Signals | `__wrap_raise` and `__wrap_abort`, wrapping the Universal CRT's | `signal.cpp` |
+| Process replacement | `__wrap__execv`, `__wrap__spawnv` and the other exec and spawn functions, wide, narrow and under their traditional names, wrapping the Universal CRT's | `exec.cpp` |
 | Threads | `__wrap__beginthread`, `__wrap__beginthreadex`, `__wrap__endthread`, `__wrap__endthreadex`, wrapping the Universal CRT's | `thread.cpp` |
 | Random numbers | `__wrap_rand_s`, wrapping the Universal CRT's | `rand_s.cpp` |
 | Formatted I/O | `printf`, `scanf` and the rest of the Universal CRT's formatted I/O, which its headers define inline | `formatted_io.c` |
@@ -113,6 +114,13 @@ otherwise calls the Universal CRT's `raise`, which keeps its handler table,
 `SIG_IGN` and the handler call. `abort` is wrapped too, since the Universal
 CRT's ends the process through its own `_exit` when `_CALL_REPORTFAULT` is
 cleared; the wrapper reads the flags with `_set_abort_behavior(0, 0)`.
+
+The exec functions, and the spawn functions in `_P_OVERLAY` mode, end the
+process the same way once the new process has started: the Universal CRT's
+calls its own `_exit(0)`. Their wrappers spawn the overlay with `_P_NOWAIT`,
+which the Universal CRT handles identically up to that point, and then call
+the DLL's `_exit(0)`; every other mode is the Universal CRT's. The variadic
+forms pass their argument list on as the vector forms' array.
 
 The same DLL wraps `_beginthread`, `_beginthreadex`, `_endthread` and
 `_endthreadex`, whose Universal CRT forms read the app model's thread

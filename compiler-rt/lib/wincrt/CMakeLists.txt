@@ -34,13 +34,14 @@ set(WINCRT_SOURCES
   )
 
 # The parts of wincrt that serve the whole process, the termination
-# registries, exit, raise, abort, the thread start, rand_s and the Universal
-# CRT's formatted I/O, which every image imports from
+# registries, exit, exec, raise, abort, the thread start, rand_s and the
+# Universal CRT's formatted I/O, which every image imports from
 # clang_rt.wincrt_dynamic.dll, and which clang_rt.wincrt_static.lib holds for a
 # program linked with -static.
 set(WINCRT_ATEXIT_SOURCES
   cxa_atexit.cpp
   cxa_thread_atexit.cpp
+  exec.cpp
   exit.cpp
   formatted_io.c
   rand_s.cpp
