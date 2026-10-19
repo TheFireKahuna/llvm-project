@@ -15,6 +15,7 @@
 #include "InputFiles.h"
 #include "LinkPins.h"
 #include "ImportSlots.h"
+#include "JointLink.h"
 #include "MarkLive.h"
 #include "MinGW.h"
 #include "SymbolTable.h"
@@ -1252,7 +1253,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   std::string path = getImplibPath();
   std::vector<uint8_t> rangeRecord, vagueRecord;
-  if (!asLib) {
+  if (!asLib && ctx.config.jointScan.empty()) {
     addKCFIRangeRecord(ctx, libName, extra, rangeRecord);
     addVagueEntityRecord(ctx, libName, extra, vagueRecord);
   }
@@ -2072,6 +2073,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     return;
   }
 
+  // The merge of a joint link reads its members' summaries, not a link line.
+  if (args.hasArg(OPT_lldjointmerge)) {
+    mergeJointLink(ctx, args);
+    return;
+  }
+
   // Handle /lldmingw early, since it can potentially affect how other
   // options are handled.
   config->mingw = args.hasArg(OPT_lldmingw);
@@ -2722,6 +2729,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   config->autoImport =
       args.hasFlag(OPT_auto_import, OPT_auto_import_no, config->mingw);
   config->importSlots = args.hasArg(OPT_import_slots);
+  config->jointScan = args.getLastArgValue(OPT_lldjointscan);
+  config->jointFacts = args.getLastArgValue(OPT_lldjoint);
+  if ((!config->jointScan.empty() || !config->jointFacts.empty()) &&
+      !config->importSlots)
+    Err(ctx) << "a joint link's members link with -import-slots";
   config->startStopSymbols =
       args.hasFlag(OPT_start_stop_symbols, OPT_start_stop_symbols_no, false);
   config->boundarySymbols =
@@ -2815,6 +2827,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // and OPT_end_lib.
   {
     llvm::TimeTraceScope timeScope2("Parse & queue inputs");
+    // A joint link's facts come first, so what they import is not taken from
+    // another member's import library.
+    if (!config->jointFacts.empty())
+      if (std::optional<StringRef> path = findFileIfNew(config->jointFacts))
+        enqueuePath(*path, false, InputOpt::None);
     bool inLib = false;
     for (auto *arg : args) {
       switch (arg->getOption().getID()) {
@@ -3313,7 +3330,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // If we are going to do codegen for link-time optimization, check for
   // unresolvable symbols first, so we don't spend time generating code that
   // will fail to link anyway.
-  if (!config->forceUnresolved)
+  if (!config->forceUnresolved && config->jointScan.empty())
     ctx.forEachSymtab([](SymbolTable &symtab) {
       if (!symtab.bitcodeFileInstances.empty())
         symtab.reportUnresolvable();
@@ -3330,6 +3347,27 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     maybeExportMinGWSymbols(args);
   }
   ctx.forEachSymtab([&](SymbolTable &symtab) { addVersionedExports(symtab); });
+
+  // A joint link's scan stops here, before LTO, and writes the import library
+  // its siblings' scans may read, unless one is already there: it holds the
+  // exports and the observable vague entities the member keeps, as offers.
+  if (!config->jointScan.empty()) {
+    writeJointSummary(ctx, args);
+    if ((config->dll || !ctx.symtab.exports.empty()) && !config->noimplib &&
+        (!config->mingw || !config->implib.empty()) &&
+        !sys::fs::exists(getImplibPath())) {
+      addJointScanOffers(ctx);
+      ctx.symtab.offerOverridableDefaults();
+      ctx.symtab.fixupExports();
+      createImportLibrary(/*asLib=*/false);
+    }
+    return;
+  }
+  if (!config->jointFacts.empty()) {
+    applyJointFacts(ctx, args);
+    if (errorCount())
+      return;
+  }
 
   if (config->ltoValidateAllVtablesHaveTypeInfos)
     ltoValidateAllVtablesHaveTypeInfos(args);

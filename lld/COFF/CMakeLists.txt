@@ -14,6 +14,7 @@ add_lld_library(lldCOFF
   ICF.cpp
   ImportSlots.cpp
   InputFiles.cpp
+  JointLink.cpp
   KCFI.cpp
   LinkPins.cpp
   LLDMapFile.cpp

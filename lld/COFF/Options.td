@@ -268,6 +268,14 @@ def version_script : P<"version-script",
 def include_optional : Joined<["/", "-", "/?", "-?"], "includeoptional:">,
     HelpText<"Add symbol as undefined, but allow it to remain undefined">;
 def import_slots : F<"import-slots">;
+def lldjointscan : P<"lldjointscan",
+    "Resolve the link as a member of a joint link and write its summary to "
+    "the given file, with no image">;
+def lldjointmerge : F<"lldjointmerge">,
+    HelpText<"Merge the summaries of a joint link's members, given in order, "
+             "into a fact file for each in the /out directory">;
+def lldjoint : P<"lldjoint",
+    "Link as a member of a joint link, with the given fact file">;
 def Bsymbolic : F<"Bsymbolic">,
     HelpText<"Under -import-slots, bind a DLL's references to the vague "
              "entities it offers locally">;

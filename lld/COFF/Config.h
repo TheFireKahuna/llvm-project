@@ -207,6 +207,10 @@ struct Configuration {
   // newly kept entities are compared, and whether the image exports an epoch.
   StringRef offersBaseline;
   bool offersEpoch = false;
+  // As a member of a joint link, the file the scan writes the member's summary
+  // to, or the fact file of its final link.
+  StringRef jointScan;
+  StringRef jointFacts;
   std::map<std::string, int> dllOrder;
   Symbol *arm64ECIcallHelper = nullptr;
 

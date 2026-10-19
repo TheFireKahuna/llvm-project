@@ -379,6 +379,18 @@ enum LinkRecordKind : uint64_t {
   // section is as for LinkRecordSites. A linker that does not know the kind
   // takes the jump as the branch it is.
   LinkRecordTailJumps = 32,
+
+  // The facts that the merge of a joint link gives one member's final link, in
+  // a member of the fact file it writes for that member:
+  //
+  //   payload := digest:16 count:ULEB128 name{count} count:ULEB128 name{count}
+  //   name    := size:ULEB128 byte{size}
+  //
+  // digest is the xxh3_128bits of the member's summary as the merge read it,
+  // which the final link recomputes, and the names are those of the members
+  // of the joint link, in lowercase, then those of the entities the member
+  // keeps for the other members, which import them from it.
+  LinkRecordJointFacts = 34,
 };
 
 // The type of an entry in a LinkRecordCoverage group.

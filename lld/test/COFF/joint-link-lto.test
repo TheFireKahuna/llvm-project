@@ -1,0 +1,69 @@
+# REQUIRES: x86
+## The scan of a member linked from bitcode reads its symbol table, before LTO:
+## a.dll, declared first, keeps the COMDAT data and the address-significant
+## function that b.dll keeps too, and its LTO keeps them, which it offers.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: llvm-as a.ll -o a.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium b.s -o b.obj
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjointscan:a.jscan
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:facts a.jscan b.jscan
+# RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll \
+# RUN:   -lldjoint:facts/a.dll.jfacts
+# RUN: lld-link -import-slots -dll -noentry b.obj -out:b.dll \
+# RUN:   -lldjoint:facts/b.dll.jfacts
+# RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=A %s
+# RUN: llvm-readobj --coff-imports b.dll | FileCheck --check-prefix=B %s
+
+# A: Name: af
+# A: Name: f
+# A: Name: v
+
+# B:      Name: a.dll
+# B-NEXT: ImportLookupTableRVA:
+# B-NEXT: ImportAddressTableRVA:
+# B-NEXT: Symbol: f (0)
+# B-NEXT: Symbol: v (0)
+# B-NEXT: }
+
+#--- a.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+$v = comdat any
+$f = comdat any
+
+@v = linkonce_odr global i32 1, comdat
+
+define linkonce_odr i32 @f() comdat {
+  ret i32 1
+}
+
+define dllexport i32 @af() {
+  ret i32 0
+}
+
+#--- b.s
+  .section .data,"dw",discard,v
+  .globl v
+v:
+  .long 1
+
+  .section .text,"xr",discard,f
+  .globl f
+f:
+  movl $1, %eax
+  retq
+
+  .text
+  .globl bf
+bf:
+  movq __imp_v(%rip), %rax
+  leaq f(%rip), %rax
+  retq
+
+  .section .drectve,"yni"
+  .ascii " -export:bf"

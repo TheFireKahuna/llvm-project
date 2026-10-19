@@ -582,6 +582,11 @@ public:
 
   std::string printSymbol(Symbol *sym) const;
 
+  void collectWeakDataGroup(DefinedRegular *d,
+                            llvm::SmallVectorImpl<SectionChunk *> &chunks,
+                            llvm::SmallVectorImpl<DefinedRegular *> &members,
+                            bool liveOnly);
+
 private:
   /// Given a name without "__imp_" prefix, returns a defined symbol
   /// with the "__imp_" prefix, if it exists.
@@ -590,10 +595,6 @@ private:
   // a forwarder to that instance.
   void
   forwardExports(llvm::function_ref<DefinedImportData *(Symbol *)> getInstance);
-  void collectWeakDataGroup(DefinedRegular *d,
-                            llvm::SmallVectorImpl<SectionChunk *> &chunks,
-                            llvm::SmallVectorImpl<DefinedRegular *> &members,
-                            bool liveOnly);
   // The name of the record of the thread-local variable s, which the link
   // keeps once, since every pass that shares s asks for it.
   StringRef getRecordName(Symbol *s);
