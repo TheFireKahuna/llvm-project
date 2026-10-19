@@ -184,6 +184,13 @@ private:
   /// memory read, and the accesses through the register of such a load that
   /// stays that only read, which the pass describes to the linker too.
   SmallPtrSet<const MachineInstr *, 2> ImportValueOnlyLoads;
+  /// The loads of import pointers of data whose pointers the linker may
+  /// derive from the register of a load of another such pointer, each with
+  /// those loads and registers, and those loads.
+  DenseMap<const MachineInstr *,
+           SmallVector<std::pair<const MachineInstr *, MCRegister>, 2>>
+      ImportAnchors;
+  SmallPtrSet<const MachineInstr *, 2> ImportAnchorLoads;
 
   std::optional<int> SwiftAsyncContextFrameIdx;
 
@@ -340,6 +347,19 @@ public:
   }
   const SmallPtrSetImpl<const MachineInstr *> &getImportValueOnlyLoads() const {
     return ImportValueOnlyLoads;
+  }
+  void addImportAnchor(const MachineInstr *MI, const MachineInstr *Load,
+                       MCRegister Reg) {
+    ImportAnchors[MI].push_back({Load, Reg});
+    ImportAnchorLoads.insert(Load);
+  }
+  const DenseMap<const MachineInstr *,
+                 SmallVector<std::pair<const MachineInstr *, MCRegister>, 2>> &
+  getImportAnchors() const {
+    return ImportAnchors;
+  }
+  bool isImportAnchorLoad(const MachineInstr *Load) const {
+    return ImportAnchorLoads.contains(Load);
   }
 
   std::optional<int> getSwiftAsyncContextFrameIdx() const {

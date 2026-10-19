@@ -94,10 +94,11 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   IndCSPrefix = M->getModuleFlag("indirect_branch_cs_prefix");
 
   const auto *FI = MF.getInfo<X86MachineFunctionInfo>();
-  ImportFusion =
-      FI->getImportFusedLoads().empty() && FI->getImportValueOnlyLoads().empty()
-          ? nullptr
-          : FI;
+  ImportFusion = FI->getImportFusedLoads().empty() &&
+                         FI->getImportValueOnlyLoads().empty() &&
+                         FI->getImportAnchors().empty()
+                     ? nullptr
+                     : FI;
   ImportFusionLabels.clear();
 
   SetupMachineFunction(MF);
@@ -145,7 +146,8 @@ MCSymbol *X86AsmPrinter::getImportFusionLabel(const MachineInstr *Load) {
 // register only reads of memory read may take the address of the image's own
 // copy of the data, and an access that only reads may read that copy. An
 // access of a thread-local variable's record is also a load, which the
-// accesses or indexes through its register name.
+// accesses or indexes through its register name. A load whose pointer another
+// load's register holds names that load, which a label names for it.
 void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
   using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
   auto Use = ImportFusion->getImportFusedUses().find(&MI);
@@ -184,9 +186,16 @@ void X86AsmPrinter::emitImportFusion(const MachineInstr &MI) {
   }
   if (ImportFusion->getImportValueOnlyLoads().contains(&MI))
     OutStreamer->emitCOFFLinkValueOnly(nullptr);
+  auto Anchors = ImportFusion->getImportAnchors().find(&MI);
+  if (Anchors != ImportFusion->getImportAnchors().end())
+    for (auto [Anchor, Reg] : Anchors->second)
+      OutStreamer->emitCOFFLinkAnchor(getImportFusionLabel(Anchor), Reg);
   auto Load = ImportFusion->getImportFusedLoads().find(&MI);
-  if (Load == ImportFusion->getImportFusedLoads().end())
+  if (Load == ImportFusion->getImportFusedLoads().end()) {
+    if (ImportFusion->isImportAnchorLoad(&MI))
+      OutStreamer->emitLabel(getImportFusionLabel(&MI));
     return;
+  }
   OutStreamer->emitLabel(getImportFusionLabel(&MI));
   if (Load->second)
     OutStreamer->emitCOFFLinkFusedRead();

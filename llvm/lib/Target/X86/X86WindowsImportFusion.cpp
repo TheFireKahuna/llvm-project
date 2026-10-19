@@ -46,6 +46,12 @@
 // that load the index through the address, and those that add the offset to
 // another register in their memory operand.
 //
+// A load of the import pointer of data whose pointer a load of the import
+// pointer of other data left in a register on every path to it is described
+// with that load: where the linker finds both data in one other image, whose
+// layout it knows, the load may become an lea of the distance between them
+// from that register.
+//
 //===----------------------------------------------------------------------===//
 
 #include "X86.h"
@@ -71,6 +77,8 @@ STATISTIC(NumDeleted, "Number of import pointer loads folded into a call");
 STATISTIC(NumAccesses, "Number of accesses described as fused with a load");
 STATISTIC(NumAdds, "Number of adds described as fused with a load");
 STATISTIC(NumValueOnly, "Number of loads described as read only for values");
+STATISTIC(NumAnchored, "Number of loads described with loads that may give "
+                      "their pointers");
 
 namespace {
 
@@ -625,6 +633,39 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
   if (Loads.empty() || (!HasRegCalls && MemCalls.empty() && !HasDataLoads))
     return false;
 
+  // The loads of the import pointers of data that the register of a load of
+  // another such pointer, the nearest earlier ones first, still holds the
+  // pointer of, each with that load. An lea from RSP or R12 needs a SIB byte,
+  // and one from a register past the first sixteen REX2, which the load has
+  // no room for.
+  SmallVector<std::pair<MachineInstr *, MachineInstr *>, 4> Anchors;
+  SmallVector<MachineInstr *, 8> DataLoads;
+  for (MachineInstr *Load : Loads)
+    if (isDataPointer(*getLoadedPointer(*Load)) &&
+        !isThreadLocalRecord(*getLoadedPointer(*Load)))
+      DataLoads.push_back(Load);
+  for (auto [I, Load] : enumerate(DataLoads)) {
+    const MachineOperand &Pointer = *getLoadedPointer(*Load);
+    SmallVector<Register, 4> Regs;
+    unsigned Tried = 0;
+    for (MachineInstr *Anchor : reverse(ArrayRef(DataLoads).take_front(I))) {
+      Register Reg = Anchor->getOperand(0).getReg();
+      if (Regs.size() == 4 || Tried == 16)
+        break;
+      if (isSamePointer(*getLoadedPointer(*Anchor), Pointer) ||
+          Reg == X86::RSP || Reg == X86::R12 ||
+          TRI->getEncodingValue(Reg) >= 16 || is_contained(Regs, Reg) ||
+          !isInSameSection(*Anchor, *Load))
+        continue;
+      ++Tried;
+      SmallVector<MachineBasicBlock *, 8> Blocks;
+      if (!reachesUnmodified(*Anchor, *Load, Reg, Blocks))
+        continue;
+      Regs.push_back(Reg);
+      Anchors.push_back({Load, Anchor});
+    }
+  }
+
   // Collected before anything changes, which leaves the reaching definitions
   // describing code that is no longer there.
   struct Fusion {
@@ -823,8 +864,11 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
   for (MachineInstr *Load : ValueOnly)
     FI->addImportValueOnlyLoad(Load);
   NumValueOnly += ValueOnly.size();
+  for (auto [Load, Anchor] : Anchors)
+    FI->addImportAnchor(Load, Anchor, Anchor->getOperand(0).getReg());
+  NumAnchored += Anchors.size();
   if (Work.empty())
-    return !ValueOnly.empty();
+    return !ValueOnly.empty() || !Anchors.empty();
 
   SmallVector<MachineBasicBlock *, 8> LiveInBlocks;
   using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
