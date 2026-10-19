@@ -383,13 +383,28 @@ enum LinkRecordKind : uint64_t {
   // The facts that the merge of a joint link gives one member's final link, in
   // a member of the fact file it writes for that member:
   //
-  //   payload := digest:16 count:ULEB128 name{count} count:ULEB128 name{count}
+  //   payload := digest:16 members:names kept:names private:names
+  //              preempted:groups runs:names unsuppressed:names identity:name
+  //              anchored:u8 count:ULEB128 dep{count} interposed:groups
+  //              interposing:names
+  //   dep     := member:name identity:name grants:names provides:names
+  //   groups  := count:ULEB128 (member:name names){count}
+  //   names   := count:ULEB128 name{count}
   //   name    := size:ULEB128 byte{size}
   //
   // digest is the xxh3_128bits of the member's summary as the merge read it,
-  // which the final link recomputes, and the names are those of the members
-  // of the joint link, in lowercase, then those of the entities the member
-  // keeps for the other members, which import them from it.
+  // which the final link recomputes. Then come the names of the members of
+  // the joint link, in lowercase; the entities the member keeps for the other
+  // members, which import them from it; what it exports under names no import
+  // library holds; the groups it gives up, each with the member that keeps
+  // them; the classes whose vtable runs it exports; the functions whose
+  // addresses other members take, which it does not suppress; its identity,
+  // empty where no member imports from it; whether a member may anchor to its
+  // layout; for each member it imports from, that member's identity, the
+  // functions whose loader grants it leaves out, and the witnesses that member
+  // provides; the functions it exports that an executable loading it defines
+  // too, with that executable, whose definitions its references import
+  // instead; and, in an executable, the functions it exports for them.
   LinkRecordJointFacts = 34,
 
   // The layout of a DLL linked as a member of a joint link, in a member of its
