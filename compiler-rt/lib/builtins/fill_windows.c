@@ -197,15 +197,19 @@ static int32_t protect(uint32_t rva, size_t size, uint32_t protection) {
 }
 
 // Makes each range of the read-only cells writable, failing at the first
-// call that fails, or read-only again.
+// call that fails, or read-only again, trying every range and failing if any
+// stays writable.
 static int32_t protectRanges(const struct fillList *l, uint32_t protection) {
   const struct range *r = (const struct range *)(l + 1);
+  int32_t result = 0;
   for (uint32_t i = 0; i != l->ranges; ++i) {
     int32_t status = protect(r[i].rva, r[i].size, protection);
     if (status && protection == pageReadWrite)
       return status;
+    if (!result)
+      result = status;
   }
-  return 0;
+  return result;
 }
 
 // Whether module m is in the executable's scope: the executable, one loaded
@@ -411,8 +415,13 @@ int __llvm_fill(void) {
         *(uint64_t *)(__ImageBase + w->import) + w->addend;
 
 done:
-  if (writable)
-    protectRanges(l, pageReadOnly);
+  // A cell left writable fails the image's initialization, as one left
+  // unwritten does.
+  if (writable) {
+    int32_t reseal = protectRanges(l, pageReadOnly);
+    if (!status)
+      status = reseal;
+  }
   if (!status && l->sealedSize)
     status = protect(l->sealed, l->sealedSize, pageReadOnly);
   return status;
