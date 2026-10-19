@@ -204,6 +204,11 @@ std::error_code Memory::protectMappedMemory(const MemoryBlock &M,
   return std::error_code();
 }
 
+std::error_code Memory::restrictCallTargets(const MemoryBlock &Code,
+                                            ArrayRef<uintptr_t> Entries) {
+  return std::error_code();
+}
+
 /// InvalidateInstructionCache - Before the JIT can run a block of code
 /// that has been emitted it must invalidate the instruction cache on some
 /// platforms.

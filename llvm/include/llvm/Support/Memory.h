@@ -13,6 +13,7 @@
 #ifndef LLVM_SUPPORT_MEMORY_H
 #define LLVM_SUPPORT_MEMORY_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/DataTypes.h"
 #include <system_error>
@@ -127,6 +128,17 @@ namespace sys {
     /// Set memory protection state.
     LLVM_ABI static std::error_code
     protectMappedMemory(const MemoryBlock &Block, unsigned Flags);
+
+    /// This method restricts the targets of indirect calls in \p Code, which
+    /// is executable, to \p Entries, in ascending order, where the process
+    /// checks such calls against the targets of the memory it calls: Control
+    /// Flow Guard on Windows takes every address of memory made executable as
+    /// one. An entry the check cannot mark keeps every target near it.
+    ///
+    /// \r error_success if the function was successful, or an error_code
+    /// describing the failure if an error occurred.
+    LLVM_ABI static std::error_code
+    restrictCallTargets(const MemoryBlock &Code, ArrayRef<uintptr_t> Entries);
 
     /// InvalidateInstructionCache - Before the JIT can run a block of code
     /// that has been emitted it must invalidate the instruction cache on some

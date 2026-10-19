@@ -13,6 +13,7 @@
 
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/WindowsError.h"
 
@@ -183,6 +184,58 @@ std::error_code Memory::protectMappedMemory(const MemoryBlock &M,
   if (Flags & MF_EXEC)
     Memory::InvalidateInstructionCache(M.Address, M.AllocatedSize);
 
+  return std::error_code();
+}
+
+#ifdef _WIN32_ITANIUM
+// The SDK declares these only above the _WIN32_WINNT floor set in
+// WindowsSupport.h.
+extern "C" __declspec(dllimport) BOOL WINAPI GetProcessMitigationPolicy(
+    HANDLE, PROCESS_MITIGATION_POLICY, PVOID, SIZE_T);
+extern "C" __declspec(dllimport) BOOL WINAPI SetProcessValidCallTargets(
+    HANDLE, PVOID, SIZE_T, ULONG, PCFG_CALL_TARGET_INFO);
+#endif
+
+std::error_code Memory::restrictCallTargets(const MemoryBlock &Code,
+                                            ArrayRef<uintptr_t> Entries) {
+#ifdef _WIN32_ITANIUM
+  // Control Flow Guard keeps a state per 16-byte granule, and only an entry at
+  // a granule's start can be marked alone, so a granule that holds another
+  // entry keeps every target, as do the granules the code shares at its ends.
+  // The call takes whole pages, and leaves the granules it is not given as
+  // they are.
+  static const bool Checked = [] {
+    PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY Policy = {};
+    return GetProcessMitigationPolicy(GetCurrentProcess(),
+                                      ProcessControlFlowGuardPolicy, &Policy,
+                                      sizeof(Policy)) &&
+           Policy.EnableControlFlowGuard;
+  }();
+  if (!Checked || Code.Address == 0 || Code.AllocatedSize == 0)
+    return std::error_code();
+  uintptr_t Start = reinterpret_cast<uintptr_t>(Code.Address);
+  uintptr_t End = Start + Code.AllocatedSize;
+  uintptr_t PageSize = Process::getPageSizeEstimate();
+  uintptr_t Base = Start & ~(PageSize - 1);
+  std::vector<CFG_CALL_TARGET_INFO> Targets;
+  const uintptr_t *E = Entries.begin();
+  for (uintptr_t G = (Start + 15) & ~uintptr_t(15); G + 16 <= End; G += 16) {
+    while (E != Entries.end() && *E < G)
+      ++E;
+    bool Valid = E != Entries.end() && *E == G;
+    const uintptr_t *Next = E + Valid;
+    if (Next != Entries.end() && *Next < G + 16)
+      continue;
+    Targets.push_back({G - Base, Valid ? ULONG_PTR(CFG_CALL_TARGET_VALID) : 0});
+  }
+  if (Targets.empty())
+    return std::error_code();
+  if (!SetProcessValidCallTargets(GetCurrentProcess(),
+                                  reinterpret_cast<void *>(Base),
+                                  alignTo(End - Base, PageSize), Targets.size(),
+                                  Targets.data()))
+    return mapWindowsError(::GetLastError());
+#endif
   return std::error_code();
 }
 

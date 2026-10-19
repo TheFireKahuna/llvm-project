@@ -477,4 +477,33 @@ TEST(MappedMemoryLargePagesTest, LooksUpPrivilegeOnlyOnRequest) {
 }
 #endif // LLVM_RUNTIME_WIN32
 
+#if defined(__x86_64__) || defined(_M_X64)
+// The code has no type check prefix, so the call checks only that the target
+// is one: Control Flow Guard's check, where the process enforces it.
+using Fn = int (*)();
+LLVM_NO_SANITIZE("kcfi") static int callThrough(volatile Fn F) { return F(); }
+
+// Code whose call targets are restricted to its entries stays callable at
+// them.
+TEST(MappedMemoryCallTargetsTest, EntriesStayCallable) {
+  std::error_code EC;
+  MemoryBlock M = Memory::allocateMappedMemory(
+      4096, nullptr, Memory::MF_READ | Memory::MF_WRITE, EC);
+  ASSERT_FALSE(EC);
+  // mov eax, 42; ret, at 0 and 32 bytes in.
+  static const unsigned char Code[] = {0xB8, 42, 0, 0, 0, 0xC3};
+  auto *Base = static_cast<unsigned char *>(M.base());
+  memcpy(Base, Code, sizeof(Code));
+  memcpy(Base + 32, Code, sizeof(Code));
+  ASSERT_FALSE(
+      Memory::protectMappedMemory(M, Memory::MF_READ | Memory::MF_EXEC));
+  uintptr_t Entries[] = {reinterpret_cast<uintptr_t>(Base),
+                         reinterpret_cast<uintptr_t>(Base + 32)};
+  EXPECT_FALSE(Memory::restrictCallTargets(M, Entries));
+  EXPECT_EQ(42, callThrough(reinterpret_cast<Fn>(Base)));
+  EXPECT_EQ(42, callThrough(reinterpret_cast<Fn>(Base + 32)));
+  EXPECT_FALSE(Memory::releaseMappedMemory(M));
+}
+#endif
+
 }  // anonymous namespace
