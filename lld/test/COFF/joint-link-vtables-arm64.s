@@ -2,7 +2,8 @@
 ## On ARM64, a member that gives up a vtable whose exact casts compare vtable
 ## pointers for another member's turns the adrp and add of its address point
 ## into an adrp and ldr of the import of the name the owner exports for that
-## address point; a copy of any other vtable stays.
+## address point, with the owner's identity, which covers that name; a copy of
+## any other vtable stays.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium a.s -o a.obj
@@ -24,6 +25,7 @@
 # CHECK-NEXT: ImportLookupTableRVA:
 # CHECK-NEXT: ImportAddressTableRVA: 0x[[#%X,IAT:]]
 # CHECK-NEXT: Symbol: _ZTV1D$ap16 (0)
+# CHECK-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
 # CHECK-NEXT: }
 # CHECK:      <bf>:
 # CHECK-NEXT: adrp x0, 0x[[#%x,mul(div(IAT+6442450944,4096),4096)]]

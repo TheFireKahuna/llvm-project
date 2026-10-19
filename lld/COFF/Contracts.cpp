@@ -65,6 +65,7 @@ static std::string getQualifiedTypeInfoName(StringRef identity,
 bool lld::coff::isContractWitnessName(StringRef name) {
   return name.starts_with(getWitnessPrefix(false)) ||
          name.starts_with(getWitnessPrefix(true)) ||
+         name.starts_with("__llvm_private$") ||
          (isTypeInfoName(name) && name.contains(qualifiedTypeInfoTag));
 }
 
@@ -298,12 +299,10 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
     return;
 
   // Every witness names one read-only byte, through one ordinal.
-  ctx.contracts.witness =
-      make<DefinedSynthetic>("__llvm_abi_witness", make<StringChunk>(""));
   for (StringRef name : witnesses) {
     Export e;
     e.name = name;
-    e.sym = ctx.contracts.witness;
+    e.sym = getContractWitnessByte(ctx);
     e.data = true;
     e.isPrivate = true;
     e.source = ExportSource::Export;
@@ -316,6 +315,23 @@ void lld::coff::addContractWitnessExports(COFFLinkerContext &ctx) {
 
 bool lld::coff::isContractWitness(COFFLinkerContext &ctx, const Defined *sym) {
   return sym && sym == ctx.contracts.witness;
+}
+
+Defined *lld::coff::getContractWitnessByte(COFFLinkerContext &ctx) {
+  if (!ctx.contracts.witness)
+    ctx.contracts.witness =
+        make<DefinedSynthetic>("__llvm_abi_witness", make<StringChunk>(""));
+  return ctx.contracts.witness;
+}
+
+static void reportMismatch(COFFLinkerContext &ctx,
+                           const ContractState::Contract *c, ObjFile *file,
+                           DefinedImportData *imp) {
+  Err(ctx) << "ABI mismatch for "
+           << describe(ctx, c->data, c->identity, c->locator) << ": " << file
+           << " was compiled with a different layout than " << imp->getDLLName()
+           << " exports (needed because " << file << " uses "
+           << maybeDemangleSymbol(ctx, imp->getExternalName()) << ")";
 }
 
 // The import that a reference to sym binds to, if any.
@@ -356,6 +372,29 @@ void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
             continue;
         }
         std::string name = getWitnessName(c->data, c->locator, c->digest);
+        // A member of the image's joint link vouches for the contracts its
+        // facts list through its identity, which covers them, in place of a
+        // witness.
+        if (auto sib = ctx.jointSiblings.find(dll);
+            sib != ctx.jointSiblings.end()) {
+          StringRef digest = sib->second.provides.lookup(
+              (getWitnessPrefix(c->data) + c->locator).str());
+          if (digest.empty())
+            continue;
+          if (digest != c->digest) {
+            if (bound.insert("__imp_" + name + "$" + dll).second)
+              reportMismatch(ctx, c, file, imp);
+            continue;
+          }
+          if (!bound.insert(sib->second.identity).second)
+            continue;
+          Symbol *s = ctx.symtab.find(sib->second.identity);
+          if (auto *lazy = dyn_cast_or_null<LazyArchive>(s))
+            ctx.symtab.loadImportMember(lazy);
+          else if (auto *w = dyn_cast_or_null<DefinedImportData>(s))
+            w->file->live = true;
+          continue;
+        }
         bool vouched = false;
         for (StringRef witness : {StringRef(qualified), StringRef(name)}) {
           if (witness.empty())
@@ -400,12 +439,7 @@ void lld::coff::bindContractWitnesses(COFFLinkerContext &ctx) {
              hasOther(
                  ("__imp__ZTI" + c->identity + qualifiedTypeInfoTag).str()));
         if (other)
-          Err(ctx) << "ABI mismatch for "
-                   << describe(ctx, c->data, c->identity, c->locator) << ": "
-                   << file << " was compiled with a different layout than "
-                   << imp->getDLLName() << " exports (needed because " << file
-                   << " uses "
-                   << maybeDemangleSymbol(ctx, imp->getExternalName()) << ")";
+          reportMismatch(ctx, c, file, imp);
       }
     }
   }

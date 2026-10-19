@@ -71,11 +71,14 @@ llvm::Error readContractRequirements(ObjFile *file, ArrayRef<uint8_t> payload);
 // provide; a type_info object it owns is exported under its qualified name.
 void addContractWitnessExports(COFFLinkerContext &ctx);
 
-// Whether sym is the witness byte all witnesses export through one ordinal.
+// Whether sym is the witness byte all witnesses export through one ordinal,
+// and that byte.
 bool isContractWitness(COFFLinkerContext &ctx, const Defined *sym);
+Defined *getContractWitnessByte(COFFLinkerContext &ctx);
 
-// Whether name names a witness, which code never calls: a plain witness or a
-// type_info name qualified by its type's contract.
+// Whether name names a witness, which code never calls: a plain witness, a
+// type_info name qualified by its type's contract, or a joint link member's
+// identity.
 bool isContractWitnessName(StringRef name);
 
 // Imports the witness of each contract the image's code requires of a DLL that

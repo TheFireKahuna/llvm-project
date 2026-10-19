@@ -48,9 +48,10 @@
 # ALIB:     __imp__ZTV1K
 # ALIB-NOT: __imp__ZTV1D
 
-## b.dll imports what its code reads, and the three words of the run of each
-## class its checks read, consecutive; its exports of K's forward, and it
-## exports nothing of D's.
+## b.dll imports what its code reads, a.dll's identity, which covers the names
+## it exports for b.dll alone, and the three words of the run of each class
+## its checks read, consecutive; its exports of K's forward, and it exports
+## nothing of D's.
 # RUN: llvm-readobj --coff-imports --coff-exports b.dll > b.txt
 # RUN: llvm-objdump -d b.dll >> b.txt
 # RUN: FileCheck --check-prefix=B %s < b.txt
@@ -61,6 +62,7 @@
 # B-NEXT: Symbol: _ZTV1D$ap16 (0)
 # B-NEXT: Symbol: _ZTV1K (0)
 # B-NEXT: Symbol: _ZTV1K$ap16 (0)
+# B-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
 # B-NEXT: Symbol: _ZTV1D$ap16 (0)
 # B-NEXT: Symbol: __llvm_vtr$[[BD:.+]]e (0)
 # B-NEXT: Symbol: __llvm_vtr$[[BD]]m (0)
@@ -81,17 +83,19 @@
 # B:      <bf>:
 # B-NEXT: movq {{.*}} # 0x[[#%x,IAT+6442450944+8]]
 # B-NEXT: leaq
-# B-NEXT: movq {{.*}} # 0x[[#%x,IAT+6442450944+32]]
-# B-NEXT: movq {{.*}} # 0x[[#%x,IAT+6442450944+56]]
+# B-NEXT: movq {{.*}} # 0x[[#%x,IAT+6442450944+40]]
+# B-NEXT: movq {{.*}} # 0x[[#%x,IAT+6442450944+64]]
 # B:      retq
 # B:      movq {{.*}} # 0x[[#%x,IAT+6442450944+24]]
 
-## The executable only casts to D, and imports a.dll's vtable for its compare.
+## The executable only casts to D, and imports a.dll's vtable for its compare,
+## with the identity that covers it.
 # RUN: llvm-readobj --coff-imports app.exe | FileCheck --check-prefix=APP %s
 # APP:      Name: a.dll
 # APP-NEXT: ImportLookupTableRVA:
 # APP-NEXT: ImportAddressTableRVA:
 # APP-NEXT: Symbol: _ZTV1D (0)
+# APP-NEXT: Symbol: __llvm_private${{[0-9a-f]+}} (0)
 # APP-NEXT: }
 
 #--- k.s

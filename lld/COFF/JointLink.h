@@ -55,10 +55,11 @@ void warnInterposingDefinitions(COFFLinkerContext &ctx);
 void mergeJointLink(COFFLinkerContext &ctx,
                     const llvm::opt::InputArgList &args);
 
-// A DLL member's identity export, which a member that derives a pointer from
+// The identity export the merge gives a member that others import from; and a
+// DLL member's identity export, which a member that derives a pointer from
 // another of the DLL's imports from it, named after the DLL's layout once that
 // is final, and the record of that layout in its import library, which such a
-// member reads. Returns whether the DLL has the export, and so writes its
+// member reads. Returns whether the DLL has the latter, and so writes its
 // import library after the image.
 bool addJointIdentityExport(COFFLinkerContext &ctx);
 void finalizeJointIdentity(COFFLinkerContext &ctx);

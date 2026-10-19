@@ -34,9 +34,10 @@
 // loader's own whole-table resolution leaves it.
 //
 // The exception is an ABI contract witness, an import the linker adds so that
-// a library built with another layout of a type than the image's code uses
-// does not bind. Code never calls one, so a call through its descriptor first
-// resolves each witness that is not yet bound, as a call through it would,
+// a library built with another layout of a type than the image's code uses,
+// or linked jointly with the image from other facts, does not bind. Code
+// never calls one, so a call through its descriptor first resolves each
+// witness that is not yet bound, as a call through it would,
 // and a witness that does not resolve fails that call, through the failure
 // hook and then the exception, before it reaches the library's code. A
 // witness that resolves stays bound, so a later call does not resolve it again.
@@ -358,9 +359,10 @@ FARPROC resolveDescriptor(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
 }
 
 // Whether a name table entry is that of an ABI contract witness, which names
-// a type's or datum's layout and its digest: a standalone witness, or the
+// a type's or datum's layout and its digest: a standalone witness, the
 // type_info object of a type that the library owns, under the name that the
-// type's layout qualifies.
+// type's layout qualifies, or the identity of a library linked jointly with
+// the image.
 bool isWitness(const IMAGE_THUNK_DATA &Name) {
   if (IMAGE_SNAP_BY_ORDINAL(Name.u1.Ordinal))
     return false;
@@ -368,6 +370,7 @@ bool isWitness(const IMAGE_THUNK_DATA &Name) {
       fromRva<IMAGE_IMPORT_BY_NAME>(static_cast<DWORD>(Name.u1.AddressOfData))
           ->Name;
   return !strncmp(Proc, "__abiw$", 7) || !strncmp(Proc, "__abis$", 7) ||
+         !strncmp(Proc, "__llvm_private$", 15) ||
          (!strncmp(Proc, "_ZTI", 4) && strstr(Proc, "$abi$"));
 }
 

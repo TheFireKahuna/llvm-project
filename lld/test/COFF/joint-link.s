@@ -48,16 +48,24 @@
 # RUN: lld-link -import-slots -entry:main -subsystem:console tool.obj \
 # RUN:   -out:tool.exe -lldjoint:facts/tool.exe.jfacts
 
-## a.dll, which b.dll imports from, keeps v for the others and offers it.
-# RUN: llvm-readobj --coff-imports --coff-exports a.dll | \
-# RUN:   FileCheck --check-prefix=A %s
+## a.dll, which b.dll imports from, keeps v for the others and offers it. As
+## it keeps an entity of its own, it imports the identity of b.dll, which it
+## imports from, so that a b.dll that starts to keep one of them fails to load
+## beside it; b.dll, which keeps none, imports none.
+# RUN: llvm-readobj --coff-imports --coff-exports a.dll > a.txt
+# RUN: llvm-readobj --coff-exports b.dll >> a.txt
+# RUN: FileCheck --check-prefix=A %s < a.txt
 # A:      Name: b.dll
 # A-NEXT: ImportLookupTableRVA:
 # A-NEXT: ImportAddressTableRVA:
+# A-NEXT: Symbol: __llvm_private$[[BID:[0-9a-f]{16}]] (0)
 # A-NEXT: Symbol: bf (0)
 # A-NEXT: }
+# A:      Name: __llvm_private$
 # A:      Name: af
 # A:      Name: v
+# A:      File: b.dll
+# A:      Name: __llvm_private$[[BID]]
 
 # RUN: llvm-readobj --coff-imports --coff-exports b.dll | \
 # RUN:   FileCheck --check-prefix=B %s

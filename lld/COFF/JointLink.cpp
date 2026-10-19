@@ -71,6 +71,8 @@ using namespace llvm::COFF;
 using namespace llvm::object;
 
 namespace lld::coff {
+static constexpr StringLiteral identityPrefix = "__llvm_private$";
+
 namespace {
 // What a member that defines it gives up for another member's instance: an
 // observable vague entity, as an importer gives it up for a DLL's offer; a
@@ -123,9 +125,18 @@ struct Summary {
   // definition may take the place of.
   std::vector<Import> interposing;
   std::vector<std::string> interposable;
+  // The witnesses of the contracts its inputs provide.
+  std::vector<std::string> provides;
 };
 
 using Digest = std::array<uint8_t, 16>;
+
+// A contract's witness name splits into the name of its identity, the prefix
+// and locator, and its digest.
+std::pair<StringRef, StringRef> splitWitness(StringRef w) {
+  size_t pos = w.rfind('$');
+  return {w.take_front(pos), w.drop_front(pos + 1)};
+}
 
 json::Value toJSON(const Definition &d) {
   return json::Object{{"names", d.names},
@@ -155,7 +166,8 @@ json::Value toJSON(const Summary &s) {
                       {"runs", s.runs},
                       {"addressTaken", s.addressTaken},
                       {"interposing", s.interposing},
-                      {"interposable", s.interposable}};
+                      {"interposable", s.interposable},
+                      {"provides", s.provides}};
 }
 
 bool fromJSON(const json::Value &v, Definition &d, json::Path p) {
@@ -192,7 +204,8 @@ bool fromJSON(const json::Value &v, Summary &s, json::Path p) {
          o.mapOptional("runs", s.runs) &&
          o.mapOptional("addressTaken", s.addressTaken) &&
          o.mapOptional("interposing", s.interposing) &&
-         o.mapOptional("interposable", s.interposable);
+         o.mapOptional("interposable", s.interposable) &&
+         o.mapOptional("provides", s.provides);
 }
 } // namespace
 
@@ -590,6 +603,11 @@ static Summary getSummary(COFFLinkerContext &ctx,
         s.interposable.push_back(e.name.str());
   llvm::sort(s.interposable);
   s.interposable.erase(llvm::unique(s.interposable), s.interposable.end());
+  for (auto &[file, witnesses] : ctx.contracts.provides)
+    for (StringRef w : witnesses)
+      s.provides.push_back(w.str());
+  llvm::sort(s.provides);
+  s.provides.erase(llvm::unique(s.provides), s.provides.end());
   // Of what the member imports or has yet to resolve, the functions whose
   // addresses it takes: an object says so in its guard metadata and data, and
   // bitcode in its module summary's references, where it has one. Without
@@ -643,19 +661,6 @@ static Digest getDigest(const Summary &s) {
   support::endian::write64le(d.data(), hash.low64);
   support::endian::write64le(d.data() + 8, hash.high64);
   return d;
-}
-
-// The private export that names the functions a DLL member does not suppress,
-// by the first 64 bits of their hash; empty if there are none.
-static std::string getGuardExport(const std::set<std::string> &names) {
-  if (names.empty())
-    return {};
-  std::string all;
-  for (const std::string &name : names)
-    all += name + "\n";
-  return "__llvm_unsuppressed$" +
-         utohexstr(xxh3_64bits(arrayRefFromStringRef(all)), /*LowerCase=*/true,
-                   /*Width=*/16);
 }
 
 static std::string getFactsSymbol(StringRef member) {
@@ -731,11 +736,16 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   std::optional<Digest> digest;
   StringSet<> members;
   std::vector<StringRef> kept, privateExports, runs, unsuppressed;
-  StringRef guard;
+  StringRef identity;
   std::vector<std::pair<StringRef, std::vector<StringRef>>> preempted;
-  std::vector<std::tuple<StringRef, StringRef, std::vector<StringRef>>> grants;
   std::vector<std::pair<StringRef, std::vector<StringRef>>> interposed;
   std::vector<StringRef> interposing;
+  struct Sibling {
+    StringRef name, identity;
+    bool needed;
+    std::vector<StringRef> grants, provides;
+  };
+  std::vector<Sibling> siblings;
   forEachLinkRecordGroup(
       lazy->getMemberBuffer(), ctx.config.machine,
       [&](uint64_t kind, ArrayRef<uint8_t> payload) {
@@ -760,12 +770,14 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
         }
         getStrings(runs);
         getStrings(unsuppressed);
-        guard = data.getBytes(c, data.getULEB128(c));
+        identity = data.getBytes(c, data.getULEB128(c));
         for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
-          auto &[from, name, names] = grants.emplace_back();
-          from = data.getBytes(c, data.getULEB128(c));
-          name = data.getBytes(c, data.getULEB128(c));
-          getStrings(names);
+          Sibling &sib = siblings.emplace_back();
+          sib.name = data.getBytes(c, data.getULEB128(c));
+          sib.identity = data.getBytes(c, data.getULEB128(c));
+          sib.needed = data.getU8(c);
+          getStrings(sib.grants);
+          getStrings(sib.provides);
         }
         for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
           auto &[from, names] = interposed.emplace_back();
@@ -835,35 +847,29 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   }
   for (StringRef start : runs)
     ctx.jointRuns[start.slice(strlen("_ZTV"), start.rfind("$ap"))] = start;
-  // The functions other members take the address of are not suppressed, and
-  // a private export names that list, which those members import, so that a
-  // DLL linked with them suppressed fails to load beside them. A member that
-  // takes them leaves their entries out of the loader's grants.
+  // The functions other members take the address of are not suppressed. A
+  // member that takes them leaves their entries out of the loader's grants.
   ctx.jointUnsuppressed.insert_range(unsuppressed);
-  if (!guard.empty() && !unsuppressed.empty()) {
-    Export e;
-    e.name = unsuppressed.front();
-    for (const Export &x : symtab.exports)
-      if ((!x.exportAs.empty() ? x.exportAs
-           : !x.extName.empty() ? x.extName
-                                : x.name) == e.name)
-        e.name = x.name;
-    e.extName = guard;
-    e.isPrivate = true;
-    e.source = ExportSource::Export;
-    e.sym = symtab.addGCRoot(e.name);
-    e.symbolName = e.name;
-    symtab.exports.push_back(e);
-  }
-  for (auto &[from, name, names] : grants) {
-    std::string imp = ("__imp_" + name).str();
-    if (!symtab.find(imp))
-      ctx.driver.addFile(make<ImportFile>(
-          ctx, makeShortImport(ctx.config.machine, from, name, IMPORT_DATA,
-                               IMPORT_NAME)));
-    symtab.addGCRoot(saver().save(imp));
-    for (StringRef n : names)
-      ctx.jointGrants.push_back({from, n});
+  // The image exports the identity the merge gave it, and imports that of
+  // each member it imports from where it relies on what that identity covers:
+  // a binding no import library holds, the functions a DLL does not suppress,
+  // or that the member keeps none of the entities the image keeps its own
+  // copies of. A member linked from other facts then fails to load beside it.
+  // The image's code is checked against the contracts those members provide,
+  // which their identities cover too, in place of their witnesses.
+  ctx.jointPrivateIdentity = identity;
+  for (Sibling &sib : siblings) {
+    COFFLinkerContext::JointSibling &js = ctx.jointSiblings[sib.name.lower()];
+    js.identity =
+        saver().save("__imp_" + sib.identity + "$" + sib.name.lower());
+    for (StringRef w : sib.provides) {
+      auto [name, digest] = splitWitness(w);
+      js.provides[name] = digest;
+    }
+    if (sib.needed)
+      symtab.addGCRoot(js.identity);
+    for (StringRef n : sib.grants)
+      ctx.jointGrants.push_back({sib.name, n});
   }
   // A function the executables that load the member define too takes the
   // place of the member's own definition in its own references, which reach
@@ -965,7 +971,8 @@ public:
         privateExports(summaries.size()), preempted(summaries.size()),
         runExports(summaries.size()), runImports(summaries.size()),
         unsuppressed(summaries.size()), grants(summaries.size()),
-        interposed(summaries.size()), interposing(summaries.size()) {}
+        interposed(summaries.size()), interposing(summaries.size()),
+        identities(summaries.size()), needs(summaries.size()) {}
   void run(StringRef dir);
 
 private:
@@ -973,6 +980,8 @@ private:
   void addImport(unsigned to, StringRef name, unsigned from, bool code);
   int chooseOwner(const Entity &e);
   bool checkLinkLines(const std::vector<SmallVector<unsigned, 4>> &libs);
+  void checkContracts();
+  std::string getIdentity(unsigned m) const;
   void writeFacts(StringRef dir, unsigned m, const Digest &digest);
 
   COFFLinkerContext &ctx;
@@ -1000,6 +1009,10 @@ private:
   // the functions an executable exports for those references.
   std::vector<std::map<unsigned, std::vector<std::string>>> interposed;
   std::vector<std::set<std::string>> interposing;
+  // The identity export of each member another imports from, and the members
+  // whose identities each member relies on.
+  std::vector<std::string> identities;
+  std::vector<std::set<unsigned>> needs;
 };
 } // namespace
 
@@ -1082,6 +1095,60 @@ bool Merge::checkLinkLines(const std::vector<SmallVector<unsigned, 4>> &libs) {
   return ok;
 }
 
+// The contracts of a member and of each member it imports from agree, as
+// those of one image's objects must.
+void Merge::checkContracts() {
+  std::vector<StringMap<StringRef>> digests(summaries.size());
+  for (unsigned m = 0; m != summaries.size(); ++m)
+    for (StringRef w : summaries[m].provides) {
+      auto [identity, digest] = splitWitness(w);
+      digests[m][identity] = digest;
+    }
+  std::set<std::pair<unsigned, unsigned>> checked;
+  for (unsigned m = 0; m != summaries.size(); ++m)
+    for (unsigned from : edges[m]) {
+      if (!checked.insert({std::min(m, from), std::max(m, from)}).second)
+        continue;
+      for (StringRef w : summaries[m].provides) {
+        auto [identity, digest] = splitWitness(w);
+        StringRef other = digests[from].lookup(identity);
+        if (other.empty() || other == digest)
+          continue;
+        bool data = identity.starts_with("__abis$");
+        Err(ctx) << "ABI contract mismatch for "
+                 << (data ? "the type of the datum with locator "
+                          : "the type with locator ")
+                 << identity.substr(identity.find('$') + 1) << ": "
+                 << summaries[m].name << " and " << summaries[from].name
+                 << " were compiled with different layouts";
+      }
+    }
+}
+
+// The first 64 bits of the SHA-256 of the format, the machine and what a
+// member offers the others beyond its import library, in lowercase
+// hexadecimal: the contracts it provides, the entities it keeps for them, the
+// names it exports for them alone, and the functions it does not suppress.
+std::string Merge::getIdentity(unsigned m) const {
+  SHA256 hash;
+  hash.update(("1 " + Twine(summaries[m].machine) + "\n").str());
+  auto add = [&](char kind, const auto &names) {
+    std::vector<StringRef> sorted(names.begin(), names.end());
+    llvm::sort(sorted);
+    for (StringRef name : sorted)
+      hash.update((Twine(kind) + " " + name + "\n").str());
+  };
+  add('c', summaries[m].provides);
+  add('k', kept[m]);
+  add('p', privateExports[m]);
+  add('r', runExports[m]);
+  add('u', unsuppressed[m]);
+  std::array<uint8_t, 32> digest = hash.final();
+  return (identityPrefix +
+          toHex(ArrayRef(digest).take_front(8), /*LowerCase=*/true))
+      .str();
+}
+
 void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
   const Summary &s = summaries[m];
   std::list<std::vector<uint8_t>> buffers;
@@ -1092,6 +1159,14 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
     members.push_back(createImportMember(
         summaries[i.from].name, ctx.config.machine, i.name,
         i.code ? IMPORT_CODE : IMPORT_DATA, buffers.emplace_back()));
+  // The identity of each member the member imports from, under a name of that
+  // member alone, imported as code so that a delay-load descriptor can hold
+  // it.
+  for (unsigned from : edges[m])
+    members.push_back(createImportMember(
+        summaries[from].name, ctx.config.machine,
+        identities[from] + "$" + StringRef(summaries[from].name).lower(),
+        IMPORT_CODE, buffers.emplace_back(), identities[from]));
   // The three words of each vtable run the member imports, under the names
   // the exporter's import library would give them.
   static const StringRef runPrefixes[] = {
@@ -1137,14 +1212,22 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
   encodeULEB128(unsuppressed[m].size(), os);
   for (const std::string &name : unsuppressed[m])
     putString(name);
-  putString(getGuardExport(unsuppressed[m]));
-  encodeULEB128(grants[m].size(), os);
-  for (const auto &[from, names] : grants[m]) {
+  putString(identities[m]);
+  SmallVector<unsigned, 4> siblings(edges[m].begin(), edges[m].end());
+  llvm::sort(siblings);
+  encodeULEB128(siblings.size(), os);
+  for (unsigned from : siblings) {
     putString(summaries[from].name);
-    putString(getGuardExport(unsuppressed[from]));
-    encodeULEB128(names.size(), os);
-    for (const std::string &name : names)
-      putString(name);
+    putString(identities[from]);
+    os << char(needs[m].count(from));
+    auto it = grants[m].find(from);
+    encodeULEB128(it == grants[m].end() ? 0 : it->second.size(), os);
+    if (it != grants[m].end())
+      for (const std::string &name : it->second)
+        putString(name);
+    encodeULEB128(summaries[from].provides.size(), os);
+    for (const std::string &w : summaries[from].provides)
+      putString(w);
   }
   encodeULEB128(interposed[m].size(), os);
   for (const auto &[from, names] : interposed[m]) {
@@ -1314,6 +1397,8 @@ void Merge::run(StringRef dir) {
         edges[k].insert(owner);
         preempted[k].push_back({unsigned(owner), {}});
       }
+      if (e.kind == ExactCastVTable)
+        needs[k].insert(owner);
       for (const std::string &name : d->names)
         if (llvm::is_contained(od->names, name)) {
           if (e.kind == VagueEntity)
@@ -1444,6 +1529,35 @@ void Merge::run(StringRef dir) {
       names.erase(llvm::unique(names), names.end());
     }
 
+  checkContracts();
+  if (errorCount())
+    return;
+  // A member relies on the identity of each member it imports from a binding
+  // no import library holds (a private name, or the words of a vtable run its
+  // checks may read) or functions that member does not suppress; and one that
+  // keeps its own copy of an entity, on that of every member it imports from,
+  // whose identity changes when it starts to keep the entity for the others.
+  for (unsigned m = 0; m != n; ++m) {
+    bool keepsOwn = llvm::any_of(summaries[m].definitions, [&](auto &d) {
+      if (!d.offeredBy.empty())
+        return false;
+      int owner = owners[entityOf.lookup(d.names.front())];
+      return owner < 0 || unsigned(owner) == m;
+    });
+    for (unsigned from : edges[m])
+      if (keepsOwn || grants[m].count(from))
+        needs[m].insert(from);
+    for (const FactImport &i : imports[m])
+      if (llvm::is_contained(privateExports[i.from], i.name))
+        needs[m].insert(i.from);
+    for (const auto &[from, run] : runImports[m])
+      needs[m].insert(from);
+  }
+  for (unsigned m = 0; m != n; ++m)
+    for (unsigned from : edges[m])
+      if (identities[from].empty())
+        identities[from] = getIdentity(from);
+
   if (std::error_code ec = sys::fs::create_directories(dir)) {
     Err(ctx) << "cannot create " << dir << ": " << ec.message();
     return;
@@ -1482,8 +1596,6 @@ void mergeJointLink(COFFLinkerContext &ctx, const opt::InputArgList &args) {
 } // namespace lld::coff
 
 namespace lld::coff {
-static constexpr StringLiteral identityPrefix = "__llvm_private$";
-
 static std::string getLayoutSymbol(StringRef dll) {
   return "__llvm_layout$" + dll.lower();
 }
@@ -1493,6 +1605,17 @@ static std::string getLayoutSymbol(StringRef dll) {
 // name is decided once the layout is, so it takes the export's place in the
 // export table now with as many characters.
 bool addJointIdentityExport(COFFLinkerContext &ctx) {
+  // The identity the merge gives a member that others import from names the
+  // read-only byte the image's contract witnesses name, through their ordinal.
+  if (!ctx.jointPrivateIdentity.empty()) {
+    Export e;
+    e.name = ctx.jointPrivateIdentity;
+    e.sym = getContractWitnessByte(ctx);
+    e.data = true;
+    e.isPrivate = true;
+    e.source = ExportSource::Export;
+    ctx.symtab.exports.push_back(e);
+  }
   if (ctx.config.jointFacts.empty() || !ctx.config.dll || ctx.config.noimplib)
     return false;
   Export *first = nullptr;

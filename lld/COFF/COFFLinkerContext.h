@@ -236,6 +236,16 @@ public:
   llvm::StringSet<> jointUnsuppressed;
   std::vector<std::pair<llvm::StringRef, llvm::StringRef>> jointGrants;
   llvm::DenseSet<DefinedImportData *> jointGranted;
+  // The identity the merge gives the image, which it exports; and for each
+  // member it imports from, in lowercase, the import of that member's identity
+  // and the digests of the contracts it provides, by witness prefix and
+  // locator.
+  llvm::StringRef jointPrivateIdentity;
+  struct JointSibling {
+    llvm::StringRef identity;
+    llvm::StringMap<llvm::StringRef> provides;
+  };
+  llvm::StringMap<JointSibling> jointSiblings;
 
   // The changes the linker makes to the code of each section chunk it
   // changes, and how it lays out the code of each it resizes.

@@ -2,8 +2,8 @@
 ## A function that a member of a joint link imports from a member DLL and takes
 ## the address of is not suppressed there, whether the member's link line names
 ## the DLL's import library or the joint link binds the reference: the member
-## leaves its entries out of the loader's grants and imports a private export
-## of the DLL that names what it does not suppress, so that a DLL linked with
+## leaves its entries out of the loader's grants and imports the DLL's
+## identity, which covers what it does not suppress, so that a DLL linked with
 ## them suppressed fails to load beside it. A function other members only call
 ## stays suppressed.
 
@@ -36,13 +36,12 @@
 # RUN: lld-link -import-slots -guard:cf -dll -noentry c.obj loadcfg.obj \
 # RUN:   -out:c.dll -lldjoint:facts/c.dll.jfacts
 
-## a.dll suppresses only ai, which b.dll only calls; neither its import library
-## nor its identity names the private export.
+## a.dll suppresses only ai, which b.dll only calls; its import library does
+## not hold its identity.
 # RUN: llvm-readobj --coff-load-config --coff-exports a.dll | \
 # RUN:   FileCheck --check-prefix=A %s
 # RUN: llvm-nm a.lib | FileCheck --check-prefix=ALIB %s
-# A-NOT:  __llvm_private
-# A:      Name: __llvm_unsuppressed$[[G:[0-9a-f]+]]
+# A:      Name: __llvm_private$
 # A-NOT:  __llvm_private
 # A:      GuardFidTable [
 # A-NEXT:   0x180001000{{$}}
@@ -50,14 +49,14 @@
 # A-NEXT:   0x180001020{{$}}
 # A-NEXT:   0x180001030 flags 2
 # A-NEXT: ]
-# ALIB-NOT: __llvm_unsuppressed
+# ALIB-NOT: __llvm_private
 
 # RUN: llvm-readobj --coff-exports a.dll > b.txt
 # RUN: llvm-readobj --coff-load-config --coff-imports b.dll >> b.txt
 # RUN: FileCheck --check-prefix=B %s < b.txt
-# B:      Name: __llvm_unsuppressed$[[G:[0-9a-f]+]]
+# B:      Name: __llvm_private$[[G:[0-9a-f]{16}]]
 # B-DAG:  GuardAddressTakenIatEntryCount: 0
-# B-DAG:  Symbol: __llvm_unsuppressed$[[G]] (0)
+# B-DAG:  Symbol: __llvm_private$[[G]] (0)
 
 # RUN: llvm-readobj --coff-exports a.dll > c.txt
 # RUN: llvm-readobj --coff-load-config --coff-imports c.dll >> c.txt
