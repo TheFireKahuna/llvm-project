@@ -419,10 +419,7 @@ void __cdecl normalToken() {
     reinterpret_cast<void (*)()>(decodeExit(S, Hook))();
 }
 
-void __cdecl quickToken() {
-  ExitState &S = exitState();
-  drainAll(S, S.Quick);
-}
+void __cdecl quickToken() { runQuickExit(); }
 
 // Returns whether the registry has its token, or needs none. Under the
 // process's state only the executable's start-up posts it; before then a
@@ -547,6 +544,11 @@ ExitState &exitState() {
 }
 
 bool isProcessExitState() { return &exitState() != &LocalState; }
+
+void runQuickExit() {
+  ExitState &S = exitState();
+  drainAll(S, S.Quick);
+}
 
 ThreadExitState *threadExitState(bool Create) {
   ExitState &S = exitState();

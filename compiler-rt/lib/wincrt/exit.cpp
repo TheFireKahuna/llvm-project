@@ -15,12 +15,18 @@
 // itself calls and every Win32 process has loaded, so importing it from there
 // loads nothing.
 //
-// quick_exit stays the Universal CRT's: its at_quick_exit table has no public
-// form that runs it and returns.
+// quick_exit is wrapped as well. Under an executable that reserves the
+// process's exit list, every image's at_quick_exit registration is in that
+// list: the Universal CRT's own table takes registrations only from the
+// executable's start-up, since a DLL that uses the Universal CRT DLL keeps its
+// at_quick_exit functions in a table of its own that nothing runs. There
+// quick_exit runs the list and ends the process as _Exit does. Under any other
+// executable, the table holds that executable's registrations, so quick_exit
+// is the Universal CRT's.
 //
 //===----------------------------------------------------------------------===//
 
-#include "wincrt.h"
+#include "exit_state.h"
 
 #include <process.h>
 
@@ -71,6 +77,10 @@ __attribute__((no_sanitize("kcfi"))) void tryCorExitProcess(int Code) {
 
 extern "C" {
 
+// The Universal CRT's quick_exit, which the wrap binds to this name.
+__attribute__((visibility("hidden"))) [[noreturn]] void __cdecl
+__real_quick_exit(int);
+
 WINCRT_ATEXIT_API void __cdecl __wrap_exit(int Code) {
   _cexit();
   endProcess(Code);
@@ -83,6 +93,16 @@ WINCRT_ATEXIT_API void __cdecl __wrap__exit(int Code) {
 
 WINCRT_ATEXIT_API void __cdecl __wrap__Exit(int Code) {
   _c_exit();
+  endProcess(Code);
+}
+
+// The C termination is marked complete before the registrations run, as the
+// Universal CRT's quick_exit marks it.
+WINCRT_ATEXIT_API void __cdecl __wrap_quick_exit(int Code) {
+  if (!wincrt::isProcessExitState())
+    __real_quick_exit(Code);
+  _c_exit();
+  wincrt::runQuickExit();
   endProcess(Code);
 }
 

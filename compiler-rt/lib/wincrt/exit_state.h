@@ -130,6 +130,9 @@ struct ExitState {
 ExitState &exitState();
 // Whether exitState() is the executable's.
 bool isProcessExitState();
+// Runs every pending at_quick_exit registration in the process, newest
+// first.
+void runQuickExit();
 // The calling thread's thread-local destructors, created if Create is set;
 // null if there are none, or if they cannot be created.
 ThreadExitState *threadExitState(bool Create);

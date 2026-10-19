@@ -20,7 +20,7 @@ The builtins define the bounds of the `.CRT$X??` tables, `__dso_handle` and
 | Termination | `__cxa_atexit`, `__llvm_kcfi_cxa_atexit`, `__cxa_finalize`, `__cxa_at_quick_exit`, the `.CRT$XP*` pre-terminators and `.CRT$XT*` terminators, `_is_c_termination_complete` | `cxa_atexit.cpp`, `init.cpp` |
 | Thread-local destructors | `__cxa_thread_atexit_impl`, `__llvm_kcfi_cxa_thread_atexit_impl`, `__cxa_thread_finalize`, a TLS callback | `cxa_thread_atexit.cpp` |
 | C registration | `atexit`, `_onexit`, `onexit`, `at_quick_exit` | `atexit.cpp` |
-| Process exit | `__wrap_exit`, `__wrap__exit`, `__wrap__Exit`, which every entry point's `/wrap` makes `exit`, `_exit` and `_Exit` | `exit.cpp`, `entry_*.cpp` |
+| Process exit | `__wrap_exit`, `__wrap__exit`, `__wrap__Exit`, `__wrap_quick_exit`, which every entry point's `/wrap` makes `exit`, `_exit`, `_Exit` and `quick_exit` | `exit.cpp`, `entry_*.cpp` |
 | Signals | `__wrap_raise` and `__wrap_abort`, wrapping the Universal CRT's | `signal.cpp` |
 | Threads | `__wrap__beginthread`, `__wrap__beginthreadex`, `__wrap__endthread`, `__wrap__endthreadex`, wrapping the Universal CRT's | `thread.cpp` |
 | Random numbers | `__wrap_rand_s`, wrapping the Universal CRT's | `rand_s.cpp` |
@@ -95,8 +95,15 @@ wincrt imports the function from `kernel32.dll`, which forwards it to the
 already loaded `kernelbase.dll`. Every entry object's `.drectve` wraps the
 three names, so that each reference in the image, the Universal CRT's
 `dllimport` declarations included, reaches the DLL's definitions, wherever
-`ucrt.lib` falls on the link line. `quick_exit` stays the Universal CRT's,
-since nothing public runs its `at_quick_exit` table and returns.
+`ucrt.lib` falls on the link line.
+
+`quick_exit` lives there too. Under a Windows Itanium executable it runs the
+process's `at_quick_exit` registrations, every image's, from the registry, and
+ends the process as `_Exit` does: the Universal CRT's own `at_quick_exit`
+table takes registrations only from an executable's start-up, since a DLL
+that uses the Universal CRT DLL keeps its own table, which nothing runs.
+Under a foreign executable, whose registrations are in that table, it calls
+the Universal CRT's `quick_exit`.
 
 `raise` is wrapped as well, because the Universal CRT's takes a signal's
 default action, ending the process with code 3, through its own `_exit`, which

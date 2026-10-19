@@ -50,7 +50,7 @@
 #define WINCRT_WRAP_NAME(Name, ...) " /wrap:" #Name
 #define WINCRT_WRAP_UCRT                                                       \
   __pragma(comment(linker,                                                     \
-                   "/wrap:exit /wrap:_exit /wrap:_Exit "                       \
+                   "/wrap:exit /wrap:_exit /wrap:_Exit /wrap:quick_exit "      \
                    "/wrap:_beginthread /wrap:_beginthreadex "                  \
                    "/wrap:_endthread /wrap:_endthreadex /wrap:rand_s "         \
                    "/wrap:raise /wrap:abort"                                   \
