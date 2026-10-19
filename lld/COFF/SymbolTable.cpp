@@ -999,10 +999,13 @@ bool SymbolTable::loadLocalImportMembers() {
   // of the group and its guard.
   std::vector<Symbol *> offers;
   if (ctx.config.importSlots) {
-    // A new offer appears only with a new object's weak definition or a new
-    // archive; otherwise a prior pass loaded every offer, so skip the scan.
+    // A new offer appears only with a new object's or bitcode file's weak
+    // definition or a new archive; otherwise a prior pass loaded every offer,
+    // so skip the scan.
     bool rescan = weakFunctionObjects != ctx.objFileInstances.size() ||
+                  offeredBitcodeFiles != bitcodeFileInstances.size() ||
                   offeredArchives != indexedArchives.size();
+    offeredBitcodeFiles = bitcodeFileInstances.size();
     for (; weakFunctionObjects != ctx.objFileInstances.size();
          ++weakFunctionObjects)
       if (ObjFile *file = ctx.objFileInstances[weakFunctionObjects];

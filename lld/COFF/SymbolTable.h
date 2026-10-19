@@ -237,9 +237,10 @@ public:
   // of objects whose address-significance tables have been read for them.
   std::vector<Symbol *> weakFunctions;
   size_t weakFunctionObjects = 0;
-  // The count of indexed archives loadLocalImportMembers has scanned for
-  // offers.
+  // The counts of indexed archives and bitcode files loadLocalImportMembers
+  // has scanned for offers.
   size_t offeredArchives = 0;
+  size_t offeredBitcodeFiles = 0;
 
   // Under -import-slots, binds to a DLL's offered instance each function whose
   // address the image takes, as on ELF: the address is the DLL's, while calls

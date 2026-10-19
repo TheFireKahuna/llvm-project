@@ -3,8 +3,9 @@
 ;; offers whole is preempted before LTO, as the native link preempts it after:
 ;; its definitions are not prevailing, so LTO compiles no copy, and the code it
 ;; generates reaches them through their imports. An alias in the COMDAT is a
-;; definition of it, whose offer is read before LTO too. Data that no DLL offers
-;; stays final in the image, and a DLL, which offers it in turn, keeps it.
+;; definition of it, whose offer is read before LTO too, as are offers from an
+;; import library given before the bitcode file. Data that no DLL offers stays
+;; final in the image, and a DLL, which offers it in turn, keeps it.
 
 ; RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 ; RUN: llvm-as main.ll -o main.bc
@@ -15,6 +16,9 @@
 ; RUN: FileCheck %s < out.dll.resolution.txt
 ; RUN: llvm-objdump -d out.dll | FileCheck --check-prefix=CODE %s
 ; RUN: llvm-readobj --coff-imports out.dll | FileCheck --check-prefix=IMPORTS %s
+; RUN: lld-link -import-slots -dll -noentry -export:use -out:first.dll \
+; RUN:   -lldsavetemps lib.lib main.bc
+; RUN: FileCheck %s < first.dll.resolution.txt
 
 ; LOG-DAG: Preempting v in main.bc with its instance in lib.dll
 ; LOG-DAG: Preempting guard variable for v in main.bc with its instance in lib.dll
