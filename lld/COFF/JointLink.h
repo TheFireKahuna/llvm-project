@@ -44,6 +44,7 @@ void addJointScanMark(COFFLinkerContext &ctx, llvm::StringRef dllName,
 // keeps for the other members.
 void applyJointFacts(COFFLinkerContext &ctx,
                      const llvm::opt::InputArgList &args);
+void collectJointGrants(COFFLinkerContext &ctx);
 
 // Runs /lldjointmerge.
 void mergeJointLink(COFFLinkerContext &ctx,

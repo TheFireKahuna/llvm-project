@@ -229,6 +229,13 @@ public:
   // The classes whose vtable runs the image exports for other members, each
   // with the name of the run's start that they import.
   llvm::StringMap<llvm::StringRef> jointRuns;
+  // The functions the image exports that other members take the address of,
+  // which it does not suppress; and the functions other members so export
+  // that the image takes, by DLL and name, and their imports, whose entries
+  // the loader need not grant.
+  llvm::StringSet<> jointUnsuppressed;
+  std::vector<std::pair<llvm::StringRef, llvm::StringRef>> jointGrants;
+  llvm::DenseSet<DefinedImportData *> jointGranted;
 
   // The changes the linker makes to the code of each section chunk it
   // changes, and how it lays out the code of each it resizes.

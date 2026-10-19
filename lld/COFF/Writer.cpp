@@ -3206,7 +3206,7 @@ void Writer::createGuardCFTables() {
   // fills with an address the image passes on.
   for (auto &kv : ctx.importSlots)
     for (const ImportSlot &s : kv.second)
-      if (s.sym->file->thunkSym)
+      if (s.sym->file->thunkSym && !ctx.jointGranted.contains(s.sym))
         giatsRVASet.insert({s.chunk, s.offset});
 
   // The C initializer table calls the fill; the TLS callback array and the DLLs
@@ -3230,9 +3230,13 @@ void Writer::createGuardCFTables() {
     if (symtab.entry)
       maybeAddAddressTakenFunction(addressTakenSyms, symtab.entry);
 
-    // Mark exported symbols in executable sections as address-taken.
+    // Mark exported symbols in executable sections as address-taken. Those
+    // whose addresses other members of a joint link take are not suppressed.
     for (Export &e : symtab.exports)
-      maybeAddAddressTakenFunction(exportedSyms, e.sym);
+      maybeAddAddressTakenFunction(ctx.jointUnsuppressed.contains(e.exportName)
+                                       ? addressTakenSyms
+                                       : exportedSyms,
+                                   e.sym);
   });
 
   // For each entry in the .giats table, check if it has a corresponding load
@@ -3283,6 +3287,15 @@ void Writer::createGuardCFTables() {
 
   maybeAddRVATable(std::move(addressTakenSyms), "__guard_fids_table",
                    "__guard_fids_count", hasFlag, std::move(entryFlags));
+
+  // What another member of a joint link exports as a valid target needs no
+  // grant from the loader.
+  for (DefinedImportData *imp : ctx.jointGranted) {
+    SymbolRVASet entry;
+    addSymbolToRVASet(entry, imp);
+    for (const ChunkAndOffset &c : entry)
+      giatsRVASet.erase(c);
+  }
 
   // Add the Guard Address Taken IAT Entry Table (.giats).
   maybeAddRVATable(std::move(giatsRVASet), "__guard_iat_table",

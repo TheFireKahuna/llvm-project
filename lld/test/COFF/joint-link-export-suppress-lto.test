@@ -1,0 +1,102 @@
+# REQUIRES: x86
+## A bitcode member's scan reads which functions it takes the address of from
+## its module summary's references: a.dll then does not suppress af, and b.dll
+## leaves af's entry out of the loader's grants. A module without a summary
+## takes none that the merge can see, so af stays suppressed and b.dll asks the
+## loader to grant it.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium loadcfg.s \
+# RUN:   -o loadcfg.obj
+# RUN: opt -module-summary b.ll -o b.obj
+# RUN: llvm-as b.ll -o bn.obj
+
+# RUN: lld-link -import-slots -guard:cf -dll -noentry a.obj loadcfg.obj \
+# RUN:   -out:a.dll -lldjointscan:a.jscan
+# RUN: lld-link -import-slots -guard:cf -dll -noentry b.obj loadcfg.obj a.lib \
+# RUN:   -out:b.dll -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:facts a.jscan b.jscan
+# RUN: lld-link -import-slots -guard:cf -dll -noentry a.obj loadcfg.obj \
+# RUN:   -out:a.dll -lldjoint:facts/a.dll.jfacts
+# RUN: lld-link -import-slots -guard:cf -dll -noentry b.obj loadcfg.obj a.lib \
+# RUN:   -out:b.dll -lldjoint:facts/b.dll.jfacts
+# RUN: llvm-readobj --coff-load-config a.dll | FileCheck --check-prefix=A %s
+# RUN: llvm-readobj --coff-load-config b.dll | FileCheck --check-prefix=B %s
+
+# A:      GuardFidTable [
+# A-NEXT:   0x180001000{{$}}
+# A-NEXT:   0x180001010 flags 2
+# A-NEXT: ]
+# B: GuardAddressTakenIatEntryCount: 0
+
+# RUN: lld-link -import-slots -guard:cf -dll -noentry a.obj loadcfg.obj \
+# RUN:   -out:a.dll -lldjointscan:a.jscan
+# RUN: lld-link -import-slots -guard:cf -dll -noentry bn.obj loadcfg.obj a.lib \
+# RUN:   -out:b.dll -lldjointscan:b.jscan
+# RUN: lld-link -lldjointmerge -out:factsn a.jscan b.jscan
+# RUN: lld-link -import-slots -guard:cf -dll -noentry a.obj loadcfg.obj \
+# RUN:   -out:a.dll -lldjoint:factsn/a.dll.jfacts
+# RUN: lld-link -import-slots -guard:cf -dll -noentry bn.obj loadcfg.obj a.lib \
+# RUN:   -out:b.dll -lldjoint:factsn/b.dll.jfacts
+# RUN: llvm-readobj --coff-load-config a.dll | FileCheck --check-prefix=AN %s
+# RUN: llvm-readobj --coff-load-config b.dll | FileCheck --check-prefix=BN %s
+
+# AN:      GuardFidTable [
+# AN-NEXT:   0x180001000 flags 2
+# AN-NEXT:   0x180001010 flags 2
+# AN-NEXT: ]
+# BN: GuardAddressTakenIatEntryCount: 1
+
+#--- a.s
+        .globl @feat.00
+.set @feat.00, 2048
+        .text
+        .def af; .scl 2; .type 32; .endef
+        .globl af
+        .p2align 4
+af:
+        retq
+        .def ag; .scl 2; .type 32; .endef
+        .globl ag
+        .p2align 4
+ag:
+        retq
+
+        .section .drectve,"yni"
+        .ascii " -export:af -export:ag"
+
+#--- loadcfg.s
+        .section .rdata,"dr"
+        .p2align 3
+        .globl _load_config_used
+_load_config_used:
+        .long 256
+        .fill 124, 1, 0
+        .quad __guard_fids_table
+        .quad __guard_fids_count
+        .long __guard_flags
+        .fill 12, 1, 0
+        .quad __guard_iat_table
+        .quad __guard_iat_count
+        .quad __guard_longjmp_table
+        .quad __guard_longjmp_count
+        .fill 84, 1, 0
+
+#--- b.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+@q = global ptr null
+
+declare dllimport void @af()
+declare dllimport void @ag()
+
+define dllexport void @bf() {
+  call void @ag()
+  store volatile ptr @af, ptr @q
+  ret void
+}
+
+!llvm.module.flags = !{!0}
+!0 = !{i32 2, !"cfguard", i32 2}

@@ -43,6 +43,8 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Bitcode/BitcodeReader.h"
+#include "llvm/IR/ModuleSummaryIndex.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Object/COFFImportFile.h"
@@ -113,6 +115,9 @@ struct Summary {
   std::vector<std::string> undefined;
   std::vector<Import> imports;
   std::vector<Run> runs;
+  // What the member references through import entries it passes on, which the
+  // loader grants as call targets where an export suppresses them.
+  std::vector<std::string> addressTaken;
 };
 
 using Digest = std::array<uint8_t, 16>;
@@ -142,7 +147,8 @@ json::Value toJSON(const Summary &s) {
                       {"definitions", s.definitions},
                       {"undefined", s.undefined},
                       {"imports", s.imports},
-                      {"runs", s.runs}};
+                      {"runs", s.runs},
+                      {"addressTaken", s.addressTaken}};
 }
 
 bool fromJSON(const json::Value &v, Definition &d, json::Path p) {
@@ -176,7 +182,8 @@ bool fromJSON(const json::Value &v, Summary &s, json::Path p) {
          o.map("machine", s.machine) && o.map("options", s.options) &&
          o.map("exports", s.exports) && o.map("definitions", s.definitions) &&
          o.map("undefined", s.undefined) && o.map("imports", s.imports) &&
-         o.mapOptional("runs", s.runs);
+         o.mapOptional("runs", s.runs) &&
+         o.mapOptional("addressTaken", s.addressTaken);
 }
 } // namespace
 
@@ -363,6 +370,62 @@ static std::vector<Definition> getDefinitions(SymbolTable &symtab) {
   return defs;
 }
 
+// Adds the names of the functions whose import entries file passes on, which
+// the loader grants as call targets: those its guard metadata lists, every
+// import an object without that metadata references, and those its static
+// data holds, which become in-place slots.
+static void addAddressTakenImports(ObjFile *file, StringSet<> &names) {
+  ArrayRef<Symbol *> syms = file->getSymbols();
+  for (SectionChunk *c : file->getGuardIATChunks()) {
+    ArrayRef<uint8_t> data = c->getContents();
+    for (size_t i = 0; i + 4 <= data.size(); i += 4) {
+      uint32_t index = support::endian::read32le(data.data() + i);
+      StringRef name = index < syms.size() && syms[index]
+                           ? syms[index]->getName()
+                           : StringRef();
+      if (name.consume_front("__imp_"))
+        names.insert(name);
+    }
+  }
+  uint16_t addr64 = file->getMachineType() == ARM64 ? IMAGE_REL_ARM64_ADDR64
+                                                    : IMAGE_REL_AMD64_ADDR64;
+  for (Chunk *chunk : file->getChunks()) {
+    auto *sc = dyn_cast<SectionChunk>(chunk);
+    if (!sc || sc->header->Characteristics & IMAGE_SCN_MEM_DISCARDABLE)
+      continue;
+    bool code = sc->header->Characteristics & IMAGE_SCN_MEM_EXECUTE;
+    for (const coff_relocation &rel : sc->getRelocs()) {
+      Symbol *sym = file->getSymbol(rel.SymbolTableIndex);
+      if (!sym)
+        continue;
+      StringRef name = sym->getName();
+      if (name.consume_front("__imp_")) {
+        if (!file->hasGuardCF())
+          names.insert(name);
+      } else if (!code && rel.Type == addr64 &&
+                 (isa<Undefined>(sym) || isa<DefinedImportThunk>(sym))) {
+        names.insert(name);
+      }
+    }
+  }
+}
+
+// Adds what bitcode file f's definitions reference other than by a call, as
+// its module summary records it; nothing for a module without a summary.
+static void addSummaryRefs(BitcodeFile *f, DenseSet<GlobalValue::GUID> &refs) {
+  Expected<std::unique_ptr<ModuleSummaryIndex>> index =
+      getModuleSummaryIndex(f->mb);
+  if (!index) {
+    consumeError(index.takeError());
+    return;
+  }
+  for (const auto &[guid, info] : **index)
+    for (const std::unique_ptr<GlobalValueSummary> &summary :
+         info.getSummaryList())
+      for (ValueInfo vi : summary->refs())
+        refs.insert(vi.getGUID());
+}
+
 // The name other images import from the member by, as its import library's.
 static std::string getMemberName(COFFLinkerContext &ctx) {
   if (ctx.config.importName.empty())
@@ -438,6 +501,30 @@ static Summary getSummary(COFFLinkerContext &ctx,
   });
   for (auto &[cls, offset] : starts)
     s.runs.push_back({cls, ("_ZTV" + cls + "$ap" + Twine(offset)).str()});
+  // Of what the member imports or has yet to resolve, the functions whose
+  // addresses it takes: an object says so in its guard metadata and data, and
+  // bitcode in its module summary's references, where it has one. Without
+  // CFG, nothing is suppressed or granted.
+  if (!(ctx.config.guardCF & GuardCFLevel::CF))
+    return s;
+  StringSet<> taken;
+  for (ObjFile *f : ctx.objFileInstances)
+    if (&f->symtab == &symtab)
+      addAddressTakenImports(f, taken);
+  DenseSet<GlobalValue::GUID> refs;
+  for (BitcodeFile *f : symtab.bitcodeFileInstances)
+    addSummaryRefs(f, refs);
+  auto addTaken = [&](StringRef name) {
+    if (taken.contains(name) ||
+        refs.contains(GlobalValue::getGUIDAssumingExternalLinkage(name)))
+      s.addressTaken.push_back(name.str());
+  };
+  for (const std::string &name : s.undefined)
+    addTaken(name);
+  for (const Import &i : s.imports)
+    addTaken(i.name);
+  llvm::sort(s.addressTaken);
+  s.addressTaken.erase(llvm::unique(s.addressTaken), s.addressTaken.end());
   return s;
 }
 
@@ -467,6 +554,19 @@ static Digest getDigest(const Summary &s) {
   support::endian::write64le(d.data(), hash.low64);
   support::endian::write64le(d.data() + 8, hash.high64);
   return d;
+}
+
+// The private export that names the functions a DLL member does not suppress,
+// by the first 64 bits of their hash; empty if there are none.
+static std::string getGuardExport(const std::set<std::string> &names) {
+  if (names.empty())
+    return {};
+  std::string all;
+  for (const std::string &name : names)
+    all += name + "\n";
+  return "__llvm_unsuppressed$" +
+         utohexstr(xxh3_64bits(arrayRefFromStringRef(all)), /*LowerCase=*/true,
+                   /*Width=*/16);
 }
 
 static std::string getFactsSymbol(StringRef member) {
@@ -541,8 +641,10 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   }
   std::optional<Digest> digest;
   StringSet<> members;
-  std::vector<StringRef> kept, privateExports, runs;
+  std::vector<StringRef> kept, privateExports, runs, unsuppressed;
+  StringRef guard;
   std::vector<std::pair<StringRef, std::vector<StringRef>>> preempted;
+  std::vector<std::tuple<StringRef, StringRef, std::vector<StringRef>>> grants;
   forEachLinkRecordGroup(
       lazy->getMemberBuffer(), ctx.config.machine,
       [&](uint64_t kind, ArrayRef<uint8_t> payload) {
@@ -566,6 +668,14 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
           getStrings(group);
         }
         getStrings(runs);
+        getStrings(unsuppressed);
+        guard = data.getBytes(c, data.getULEB128(c));
+        for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
+          auto &[from, name, names] = grants.emplace_back();
+          from = data.getBytes(c, data.getULEB128(c));
+          name = data.getBytes(c, data.getULEB128(c));
+          getStrings(names);
+        }
         if (c && data.eof(c))
           digest = d;
         consumeError(c.takeError());
@@ -628,6 +738,45 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   }
   for (StringRef start : runs)
     ctx.jointRuns[start.slice(strlen("_ZTV"), start.rfind("$ap"))] = start;
+  // The functions other members take the address of are not suppressed, and
+  // a private export names that list, which those members import, so that a
+  // DLL linked with them suppressed fails to load beside them. A member that
+  // takes them leaves their entries out of the loader's grants.
+  ctx.jointUnsuppressed.insert_range(unsuppressed);
+  if (!guard.empty() && !unsuppressed.empty()) {
+    Export e;
+    e.name = unsuppressed.front();
+    for (const Export &x : symtab.exports)
+      if ((!x.exportAs.empty() ? x.exportAs
+           : !x.extName.empty() ? x.extName
+                                : x.name) == e.name)
+        e.name = x.name;
+    e.extName = guard;
+    e.isPrivate = true;
+    e.source = ExportSource::Export;
+    e.sym = symtab.addGCRoot(e.name);
+    e.symbolName = e.name;
+    symtab.exports.push_back(e);
+  }
+  for (auto &[from, name, names] : grants) {
+    std::string imp = ("__imp_" + name).str();
+    if (!symtab.find(imp))
+      ctx.driver.addFile(make<ImportFile>(
+          ctx, makeShortImport(ctx.config.machine, from, name, IMPORT_DATA,
+                               IMPORT_NAME)));
+    symtab.addGCRoot(saver().save(imp));
+    for (StringRef n : names)
+      ctx.jointGrants.push_back({from, n});
+  }
+}
+
+void collectJointGrants(COFFLinkerContext &ctx) {
+  for (auto [dll, name] : ctx.jointGrants)
+    if (auto *imp = dyn_cast_or_null<DefinedImportData>(
+            ctx.symtab.find(("__imp_" + name).str()));
+        imp && imp->file->thunkSym && !imp->file->isDelayLoaded() &&
+        imp->getDLLName().equals_insensitive(dll))
+      ctx.jointGranted.insert(imp);
 }
 
 namespace {
@@ -659,7 +808,8 @@ public:
       : ctx(ctx), summaries(summaries), edges(summaries.size()),
         imports(summaries.size()), kept(summaries.size()),
         privateExports(summaries.size()), preempted(summaries.size()),
-        runExports(summaries.size()), runImports(summaries.size()) {}
+        runExports(summaries.size()), runImports(summaries.size()),
+        unsuppressed(summaries.size()), grants(summaries.size()) {}
   void run(StringRef dir);
 
 private:
@@ -684,6 +834,11 @@ private:
       preempted;
   std::vector<std::set<std::string>> runExports;
   std::vector<std::set<std::pair<unsigned, const Run *>>> runImports;
+  // The functions a DLL exports that other members take the address of, which
+  // it does not suppress; and those of each DLL that a member takes, whose
+  // entries it leaves out of the loader's grants.
+  std::vector<std::set<std::string>> unsuppressed;
+  std::vector<std::map<unsigned, std::vector<std::string>>> grants;
 };
 } // namespace
 
@@ -818,6 +973,18 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
   encodeULEB128(runExports[m].size(), os);
   for (const std::string &start : runExports[m])
     putString(start);
+  encodeULEB128(unsuppressed[m].size(), os);
+  for (const std::string &name : unsuppressed[m])
+    putString(name);
+  putString(getGuardExport(unsuppressed[m]));
+  encodeULEB128(grants[m].size(), os);
+  for (const auto &[from, names] : grants[m]) {
+    putString(summaries[from].name);
+    putString(getGuardExport(unsuppressed[from]));
+    encodeULEB128(names.size(), os);
+    for (const std::string &name : names)
+      putString(name);
+  }
   members.push_back(createLinkRecordMember(ctx, s.name, getFactsSymbol(s.name),
                                            {{LinkRecordJointFacts, payload}},
                                            buffers.emplace_back()));
@@ -1036,6 +1203,29 @@ void Merge::run(StringRef dir) {
       for (const std::string &name : group)
         addRun(m, name, from);
   }
+
+  // A function that a member imports from a DLL member and takes the address
+  // of need not wait for the loader to grant it as a call target: the DLL
+  // does not suppress it, and the member leaves its entry out of the grants.
+  // One that delay-loads the DLL still asks the loader.
+  for (unsigned m = 0; m != n; ++m) {
+    ArrayRef<std::string> taken = summaries[m].addressTaken;
+    for (const FactImport &i : imports[m]) {
+      std::string delayLoad =
+          "delayload:" + StringRef(summaries[i.from].name).lower();
+      if (!i.code || !summaries[i.from].dll ||
+          llvm::is_contained(summaries[m].options, delayLoad) ||
+          !std::binary_search(taken.begin(), taken.end(), i.name))
+        continue;
+      unsuppressed[i.from].insert(i.name);
+      grants[m][i.from].push_back(i.name);
+    }
+  }
+  for (auto &g : grants)
+    for (auto &[from, names] : g) {
+      llvm::sort(names);
+      names.erase(llvm::unique(names), names.end());
+    }
 
   if (std::error_code ec = sys::fs::create_directories(dir)) {
     Err(ctx) << "cannot create " << dir << ": " << ec.message();

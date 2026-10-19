@@ -3466,6 +3466,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // other member's identity.
   if (bindJointAnchors(ctx))
     run();
+  // It leaves out of the loader's grants the functions it takes the address of
+  // that other members do not suppress.
+  collectJointGrants(ctx);
 
   if (ctx.hybridSymtab) {
     // On ARM64X, merge tls chunks, there may be only one true _tls_start and
