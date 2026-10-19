@@ -2549,6 +2549,9 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
       if (!PinsVTableTags)
         CGM.AppendLinkerOptions("/INCLUDE:__llvm_link_pins_v1");
       PinsVTableTags = true;
+      // Exact casts compare with this vtable, so a joint link keeps one copy
+      // for its members; its scan reads the fact before LTO, from bitcode too.
+      CGM.AppendLinkFact(("/EXACTCAST:" + VTable->getName()).str());
     }
     CGVT.setVTablePlacement(
         VTable, VTLayout,

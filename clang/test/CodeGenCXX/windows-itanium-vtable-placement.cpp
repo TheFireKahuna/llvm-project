@@ -6,6 +6,8 @@
 // RUN:   -DNO_TAGS | FileCheck --check-prefix=NOTAG %s
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s \
 // RUN:   -fno-rtti | FileCheck --check-prefix=NORTTI %s
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm -o - %s \
+// RUN:   | FileCheck --check-prefix=FACT %s
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -emit-llvm -o - %s \
 // RUN:   | FileCheck --check-prefix=ELF %s
 
@@ -96,12 +98,22 @@ void use() {
 
 // CHECK-DAG: !{!"/FAILIFMISMATCH:\22_WIN_ITANIUM_VTABLE_LAYOUT=1\22"}
 // CHECK-DAG: !{!"/INCLUDE:__llvm_link_pins_v1"}
+// A joint link keeps one copy of each tagged vtable, which its scan learns
+// from these, bitcode included.
+// CHECK-DAG: !{!"/EXACTCAST:_ZTV6Tagged"}
+// CHECK-DAG: !{!"/EXACTCAST:_ZTV7TaggedV"}
+// CHECK-DAG: !{!"/EXACTCAST:_ZTV6Hidden"}
+// CHECK-DAG: !{!"/EXACTCAST:_ZTV4TmplIiE"}
+// FACT-NOT: /EXACTCAST:_ZTVN12_GLOBAL__N_15LocalE
+// FACT-NOT: /EXACTCAST:_ZTV8Exported
+// FACT-NOT: /EXACTCAST:_ZTV5Plain
 #endif
 
 // Without a tagged class there is no required pin and no directive.
 // NOTAG-NOT: = !{i64 {{[0-9]+}}, i64 12,
 // NOTAG-NOT: _WIN_ITANIUM_VTABLE_LAYOUT
 // NOTAG-NOT: __llvm_link_pins_v1
+// NOTAG-NOT: /EXACTCAST
 
 // ELF-NOT: !pin
 // ELF: @_ZTV5Plain = {{.*}} align 8{{$}}
