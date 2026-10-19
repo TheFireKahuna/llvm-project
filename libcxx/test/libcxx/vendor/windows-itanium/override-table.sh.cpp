@@ -34,8 +34,8 @@
 // RUN: not %{exec} %{temp}/moved.exe > %{temp}/moved.txt
 // RUN: not grep -q main %{temp}/moved.txt
 
-// The magic erased: the library cannot tell the table from no table, and the
-// executable's check fails before main.
+// The magic erased: the library finds the anchor's section, which the table
+// would match, and fails before any image that imports it initializes.
 // RUN: cp %{temp}/main.exe %{temp}/erased.exe
 // RUN: %{exec} %{temp}/tool.exe erased %{temp}/erased.exe
 // RUN: not %{exec} %{temp}/erased.exe > %{temp}/erased.txt

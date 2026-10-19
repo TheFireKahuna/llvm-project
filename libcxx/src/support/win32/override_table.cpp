@@ -80,11 +80,38 @@ const unsigned char* __executable() {
   return __read<const unsigned char*>(__peb + 0x10);
 }
 
+// Whether the executable has the read-only section that a replacing link puts
+// the anchor in, .ovra, beginning with the table's magic and version: a table
+// that a rewrite of the header page erased leaves it in place. The walk reads
+// the header page and the section only.
+bool __has_anchor_section(const unsigned char* __base) {
+  std::uint32_t __lfanew = __read<std::uint32_t>(__base + 0x3C);
+  if (__lfanew > 0x1000 - 24)
+    return false;
+  const unsigned char* __nt  = __base + __lfanew;
+  std::uint32_t __image_size = __read<std::uint32_t>(__nt + 0x50);
+  std::uint32_t __sections   = __read<std::uint16_t>(__nt + 6);
+  std::uint32_t __first      = __lfanew + 24 + __read<std::uint16_t>(__nt + 20);
+  for (std::uint32_t __i = 0; __i != __sections && __first + 40 * (__i + 1) <= 0x1000; ++__i) {
+    const unsigned char* __header = __base + __first + 40 * __i;
+    std::uint32_t __rva           = __read<std::uint32_t>(__header + 12);
+    if (std::memcmp(__header, ".ovra\0\0\0", 8) != 0 || __read<std::uint32_t>(__header + 8) < 8 ||
+        std::uint64_t(__rva) + 8 > __image_size)
+      continue;
+    return __read<std::uint32_t>(__base + __rva) == __table_magic &&
+           __read<std::uint16_t>(__base + __rva + 4) == _LIBCPP_OVERRIDE_TABLE_VERSION;
+  }
+  return false;
+}
+
 void __check_override_table(const unsigned char* __base) {
-  // Without the magic, nothing tells an erased table from a program that
-  // never had one.
-  if (__read<std::uint32_t>(__base + 0x80) != __table_magic)
+  // Without the magic, only the anchor's section tells an erased table from a
+  // program that never had one.
+  if (__read<std::uint32_t>(__base + 0x80) != __table_magic) {
+    if (__has_anchor_section(__base))
+      __fail();
     return;
+  }
 
   std::uint16_t __version = __read<std::uint16_t>(__base + 0x84);
   std::uint16_t __count   = __read<std::uint16_t>(__base + 0x86);
