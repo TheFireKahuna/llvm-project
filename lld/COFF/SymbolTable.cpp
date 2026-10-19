@@ -753,22 +753,29 @@ bool SymbolTable::loadInteriorImports() {
   auto walkWord = [&](SectionChunk *sc, const coff_relocation &rel) {
     Symbol *s = sc->file->getSymbol(rel.SymbolTableIndex);
     DefinedImportData *imp = getInPlaceImport(s);
-    if (!imp || !sc->isAddressWord(rel))
+    auto *d = dyn_cast_or_null<DefinedRegular>(s);
+    if ((!imp && !(d && d->isCOMDAT)) || !sc->isAddressWord(rel))
       return false;
     int64_t addend = getAddressWordAddend(sc, rel).value_or(0);
     if (!addend)
       return false;
+    // COMDAT data that a DLL's instance may preempt takes the names the DLL
+    // exports for the addresses inside it, though the image's copy has none.
+    std::string impName =
+        imp ? imp->getName().str() : ("__imp_" + s->getName()).str();
+    if (!imp && !find(impName))
+      return false;
     bool pending = false;
     if (addend > 0)
       for (StringRef kind : interiorKinds) {
-        Symbol *l = find((imp->getName() + kind + Twine(addend)).str());
+        Symbol *l = find((impName + kind + Twine(addend)).str());
         if (l && l->isLazy() && !l->pendingArchiveLoad && isLazyImport(l)) {
           lazies.push_back(l);
           pending = true;
         }
       }
     bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
-    if (!pending && readOnly && isa<DefinedImportData>(s) &&
+    if (!pending && readOnly && imp && isa<DefinedImportData>(s) &&
         !findInteriorImport(imp, addend))
       sealed = true;
     return pending;
@@ -778,9 +785,14 @@ bool SymbolTable::loadInteriorImports() {
     for (auto [sc, i] : pendingInteriorWords)
       if (walkWord(sc, sc->getRelocs()[i]))
         pendingWords.push_back({sc, i});
+  DenseSet<InputFile *> preemptible;
+  for (Symbol *sym : weakData)
+    if (isa<DefinedRegular>(sym) && find(("__imp_" + sym->getName()).str()))
+      preemptible.insert(sym->getFile());
   for (ObjFile *file : llvm::drop_begin(ctx.objFileInstances, first)) {
     if (&file->symtab != this ||
-        llvm::none_of(file->getSymbols(), getInPlaceImport))
+        (!preemptible.contains(file) &&
+         llvm::none_of(file->getSymbols(), getInPlaceImport)))
       continue;
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast_or_null<SectionChunk>(c);
