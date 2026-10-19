@@ -37,6 +37,12 @@
 // described and takes the index's offset in the page, and the load of the
 // offset can become a move of it.
 //
+// A load of the import pointer of data whose pointer a load of the import
+// pointer of other data left in a register on every path to it is described
+// with that load: where the linker finds both data in one other image, whose
+// layout it knows, the load may become an add of the distance between them to
+// that register.
+//
 //===----------------------------------------------------------------------===//
 
 #include "AArch64.h"
@@ -58,6 +64,8 @@ using namespace llvm;
 STATISTIC(NumAccesses, "Number of accesses described as fused with a load");
 STATISTIC(NumAdds, "Number of adds described as fused with a load");
 STATISTIC(NumValueOnly, "Number of loads described as read only for values");
+STATISTIC(NumAnchored, "Number of loads described with loads that may give "
+                       "their pointers");
 
 namespace {
 class AArch64WindowsImportFusion : public MachineFunctionPass {
@@ -354,6 +362,47 @@ static void undefDebugValues(MachineInstr &Load, Register Reg,
   }
 }
 
+// Whether the value Load gives Reg is still in Reg at MI, on every path from
+// the function's entry: each path passes Load and nothing after it modifies
+// Reg, a call's register mask included.
+static bool reachesUnmodified(MachineInstr &Load, MachineInstr &MI,
+                              Register Reg, const TargetRegisterInfo *TRI) {
+  auto Modifies = [&](MachineBasicBlock::instr_iterator I,
+                      MachineBasicBlock::instr_iterator E) {
+    return std::any_of(I, E, [&](const MachineInstr &X) {
+      return X.modifiesRegister(Reg, TRI);
+    });
+  };
+  MachineBasicBlock *LoadMBB = Load.getParent();
+  MachineBasicBlock *MBB = MI.getParent();
+  auto AfterLoad = std::next(Load.getIterator());
+  if (MBB == LoadMBB)
+    for (auto I = AfterLoad; I != LoadMBB->instr_end(); ++I)
+      if (&*I == &MI)
+        return !Modifies(AfterLoad, I);
+  if (Modifies(MBB->instr_begin(), MI.getIterator()))
+    return false;
+  SmallVector<MachineBasicBlock *, 8> Work(MBB->predecessors());
+  SmallPtrSet<MachineBasicBlock *, 8> Seen;
+  while (!Work.empty()) {
+    MachineBasicBlock *Pred = Work.pop_back_val();
+    if (!Seen.insert(Pred).second)
+      continue;
+    if (Pred == LoadMBB) {
+      if (Modifies(AfterLoad, Pred->instr_end()))
+        return false;
+      continue;
+    }
+    // A path that reaches the entry, or comes from code the function does
+    // not show, does not pass Load.
+    if (Pred->pred_empty() || Pred->isEHPad() ||
+        Modifies(Pred->instr_begin(), Pred->instr_end()))
+      return false;
+    append_range(Work, Pred->predecessors());
+  }
+  return !MBB->pred_empty() && !MBB->isEHPad();
+}
+
 bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   // An outlined function does not say which registers its callers read once
   // it returns.
@@ -622,6 +671,31 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
       FI->addImportFusedUse(Use, Load, Reg, UseKind::Access);
       FI->addImportValueOnlyLoad(Use, nullptr);
       ++NumValueOnly;
+      Changed = true;
+    }
+  }
+
+  // The loads of the import pointers of data that the register of a load of
+  // another such pointer, the nearest earlier ones first, still holds the
+  // pointer of, each with that load.
+  for (auto [I, Load] : enumerate(Loads)) {
+    const GlobalValue *GV = Load->getOperand(2).getGlobal();
+    SmallVector<Register, 4> Regs;
+    unsigned Tried = 0;
+    for (MachineInstr *Anchor : reverse(ArrayRef(Loads).take_front(I))) {
+      Register Reg = Anchor->getOperand(0).getReg();
+      if (Regs.size() == 4 || Tried == 16)
+        break;
+      if (Anchor->getOperand(2).getGlobal() == GV || is_contained(Regs, Reg) ||
+          Anchor->getParent()->getSectionID() !=
+              Load->getParent()->getSectionID())
+        continue;
+      ++Tried;
+      if (!reachesUnmodified(*Anchor, *Load, Reg, TRI))
+        continue;
+      Regs.push_back(Reg);
+      FI->addImportAnchor(Load, Anchor, Reg);
+      ++NumAnchored;
       Changed = true;
     }
   }

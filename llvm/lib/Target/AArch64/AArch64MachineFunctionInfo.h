@@ -637,6 +637,19 @@ public:
   getImportValueOnlyLoads() const {
     return ImportValueOnlyLoads;
   }
+  void addImportAnchor(const MachineInstr *MI, const MachineInstr *Load,
+                       MCRegister Reg) {
+    ImportAnchors[MI].push_back({Load, Reg});
+    ImportAnchorLoads.insert(Load);
+  }
+  const DenseMap<const MachineInstr *,
+                 SmallVector<std::pair<const MachineInstr *, MCRegister>, 2>> &
+  getImportAnchors() const {
+    return ImportAnchors;
+  }
+  bool isImportAnchorLoad(const MachineInstr *Load) const {
+    return ImportAnchorLoads.contains(Load);
+  }
 
   bool hasStackProbing() const { return StackProbeSize != 0; }
 
@@ -659,6 +672,13 @@ private:
   // gives it the pointer's page; and, with none, the accesses that only read
   // through the register of such a load that stays.
   DenseMap<const MachineInstr *, const MachineInstr *> ImportValueOnlyLoads;
+  // The loads of import pointers of data whose pointers the linker may derive
+  // from the register of a load of another such pointer, each with those
+  // loads and registers, and those loads.
+  DenseMap<const MachineInstr *,
+           SmallVector<std::pair<const MachineInstr *, MCRegister>, 2>>
+      ImportAnchors;
+  SmallPtrSet<const MachineInstr *, 2> ImportAnchorLoads;
 };
 
 namespace yaml {

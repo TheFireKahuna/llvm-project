@@ -4117,7 +4117,8 @@ void AArch64AsmPrinter::EmitToStreamer(MCStreamer &S, const MCInst &Inst) {
 // to, the register that a load of an import pointer of data filled, or such a
 // load, which a label names for the instructions that use it. A load whose
 // register only reads of memory read is described with the adrp before it,
-// which a label names.
+// which a label names. A load whose pointer another load's register holds
+// names that load.
 void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
   auto GetLabel = [&](const MachineInstr *Load) {
     MCSymbol *&Label = ImportFusionLabels[Load];
@@ -4140,6 +4141,10 @@ void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
     else if (MCSymbol *Page = ImportPageLabels[Load->second])
       OutStreamer->emitCOFFLinkValueOnly(Page);
   }
+  if (auto Anchors = AArch64FI->getImportAnchors().find(&MI);
+      Anchors != AArch64FI->getImportAnchors().end())
+    for (auto [Anchor, Reg] : Anchors->second)
+      OutStreamer->emitCOFFLinkAnchor(GetLabel(Anchor), Reg);
   using UseKind = AArch64FunctionInfo::ImportFusedUseKind;
   // An access of a thread-local variable's record may itself be a load.
   auto Use = AArch64FI->getImportFusedUses().find(&MI);
@@ -4155,8 +4160,11 @@ void AArch64AsmPrinter::emitImportFusion(const MachineInstr &MI) {
       return;
   }
   auto Load = AArch64FI->getImportFusedLoads().find(&MI);
-  if (Load == AArch64FI->getImportFusedLoads().end())
+  if (Load == AArch64FI->getImportFusedLoads().end()) {
+    if (AArch64FI->isImportAnchorLoad(&MI))
+      OutStreamer->emitLabel(GetLabel(&MI));
     return;
+  }
   OutStreamer->emitLabel(GetLabel(&MI));
   if (Load->second)
     OutStreamer->emitCOFFLinkFusedRead();
@@ -4188,7 +4196,8 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
   }
 
   if (!AArch64FI->getImportFusedLoads().empty() ||
-      !AArch64FI->getImportValueOnlyLoads().empty())
+      !AArch64FI->getImportValueOnlyLoads().empty() ||
+      !AArch64FI->getImportAnchors().empty())
     emitImportFusion(*MI);
 
   if (AArch64FI->getLOHRelated().count(MI)) {
