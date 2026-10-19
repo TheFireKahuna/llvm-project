@@ -808,14 +808,16 @@ void SymbolTable::readImmutableDataLocally() {
       // unless something else does.
       auto *d = dyn_cast_or_null<DefinedRegular>(
           find(imp->getName().drop_front(strlen("__imp_"))));
-      if (!d || !isa<ObjFile>(d->getFile()) || !d->isCOMDAT ||
-          d->getChunk()->live || isThreadLocal(d) || !isDefaultVisibility(d) ||
-          ignoresOffersOf(imp))
+      // Another name in the group is read through it too.
+      DefinedRegular *leader = d ? d->getChunk()->sym : nullptr;
+      if (!leader || !isa<ObjFile>(leader->getFile()) || !leader->isCOMDAT ||
+          leader->getChunk()->live || isThreadLocal(leader) ||
+          !isDefaultVisibility(leader) || ignoresOffersOf(imp))
         return;
       // The group moves to the DLL whole, so it must lie in the copy's
       // section, and the DLL must provide each member.
-      collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
-      if (chunks.size() != 1 || !isCanonicalCopy(d->getChunk()))
+      collectWeakDataGroup(leader, chunks, members, /*liveOnly=*/false);
+      if (chunks.size() != 1 || !isCanonicalCopy(leader->getChunk()))
         return;
       for (DefinedRegular *m : members) {
         auto *mi =
@@ -1045,6 +1047,11 @@ void SymbolTable::addOffers() {
       continue;
     collectWeakDataGroup(d, chunks, members, /*liveOnly=*/true);
     for (DefinedRegular *m : members) {
+      // Another name at the definition's address has its own visibility; a
+      // name inside it (an interior name) has the definition's.
+      if (m != d && !isDefaultVisibility(m) &&
+          (m->getChunk() != d->getChunk() || m->getValue() == d->getValue()))
+        continue;
       if (!isThreadLocal(m)) {
         offer(m, /*data=*/true, nullptr);
       } else if (Defined *record = getThreadLocalRecord(m)) {
@@ -1075,9 +1082,18 @@ void SymbolTable::addOffers() {
     auto *d = dyn_cast<DefinedRegular>(sym);
     if (!d || !isa<ObjFile>(d->getFile()) || !isDefaultVisibility(d))
       continue;
+    // A path through the image that reaches one member reaches the group.
     collectWeakDataGroup(d, chunks, members, /*liveOnly=*/false);
+    DefinedImportData *reached = nullptr;
     for (DefinedRegular *m : members)
-      if (DefinedImportData *imp = getOffer(getSharedName(m)))
+      if ((reached = getOffer(getSharedName(m))))
+        break;
+    if (!reached)
+      continue;
+    for (DefinedRegular *m : members)
+      if (auto *imp =
+              dyn_cast_or_null<DefinedImportData>(impSymbol(getSharedName(m)));
+          imp && imp->getDLLName().equals_insensitive(reached->getDLLName()))
         offer(m, /*data=*/true, imp);
   }
   for (auto &[f, imp] : offeredFunctions)

@@ -2,7 +2,8 @@
 ;; Under -import-slots, a COMDAT of data that a DLL the image imports from
 ;; offers whole is preempted before LTO, as the native link preempts it after:
 ;; its definitions are not prevailing, so LTO compiles no copy, and the code it
-;; generates reaches them through their imports. Data that no DLL offers
+;; generates reaches them through their imports. An alias in the COMDAT is a
+;; definition of it, whose offer is read before LTO too. Data that no DLL offers
 ;; stays final in the image, and a DLL, which offers it in turn, keeps it.
 
 ; RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
@@ -17,11 +18,13 @@
 
 ; LOG-DAG: Preempting v in main.bc with its instance in lib.dll
 ; LOG-DAG: Preempting guard variable for v in main.bc with its instance in lib.dll
+; LOG-DAG: Preempting va in main.bc with its instance in lib.dll
 
 ; CHECK:      -r=main.bc,use,plx{{$}}
 ; CHECK-NEXT: -r=main.bc,v,{{$}}
 ; CHECK-NEXT: -r=main.bc,_ZGV1v,{{$}}
 ; CHECK-NEXT: -r=main.bc,local,plx{{$}}
+; CHECK-NEXT: -r=main.bc,va,{{$}}
 
 ; CODE:      <use>:
 ; CODE-NEXT: 48 8b 05 {{.*}} movq
@@ -31,6 +34,7 @@
 ; IMPORTS:      Name: lib.dll
 ; IMPORTS:      Symbol: _ZGV1v
 ; IMPORTS-NEXT: Symbol: v
+; IMPORTS-NEXT: Symbol: va
 ; IMPORTS-NEXT: }
 
 ;--- lib.def
@@ -38,6 +42,7 @@ LIBRARY lib.dll
 EXPORTS
   v DATA
   _ZGV1v DATA
+  va DATA
 
 ;--- main.ll
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
@@ -49,13 +54,16 @@ $local = comdat any
 @v = linkonce_odr global i32 1, comdat
 @_ZGV1v = linkonce_odr global i64 0, comdat
 @local = linkonce_odr global i32 2, comdat
+@va = alias i32, ptr @v
 
 define i32 @use() {
   %a = load i32, ptr @v
   %g = load i64, ptr @_ZGV1v
   %b = load i32, ptr @local
+  %c = load i32, ptr @va
   %t = trunc i64 %g to i32
   %s = add i32 %a, %b
-  %r = add i32 %s, %t
+  %u = add i32 %s, %t
+  %r = add i32 %u, %c
   ret i32 %r
 }

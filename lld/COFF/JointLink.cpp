@@ -248,10 +248,8 @@ getLinkWideOptions(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   return options;
 }
 
-// Adds to names the shared names of what bitcode file f defines in the COMDAT
-// of d and in that of its guard, as a native object's group would hold them.
-static void addBitcodeGroup(SymbolTable &symtab, BitcodeFile *f, Symbol *d,
-                            std::vector<std::string> &names) {
+void addBitcodeGroup(SymbolTable &symtab, BitcodeFile *f, Symbol *d,
+                     std::vector<std::string> &names) {
   ArrayRef<Symbol *> syms = f->getSymbols();
   Symbol *guard = symtab.find(getGuardName(d->getName()));
   SmallVector<int, 2> comdats;

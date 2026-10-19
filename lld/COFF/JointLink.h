@@ -11,6 +11,7 @@
 
 #include "llvm/ADT/StringRef.h"
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace llvm {
@@ -21,7 +22,15 @@ class InputArgList;
 } // namespace llvm
 
 namespace lld::coff {
+class BitcodeFile;
 class COFFLinkerContext;
+class Symbol;
+class SymbolTable;
+
+// Adds to names the shared names of what bitcode file f defines in the COMDAT
+// of d and in that of its guard, as a native object's group would hold them.
+void addBitcodeGroup(SymbolTable &symtab, BitcodeFile *f, Symbol *d,
+                     std::vector<std::string> &names);
 
 // Under /lldjointscan, writes the summary of the member's link, resolved but
 // for LTO, and adds the observable vague entities it keeps to the exports of

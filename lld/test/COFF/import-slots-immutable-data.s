@@ -60,14 +60,18 @@
 # IMPORTS-NEXT: Symbol: f
 # IMPORTS-NEXT: }
 
-## Where only value reads remain, the image imports nothing for the data.
+## Where only value reads remain, the image imports nothing for the data. A
+## read through another name of the group, liveness having discarded the copy,
+## reads the same copy.
 # RUN: lld-link -import-slots -entry:main -subsystem:console only.obj lib.lib \
 # RUN:   -out:only.exe
 # RUN: llvm-objdump -d only.exe | FileCheck --check-prefix=ONLY %s
 # RUN: llvm-readobj --coff-imports only.exe | \
 # RUN:   FileCheck --check-prefix=NOIMPORTS %s
 # ONLY:      <.text>:
-# ONLY-NEXT: 48 8d 05 {{.*}} leaq
+# ONLY-NEXT: 48 8d 05 {{.*}} leaq {{.*}}(%rip), %rax # 0x[[#%x,COPY:]]
+# ONLY-NEXT: 8b 04 88 movl (%rax,%rcx,4), %eax
+# ONLY-NEXT: 48 8d 15 {{.*}} leaq {{.*}}(%rip), %rdx # 0x[[#COPY]]
 # NOIMPORTS-NOT: lib.dll
 
 ## A DLL that keeps tbl preemptible reads its instance for the value read.
@@ -116,6 +120,7 @@
 LIBRARY lib.dll
 EXPORTS
   tbl DATA
+  tbla DATA
   ftbl DATA
   stbl DATA
   mut DATA
@@ -219,6 +224,8 @@ h:
   .p2align 2
 tbl:
   .long 1, 2, 3, 4
+  .globl tbla
+  .set tbla, tbl
 
   .text
   .globl main
@@ -226,6 +233,9 @@ main:
   .linkvalueonly
   movq __imp_tbl(%rip), %rax
   movl (%rax,%rcx,4), %eax
+  .linkvalueonly
+  movq __imp_tbla(%rip), %rdx
+  addl (%rdx,%rcx,4), %eax
   retq
 
 #--- own.s

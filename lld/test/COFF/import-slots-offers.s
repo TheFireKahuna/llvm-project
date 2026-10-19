@@ -4,14 +4,17 @@
 ## another image may observe, as an ELF shared object's dynamic symbol table
 ## gives it: data, with the other external symbols of its group and its guard,
 ## and functions whose addresses are significant. A definition its object does
-## not list as having default visibility is hidden and not offered. What the
-## image takes from a DLL that offers it is offered as a forwarder to that DLL,
-## and the image's import library names the DLL in its place, so that an
-## importer binds to the DLL that holds it.
+## not list as having default visibility is hidden and not offered, nor is
+## another name at its address that the object does not list; a name inside it
+## has its visibility. What the image takes from a DLL that offers it is
+## offered as a forwarder to that DLL, the whole group where it takes one name
+## of it, and the image's import library names the DLL in its place, so that
+## an importer binds to the DLL that holds it.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium b.s -o b.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium c.s -o c.obj
 
 # RUN: lld-link -import-slots -dll -noentry a.obj -out:a.dll
 # RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=OFFERS %s
@@ -28,7 +31,9 @@
 # OFFERS-NEXT: Export {
 # OFFERS-NEXT:  Ordinal:
 # OFFERS-NEXT:  Name: iv$so4
+# OFFERS:     Name: iva
 # OFFERS-NOT: Name: hid
+# OFFERS-NOT: Name: ivh
 # OFFERS-NOT: Name: nf
 
 ## An executable offers nothing unless it writes an import library, and a link
@@ -57,6 +62,17 @@
 # LIB-NEXT: {{0+}} D __imp_iv
 # LIB-NOT:  __imp_iv
 
+## A DLL whose copy is discarded and that takes one name of the group from
+## a.dll forwards the group's other names too.
+# RUN: lld-link -import-slots -dll -noentry c.obj a.lib -out:c.dll
+# RUN: llvm-readobj --coff-exports c.dll | FileCheck --check-prefix=GROUP %s
+# GROUP:      Name: iv
+# GROUP-NEXT: ForwardedTo: a.iv
+# GROUP:      Name: iv$so4
+# GROUP-NEXT: ForwardedTo: a.iv$so4
+# GROUP:      Name: iva
+# GROUP-NEXT: ForwardedTo: a.iva
+
 #--- a.s
   .linkbindings
   .section .data,"dw",discard,iv
@@ -67,6 +83,11 @@ iv:
   .quad 1
   .globl "iv$so4"
   .set "iv$so4", iv+4
+  .globl iva
+  .linkbinding iva, default
+  .set iva, iv
+  .globl ivh
+  .set ivh, iv
 
   .section .bss,"bw",discard,_ZGV2iv
   .globl _ZGV2iv
@@ -121,3 +142,23 @@ iv:
   .globl bstrong
 bstrong:
   .quad iv
+
+#--- c.s
+  .linkbindings
+  .section .data,"dw",discard,iv
+  .globl iv
+  .p2align 3
+iv:
+  .linkbinding iv, default
+  .quad 1
+  .globl "iv$so4"
+  .set "iv$so4", iv+4
+  .globl iva
+  .linkbinding iva, default
+  .set iva, iv
+
+  .text
+  .globl get
+get:
+  movq __imp_iva(%rip), %rax
+  retq

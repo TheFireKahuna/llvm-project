@@ -11,6 +11,7 @@
 #include "Config.h"
 #include "Driver.h"
 #include "ImportSlots.h"
+#include "JointLink.h"
 #include "LTO.h"
 #include "OverrideTable.h"
 #include "PDB.h"
@@ -1023,13 +1024,19 @@ bool SymbolTable::loadLocalImportMembers() {
       };
       SmallVector<SectionChunk *, 4> chunks;
       SmallVector<DefinedRegular *, 4> members;
+      std::vector<std::string> names;
       for (Symbol *sym : weakData) {
         auto *d = dyn_cast<DefinedRegular>(sym);
         if (!d || !isDefaultVisibility(d) || !addOffer(getSharedName(d)))
           continue;
         addOffer(getSharedGuardName(d));
-        if (!isa<ObjFile>(d->getFile()))
+        if (auto *f = dyn_cast<BitcodeFile>(d->getFile())) {
+          names.clear();
+          addBitcodeGroup(*this, f, d, names);
+          for (StringRef name : names)
+            addOffer(name);
           continue;
+        }
         chunks.clear();
         members.clear();
         collectComdatGroup(d, chunks, members);
