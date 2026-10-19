@@ -217,11 +217,16 @@ HMODULE failLoadLibrary(DelayLoadInfo &Dli) {
   return nullptr;
 }
 
-// The library has no such procedure.
+bool isWitnessName(const char *Proc);
+
+// The library has no such procedure. A failure hook that answers returns a
+// substitute, except for a witness: what it proves, the library's layout, no
+// substitute can.
 FARPROC failGetProcAddress(DelayLoadInfo &Dli) {
   if (__pfnDliFailureHook2)
     if (FARPROC Proc = __pfnDliFailureHook2(dliFailGetProc, &Dli))
-      return Proc;
+      if (!Dli.dlp.fImportByName || !isWitnessName(Dli.dlp.szProcName))
+        return Proc;
   return raiseFailure(ERROR_PROC_NOT_FOUND, Dli);
 }
 
@@ -363,15 +368,18 @@ FARPROC resolveDescriptor(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
 // type_info object of a type that the library owns, under the name that the
 // type's layout qualifies, or the identity of a library linked jointly with
 // the image.
-bool isWitness(const IMAGE_THUNK_DATA &Name) {
-  if (IMAGE_SNAP_BY_ORDINAL(Name.u1.Ordinal))
-    return false;
-  const char *Proc =
-      fromRva<IMAGE_IMPORT_BY_NAME>(static_cast<DWORD>(Name.u1.AddressOfData))
-          ->Name;
+bool isWitnessName(const char *Proc) {
   return !strncmp(Proc, "__abiw$", 7) || !strncmp(Proc, "__abis$", 7) ||
          !strncmp(Proc, "__llvm_private$", 15) ||
          (!strncmp(Proc, "_ZTI", 4) && strstr(Proc, "$abi$"));
+}
+
+bool isWitness(const IMAGE_THUNK_DATA &Name) {
+  if (IMAGE_SNAP_BY_ORDINAL(Name.u1.Ordinal))
+    return false;
+  return isWitnessName(
+      fromRva<IMAGE_IMPORT_BY_NAME>(static_cast<DWORD>(Name.u1.AddressOfData))
+          ->Name);
 }
 
 bool hasHooks() { return __pfnDliNotifyHook2 || __pfnDliFailureHook2; }
@@ -501,8 +509,7 @@ namespace {
 
 // Resolves each ABI contract witness of the descriptor that is not yet bound,
 // unless Slot is itself one, as a call through it would. Returns false when
-// one did not resolve and no hook answered for it, after its failure was
-// reported.
+// one did not resolve, after its failure was reported.
 bool resolveWitnesses(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
                       const IMAGE_THUNK_DATA *Slot) {
   auto *Iat = fromRva<IMAGE_THUNK_DATA>(Descriptor->ImportAddressTableRVA);

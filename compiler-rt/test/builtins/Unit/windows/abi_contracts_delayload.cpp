@@ -7,9 +7,11 @@
 // RUN:   -Wl,-delay:unload -o %t/unload.dll
 // RUN: %{cxx} -shared -DPLUGIN -DHOOK %s %t/shape.dll.lib \
 // RUN:   -Wl,-delayload:shape.dll -o %t/hook.dll
+// RUN: %{cxx} -shared -DPLUGIN -DHOOK -DSUBSTITUTE %s %t/shape.dll.lib \
+// RUN:   -Wl,-delayload:shape.dll -o %t/substitute.dll
 // RUN: %{cxx} -DHOST %s -o %t/bin/host.exe
 // RUN: cp %t/loader.dll %t/unload.dll %t/hook.dll %t/same/
-// RUN: cp %t/loader.dll %t/unload.dll %t/hook.dll %t/wide/
+// RUN: cp %t/loader.dll %t/unload.dll %t/hook.dll %t/substitute.dll %t/wide/
 // RUN: %{cxx} -shared -DSHAPE -DOTHER_CODE %s -o %t/same/shape.dll
 // RUN: %{cxx} -shared -DSHAPE -DWIDE %s -o %t/wide/shape.dll
 // RUN: cd %t/same && %run %t/bin/host.exe %t/same/loader.dll \
@@ -24,6 +26,8 @@
 // RUN:   | FileCheck --check-prefix=WIDE %s
 // RUN: cd %t/wide && %run %t/bin/host.exe %t/wide/hook.dll \
 // RUN:   | FileCheck --check-prefixes=HOOK,WIDE %s
+// RUN: cd %t/wide && %run %t/bin/host.exe %t/wide/substitute.dll \
+// RUN:   | FileCheck --check-prefixes=HOOK,WIDE %s
 
 // A plugin that delay-loads shape.dll, whose class's layout it uses, binds
 // shape.dll's witness of that layout when it first calls into it. Code never
@@ -32,14 +36,15 @@
 // rebuilt with another layout lacks the witness, so the first call fails as a
 // missing import fails, through the failure hook and then the exception, and
 // never reaches the rebuilt code. This holds through the loader, when the
-// image resolves its own imports under /delay:unload, and with a hook. The
+// image resolves its own imports under /delay:unload, and with a hook, even
+// one that answers every missing import with a substitute. The
 // host is apart from shape.dll, which a delay load finds in the current
 // directory.
 
 // SAME: area 13, height 4
 // HOOK: failure hook: shape.dll lacks __abiw$
 // WIDE: the first call failed: 0xC06D007F
-// WIDE-NOT: area
+// WIDE-NOT: {{area|substitute}}
 
 #define API __attribute__((visibility("default")))
 
@@ -67,11 +72,18 @@ int Shape::area() const { return w * h; }
 #  include <windows.h>
 #  ifdef HOOK
 #    include <delayimp.h>
+#    ifdef SUBSTITUTE
+static void substitute() { printf("substitute\n"); }
+#    endif
 static FARPROC WINAPI failureHook(unsigned Reason, DelayLoadInfo *Dli) {
   if (Reason == dliFailGetProc && Dli->dlp.fImportByName)
     printf("failure hook: %s lacks %.7s\n", Dli->szDll, Dli->dlp.szProcName);
   fflush(stdout);
+#    ifdef SUBSTITUTE
+  return reinterpret_cast<FARPROC>(&substitute);
+#    else
   return nullptr;
+#    endif
 }
 const PfnDliHook __pfnDliFailureHook2 = failureHook;
 #  endif
