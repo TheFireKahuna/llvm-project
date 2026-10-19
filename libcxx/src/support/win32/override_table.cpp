@@ -80,31 +80,6 @@ const unsigned char* __executable() {
   return __read<const unsigned char*>(__peb + 0x10);
 }
 
-// An executable whose thread-local data holds the addresses of imports names,
-// as {tag u32, rva u32} in the reserved words of its MZ header at 0x1C, the
-// linker's copy of those words into the main thread's block, which the loader
-// filled from the template before it bound them. A replacement of a default
-// may read them, and runs as soon as an image that imports this library
-// allocates, before the executable's own TLS callback runs the copy; so the
-// copy runs here first. It acts only while the process initializes, and leaves
-// a word that no longer holds its lookup entry alone, so a second run does
-// nothing.
-constexpr std::uint32_t __tls_copy_offset = 0x1C;
-constexpr std::uint32_t __tls_copy_tag    = 0x9E3779B9;
-
-// The copy is the linker's TLS callback, which carries no kcfi type.
-__attribute__((__no_sanitize__("kcfi"))) void
-__copy_executable_thread_locals(const unsigned char* __base, std::uint32_t __image_size) {
-  if (__read<std::uint32_t>(__base + __tls_copy_offset) != __tls_copy_tag)
-    return;
-  std::uint32_t __rva = __read<std::uint32_t>(__base + __tls_copy_offset + 4);
-  if (__rva == 0 || __rva >= __image_size)
-    __fail();
-  using __tls_callback   = void (*)(void*, unsigned long, void*);
-  unsigned char* __image = const_cast<unsigned char*>(__base);
-  reinterpret_cast<__tls_callback>(__image + __rva)(__image, 1, nullptr);
-}
-
 void __check_override_table(const unsigned char* __base) {
   // Without the magic, nothing tells an erased table from a program that
   // never had one.
@@ -188,8 +163,6 @@ void __check_override_table(const unsigned char* __base) {
       __fail();
     }
   }
-
-  __copy_executable_thread_locals(__base, __image_size);
 }
 
 // Before the library's other initializers, which allocate.

@@ -28,7 +28,7 @@
 ## .myro's at 0x5000, kept apart so .data between them stays read-only.
 # CHECK:      [[#%x,LIST]]      02000000 02000000 00000000 00000000
 # CHECK-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
-# CHECK-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 a0200000 08000000
+# CHECK-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 a0200000 08000000
 # CHECK-NEXT: [[#%x,LIST+0x30]] 00500000 08000000 {{.*}}
 
 ## Merged into .rdata, the two cells share one range, which the list repeats
@@ -41,7 +41,7 @@
 # MERGED:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 # MERGED:      [[#%x,LIST]]      01000000 02000000 00000000 00000000
 # MERGED-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
-# MERGED-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 a0200000 d8000000
+# MERGED-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 a0200000 d8000000
 # MERGED-NEXT: [[#%x,LIST+0x30]] 00000000 00000000 {{.*}}
 
 #--- a.s

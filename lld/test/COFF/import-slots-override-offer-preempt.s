@@ -54,7 +54,7 @@
 ## One read-only range over the import entry, then the cells {key, rva, kind},
 ## each of slot 0, whose RVA is at 0x44 in the executable's header, each of kind
 ## 2: the writable word in .data, then the read-only import entry.
-# OFFER:      [[#%x,LIST+0x20]] 00000000 00000000 {{[0-9a-f]+}} 08000000
+# OFFER:      [[#%x,LIST+0x20]] 01000000 00000000 {{[0-9a-f]+}} 08000000
 # OFFER-NEXT: [[#%x,LIST+0x30]] 00000000 44000000 00300000 02000000
 # OFFER-NEXT: [[#%x,LIST+0x40]] 01000000 44000000 {{[0-9a-f]+}} 02000000
 

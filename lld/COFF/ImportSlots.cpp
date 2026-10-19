@@ -1535,12 +1535,14 @@ void ImportSlotContents::createFill() {
   Configuration &config = ctx.config;
   auto *list = cast_or_null<FillListChunk>(fillList);
   bool hasXIA = isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a"));
-  // A DLL that imports from an executable first runs the executable's copy.
+  // A DLL that imports from an executable, or whose cells may take the
+  // executable's code, can run that code while the DLLs initialize, before the
+  // executable's TLS callbacks, so it first runs the executable's copy.
   bool callsCopy =
       config.importSlots && config.dll && hasXIA &&
-      llvm::any_of(ctx.importFileInstances, [](ImportFile *f) {
-        return f->live && StringRef(f->dllName).ends_with_insensitive(".exe");
-      });
+      (list || llvm::any_of(ctx.importFileInstances, [](ImportFile *f) {
+         return f->live && StringRef(f->dllName).ends_with_insensitive(".exe");
+       }));
   if (!callsCopy && !list && residualWords.empty() && runTimeCells.empty())
     return;
   if (!residualWords.empty() || !runTimeCells.empty()) {

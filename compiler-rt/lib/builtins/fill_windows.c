@@ -344,8 +344,9 @@ int __llvm_fill(void) {
   int32_t status = 0;
   int writable = 0;
 
-  // Code of the executable that this DLL's initializers call sees its
-  // thread-local slots bound in the main thread.
+  // Code of the executable that runs while the DLLs initialize, through this
+  // DLL's imports from it or its cells, sees its thread-local slots bound in
+  // the main thread.
   if (l->flags & fillCallsCopy && initializing &&
       read32(exe + copyTagOffset) == copyTag)
     copySlots(exe,

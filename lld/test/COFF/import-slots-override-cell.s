@@ -43,15 +43,16 @@
 # FILL:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
 ## The list header: one read-only range, two cells; no section to seal; then
-## the key of this DLL's name, and a flag word that runs no copy. The range
-## spans the read-only cell, the import entry at 0x20C0.
+## the key of this DLL's name, and a flag word whose bit 0 runs the
+## executable's copy first, since a cell may take the executable's code. The
+## range spans the read-only cell, the import entry at 0x20C0.
 # FILL:      [[#%x,LIST]]      01000000 02000000 00000000 00000000
 # FILL-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
 ## Then, after the 40-byte header, the range, {rva, size}, and the cells, {key,
 ## rva, kind}: the writable one in .data, and the read-only import entry whose
 ## key has bit 0 set, each of slot 0, whose RVA is at 0x44 in the executable's
 ## header, each of kind 2.
-# FILL-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 c0200000 08000000
+# FILL-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 c0200000 08000000
 # FILL-NEXT: [[#%x,LIST+0x30]] 00000000 44000000 00300000 02000000
 # FILL-NEXT: [[#%x,LIST+0x40]] 01000000 44000000 c0200000 02000000
 
@@ -117,7 +118,7 @@
 ## One cell, a slot in the template at 0x5008, of kind 6.
 # TL:      [[#%x,LIST]]      00000000 01000000 00000000 00000000
 # TL-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
-# TL-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 00000000 44000000
+# TL-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 00000000 44000000
 # TL-NEXT: [[#%x,LIST+0x30]] 08500000 06000000 {{.*}}
 
 ## An executable binds its own references at link time and carries no fill.
