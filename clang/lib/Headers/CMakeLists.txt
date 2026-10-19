@@ -438,6 +438,7 @@ set(win32_itanium_wrapper_files
   win32_itanium_wrappers/corecrt_share.h
   win32_itanium_wrappers/corecrt_stdio_config.h
   win32_itanium_wrappers/ctype.h
+  win32_itanium_wrappers/delayimp.h
   win32_itanium_wrappers/direct.h
   win32_itanium_wrappers/dos.h
   win32_itanium_wrappers/eh.h

@@ -66,27 +66,14 @@ int Shape::area() const { return w * h; }
 #  include <stdio.h>
 #  include <windows.h>
 #  ifdef HOOK
-// delayimp.h's types, which ship with the MSVC tools.
-struct DelayLoadInfo {
-  DWORD cb;
-  const void *pidd;
-  FARPROC *ppfn;
-  LPCSTR szDll;
-  BOOL fImportByName;
-  LPCSTR szProcName;
-  HMODULE hmodCur;
-  FARPROC pfnCur;
-  DWORD dwLastError;
-};
+#    include <delayimp.h>
 static FARPROC WINAPI failureHook(unsigned Reason, DelayLoadInfo *Dli) {
-  if (Reason == 4 && Dli->fImportByName)
-    printf("failure hook: %s lacks %.7s\n", Dli->szDll, Dli->szProcName);
+  if (Reason == dliFailGetProc && Dli->dlp.fImportByName)
+    printf("failure hook: %s lacks %.7s\n", Dli->szDll, Dli->dlp.szProcName);
   fflush(stdout);
   return nullptr;
 }
-extern "C" FARPROC(WINAPI *const __pfnDliFailureHook2)(unsigned,
-                                                       DelayLoadInfo *) =
-    failureHook;
+const PfnDliHook __pfnDliFailureHook2 = failureHook;
 #  endif
 extern "C" API void measure() {
   Shape s(3, 4);

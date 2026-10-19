@@ -46,6 +46,7 @@
 // resolves the library's other imports together. __HrLoadAllImportsForDll
 // reports a failure as a call would, on either path.
 
+#include <delayimp.h>
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -60,36 +61,16 @@ __declspec(dllexport) int missing(int Value) { return Value; }
 __declspec(dllimport) int present(int);
 __declspec(dllimport) int missing(int);
 
-// The delayimp.h ABI.
-typedef struct DelayLoadInfo {
-  DWORD cb;
-  const void *pidd;
-  FARPROC *ppfn;
-  LPCSTR szDll;
-  struct {
-    BOOL fImportByName;
-    union {
-      LPCSTR szProcName;
-      DWORD dwOrdinal;
-    };
-  } dlp;
-  HMODULE hmodCur;
-  FARPROC pfnCur;
-  DWORD dwLastError;
-} DelayLoadInfo;
-
-#  define VCPP_EXCEPTION(Error)                                                \
-    (ERROR_SEVERITY_ERROR | FACILITY_VISUALCPP << 16 | (Error))
+#  define VCPP_EXCEPTION(Error) VcppException(ERROR_SEVERITY_ERROR, Error)
 
 #  ifdef FAILURE_HOOK
 static int substitute(int Value) { return -Value; }
 
 static FARPROC WINAPI failureHook(unsigned Reason, DelayLoadInfo *Info) {
   fprintf(stderr, "hook %u %s\n", Reason, Info->dlp.szProcName);
-  return Reason == 4 ? (FARPROC)substitute : NULL;
+  return Reason == dliFailGetProc ? (FARPROC)substitute : NULL;
 }
-FARPROC(WINAPI *const __pfnDliFailureHook2)(unsigned,
-                                            DelayLoadInfo *) = failureHook;
+const PfnDliHook __pfnDliFailureHook2 = failureHook;
 #  endif
 
 static DelayLoadInfo Captured;
@@ -115,8 +96,6 @@ static void call(const char *Name, int (*Function)(int)) {
             Captured.cb);
   }
 }
-
-HRESULT WINAPI __HrLoadAllImportsForDll(LPCSTR);
 
 static void loadAll(const char *Dll) {
   __try {

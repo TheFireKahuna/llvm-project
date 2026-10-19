@@ -5,7 +5,11 @@
 // RUN: %clang_wincrt -mguard=cf -DPROTECTED %s %t.dll.lib -o %t-protected.exe \
 // RUN:   -Wl,/delayload:%basename_t.tmp.dll
 // RUN: %run %t-protected.exe %basename_t.tmp.dll 2>&1 \
-// RUN:   | FileCheck %s --check-prefixes=CHECK,PROTECTED
+// RUN:   | FileCheck %s --check-prefixes=CHECK,PROTECTED,NARROW
+// RUN: %clang_wincrt -mguard=cf -DPROTECTED -DWHOLE_SECTION %s %t.dll.lib \
+// RUN:   -o %t-whole.exe -Wl,/delayload:%basename_t.tmp.dll
+// RUN: %run %t-whole.exe %basename_t.tmp.dll 2>&1 \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,PROTECTED,WHOLE
 // RUN: %clang_wincrt -DNOTIFY_HOOK %s %t.dll.lib -o %t-hook.exe \
 // RUN:   -Wl,/delayload:%basename_t.tmp.dll
 // RUN: %run %t-hook.exe %basename_t.tmp.dll 2>&1 \
@@ -13,13 +17,17 @@
 // RUN: %clang_wincrt -mguard=cf -DPROTECTED -DNOTIFY_HOOK %s %t.dll.lib \
 // RUN:   -o %t-protected-hook.exe -Wl,/delayload:%basename_t.tmp.dll
 // RUN: %run %t-protected-hook.exe %basename_t.tmp.dll 2>&1 \
-// RUN:   | FileCheck %s --check-prefixes=CHECK,PROTECTED,HOOK
+// RUN:   | FileCheck %s --check-prefixes=CHECK,PROTECTED,NARROW,HOOK
 
 // A delayed import resolves on its first call, through the loader or, with a
 // delayimp.h notify hook installed, in the image, where the hook sees every
 // stage of each import as it is called. Under /guard:cf the table is
-// protected: read-only before and after it is written.
+// protected: read-only before and after it is written. A program's choice to
+// make the whole section writable while the table is written is read as
+// false when it makes none, and has no effect: the table is read-only again
+// after it is written either way.
 
+#include <delayimp.h>
 #include <stdio.h>
 #include <windows.h>
 
@@ -30,8 +38,11 @@ __declspec(dllexport) int add(int A, int B) { return A + B; }
 
 __declspec(dllimport) int twice(int);
 __declspec(dllimport) int add(int, int);
-HRESULT WINAPI __HrLoadAllImportsForDll(LPCSTR);
 extern IMAGE_DOS_HEADER __ImageBase;
+
+#  ifdef WHOLE_SECTION
+const BOOL __bChangeProtectionOfWholeDloadSection = TRUE;
+#  endif
 
 #  ifdef PROTECTED
 // Whether the page of the first descriptor's address table is read-only.
@@ -51,32 +62,13 @@ static int tableIsReadOnly(void) {
 #  endif
 
 #  ifdef NOTIFY_HOOK
-// The delayimp.h ABI.
-typedef struct DelayLoadInfo {
-  DWORD cb;
-  const void *pidd;
-  FARPROC *ppfn;
-  LPCSTR szDll;
-  struct {
-    BOOL fImportByName;
-    union {
-      LPCSTR szProcName;
-      DWORD dwOrdinal;
-    };
-  } dlp;
-  HMODULE hmodCur;
-  FARPROC pfnCur;
-  DWORD dwLastError;
-} DelayLoadInfo;
-
 static FARPROC WINAPI notifyHook(unsigned Reason, DelayLoadInfo *Info) {
   static const char *const Stages[] = {
       "start", "pre-load", "pre-getproc", "fail-load", "fail-getproc", "end"};
   fprintf(stderr, "hook %s %s\n", Stages[Reason], Info->dlp.szProcName);
   return NULL;
 }
-FARPROC(WINAPI *const __pfnDliNotifyHook2)(unsigned,
-                                           DelayLoadInfo *) = notifyHook;
+const PfnDliHook __pfnDliNotifyHook2 = notifyHook;
 #  endif
 
 int main(int argc, char **argv) {
@@ -84,6 +76,7 @@ int main(int argc, char **argv) {
     return 1;
 #  ifdef PROTECTED
   fprintf(stderr, "read-only before %d\n", tableIsReadOnly());
+  fprintf(stderr, "whole section %d\n", __bChangeProtectionOfWholeDloadSection);
 #  endif
   fprintf(stderr, "twice(21) = %d\n", twice(21));
   if (!GetModuleHandleA(argv[1]))
@@ -103,6 +96,8 @@ int main(int argc, char **argv) {
 #endif
 
 // PROTECTED:      read-only before 1
+// NARROW-NEXT:    whole section 0
+// WHOLE-NEXT:     whole section 1
 // HOOK:           hook start twice
 // HOOK-NEXT:      hook pre-load twice
 // HOOK-NEXT:      hook pre-getproc twice

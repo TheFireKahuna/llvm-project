@@ -41,13 +41,11 @@
 // hook and then the exception, before it reaches the library's code. A
 // witness that resolves stays bound, so a later call does not resolve it again.
 //
-// The hook types are those of delayimp.h, which ships with the MSVC tools
-// rather than the Windows SDK, so it is not included.
-//
 //===----------------------------------------------------------------------===//
 
 #include "wincrt.h"
 
+#include <delayimp.h>
 #include <string.h>
 
 // This file writes a protected table only while it has made the table
@@ -55,36 +53,8 @@
 // table read-only whether or not Control Flow Guard is on.
 __asm__(".linkprotecteddelayiat");
 
-// delayimp.h ABI.
-struct DelayLoadProc {
-  BOOL fImportByName;
-  union {
-    LPCSTR szProcName;
-    DWORD dwOrdinal;
-  };
-};
-
-struct DelayLoadInfo {
-  DWORD cb;
-  const IMAGE_DELAYLOAD_DESCRIPTOR *pidd;
-  FARPROC *ppfn;
-  LPCSTR szDll;
-  DelayLoadProc dlp;
-  HMODULE hmodCur;
-  FARPROC pfnCur;
-  DWORD dwLastError;
-};
-
-using PfnDliHook = FARPROC(WINAPI *)(unsigned, DelayLoadInfo *);
-
-enum {
-  dliStartProcessing = 0,
-  dliNotePreLoadLibrary = 1,
-  dliNotePreGetProcAddress = 2,
-  dliFailLoadLib = 3,
-  dliFailGetProc = 4,
-  dliNoteEndProcessing = 5,
-};
+static_assert(sizeof(ImgDelayDescr) == sizeof(IMAGE_DELAYLOAD_DESCRIPTOR),
+              "delayimp.h's descriptor is the SDK's");
 
 extern "C" {
 // Exported by kernel32 and forwarded to ntdll; no SDK header declares them.
@@ -98,14 +68,17 @@ __declspec(dllimport) LONG WINAPI ResolveDelayLoadsFromDll(
 __declspec(dllimport) PVOID WINAPI DelayLoadFailureHook(LPCSTR DllName,
                                                         LPCSTR ProcName);
 
-// The hooks a program defines, which are constant so that memory corruption
-// cannot redirect them, or the null hook of a program that defines neither.
-extern const PfnDliHook __pfnDliNotifyHook2;
-extern const PfnDliHook __pfnDliFailureHook2;
+// The null hook of a program that does not define one.
 extern const PfnDliHook __wincrt_no_dli_hook = nullptr;
+
+// The section-wide protection choice of a program that does not make one.
+// Whatever a program chooses, writeSlots reopens only the pages it writes.
+extern const BOOL __wincrt_no_whole_dload_section = FALSE;
 }
 WINCRT_ALTERNATENAME(__pfnDliNotifyHook2, __wincrt_no_dli_hook)
 WINCRT_ALTERNATENAME(__pfnDliFailureHook2, __wincrt_no_dli_hook)
+WINCRT_ALTERNATENAME(__bChangeProtectionOfWholeDloadSection,
+                     __wincrt_no_whole_dload_section)
 
 namespace {
 
@@ -155,11 +128,6 @@ bool isUnbound(const IMAGE_THUNK_DATA &Slot) {
          ntHeaders()->OptionalHeader.SizeOfImage;
 }
 
-// delayimp.h reports failures as Visual C++ facility exceptions.
-constexpr DWORD vcppException(DWORD Error) {
-  return ERROR_SEVERITY_ERROR | FACILITY_VISUALCPP << 16 | Error;
-}
-
 // A protected table is read-only except while it is written. Two threads may
 // write slots on one page, and one must not restore the protection while the
 // other is still storing, so the image serializes its writes.
@@ -203,7 +171,7 @@ DelayLoadInfo describeImport(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
 
   DelayLoadInfo Dli = {};
   Dli.cb = sizeof(Dli);
-  Dli.pidd = Descriptor;
+  Dli.pidd = reinterpret_cast<PCImgDelayDescr>(Descriptor);
   Dli.ppfn = reinterpret_cast<FARPROC *>(&Slot->u1.Function);
   Dli.szDll = fromRva<const char>(Descriptor->DllNameRVA);
   if (IMAGE_SNAP_BY_ORDINAL(Name.u1.Ordinal)) {
@@ -233,7 +201,7 @@ FARPROC notify(unsigned Reason, DelayLoadInfo &Dli) {
 FARPROC raiseFailure(DWORD Error, DelayLoadInfo &Dli) {
   ULONG_PTR Arguments[] = {reinterpret_cast<ULONG_PTR>(&Dli)};
   SetLastError(Dli.dwLastError);
-  RaiseException(vcppException(Error), 0, 1, Arguments);
+  RaiseException(VcppException(ERROR_SEVERITY_ERROR, Error), 0, 1, Arguments);
   return nullptr;
 }
 
@@ -438,7 +406,7 @@ FARPROC WINAPI __delayLoadHelper2(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
   if (!Descriptor->Attributes.RvaBased) {
     DelayLoadInfo Dli = {};
     Dli.cb = sizeof(Dli);
-    Dli.pidd = Descriptor;
+    Dli.pidd = reinterpret_cast<PCImgDelayDescr>(Descriptor);
     Dli.ppfn = Entry;
     return raiseFailure(ERROR_INVALID_PARAMETER, Dli);
   }

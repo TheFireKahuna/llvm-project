@@ -18,6 +18,7 @@
 // library the image does not delay-load, and matches the name without regard
 // to case.
 
+#include <delayimp.h>
 #include <stdio.h>
 #include <string.h>
 #include <windows.h>
@@ -27,7 +28,6 @@ __declspec(dllexport) int twice(int Value) { return 2 * Value; }
 #else
 
 __declspec(dllimport) int twice(int);
-BOOL WINAPI __FUnloadDelayLoadedDLL2(LPCSTR);
 
 int main(int argc, char **argv) {
   if (argc != 2 || GetModuleHandleA(argv[1]) || twice(21) != 42 ||
