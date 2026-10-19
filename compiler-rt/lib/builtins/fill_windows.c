@@ -70,7 +70,7 @@ enum {
   cellName = 0x1000,
 };
 
-enum { fillCallsCopy = 1 };
+enum { fillCallsCopy = 1, fillWordsInPlace = 2 };
 
 struct range {
   uint32_t rva, size;
@@ -97,14 +97,15 @@ struct runTimeCell {
 };
 
 // The fill's list: the number of each kind of entry, the section it seals,
-// and this DLL's key, by which an image that delay-loads it lists it. The
+// this DLL's key, by which an image that delay-loads it lists it, and how many
+// of the residual words, the last, are in the thread-local template. The
 // ranges, the cells, the residual words and the run-time cells follow, in
 // that order.
 struct fillList {
   uint32_t ranges, cells, words, runTimeCells;
   uint32_t sealed, sealedSize;
   uint64_t selfKey;
-  uint32_t flags, reserved;
+  uint32_t flags, threadLocalWords;
 };
 
 struct copyList {
@@ -411,9 +412,20 @@ int __llvm_fill(void) {
     }
   }
 
-  for (uint32_t i = 0; i != l->words; ++i, ++w)
-    *(uint64_t *)(__ImageBase + w->word) =
-        *(uint64_t *)(__ImageBase + w->import) + w->addend;
+  // A residual word in read-only data outside the sealed section is written
+  // where it is, and one in the thread-local template in the loading thread's
+  // block too, which the loader copied from the template before.
+  if (l->flags & fillWordsInPlace && !writable) {
+    writable = 1;
+    if ((status = protectRanges(l, pageReadWrite)))
+      goto done;
+  }
+  for (uint32_t i = 0; i != l->words; ++i, ++w) {
+    uint64_t value = *(uint64_t *)(__ImageBase + w->import) + w->addend;
+    *(uint64_t *)(__ImageBase + w->word) = value;
+    if (i >= l->words - l->threadLocalWords)
+      *(uint64_t *)(threadBlock(__ImageBase) + w->word) = value;
+  }
 
 done:
   // A cell left writable fails the image's initialization, as one left

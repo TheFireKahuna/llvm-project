@@ -55,12 +55,16 @@ std::optional<int64_t> getAddressWordAddend(SectionChunk *sc,
 
 // A word of static data holding an address inside an import whose DLL exports
 // no name: the import's address plus addend. sym names the word's relocation.
+// A word in read-only data that stays in its section is written in place, and
+// one in thread-local data in the template and the loading thread's block.
 struct ResidualWord {
   SectionChunk *chunk;
   uint32_t offset;
   DefinedImportData *imp;
   int64_t addend;
   Symbol *sym;
+  bool inPlace = false;
+  bool threadLocal = false;
 };
 
 // Under -import-slots, an import bound by name at image start: its cell (read

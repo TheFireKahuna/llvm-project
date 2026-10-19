@@ -7,7 +7,8 @@
 ## defines its list, and names it to the table. A read-only word moves with its
 ## chunk, slots and all, to .sealed, whose RVA and size the list names so the
 ## fill can make it read-only once written; a writable word stays in place, and
-## a fill with no read-only word names no section to seal.
+## a fill with no read-only word names no section to seal. A word of another
+## read-only section, or of thread-local data, stays in place too.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: lld-link -def:lib.def -out:lib.lib -machine:x64
@@ -18,6 +19,8 @@
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tls.s -o tls.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium named.s -o named.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium cfg.s -o cfg.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium tlsdir.s \
+# RUN:   -o tlsdir.obj
 
 # RUN: lld-link -dll -noentry -import-slots -out:out.dll crt.obj ro.obj rw.obj \
 # RUN:   lib.lib ntdll.lib
@@ -108,15 +111,36 @@
 # RUN:   crt.obj ro.obj lib.lib ntdll.lib 2>&1 | \
 # RUN:   FileCheck --check-prefix=ALIGN %s
 # RUN: not lld-link -dll -noentry -import-slots -out:out.dll crt.obj tls.obj \
-# RUN:   named.obj lib.lib ntdll.lib 2>&1 | FileCheck --check-prefix=PLACE %s
+# RUN:   lib.lib ntdll.lib 2>&1 | FileCheck --check-prefix=PLACE %s
 
 # NOTABLE: error: ro.obj: .rdata holds the address of arr plus 12, imported from lib.dll, which exports no name for it, and the image has no C initializer table (__xi_a) to write it
 ## Without ntdll the fill's own reference to NtProtectVirtualMemory is undefined.
 # NOPROTECT: error: undefined symbol: {{.*}}NtProtectVirtualMemory
 # NOPROTECT: referenced by crt.obj:(__llvm_fill)
 # ALIGN: error: ro.obj: .rdata holds the address of arr plus 12, imported from lib.dll, which exports no name for it, and its section alignment is smaller than a page, which the image cannot make read-only once written
-# PLACE: error: tls.obj: .tls$ holds the address of arr plus 4, imported from lib.dll, which exports no name for it, in thread-local data
-# PLACE: error: named.obj: .rdata$x holds the address of arr plus 4, imported from lib.dll, which exports no name for it, in a read-only section that cannot move
+# PLACE: error: tls.obj: .tls$ holds the address of arr plus 4, imported from lib.dll, which exports no name for it, in thread-local data that the image has no TLS directory (_tls_used) for
+
+## A word of a read-only section whose order its users may rely on stays
+## where it is, and the fill makes its output section's range writable around
+## the write: flag 2. A word of the thread-local template is written in the
+## template and the loading thread's block too; the list's last word counts
+## those, which follow the others.
+# RUN: lld-link -dll -noentry -import-slots -out:place.dll crt.obj tls.obj \
+# RUN:   named.obj tlsdir.obj lib.lib ntdll.lib
+# RUN: llvm-objdump -d --no-show-raw-insn place.dll > place.txt
+# RUN: llvm-objdump -s -j .rdata place.dll >> place.txt
+# RUN: FileCheck --check-prefix=INPLACE --input-file=place.txt %s
+
+# INPLACE:      leaq {{.*}}(%rip), %rax # 0x[[#%x,PLIST:]]
+## One range, no cells, two words; no section to seal; then flag 2 and one
+## thread-local word. The range is the word of .rdata$x, which stays in .rdata
+## at 0x2080, and the words are it and the template's at 0x4000, each arr + 4
+## from arr's entry.
+# INPLACE:      [[#%x,PLIST]]      01000000 00000000 02000000 00000000
+# INPLACE-NEXT: [[#%x,PLIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# INPLACE-NEXT: [[#%x,PLIST+0x20]] 02000000 01000000 80200000 08000000
+# INPLACE-NEXT: [[#%x,PLIST+0x30]] 80200000 [[ENTRY:[0-9a-f]{8}]] 04000000 00000000
+# INPLACE-NEXT: [[#%x,PLIST+0x40]] 00400000 [[ENTRY]] 04000000 00000000
 
 #--- lib.def
 LIBRARY lib.dll
@@ -173,6 +197,14 @@ __llvm_fill:
   .section .rdata$x,"dr"
   .p2align 3
   .quad arr+4
+
+#--- tlsdir.s
+  .section .rdata,"dr"
+  .p2align 3
+  .globl _tls_used
+_tls_used:
+  .quad 0, 0, 0, 0
+  .long 0, 0
 
 #--- cfg.s
   .section .rdata,"dr"

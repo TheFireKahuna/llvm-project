@@ -338,15 +338,7 @@ public:
                       [](const OverrideCell &a, const OverrideCell &b) {
                         return a.getKey() < b.getKey();
                       });
-    // An import's own entry is in .rdata.
-    StringSet<> names;
-    for (const OverrideCell &c : this->cells)
-      if (auto *sc = dyn_cast_or_null<SectionChunk>(c.chunk); c.readOnly)
-        names.insert(sc ? getOutputSectionName(
-                              getPartialSectionName(sc, ctx.config.mingw),
-                              ctx.config.mingw)
-                        : ".rdata");
-    maxRanges = names.size();
+    countRanges();
   }
   static constexpr uint32_t headerSize = 40;
   size_t getSize() const override {
@@ -357,6 +349,14 @@ public:
   uint32_t getOutputCharacteristics() const override {
     return llvm::COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
            llvm::COFF::IMAGE_SCN_MEM_READ;
+  }
+  // Takes the residual words, the thread-local ones last.
+  void setWords(std::vector<ResidualWord> residual) {
+    words = std::move(residual);
+    std::stable_partition(
+        words.begin(), words.end(),
+        [](const ResidualWord &w) { return !w.threadLocal; });
+    countRanges();
   }
   // One range of read-only cells for each output section, which the fill makes
   // writable and read-only again: a range across sections would change those
@@ -376,6 +376,24 @@ public:
   bool callsCopy = false;
 
 private:
+  // Makes room for a range for each output section that the read-only cells
+  // and the words written in place name.
+  void countRanges() {
+    // An import's own entry is in .rdata.
+    StringSet<> names;
+    for (const OverrideCell &c : cells)
+      if (auto *sc = dyn_cast_or_null<SectionChunk>(c.chunk); c.readOnly)
+        names.insert(sc ? getOutputSectionName(
+                              getPartialSectionName(sc, ctx.config.mingw),
+                              ctx.config.mingw)
+                        : ".rdata");
+    for (const ResidualWord &w : words)
+      if (w.inPlace)
+        names.insert(getOutputSectionName(
+            getPartialSectionName(w.chunk, ctx.config.mingw),
+            ctx.config.mingw));
+    maxRanges = names.size();
+  }
   uint32_t getKind(const OverrideCell &c) const;
   COFFLinkerContext &ctx;
 };
@@ -383,18 +401,21 @@ private:
 SmallVector<std::pair<uint64_t, uint64_t>, 0>
 FillListChunk::getReadOnlyRanges() const {
   MapVector<OutputSection *, std::pair<uint64_t, uint64_t>> bySection;
-  for (const OverrideCell &c : cells) {
-    if (!c.readOnly)
-      continue;
-    Chunk *chunk = c.chunk ? c.chunk : c.imp->getChunk();
-    uint64_t start = c.getRVA(), end = start + ctx.config.wordsize;
+  auto add = [&](Chunk *chunk, uint64_t start) {
+    uint64_t end = start + ctx.config.wordsize;
     auto [it, inserted] =
         bySection.try_emplace(ctx.getOutputSection(chunk), start, end);
     if (!inserted) {
       it->second.first = std::min(it->second.first, start);
       it->second.second = std::max(it->second.second, end);
     }
-  }
+  };
+  for (const OverrideCell &c : cells)
+    if (c.readOnly)
+      add(c.chunk ? c.chunk : c.imp->getChunk(), c.getRVA());
+  for (const ResidualWord &w : words)
+    if (w.inPlace)
+      add(w.chunk, w.chunk->getRVA() + w.offset);
   auto ranges = llvm::to_vector_of<std::pair<uint64_t, uint64_t>>(
       llvm::make_second_range(bySection));
   llvm::sort(ranges);
@@ -427,7 +448,13 @@ void FillListChunk::writeTo(uint8_t *buf) const {
     header[5] = seal->getVirtualSize();
   }
   write64le(buf + 24, selfKey);
-  header[8] = callsCopy;
+  header[8] = callsCopy | (llvm::any_of(words, [](const ResidualWord &w) {
+                             return w.inPlace;
+                           })
+                               ? 2
+                               : 0);
+  header[9] = llvm::count_if(
+      words, [](const ResidualWord &w) { return w.threadLocal; });
   auto *range = reinterpret_cast<support::ulittle32_t *>(buf + headerSize);
   for (auto [start, end] : ranges) {
     *range++ = start;
@@ -760,18 +787,22 @@ void ImportSlotContents::addResidualWord(SectionChunk *sc, uint32_t offset,
   StringRef name = getPartialSectionName(sc, config.mingw);
   bool readOnly = !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE);
   bool tls = name.starts_with(".tls");
-  if (!tls && (!readOnly || name == ".rdata")) {
-    if (readOnly)
-      sealedChunks.insert(sc);
-    residualWords.push_back({sc, offset, imp, addend, s});
+  // A word of .rdata moves to the section the fill seals; one of another
+  // read-only section, whose order its users may rely on, stays where it is,
+  // and the fill makes its range writable around the write.
+  if (readOnly && name == ".rdata")
+    sealedChunks.insert(sc);
+  if (!tls || (!readOnly && ctx.symtab.findUnderscore("_tls_used"))) {
+    residualWords.push_back(
+        {sc, offset, imp, addend, s, readOnly && name != ".rdata", tls});
     return;
   }
   Err(ctx) << sc->file << ": " << sc->getSectionName()
            << " holds the address of " << sc->file->symtab.printSymbol(s)
            << " plus " << addend << ", imported from " << imp->getDLLName()
-           << ", which exports no name for it"
-           << (tls ? ", in thread-local data"
-                   : ", in a read-only section that cannot move");
+           << ", which exports no name for it, in thread-local data "
+           << (readOnly ? "that is read-only" : "that the image has no TLS "
+                                                "directory (_tls_used) for");
 }
 
 // Gathers what the decisions need from the reference at relocs[i] of sc; an
@@ -1576,7 +1607,7 @@ void ImportSlotContents::createFill() {
   if (!list)
     fillList = list = make<FillListChunk>(ctx, std::vector<OverrideCell>());
   list->runTimeCells = runTimeCells;
-  list->words = residualWords;
+  list->setWords(residualWords);
   list->callsCopy = callsCopy;
   list->sealed = !runTimeCells.empty()   ? runTimeCells.front().cell
                  : !sealedChunks.empty() ? sealedChunks.front()
