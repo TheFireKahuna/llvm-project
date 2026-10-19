@@ -20,6 +20,8 @@ include(
 if(WIN32_ITANIUM OR WIN32_NTPOSIX)
   set(CMAKE_USER_MAKE_RULES_OVERRIDE
       ${CMAKE_CURRENT_LIST_DIR}/WindowsItaniumRules.cmake)
+  # windows_itanium_joint_link(), which declares a joint link.
+  include(${CMAKE_CURRENT_LIST_DIR}/WindowsItaniumJointLink.cmake)
 
   # Choose llvm-rc before the platform rules would pick windres. CMake's own
   # rules then preprocess resource scripts with clang. Prefer the one next to
