@@ -961,6 +961,14 @@ void collectJointGrants(COFFLinkerContext &ctx) {
       ctx.jointGranted.insert(imp);
 }
 
+// Whether name is an address inside base: base$soK or base$apK.
+static bool isInteriorName(StringRef name, StringRef base) {
+  if (!name.consume_front(base) ||
+      !(name.consume_front("$so") || name.consume_front("$ap")))
+    return false;
+  return !name.empty() && llvm::all_of(name, isDigit);
+}
+
 namespace {
 // What a member imports from another through its fact file.
 struct FactImport {
@@ -1423,14 +1431,26 @@ void Merge::run(StringRef dir) {
     for (const NamedExport &e : summaries[m].exports)
       exporters.try_emplace(e.name, m, e.data);
 
-  // References to what another member exports, an executable's only to a DLL.
+  // References to what another member exports, an executable's only to a DLL,
+  // with the names the exporter gives addresses inside it, which a word
+  // holding one takes, as it would from the exporter's import library.
   auto bindExport = [&](unsigned m, StringRef name) {
     auto it = exporters.find(name);
     if (it == exporters.end())
       return;
     auto [from, data] = it->second;
-    if (from != m && (summaries[from].dll || summaries[m].dll))
-      addImport(m, name, from, !data);
+    if (from == m || (!summaries[from].dll && !summaries[m].dll))
+      return;
+    addImport(m, name, from, !data);
+    const std::vector<NamedExport> &exports = summaries[from].exports;
+    std::string prefix = (name + "$").str();
+    for (auto e = llvm::lower_bound(exports, prefix,
+                                    [](const NamedExport &x, StringRef y) {
+                                      return x.name < y;
+                                    });
+         e != exports.end() && StringRef(e->name).starts_with(prefix); ++e)
+      if (isInteriorName(e->name, name))
+        addImport(m, e->name, from, /*code=*/false);
   };
   for (unsigned m = 0; m != n; ++m)
     for (const std::string &name : summaries[m].undefined) {
@@ -1505,12 +1525,16 @@ void Merge::run(StringRef dir) {
       if (it == entityOf.end() || keeperDef(entities[it->second], m))
         continue;
       int owner = owners[it->second];
-      if (owner >= 0 &&
-          llvm::is_contained(keeperDef(entities[it->second], owner)->names,
-                             name))
+      const Definition *od =
+          owner >= 0 ? keeperDef(entities[it->second], owner) : nullptr;
+      if (od && llvm::is_contained(od->names, name)) {
         addImport(m, name, owner, entities[it->second].code);
-      else
+        for (const std::string &other : od->names)
+          if (isInteriorName(other, name))
+            addImport(m, other, owner, /*code=*/false);
+      } else {
         bindExport(m, name);
+      }
     }
   if (errorCount())
     return;
