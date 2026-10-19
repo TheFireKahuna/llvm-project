@@ -18,13 +18,13 @@
 # RUN: llvm-objdump -s -j .rdata rt.dll >> rt.txt
 # RUN: FileCheck --input-file=rt.txt %s
 # CHECK:      <take>:
-# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180002050
+# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x1800020b0
 # CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
-## One read-only range over the read-only pointer at 0x2050, then the cells,
+## One read-only range over the read-only pointer at 0x20b0, then the cells,
 ## {key, rva, kind}, each of slot 0, whose RVA is at 0x44 in the executable's
 ## header: the read-only pointer, bit 0 of its key set, and the writable word.
-# CHECK:      [[#%x,LIST+0x20]] 01000000 00000000 50200000 08000000
-# CHECK-NEXT: [[#%x,LIST+0x30]] 01000000 44000000 50200000 02000000
+# CHECK:      [[#%x,LIST+0x20]] 01000000 00000000 b0200000 08000000
+# CHECK-NEXT: [[#%x,LIST+0x30]] 01000000 44000000 b0200000 02000000
 # CHECK-NEXT: [[#%x,LIST+0x40]] 00000000 44000000 00300000 02000000
 
 ## Without an address-take there is no cell, no fill and no import of

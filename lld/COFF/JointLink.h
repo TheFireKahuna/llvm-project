@@ -72,6 +72,11 @@ void mergeJointLink(COFFLinkerContext &ctx,
 // import library after the image.
 bool addJointIdentityExport(COFFLinkerContext &ctx);
 void finalizeJointIdentity(COFFLinkerContext &ctx);
+
+// Under -import-slots, reports each export whose address is inside the export
+// directory, which the loader would read as a forwarder: an address past the
+// end of data, which the image exports where another image's data holds it.
+void checkExportAddresses(COFFLinkerContext &ctx);
 void addJointLayoutRecord(COFFLinkerContext &ctx, llvm::StringRef dllName,
                           std::vector<llvm::NewArchiveMember> &members,
                           std::vector<uint8_t> &buffer);

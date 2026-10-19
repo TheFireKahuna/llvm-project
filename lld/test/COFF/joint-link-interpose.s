@@ -64,10 +64,10 @@
 # LIB:      [[#%x,THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x180005000
 ## The residual word {.data, cell, addend} and the cells {cell, name, from the
 ## executable} of f and of the identity, after the list's 40-byte header.
-# LIB:      180002020 01000000 00000000 00300000 00500000
-# LIB-NEXT: 180002030 00000000 00000000 00500000 {{[0-9a-f]+}}
-# LIB-NEXT: 180002040 00000000 08500000 {{[0-9a-f]+}} 00000000
-# LIB-NEXT: 180002050 66005f5f 6c6c766d 5f707269 76617465
+# LIB:      1800020a0 01000000 00000000 00300000 00500000
+# LIB-NEXT: 1800020b0 00000000 00000000 00500000 {{[0-9a-f]+}}
+# LIB-NEXT: 1800020c0 00000000 08500000 {{[0-9a-f]+}} 00000000
+# LIB-NEXT: 1800020d0 66005f5f 6c6c766d 5f707269 76617465
 
 ## user.dll imports f from the executable and g from lib.dll, with the
 ## identities of both.

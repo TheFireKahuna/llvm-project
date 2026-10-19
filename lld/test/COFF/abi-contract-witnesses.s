@@ -14,11 +14,11 @@
 # RUN: llvm-readobj a.lib | FileCheck --check-prefix=IMPLIB %s
 # RUN: llvm-nm a.lib | FileCheck --check-prefix=NM %s
 
-# The witness byte opens .rdata; the export directory after it has two
+# The export directory, which opens .rdata ahead of the witness byte, has two
 # functions and four names.
 # EXPORTS:      Export Table:
 # EXPORTS:      Ordinal      RVA  Name
-# EXPORTS-NEXT:       1   0x2000  __abis$SE709m-9Gmo$AAECAwQFBgcICQoLDA0ODw
+# EXPORTS-NEXT:       1   0x20ce  __abis$SE709m-9Gmo$AAECAwQFBgcICQoLDA0ODw
 # EXPORTS-NEXT:       2   0x1000  f
 # EXPORTS-EMPTY:
 

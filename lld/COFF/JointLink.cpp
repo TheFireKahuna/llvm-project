@@ -1751,6 +1751,20 @@ bool addJointIdentityExport(COFFLinkerContext &ctx) {
   return true;
 }
 
+void checkExportAddresses(COFFLinkerContext &ctx) {
+  SymbolTable &symtab = ctx.symtab;
+  if (!ctx.config.importSlots || !symtab.edataStart)
+    return;
+  uint64_t begin = symtab.edataStart->getRVA();
+  uint64_t end = symtab.edataEnd->getRVA() + symtab.edataEnd->getSize();
+  for (const Export &e : symtab.exports)
+    if (auto *d = dyn_cast_or_null<Defined>(e.sym);
+        d && e.forwardTo.empty() && d->getRVA() >= begin && d->getRVA() < end)
+      Err(ctx) << "cannot export " << (e.noname ? e.name : e.exportName)
+               << ": its address is inside the export directory, which the "
+               << "loader reads as the name of another DLL's export";
+}
+
 void finalizeJointIdentity(COFFLinkerContext &ctx) {
   if (!ctx.jointIdentity)
     return;

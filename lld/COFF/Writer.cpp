@@ -225,6 +225,7 @@ private:
   void createImportTables();
   void placeImportSlotSections();
   bool iatStartsRdata() const;
+  void placeExportDirectory();
   void packPlacedChunks();
   void appendImportThunks();
   void locateImportTables();
@@ -907,6 +908,7 @@ void Writer::run() {
     createDynamicRelocs();
     removeUnusedSections();
     kcfi.layOut(textSec, rdataSec);
+    placeExportDirectory();
     layoutSections();
     finalizeAddresses();
     defineVTableRuns(ctx);
@@ -915,6 +917,7 @@ void Writer::run() {
     assignOutputSectionIndices();
     placeLinkerDefinedSymbols();
     finalizeJointIdentity(ctx);
+    checkExportAddresses(ctx);
     setSectionPermissions();
     slots.check(iatStart, getIATSize());
     setECSymbols();
@@ -1602,6 +1605,26 @@ void Writer::createImportTables() {
 bool Writer::iatStartsRdata() const {
   return slots.hasRdataGroupSlots() || !slots.getSlotSections().empty() ||
          (packRdata && !slots.getReadOnlyChunks().empty());
+}
+
+// Under -import-slots the image exports addresses past the ends of its data, a
+// vtable run's end or the end of an array another image's data holds, which
+// the loader would read as the names of other DLLs' exports were the export
+// directory to follow the data. It goes first in the section it is merged
+// into, ahead of the import address tables too, once that section's other
+// chunks are in place.
+void Writer::placeExportDirectory() {
+  if (!ctx.config.importSlots || !ctx.symtab.edataStart)
+    return;
+  for (OutputSection *sec : ctx.outputSections) {
+    auto begin = llvm::find(sec->chunks, ctx.symtab.edataStart);
+    if (begin == sec->chunks.end())
+      continue;
+    auto end = std::find(begin, sec->chunks.end(), ctx.symtab.edataEnd);
+    if (end != sec->chunks.end())
+      std::rotate(sec->chunks.begin(), begin, std::next(end));
+    return;
+  }
 }
 
 // Lays out read-only in-place import slots so the import address table

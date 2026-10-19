@@ -33,8 +33,10 @@
 # RUN:   -out:app.exe -lldjoint:facts/app.exe.jfacts
 
 ## a.dll, declared first, keeps K's vtable and type_info and D's vtable, which
-## it exports privately, and the runs of K and D.
+## it exports privately, and the runs of K and D. D's run ends past its
+## vtable, which the export directory, first in .rdata, never follows.
 # RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=A %s
+# RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=NOFWD %s
 # RUN: llvm-nm a.lib | FileCheck --check-prefix=ALIB %s
 # A-DAG: Name: _ZTI1K
 # A-DAG: Name: _ZTV1D
@@ -45,6 +47,7 @@
 # A-DAG: Name: __llvm_vtr$[[D]]m
 # A-DAG: Name: __llvm_vtr$[[K:.*]]e
 # A-DAG: Name: __llvm_vtr$[[K]]m
+# NOFWD-NOT: ForwardedTo:
 # ALIB:     __imp__ZTV1K
 # ALIB-NOT: __imp__ZTV1D
 

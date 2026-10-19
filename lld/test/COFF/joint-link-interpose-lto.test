@@ -32,7 +32,7 @@
 # LIB:      callq 0x[[#%x,THUNK:]]
 # LIB:      [[#%x,THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x180005000
 ## The residual word {p, the cell} after the list's header.
-# LIB:      180002020 01000000 00000000 00300000 00500000
+# LIB:      1800020a0 01000000 00000000 00300000 00500000
 
 # RUN: llvm-readobj --coff-exports app.exe | FileCheck --check-prefix=APP %s
 # APP: Name: f
