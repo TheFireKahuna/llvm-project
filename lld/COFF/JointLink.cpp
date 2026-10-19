@@ -118,6 +118,11 @@ struct Summary {
   // What the member references through import entries it passes on, which the
   // loader grants as call targets where an export suppresses them.
   std::vector<std::string> addressTaken;
+  // An executable's functions that an import library it links offers too,
+  // each with that library's DLL; and the functions a DLL exports that such a
+  // definition may take the place of.
+  std::vector<Import> interposing;
+  std::vector<std::string> interposable;
 };
 
 using Digest = std::array<uint8_t, 16>;
@@ -148,7 +153,9 @@ json::Value toJSON(const Summary &s) {
                       {"undefined", s.undefined},
                       {"imports", s.imports},
                       {"runs", s.runs},
-                      {"addressTaken", s.addressTaken}};
+                      {"addressTaken", s.addressTaken},
+                      {"interposing", s.interposing},
+                      {"interposable", s.interposable}};
 }
 
 bool fromJSON(const json::Value &v, Definition &d, json::Path p) {
@@ -183,7 +190,9 @@ bool fromJSON(const json::Value &v, Summary &s, json::Path p) {
          o.map("exports", s.exports) && o.map("definitions", s.definitions) &&
          o.map("undefined", s.undefined) && o.map("imports", s.imports) &&
          o.mapOptional("runs", s.runs) &&
-         o.mapOptional("addressTaken", s.addressTaken);
+         o.mapOptional("addressTaken", s.addressTaken) &&
+         o.mapOptional("interposing", s.interposing) &&
+         o.mapOptional("interposable", s.interposable);
 }
 } // namespace
 
@@ -254,18 +263,84 @@ static const lto::InputFile::Symbol *getBitcodeSymbol(BitcodeFile *f,
   return nullptr;
 }
 
+// Whether bitcode file f's symbol o is a definition that no COMDAT copy
+// replaces: one outside a COMDAT that deduplicates.
+static bool isStrongDefinition(BitcodeFile *f,
+                               const lto::InputFile::Symbol &o) {
+  return !o.isUndefined() && !o.isWeak() &&
+         (o.getComdatIndex() == -1 ||
+          f->obj->getComdatTable()[o.getComdatIndex()].second ==
+              Comdat::NoDeduplicate);
+}
+
 // Whether d is a definition that no COMDAT copy replaces: a section that admits
 // no duplicate, or a bitcode definition outside a COMDAT that deduplicates.
 static bool isStrongDefinition(DefinedRegular *d) {
   if (isa<ObjFile>(d->getFile()))
-    return d->isCOMDAT &&
+    return !d->isCOMDAT ||
            d->getChunk()->selection == IMAGE_COMDAT_SELECT_NODUPLICATES;
   auto *f = dyn_cast<BitcodeFile>(d->getFile());
   const lto::InputFile::Symbol *o = f ? getBitcodeSymbol(f, d) : nullptr;
-  return o && !o->isWeak() &&
-         (o->getComdatIndex() == -1 ||
-          f->obj->getComdatTable()[o->getComdatIndex()].second ==
-              Comdat::NoDeduplicate);
+  return o && isStrongDefinition(f, *o);
+}
+
+// Whether d is a function the image defines with default visibility, which no
+// COMDAT copy replaces.
+static bool isStrongFunction(DefinedRegular *d) {
+  if (auto *f = dyn_cast<BitcodeFile>(d->getFile())) {
+    const lto::InputFile::Symbol *o = getBitcodeSymbol(f, d);
+    return o && o->isExecutable() &&
+           o->getVisibility() == GlobalValue::DefaultVisibility &&
+           isStrongDefinition(f, *o);
+  }
+  return isa<ObjFile>(d->getFile()) && d->getCOFFSymbol().isExternal() &&
+         (d->getChunk()->header->Characteristics & IMAGE_SCN_CNT_CODE) &&
+         isStrongDefinition(d) && isDefaultVisibility(d);
+}
+
+// The functions an executable defines with default visibility, which no COMDAT
+// copy replaces, that an import library its link names offers too, each with
+// the library's DLL: those an ELF executable exports because a shared object
+// it links defines them, and whose definitions so take the shared object's
+// place in its own references.
+static std::vector<std::pair<DefinedRegular *, StringRef>>
+getInterposingDefinitions(COFFLinkerContext &ctx) {
+  SymbolTable &symtab = ctx.symtab;
+  std::vector<std::pair<DefinedRegular *, StringRef>> defs;
+  if (ctx.config.dll)
+    return defs;
+  std::vector<DefinedRegular *> functions;
+  for (ObjFile *f : ctx.objFileInstances)
+    if (&f->symtab == &symtab)
+      for (Symbol *sym : f->getSymbols())
+        if (auto *d = dyn_cast_or_null<DefinedRegular>(sym);
+            d && d->getFile() == f && isStrongFunction(d))
+          functions.push_back(d);
+  for (BitcodeFile *f : symtab.bitcodeFileInstances) {
+    ArrayRef<Symbol *> syms = f->getSymbols();
+    for (auto [i, o] : llvm::enumerate(f->obj->symbols()))
+      if (auto *d = dyn_cast_or_null<DefinedRegular>(syms[i]);
+          d && d->getFile() == f && o.isExecutable() &&
+          o.getVisibility() == GlobalValue::DefaultVisibility &&
+          isStrongDefinition(f, o))
+        functions.push_back(d);
+  }
+  for (DefinedRegular *d : functions) {
+    Symbol *imp = symtab.find(("__imp_" + d->getName()).str());
+    StringRef dll;
+    if (auto *data = dyn_cast_or_null<DefinedImportData>(imp))
+      dll = data->file->thunkSym ? data->getDLLName() : StringRef();
+    else
+      dll = getLazyImportDLL(imp, IMPORT_CODE);
+    if (!dll.empty())
+      defs.push_back({d, dll});
+  }
+  llvm::sort(defs, [](auto &a, auto &b) {
+    return std::make_pair(a.first->getName(), a.second) <
+           std::make_pair(b.first->getName(), b.second);
+  });
+  defs.erase(llvm::unique(defs), defs.end());
+  return defs;
 }
 
 // Whether d is a default-visibility COMDAT copy, of which a link keeps any.
@@ -501,6 +576,20 @@ static Summary getSummary(COFFLinkerContext &ctx,
   });
   for (auto &[cls, offset] : starts)
     s.runs.push_back({cls, ("_ZTV" + cls + "$ap" + Twine(offset)).str()});
+  // An executable's functions that a DLL it links exports too, and the
+  // functions a DLL defines and exports that such a definition may take the
+  // place of: all but overridable defaults, which the override table replaces.
+  for (auto [d, dll] : getInterposingDefinitions(ctx))
+    s.interposing.push_back({d->getName().str(), dll.lower()});
+  if (s.dll)
+    for (const Export &e : symtab.exports)
+      if (auto *d = dyn_cast_or_null<DefinedRegular>(e.sym);
+          d && !e.isPrivate && !e.noname && !e.data && e.forwardTo.empty() &&
+          e.extName.empty() && e.exportAs.empty() &&
+          !symtab.getOverrideOffer(e) && isStrongFunction(d))
+        s.interposable.push_back(e.name.str());
+  llvm::sort(s.interposable);
+  s.interposable.erase(llvm::unique(s.interposable), s.interposable.end());
   // Of what the member imports or has yet to resolve, the functions whose
   // addresses it takes: an object says so in its guard metadata and data, and
   // bitcode in its module summary's references, where it has one. Without
@@ -645,6 +734,8 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
   StringRef guard;
   std::vector<std::pair<StringRef, std::vector<StringRef>>> preempted;
   std::vector<std::tuple<StringRef, StringRef, std::vector<StringRef>>> grants;
+  std::vector<std::pair<StringRef, std::vector<StringRef>>> interposed;
+  std::vector<StringRef> interposing;
   forEachLinkRecordGroup(
       lazy->getMemberBuffer(), ctx.config.machine,
       [&](uint64_t kind, ArrayRef<uint8_t> payload) {
@@ -676,6 +767,12 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
           name = data.getBytes(c, data.getULEB128(c));
           getStrings(names);
         }
+        for (uint64_t i = 0, n = data.getULEB128(c); c && i != n; ++i) {
+          auto &[from, names] = interposed.emplace_back();
+          from = data.getBytes(c, data.getULEB128(c));
+          getStrings(names);
+        }
+        getStrings(interposing);
         if (c && data.eof(c))
           digest = d;
         consumeError(c.takeError());
@@ -768,6 +865,64 @@ void applyJointFacts(COFFLinkerContext &ctx, const opt::InputArgList &args) {
     for (StringRef n : names)
       ctx.jointGrants.push_back({from, n});
   }
+  // A function the executables that load the member define too takes the
+  // place of the member's own definition in its own references, which reach
+  // it through an import from the executable, unless -Bsymbolic binds them
+  // locally; the definition stays the member's export. The executables export
+  // their definitions for those references.
+  for (auto &[from, names] : interposed) {
+    if (ctx.config.bsymbolic != Configuration::Bsymbolic::None)
+      break;
+    for (StringRef name : names) {
+      auto *d = dyn_cast_or_null<DefinedRegular>(symtab.find(name));
+      if (!d)
+        continue;
+      Symbol *imp = symtab.find(("__imp_" + name).str());
+      if (auto *data = dyn_cast_or_null<DefinedImportData>(imp)) {
+        if (!data->getDLLName().equals_insensitive(from))
+          Err(ctx) << name << " is imported from " << data->getDLLName()
+                   << ", but the joint-link facts give it up for " << from
+                   << "'s";
+      } else if (!imp || isa<Undefined>(imp) || imp->isLazy()) {
+        ctx.driver.addFile(make<ImportFile>(
+            ctx, makeShortImport(ctx.config.machine, from, name, IMPORT_CODE,
+                                 IMPORT_NAME)));
+      }
+      symtab.jointInterposed.insert(d);
+    }
+  }
+  for (StringRef name : interposing) {
+    Export e;
+    e.name = name;
+    e.isPrivate = true;
+    e.source = ExportSource::Export;
+    e.sym = symtab.addGCRoot(name);
+    e.symbolName = name;
+    symtab.exports.push_back(e);
+  }
+}
+
+void warnInterposingDefinitions(COFFLinkerContext &ctx) {
+  SymbolTable &symtab = ctx.symtab;
+  if (!ctx.config.importSlots || ctx.config.dll)
+    return;
+  symtab.readOverrideRecords();
+  // A DLL that links under -import-slots, whose import library records its
+  // entities, is linked to bind as ELF does; others keep PE's binding. A DLL
+  // of the joint link the merge decided for, and a default the override table
+  // replaces, are not reported.
+  for (auto [d, dll] : getInterposingDefinitions(ctx)) {
+    StringRef name = d->getName();
+    if (ctx.jointMembers.contains(dll.lower()) ||
+        symtab.overrideSlotFacts.contains(name) ||
+        symtab.defaultsByName.contains(name) ||
+        symtab.overridablesByName.contains(name) ||
+        !symtab.find((vagueRecordPrefix + dll.lower()).str()))
+      continue;
+    Warn(ctx) << d->getFile() << ": " << name << " is also exported by " << dll
+              << ", whose own references keep its definition; link them "
+                 "jointly for this one to take its place";
+  }
 }
 
 void collectJointGrants(COFFLinkerContext &ctx) {
@@ -809,7 +964,8 @@ public:
         imports(summaries.size()), kept(summaries.size()),
         privateExports(summaries.size()), preempted(summaries.size()),
         runExports(summaries.size()), runImports(summaries.size()),
-        unsuppressed(summaries.size()), grants(summaries.size()) {}
+        unsuppressed(summaries.size()), grants(summaries.size()),
+        interposed(summaries.size()), interposing(summaries.size()) {}
   void run(StringRef dir);
 
 private:
@@ -839,6 +995,11 @@ private:
   // entries it leaves out of the loader's grants.
   std::vector<std::set<std::string>> unsuppressed;
   std::vector<std::map<unsigned, std::vector<std::string>>> grants;
+  // The functions a DLL exports whose definitions the executables that load
+  // it define too, with the executable whose its own references import; and
+  // the functions an executable exports for those references.
+  std::vector<std::map<unsigned, std::vector<std::string>>> interposed;
+  std::vector<std::set<std::string>> interposing;
 };
 } // namespace
 
@@ -985,6 +1146,16 @@ void Merge::writeFacts(StringRef dir, unsigned m, const Digest &digest) {
     for (const std::string &name : names)
       putString(name);
   }
+  encodeULEB128(interposed[m].size(), os);
+  for (const auto &[from, names] : interposed[m]) {
+    putString(summaries[from].name);
+    encodeULEB128(names.size(), os);
+    for (const std::string &name : names)
+      putString(name);
+  }
+  encodeULEB128(interposing[m].size(), os);
+  for (const std::string &name : interposing[m])
+    putString(name);
   members.push_back(createLinkRecordMember(ctx, s.name, getFactsSymbol(s.name),
                                            {{LinkRecordJointFacts, payload}},
                                            buffers.emplace_back()));
@@ -1176,6 +1347,52 @@ void Merge::run(StringRef dir) {
     }
   if (errorCount())
     return;
+
+  // A function that an executable defines and that a DLL member, whose import
+  // library its link line names, exports takes the DLL's definition's place in
+  // every member's references, the DLL's own included, as an ELF executable's
+  // definition preempts a shared object's. The DLL's references bind once for
+  // every process that loads it, so only where every executable of the set
+  // that loads it defines the function; otherwise the DLL keeps its own, as
+  // where nothing is declared.
+  std::map<std::pair<unsigned, StringRef>, SmallVector<unsigned, 2>> claims;
+  for (unsigned e = 0; e != n; ++e)
+    for (const Import &i : summaries[e].interposing)
+      if (auto it = byName.find(i.dll);
+          !summaries[e].dll && it != byName.end() &&
+          std::binary_search(summaries[it->second].interposable.begin(),
+                             summaries[it->second].interposable.end(),
+                             i.name))
+        claims[{it->second, i.name}].push_back(e);
+  for (auto &claim : claims) {
+    auto [d, name] = claim.first;
+    ArrayRef<unsigned> exes = claim.second;
+    SmallVector<unsigned, 2> loaders;
+    for (unsigned e = 0; e != n; ++e)
+      if (!summaries[e].dll && reaches(e, d))
+        loaders.push_back(e);
+    auto other = llvm::find_if(
+        loaders, [&](unsigned e) { return !llvm::is_contained(exes, e); });
+    if (other != loaders.end()) {
+      Warn(ctx) << summaries[exes.front()].name << " defines " << name
+                << ", which " << summaries[d].name << " exports, but "
+                << summaries[*other].name << ", which loads "
+                << summaries[d].name << " too, does not; every member keeps "
+                << "binding " << name << " to " << summaries[d].name << "'s";
+      continue;
+    }
+    if (loaders.empty())
+      continue;
+    interposed[d][loaders.front()].push_back(name.str());
+    for (unsigned e : loaders)
+      interposing[e].insert(name.str());
+    for (unsigned m = 0; m != n; ++m)
+      for (FactImport &i : imports[m])
+        if (i.from == d && i.name == name) {
+          i.from = loaders.front();
+          edges[m].insert(loaders.front());
+        }
+  }
 
   // A member's vtable guard finds the objects another member builds where it
   // reads the other's vtable run: for each class whose vtable or type_info it

@@ -1,0 +1,99 @@
+# REQUIRES: x86
+## A function that the executable of a joint link defines in bitcode takes the
+## place of the definition a DLL member compiles from bitcode in the DLL's own
+## references: the scans read both from the symbol tables before LTO, the DLL's
+## LTO keeps the definition, which it still exports, and its call reaches the
+## import's thunk, its data word the fill's list.
+
+# RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
+# RUN: llvm-as lib.ll -o lib.obj
+# RUN: llvm-as app.ll -o app.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium crt.s -o crt.obj
+# RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
+
+# RUN: lld-link -import-slots -dll -noentry lib.obj crt.obj ntdll.lib \
+# RUN:   -out:lib.dll -lldjointscan:lib.jscan
+# RUN: lld-link -import-slots -entry:main -subsystem:console app.obj lib.lib \
+# RUN:   -out:app.exe -lldjointscan:app.jscan
+# RUN: lld-link -lldjointmerge -out:facts lib.jscan app.jscan
+# RUN: lld-link -import-slots -dll -noentry lib.obj crt.obj ntdll.lib \
+# RUN:   -out:lib.dll -lldjoint:facts/lib.dll.jfacts
+# RUN: lld-link -import-slots -entry:main -subsystem:console app.obj lib.lib \
+# RUN:   -out:app.exe -lldjoint:facts/app.exe.jfacts
+
+# RUN: llvm-readobj --coff-imports --coff-exports lib.dll > lib.txt
+# RUN: llvm-objdump -d lib.dll >> lib.txt
+# RUN: llvm-objdump -s -j .rdata lib.dll >> lib.txt
+# RUN: FileCheck --check-prefix=LIB --input-file=lib.txt %s
+# LIB-NOT:  Name: app.exe
+# LIB:      Name: f
+# LIB:      Name: g
+# LIB:      <g>:
+# LIB:      callq 0x[[#%x,THUNK:]]
+# LIB:      [[#%x,THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x180005000
+## The residual word {p, the cell} after the list's header.
+# LIB:      180002020 01000000 00000000 00300000 00500000
+
+# RUN: llvm-readobj --coff-exports app.exe | FileCheck --check-prefix=APP %s
+# APP: Name: f
+
+#--- lib.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+@p = dllexport global ptr @f
+
+define dllexport i32 @f(i32 %x) noinline {
+  %y = mul i32 %x, 3
+  ret i32 %y
+}
+
+define dllexport i32 @g(i32 %x) {
+  %r = call i32 @f(i32 %x)
+  %s = add i32 %r, 1
+  ret i32 %s
+}
+
+#--- app.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+declare i32 @g(i32)
+
+define i32 @f(i32 %x) noinline {
+  %y = mul i32 %x, 5
+  ret i32 %y
+}
+
+define i32 @main() {
+  %a = call i32 @f(i32 1)
+  %b = call i32 @g(i32 2)
+  %r = add i32 %a, %b
+  ret i32 %r
+}
+
+#--- crt.s
+        .section .CRT$XIA,"dr"
+        .globl __xi_a
+__xi_a:
+        .quad 0
+        .section .CRT$XIZ,"dr"
+        .globl __xi_z
+__xi_z:
+        .quad 0
+
+## A stand-in for the builtins' __llvm_fill.
+        .def __llvm_fill; .scl 2; .type 32; .endef
+        .section .text,"xr",one_only,__llvm_fill
+        .globl __llvm_fill
+__llvm_fill:
+        leaq __llvm_fill_list(%rip), %rax
+        callq *__imp_NtProtectVirtualMemory(%rip)
+        callq *__imp_LdrGetProcedureAddressForCaller(%rip)
+        retq
+
+#--- ntdll.def
+LIBRARY ntdll.dll
+EXPORTS
+  LdrGetProcedureAddressForCaller
+  NtProtectVirtualMemory

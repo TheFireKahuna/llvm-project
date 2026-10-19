@@ -370,16 +370,24 @@ bool isShareableVagueName(StringRef name) {
 
 bool isTypeInfoName(StringRef name) { return name.starts_with("_ZTI"); }
 
-// Whether lazy symbol s is an import library's offer of the given type.
-static bool isLazyImportOf(Symbol *s, ImportType type) {
-  auto *a = dyn_cast<LazyArchive>(s);
+StringRef getLazyImportDLL(Symbol *s, ImportType type) {
+  auto *a = dyn_cast_or_null<LazyArchive>(s);
   if (!a || a->pendingArchiveLoad)
-    return false;
+    return {};
   MemoryBufferRef mb = a->getMemberBuffer();
   if (identify_magic(mb.getBuffer()) != file_magic::coff_import_library)
-    return false;
+    return {};
   auto *hdr = reinterpret_cast<const coff_import_header *>(mb.getBufferStart());
-  return hdr->getType() == static_cast<int>(type);
+  if (hdr->getType() != static_cast<int>(type))
+    return {};
+  // The member holds the import's name, then the DLL's.
+  StringRef names = mb.getBuffer().substr(sizeof(coff_import_header));
+  return names.split('\0').second.split('\0').first;
+}
+
+// Whether lazy symbol s is an import library's offer of the given type.
+static bool isLazyImportOf(Symbol *s, ImportType type) {
+  return !getLazyImportDLL(s, type).empty();
 }
 
 static bool isLazyDataImport(Symbol *s) {
@@ -1146,19 +1154,22 @@ void SymbolTable::bindImportsToDefinitions() {
       continue;
     // A definition the DLL offers is the program's only if the executable
     // selects it, so the DLL's own references keep the default's import; an
-    // unselected definition is preempted, as on ELF.
-    if (offers.contains(d) && !file->isDelayLoaded()) {
+    // unselected definition is preempted, as on ELF. So is one the executables
+    // of a joint link define too.
+    bool interposed = jointInterposed.contains(d);
+    if ((offers.contains(d) || interposed) && !file->isDelayLoaded()) {
       Log(ctx) << "Keeping " << name << " for " << printSymbol(d)
-               << ", which the image offers";
+               << ", which the image " << (interposed ? "gives up" : "offers");
       // Only an object that describes how its instructions use the
       // definition's address can have those uses reach the program's choice.
       auto *obj = cast<ObjFile>(d->getFile());
       if (machine == ARM64 ? !obj->hasLinkRecords()
                            : !obj->describesFunctionSites())
-        Err(ctx) << d->getFile() << ": " << printSymbol(d)
-                 << " is offered as an overridable default, but its object "
-                    "does not describe its references to it, which therefore "
-                    "cannot reach the program's choice";
+        Err(ctx) << d->getFile() << ": " << printSymbol(d) << " is "
+                 << (interposed ? "defined by the executable of its joint link"
+                                : "offered as an overridable default")
+                 << ", but its object does not describe its references to it, "
+                    "which therefore cannot reach the program's choice";
       preemptedOffers[d] = imp;
       file->live = true;
       // The DLL's branches to the definition reach the import's thunk.

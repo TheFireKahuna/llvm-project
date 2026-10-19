@@ -61,6 +61,10 @@ bool isShareableVagueName(StringRef name);
 // vague entities, but images no link joins keep their own, compared by name.
 bool isTypeInfoName(StringRef name);
 
+// The DLL whose import library offers lazy symbol s as an import of the given
+// type, or empty if s is not one.
+StringRef getLazyImportDLL(Symbol *s, llvm::COFF::ImportType type);
+
 // The name of the guard variable of the variable named name.
 std::string getGuardName(StringRef name);
 
@@ -276,7 +280,8 @@ public:
 
   // The definitions this DLL offers, each with the default's import its own
   // references reach, so a definition the program does not select is preempted,
-  // as on ELF.
+  // as on ELF; and those it gives up to its joint link's executables, each with
+  // the import of theirs.
   llvm::MapVector<Symbol *, DefinedImportData *> preemptedOffers;
 
   // Under -import-slots in an executable, materialises its import libraries'
@@ -361,6 +366,10 @@ public:
   llvm::DenseSet<StringRef> exactCastVTables;
   llvm::SetVector<Symbol *> jointPreempted;
   llvm::DenseSet<Symbol *> jointGivenUp;
+  // As a DLL member of one, the functions it exports whose definitions the
+  // executables that load it define too, which take their place in its own
+  // references, as an ELF executable's definition preempts a shared object's.
+  llvm::DenseSet<Symbol *> jointInterposed;
   // Reads the overridable defaults that the import libraries the link names
   // record, by slot and by name, again only once more libraries have been read.
   size_t overrideRecordsArchives = 0;

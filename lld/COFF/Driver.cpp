@@ -3375,6 +3375,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     if (errorCount())
       return;
   }
+  warnInterposingDefinitions(ctx);
 
   if (config->ltoValidateAllVtablesHaveTypeInfos)
     ltoValidateAllVtablesHaveTypeInfos(args);

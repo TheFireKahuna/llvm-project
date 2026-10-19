@@ -46,6 +46,11 @@ void applyJointFacts(COFFLinkerContext &ctx,
                      const llvm::opt::InputArgList &args);
 void collectJointGrants(COFFLinkerContext &ctx);
 
+// Under -import-slots in an executable, warns of each function it defines
+// that a DLL it links, outside its joint link, exports too: on ELF the
+// executable's definition would take the DLL's place in the DLL's references.
+void warnInterposingDefinitions(COFFLinkerContext &ctx);
+
 // Runs /lldjointmerge.
 void mergeJointLink(COFFLinkerContext &ctx,
                     const llvm::opt::InputArgList &args);
