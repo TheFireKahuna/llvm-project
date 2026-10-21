@@ -82,6 +82,24 @@ static inline bool is_equal(const std::type_info* x, const std::type_info* y, bo
   return x == y || strcmp(x->name(), y->name()) == 0;
 }
 
+// Whether the pointee of either pointer or pointer to member type, or the class
+// of either pointer to member type, is incomplete: its type_info is then a
+// local copy that only its name identifies (Itanium C++ ABI 2.9.5p7), so the
+// types must be compared by name.
+static inline bool has_incomplete_target(const __cxxabiv1::__pbase_type_info* x,
+                                         const __cxxabiv1::__pbase_type_info* y) {
+  using __cxxabiv1::__pbase_type_info;
+  return ((x->__flags | y->__flags) &
+          (__pbase_type_info::__incomplete_mask | __pbase_type_info::__incomplete_class_mask)) != 0;
+}
+
+// The flags of a pointer or pointer to member type other than those that say a
+// type it refers to is incomplete, which no conversion adds or removes.
+static inline unsigned int qualification_flags(const __cxxabiv1::__pbase_type_info* x) {
+  using __cxxabiv1::__pbase_type_info;
+  return x->__flags & ~(__pbase_type_info::__incomplete_mask | __pbase_type_info::__incomplete_class_mask);
+}
+
 static inline ptrdiff_t update_offset_to_base(const char* vtable, ptrdiff_t offset_to_base) {
 #if __has_feature(cxx_abi_relative_vtable)
   // VTable components are 32 bits in the relative vtables ABI.
@@ -657,7 +675,7 @@ bool __pointer_type_info::can_catch(const __shim_type_info* thrown_type, void*& 
     return false;
   if (__flags & ~thrown_pointer_type->__flags & __no_add_flags_mask)
     return false;
-  if (is_equal(__pointee, thrown_pointer_type->__pointee, false))
+  if (is_equal(__pointee, thrown_pointer_type->__pointee, has_incomplete_target(this, thrown_pointer_type)))
     return true;
   // bullet 3A
   if (is_equal(__pointee, &typeid(void), false)) {
@@ -714,9 +732,9 @@ bool __pointer_type_info::can_catch_nested(const __shim_type_info* thrown_type) 
   if (thrown_pointer_type == 0)
     return false;
   // bullet 3B
-  if (thrown_pointer_type->__flags & ~__flags)
+  if (qualification_flags(thrown_pointer_type) & ~qualification_flags(this))
     return false;
-  if (is_equal(__pointee, thrown_pointer_type->__pointee, false))
+  if (is_equal(__pointee, thrown_pointer_type->__pointee, has_incomplete_target(this, thrown_pointer_type)))
     return true;
   // If the pointed to types differ then the catch type must be const
   // qualified.
@@ -766,9 +784,10 @@ bool __pointer_to_member_type_info::can_catch(const __shim_type_info* thrown_typ
     return false;
   if (__flags & ~thrown_pointer_type->__flags & __no_add_flags_mask)
     return false;
-  if (!is_equal(__pointee, thrown_pointer_type->__pointee, false))
+  bool use_strcmp = has_incomplete_target(this, thrown_pointer_type);
+  if (!is_equal(__pointee, thrown_pointer_type->__pointee, use_strcmp))
     return false;
-  if (is_equal(__context, thrown_pointer_type->__context, false))
+  if (is_equal(__context, thrown_pointer_type->__context, use_strcmp))
     return true;
 
   // [except.handle] does not allow the pointer-to-member conversions mentioned
@@ -783,11 +802,12 @@ bool __pointer_to_member_type_info::can_catch_nested(const __shim_type_info* thr
       dynamic_cast<const __pointer_to_member_type_info*>(thrown_type);
   if (thrown_member_ptr_type == 0)
     return false;
-  if (~__flags & thrown_member_ptr_type->__flags)
+  if (~qualification_flags(this) & qualification_flags(thrown_member_ptr_type))
     return false;
-  if (!is_equal(__pointee, thrown_member_ptr_type->__pointee, false))
+  bool use_strcmp = has_incomplete_target(this, thrown_member_ptr_type);
+  if (!is_equal(__pointee, thrown_member_ptr_type->__pointee, use_strcmp))
     return false;
-  if (!is_equal(__context, thrown_member_ptr_type->__context, false))
+  if (!is_equal(__context, thrown_member_ptr_type->__context, use_strcmp))
     return false;
   return true;
 }

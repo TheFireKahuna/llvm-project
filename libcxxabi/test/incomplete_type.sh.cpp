@@ -177,6 +177,40 @@ int main(int, char**) {
   }
   catch(...) { assert(!"FAIL: Didn't catch CompleteAtThrow::**" ); }
 
+  // Qualification conversions compare the types pointed to, which reach a
+  // class one side sees as incomplete.
+  try {
+    ThrowIncompletePP();
+    assert(false);
+  } catch (IncompleteAtThrow* const* p) {
+    assert(!p);
+  }
+  catch(...) { assert(!"FAIL: Didn't catch IncompleteAtThrow** as IncompleteAtThrow* const*" ); }
+
+  try {
+    ThrowCompletePP();
+    assert(false);
+  } catch (const CompleteAtThrow* const* p) {
+    assert(!p);
+  }
+  catch(...) { assert(!"FAIL: Didn't catch CompleteAtThrow** as const CompleteAtThrow* const*" ); }
+
+  try {
+    ThrowIncompleteMP();
+    assert(false);
+  } catch (const int IncompleteAtThrow::*p) {
+    assert(!p);
+  }
+  catch(...) { assert(!"FAIL: Didn't catch int IncompleteAtThrow::* as const int IncompleteAtThrow::*" ); }
+
+  try {
+    ThrowCompletePMP();
+    assert(false);
+  } catch (int CompleteAtThrow::* const* p) {
+    assert(!p);
+  }
+  catch(...) { assert(!"FAIL: Didn't catch int CompleteAtThrow::** as int CompleteAtThrow::* const*" ); }
+
 #if __cplusplus >= 201103L
   // Catch nullptr as complete type
   try {
