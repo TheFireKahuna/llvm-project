@@ -25,7 +25,7 @@
 # RUN: llvm-readobj --coff-imports a.exe | FileCheck --check-prefix=IMAGE %s
 
 # CHECK:      Name: .sealed
-# CHECK-NEXT: VirtualSize: 0x8
+# CHECK-NEXT: VirtualSize: 0x10
 # CHECK-NEXT: VirtualAddress: 0x4000
 
 ## f resolves to its definition, absent to zero, and g to a load of its cell.
@@ -34,7 +34,7 @@
 # CHECK-NEXT: mov x1, #0x0
 # CHECK-NEXT: mov x1, #0x0
 # CHECK-NEXT: adrp x2, 0x140004000
-# CHECK-NEXT: ldr x2, [x2]
+# CHECK-NEXT: ldr x2, [x2, #0x8]
 # CHECK-NEXT: ret
 # CHECK:      [[#PAGE + OFF]]: ret
 
@@ -43,11 +43,12 @@
 # CHECK-NEXT: add x0, x0, #0x[[#%x,LOFF:]]
 
 ## The list: no cells, no residual word, one run-time cell; the section it
-## seals is .sealed at 0x4000, size 8; then the run-time cell for g, {cell,
-## name, dll}, resolved in dll.dll, whose name and UTF-16 DLL name follow.
+## opens is .sealed at 0x4000, size 0x10, its done word first; then the
+## run-time cell for g, {cell, name, dll}, resolved in dll.dll, whose name and
+## UTF-16 DLL name follow.
 # CHECK:      [[#%x,LPAGE+LOFF]]      00000000 00000000 00000000 01000000
-# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x10]] 00400000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
-# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x20]] 00000000 00000000 00400000 34200000
+# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x10]] 00400000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CHECK-NEXT: [[#%x,LPAGE+LOFF+0x20]] 00000000 00000000 08400000 34200000
 # CHECK-NEXT: [[#%x,LPAGE+LOFF+0x30]] 36200000 67006400 6c006c00 2e006400  6 ..g.d.l.l...d.
 
 # IMAGE-NOT: Name: dll.dll
@@ -91,6 +92,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .quad 0
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  bl __llvm_run_fill
+  ret
 
 ## A stand-in for the builtins' __llvm_fill: it loads its list and references
 ## the ntdll functions it binds run-time imports and seals with.

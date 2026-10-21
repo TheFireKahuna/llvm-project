@@ -28,9 +28,7 @@
 # CHECK-NEXT: ret
 # CHECK:      [[#PAGE + OFF]]: ret
 
-## The one word with a base relocation is the C initializer table's pointer to
-## the fill.
-# RELOC:     Type: DIR64
+## No word needs a base relocation: the start-up calls the fill directly.
 # RELOC-NOT: Type: DIR64
 
 #--- main.s
@@ -81,6 +79,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .xword 0
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  bl __llvm_run_fill
+  ret
 
 ## A stand-in for the builtins' __llvm_fill: it loads its list and references
 ## the ntdll functions it binds run-time imports and seals with.

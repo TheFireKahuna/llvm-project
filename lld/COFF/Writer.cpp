@@ -1313,11 +1313,11 @@ void Writer::createSections() {
     createPartialSection(".rdata", data | r)
         ->chunks.push_back(slots.getThreadLocalSlotCopyList());
   }
-  // Ahead of every other C initializer: the image's fill, with its list and
-  // the names it binds imports by.
+  // The image's fill, which its start-up calls, with its list and the names
+  // it binds imports by; or the function that stands in for it.
+  if (Chunk *stub = slots.getFillStub())
+    createPartialSection(".text", code | r | x)->chunks.push_back(stub);
   if (slots.getFill()) {
-    createPartialSection(".CRT$XIA$fill", data | r)
-        ->chunks.push_back(slots.getFillPointer());
     PartialSection *rdata = createPartialSection(".rdata", data | r);
     rdata->chunks.push_back(slots.getFillList());
     llvm::append_range(rdata->chunks, slots.getRunTimeNames());
@@ -1379,8 +1379,8 @@ void Writer::createSections() {
 
       Log(ctx) << "Processing section " << pSec->name << " -> " << name;
 
-      // The linker's fills have groups of their own, in their order there.
-      if (pSec->name != ".CRT$XIA$fill" && pSec->name != ".CRT$XLA$fill")
+      // The linker's copy has a group of its own, in its order there.
+      if (pSec->name != ".CRT$XLA$fill")
         sortCRTSectionChunks(pSec->chunks);
     }
 
@@ -1415,10 +1415,13 @@ void Writer::createSections() {
       sec->splitECChunks();
   }
 
-  // Residual words and run-time-bound import cells get their own pages, mapped
-  // writable and made read-only by the fill.
-  if (!slots.getSealedChunks().empty() || !slots.getRunTimeCells().empty()) {
-    OutputSection *sec = createSection(".sealed", data | r | w);
+  // The fill's done word, residual words and run-time-bound import cells get
+  // their own pages, linked read-only and written under the fill's bracket.
+  if (slots.getDoneWord() || !slots.getSealedChunks().empty() ||
+      !slots.getRunTimeCells().empty()) {
+    OutputSection *sec = createSection(".sealed", data | r);
+    if (Chunk *done = slots.getDoneWord())
+      sec->addChunk(done);
     for (const RunTimeCell &c : slots.getRunTimeCells())
       sec->addChunk(c.cell);
     for (SectionChunk *sc : slots.getSealedChunks())
@@ -3232,9 +3235,8 @@ void Writer::createGuardCFTables() {
       if (s.sym->file->thunkSym && !ctx.jointGranted.contains(s.sym))
         giatsRVASet.insert({s.chunk, s.offset});
 
-  // The C initializer table calls the fill; the TLS callback array and the DLLs
-  // the executable's header names call the thread-local slot copy.
-  maybeAddAddressTakenFunction(addressTakenSyms, slots.getFill());
+  // The TLS callback array and the DLLs the executable's header names call the
+  // thread-local slot copy. Only the start-up calls the fill, directly.
   maybeAddAddressTakenFunction(addressTakenSyms,
                                slots.getThreadLocalSlotCopy());
 
@@ -3279,6 +3281,15 @@ void Writer::createGuardCFTables() {
   for (const ChunkAndOffset &c : exportedSyms)
     if (addressTakenSyms.insert(c).second && c.offset % 16 == 0)
       exportSuppressed.insert(c);
+  // The fill makes pages writable, so nothing may reach it but the start-up's
+  // direct call: an image that takes its address, or exports it, is refused.
+  if (Defined *fill = slots.getFill()) {
+    SymbolRVASet own;
+    addSymbolToRVASet(own, fill);
+    if (addressTakenSyms.contains(*own.begin()))
+      Err(ctx) << "the image takes the address of its fill, " << fill->getName()
+               << ", which only its start-up may call, and only directly";
+  }
   // Sealing may yet drop from the table a function whose address is taken.
   identityTaken = addressTakenSyms;
   identityKnown = true;

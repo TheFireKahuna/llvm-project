@@ -31,7 +31,7 @@
 # RUN: FileCheck --input-file=a.txt %s
 
 # CHECK:      Name: .sealed
-# CHECK-NEXT: VirtualSize: 0x10
+# CHECK-NEXT: VirtualSize: 0x18
 # CHECK-NEXT: VirtualAddress: 0x5000
 # CHECK-NOT:  Name: dll.dll
 # CHECK:      Name: ntdll.dll
@@ -43,24 +43,24 @@
 ## f and v read their cells; the archive's g is not loaded, so g is zero, as
 ## absent is.
 # CHECK:      <.text>:
-# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x140005000
-# CHECK-NEXT: callq *{{.*}}(%rip) # 0x140005000
-# CHECK-NEXT: movq {{.*}}(%rip), %rcx # 0x140005008
+# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x140005008
+# CHECK-NEXT: callq *{{.*}}(%rip) # 0x140005008
+# CHECK-NEXT: movq {{.*}}(%rip), %rcx # 0x140005010
 # CHECK-NEXT: movq $0x0, %rdx
 
 ## __llvm_fill loads its list.
 # CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
 ## The list: no cells, one residual word, two run-time cells; the section it
-## seals is .sealed at 0x5000, size 0x10.
+## opens is .sealed at 0x5000, size 0x18, its done word first.
 # CHECK:      [[#%x,LIST]]      00000000 00000000 01000000 02000000
-# CHECK-NEXT: [[#%x,LIST+0x10]] 00500000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CHECK-NEXT: [[#%x,LIST+0x10]] 00500000 18000000 {{[0-9a-f]+ [0-9a-f]+}}
 ## After the 40-byte header, the residual word {word, cell, addend} that writes
 ## the .data copy from v's cell, then the run-time cells {cell, name, dll}: f and
 ## v, each resolved in dll.dll, whose names and UTF-16 DLL name follow the list.
-# CHECK-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 00300000 08500000
-# CHECK-NEXT: [[#%x,LIST+0x30]] 00000000 00000000 00500000 50200000
-# CHECK-NEXT: [[#%x,LIST+0x40]] 52200000 08500000 62200000 64200000
+# CHECK-NEXT: [[#%x,LIST+0x20]] 00000000 00000000 00300000 10500000
+# CHECK-NEXT: [[#%x,LIST+0x30]] 00000000 00000000 08500000 50200000
+# CHECK-NEXT: [[#%x,LIST+0x40]] 52200000 10500000 62200000 64200000
 # CHECK-NEXT: [[#%x,LIST+0x50]] 66006400 6c006c00 2e006400 6c006c00  f.d.l.l...d.l.l.
 
 ## A reference other than a weak one, as a declaration marked dllimport gives,
@@ -142,6 +142,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .quad 0
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  callq __llvm_run_fill
+  retq
 
 ## A stand-in for the builtins' __llvm_fill: it loads its list and references
 ## the ntdll functions it binds run-time imports and seals with.

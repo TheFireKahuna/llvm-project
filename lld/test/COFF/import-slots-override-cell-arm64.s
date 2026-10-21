@@ -1,9 +1,10 @@
 # REQUIRES: aarch64
 ## The AArch64 form of a DLL's fill of its overridable-default cells: the
-## builtins' __llvm_fill, which the C initializer table runs, loads a list the
-## linker builds, the cells ordered by key, each {key u64 (bit 0 the read-only
-## mark), rva u32, kind u32}, preceded by the read-only ranges. The linker names
-## the fill to the table and keeps it only where it is needed.
+## builtins' __llvm_fill, which the start-up calls, loads a list the linker
+## builds, the cells ordered by key, each {key u64 (bit 0 the read-only mark),
+## rva u32, kind u32}, preceded by the read-only ranges. The linker points the
+## start-up's __llvm_run_fill at the fill and keeps it only where it is
+## needed.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium rt.s -o rt.obj
@@ -21,13 +22,13 @@
 # CHECK:      adrp x0, 0x[[#%x,PAGE:]]
 # CHECK-NEXT: add x0, x0, #0x[[#%x,OFF:]]
 
-## The list header: one read-only range, two cells; no section to seal; then,
-## after the 40-byte header, the range {rva, size} over the read-only import
+## The list header: one read-only range, two cells; .sealed at 0x5000 for the
+## fill's done word; then, after the 40-byte header, the range {rva, size} over the read-only import
 ## entry at 0x20C0, and the cells, {key, rva, kind}: the writable one in .data
 ## and the read-only import entry whose key has bit 0 set, each of slot 0, whose
 ## RVA is at 0x44 in the executable's header, each of kind 2.
 # CHECK:      [[#%x,PAGE+OFF]]      01000000 02000000 00000000 00000000
-# CHECK-NEXT: [[#%x,PAGE+OFF+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CHECK-NEXT: [[#%x,PAGE+OFF+0x10]] 00500000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
 # CHECK-NEXT: [[#%x,PAGE+OFF+0x20]] 01000000 00000000 c0200000 08000000
 # CHECK-NEXT: [[#%x,PAGE+OFF+0x30]] 00000000 44000000 00300000 02000000
 # CHECK-NEXT: [[#%x,PAGE+OFF+0x40]] 01000000 44000000 c0200000 02000000
@@ -63,9 +64,9 @@ EXPORTS
   NtProtectVirtualMemory
 
 #--- crt.s
-## The C initializer table's bounds, as the C runtime provides them, so the
-## linker names the fill to the table the runtime's start-up runs, and a
-## stand-in for the builtins' __llvm_fill: it loads its list and references the
+## The C initializer table's bounds, as the C runtime provides them, the
+## runtime's start-up, which calls the fill, and a stand-in for the builtins'
+## __llvm_fill: it loads its list and references the
 ## NtProtectVirtualMemory it makes read-only cells writable with.
         .section .CRT$XIA,"dr"
         .globl __xi_a
@@ -75,6 +76,13 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .xword 0
+
+## The image's start-up, which calls its fill directly.
+        .section .text$start,"xr"
+        .globl __start
+__start:
+        bl __llvm_run_fill
+        ret
 
         .def __llvm_fill
         .scl 2

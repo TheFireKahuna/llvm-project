@@ -722,7 +722,7 @@ bool SymbolTable::loadInteriorImports() {
   if (ctx.config.dll) {
     isPreemptibleVagueEntity(nullptr); // computes the set
     bool cells = !preemptibleVagueEntities->empty();
-    if (!cells && isa_and_nonnull<Defined>(findUnderscore("__xi_a"))) {
+    if (!cells && startCallsFill()) {
       StringMap<StringSet<>> offers = getPreemptibleOffers(ctx, false);
       cells = !offers.empty() &&
               llvm::any_of(ctx.importFileInstances, [&](ImportFile *f) {
@@ -1246,10 +1246,9 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
     preemptibleVagueEntities.emplace();
     Configuration &config = ctx.config;
     using B = Configuration::Bsymbolic;
-    // The cells are written by the image's fill, run by its C initializer
-    // table.
+    // The cells are written by the image's fill, which its start-up calls.
     if (!config.importSlots || !config.dll || config.bsymbolic == B::All ||
-        !isa_and_nonnull<Defined>(findUnderscore("__xi_a")))
+        !startCallsFill())
       return false;
     // Asked before liveness is decided, which a cell's reference keeps.
     SmallVector<SectionChunk *, 4> chunks;
@@ -1278,13 +1277,17 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
   return preemptibleVagueEntities->contains(s);
 }
 
+bool SymbolTable::startCallsFill() {
+  Symbol *s = find("__llvm_run_fill");
+  return isa_and_nonnull<Undefined>(s) || isa_and_nonnull<DefinedSynthetic>(s);
+}
+
 bool SymbolTable::isBoundTypeInfo(Symbol *s) {
   auto *d = dyn_cast_or_null<DefinedRegular>(s);
   return d && ctx.config.importSlots && ctx.config.dll &&
          ctx.config.bsymbolic != Configuration::Bsymbolic::All && d->isCOMDAT &&
          isTypeInfoName(d->getName()) && isa<ObjFile>(d->getFile()) &&
-         isDefaultVisibility(d) &&
-         isa_and_nonnull<Defined>(findUnderscore("__xi_a"));
+         isDefaultVisibility(d) && startCallsFill();
 }
 
 void SymbolTable::keepThreadLocalRecord(Defined *record) {

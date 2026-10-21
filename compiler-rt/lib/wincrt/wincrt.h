@@ -108,6 +108,10 @@ extern void *__dso_handle;
 
 // The image's own header, defined by the linker.
 extern IMAGE_DOS_HEADER __ImageBase;
+// The image's fill, defined by the linker: the builtins' __llvm_fill, or a
+// function returning 0 where the image needs none. Called only here, and
+// directly, so that it is no valid target of an indirect call.
+__attribute__((visibility("hidden"))) int __llvm_run_fill(void);
 
 extern uintptr_t __security_cookie;
 void __cdecl __security_init_cookie(void);
@@ -224,8 +228,8 @@ extern "C" __declspec(allocate(".rdata$T")) const LoadConfig _load_config_used;
 
 namespace wincrt {
 
-// Runs the image's C initializers, then its C++ constructors. Returns false
-// if a C initializer fails.
+// Runs the image's fill, then its C initializers, then its C++
+// constructors. Returns false if the fill or a C initializer fails.
 bool initializeImage();
 // Executable start-up after the Universal CRT has its arguments and
 // environment. Exits if a C initializer fails.

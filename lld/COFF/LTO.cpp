@@ -261,7 +261,7 @@ static bool isOfferedByImage(BitcodeFile &f,
 // address-significant functions, unless -Bsymbolic binds them locally.
 static bool isPreemptibleInImage(BitcodeFile &f,
                                  const lto::InputFile::Symbol &objSym,
-                                 Symbol *sym, bool hasCInitializers) {
+                                 Symbol *sym, bool callsFill) {
   const Configuration &config = f.symtab.ctx.config;
   using B = Configuration::Bsymbolic;
   if (!config.importSlots || !config.dll || config.bsymbolic == B::All ||
@@ -270,7 +270,7 @@ static bool isPreemptibleInImage(BitcodeFile &f,
           Comdat::NoDeduplicate ||
       objSym.getVisibility() != GlobalValue::DefaultVisibility ||
       !isShareableVagueName(sym->getName()) || isTypeInfoName(sym->getName()) ||
-      !hasCInitializers)
+      !callsFill)
     return false;
   if (objSym.isExecutable())
     return config.bsymbolic != B::Functions &&
@@ -359,9 +359,8 @@ void BitcodeCompiler::add(BitcodeFile &f) {
         offeredComdats[c] = nullptr;
   }
 
-  bool hasCInitializers =
-      ctx.config.importSlots && ctx.config.dll &&
-      isa_and_nonnull<Defined>(f.symtab.findUnderscore("__xi_a"));
+  bool callsFill =
+      ctx.config.importSlots && ctx.config.dll && f.symtab.startCallsFill();
 
   // Provide a resolution to the LTO API for each symbol.
   for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
@@ -400,7 +399,7 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // Under -import-slots a definition a DLL offers, or one this DLL reaches
     // through a cell so another image may preempt it at run time, is not final.
     // Both are definitions, so isFinalInImage saw no undefined __imp_ ref.
-    if (offered || isPreemptibleInImage(f, objSym, sym, hasCInitializers))
+    if (offered || isPreemptibleInImage(f, objSym, sym, callsFill))
       r.FinalDefinitionInLinkageUnit = false;
     // The object LTO generates defines the symbol again. It is undefined only
     // once every file is added, so later files still see where it is defined.

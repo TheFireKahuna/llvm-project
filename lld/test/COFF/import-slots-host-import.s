@@ -2,8 +2,9 @@
 ## Under -import-slots, an import of a DLL from an executable can only mean the
 ## process's own executable, whatever its file name, so it is bound by name
 ## when the DLL starts rather than by a descriptor naming the file: its pointer
-## is a cell in .sealed, which the image's fill, the builtins' __llvm_fill,
-## writes at run time against PEB->ImageBaseAddress, and a word of static data
+## is a cell in .sealed, linked read-only behind the fill's done word, which
+## the image's fill, the builtins' __llvm_fill, writes at run time against
+## PEB->ImageBaseAddress, and a word of static data
 ## holding the address is written from the cell. The run-time cells and residual
 ## word sit in a list the linker builds. -unresolved-host-imports imports what
 ## nothing defines from the executable, as code where an object declares it a
@@ -24,7 +25,7 @@
 # RUN: FileCheck --input-file=plug.txt %s
 
 # CHECK:      Name: .sealed
-# CHECK-NEXT: VirtualSize: 0x10
+# CHECK-NEXT: VirtualSize: 0x18
 # CHECK-NEXT: VirtualAddress: 0x5000
 # CHECK-NOT:  Name: host.exe
 # CHECK:      Name: ntdll.dll
@@ -34,24 +35,24 @@
 
 ## hostfn and hostvar read their cells in .sealed.
 # CHECK:      <.text>:
-# CHECK-NEXT: callq *{{.*}}(%rip) # 0x180005000
-# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180005008
+# CHECK-NEXT: callq *{{.*}}(%rip) # 0x180005008
+# CHECK-NEXT: movq {{.*}}(%rip), %rax # 0x180005010
 
 ## __llvm_fill loads its list.
 # CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
 ## The list: no cells, one residual word, two run-time cells; the section it
-## seals is .sealed at 0x5000, size 0x10; then the key of this DLL's name, and
+## opens is .sealed at 0x5000, size 0x18; then the key of this DLL's name, and
 ## a flag word whose bit 0 is set, since the DLL imports from the executable and
 ## runs its copy.
 # CHECK:      [[#%x,LIST]]      00000000 00000000 01000000 02000000
-# CHECK-NEXT: [[#%x,LIST+0x10]] 00500000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CHECK-NEXT: [[#%x,LIST+0x10]] 00500000 18000000 {{[0-9a-f]+ [0-9a-f]+}}
 ## After the 40-byte header, the residual word {word, cell, addend} for the
 ## .data copy, then the run-time cells {cell, name, 0 for one from the executable
 ## that is not weak}: hostfn and hostvar, whose names follow the list.
-# CHECK-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 00300000 00500000
-# CHECK-NEXT: [[#%x,LIST+0x30]] 00000000 00000000 00500000 50200000
-# CHECK-NEXT: [[#%x,LIST+0x40]] 00000000 08500000 57200000 00000000
+# CHECK-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 00300000 08500000
+# CHECK-NEXT: [[#%x,LIST+0x30]] 00000000 00000000 08500000 50200000
+# CHECK-NEXT: [[#%x,LIST+0x40]] 00000000 10500000 57200000 00000000
 # CHECK-NEXT: [[#%x,LIST+0x50]] 686f7374 666e0068 6f737476 61720000  hostfn.hostvar..
 
 ## The names are imported from the executable that loads the DLL.
@@ -98,6 +99,13 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+## The image's start-up, which calls its fill directly.
+        .section .text$start,"xr"
+        .globl __start
+__start:
+        callq __llvm_run_fill
+        retq
 
 ## A stand-in for the builtins' __llvm_fill: it loads its list and references
 ## the ntdll functions it binds run-time host imports and seals with.

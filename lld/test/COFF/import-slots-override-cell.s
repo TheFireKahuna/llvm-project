@@ -3,11 +3,11 @@
 ## the words through which it reaches the default: each in-place import slot of
 ## it, and its import's entry, through which the DLL calls it and loads its
 ## address. The loader writes them with the runtime's entry. The DLL's fill, the
-## builtins' __llvm_fill, which its C initializer table runs before every other
-## initializer, writes the program's replacement over each cell of a replaced
-## slot, from a list the linker builds: the cells ordered by key, each {key u64
-## (bit 0 the read-only mark), rva u32, kind u32}, preceded by the read-only
-## ranges it makes writable. The executable binds its own references at link
+## builtins' __llvm_fill, which its start-up calls before every initializer,
+## writes the program's replacement over each cell of a replaced slot, from a
+## list the linker builds: the cells ordered by key, each {key u64 (bit 0 the
+## read-only mark), rva u32, kind u32}, preceded by the read-only ranges it
+## makes writable. The executable binds its own references at link
 ## time and carries no fill.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
@@ -42,12 +42,13 @@
 ## __llvm_fill loads its list.
 # FILL:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
-## The list header: one read-only range, two cells; no section to seal; then
-## the key of this DLL's name, and a flag word whose bit 0 runs the
-## executable's copy first, since a cell may take the executable's code. The
-## range spans the read-only cell, the import entry at 0x20C0.
+## The list header: one read-only range, two cells; .sealed at 0x5000 for the
+## fill's done word; then the key of this DLL's name, and a flag word whose
+## bit 0 runs the executable's copy first, since a cell may take the
+## executable's code. The range spans the read-only cell, the import entry at
+## 0x20C0.
 # FILL:      [[#%x,LIST]]      01000000 02000000 00000000 00000000
-# FILL-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# FILL-NEXT: [[#%x,LIST+0x10]] 00500000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
 ## Then, after the 40-byte header, the range, {rva, size}, and the cells, {key,
 ## rva, kind}: the writable one in .data, and the read-only import entry whose
 ## key has bit 0 set, each of slot 0, whose RVA is at 0x44 in the executable's
@@ -56,11 +57,11 @@
 # FILL-NEXT: [[#%x,LIST+0x30]] 00000000 44000000 00300000 02000000
 # FILL-NEXT: [[#%x,LIST+0x40]] 01000000 44000000 c0200000 02000000
 
-## The C initializer table holds the fill's pointer right after the table's
-## start.
+## The C initializer table holds no pointer to the fill, which the start-up
+## calls directly.
 # RUN: llvm-objdump -s -j .CRT use.dll | FileCheck --check-prefix=CRT %s
 # CRT:      Contents of section .CRT:
-# CRT-NEXT: 00000000 00000000 {{[0-9a-f]+}} 01000000
+# CRT-NEXT: 00000000 00000000 00000000 00000000
 
 ## With only a writable cell, which is then the slot its import is read from,
 ## the fill names no read-only range.
@@ -82,12 +83,12 @@
 # RUN: llvm-readobj --coff-imports plain.dll | FileCheck --check-prefix=NONE %s
 # NONE-NOT: NtProtectVirtualMemory
 
-## Without a C initializer table nothing runs the fill, and without
+## Without a start-up that calls it nothing runs the fill, and without
 ## NtProtectVirtualMemory the fill's own reference to it is undefined: either is
 ## an error, not a silently unreplaced default.
 # RUN: not lld-link -import-slots -dll -noentry use.obj rt.lib \
 # RUN:   ntdll.lib -out:nocrt.dll 2>&1 | FileCheck --check-prefix=NOCRT %s
-# NOCRT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that the image has no C initializer table (__xi_a) to fill
+# NOCRT: error: the image reaches __declspec(dllimport) operator new(unsigned long long), an overridable default imported from rt.dll, through a cell that the image's start-up does not call __llvm_run_fill to fill
 # RUN: not lld-link -import-slots -dll -noentry use.obj crt.obj rt.lib \
 # RUN:   -out:noprotect.dll 2>&1 | \
 # RUN:   FileCheck --check-prefix=NOPROTECT %s
@@ -143,9 +144,9 @@ EXPORTS
   NtProtectVirtualMemory
 
 #--- crt.s
-## The C initializer table's bounds, as the C runtime provides them, so the
-## linker names the fill to the table the runtime's start-up runs, and a
-## stand-in for the builtins' __llvm_fill: it loads its list and references the
+## The C initializer table's bounds, as the C runtime provides them, the
+## runtime's start-up, which calls the fill, and a stand-in for the builtins'
+## __llvm_fill: it loads its list and references the
 ## NtProtectVirtualMemory it makes read-only cells writable with.
         .section .CRT$XIA,"dr"
         .globl __xi_a
@@ -155,6 +156,13 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+## The image's start-up, which calls its fill directly.
+        .section .text$start,"xr"
+        .globl __start
+__start:
+        callq __llvm_run_fill
+        retq
 
         .def __llvm_fill
         .scl 2

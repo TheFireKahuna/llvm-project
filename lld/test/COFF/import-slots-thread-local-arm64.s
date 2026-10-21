@@ -46,12 +46,13 @@
 ## __llvm_fill loads its list, whose address its adrp and add name.
 # CALL:      adrp x0, 0x[[#%x,PAGE:]]
 # CALL-NEXT: add x0, x0, #0x[[#%x,OFF:]]
-## One run-time cell, the cell in .sealed at 0x4000; the flag word's bit 0 set
-## to run the executable's copy; the run-time cell for hostfn, bound in the
-## executable (dll word 0), whose name follows the list.
+## One run-time cell; .sealed at 0x4000, the fill's done word and then the
+## cell; the flag word's bit 0 set to run the executable's copy; the run-time
+## cell for hostfn, bound in the executable (dll word 0), whose name follows the
+## list.
 # CALL:      [[#%x,PAGE+OFF]]      00000000 00000000 00000000 01000000
-# CALL-NEXT: [[#%x,PAGE+OFF+0x10]] 00400000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
-# CALL-NEXT: [[#%x,PAGE+OFF+0x20]] 01000000 00000000 00400000 {{[0-9a-f]+}}
+# CALL-NEXT: [[#%x,PAGE+OFF+0x10]] 00400000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CALL-NEXT: [[#%x,PAGE+OFF+0x20]] 01000000 00000000 08400000 {{[0-9a-f]+}}
 # CALL-NEXT: [[#%x,PAGE+OFF+0x30]] 00000000 {{.*}}
 
 #--- host.def
@@ -72,6 +73,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .quad 0
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  bl __llvm_run_fill
+  ret
 
   .def __llvm_fill
   .scl 2

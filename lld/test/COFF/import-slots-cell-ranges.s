@@ -23,11 +23,12 @@
 ## __llvm_fill loads its list.
 # CHECK:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 
-## The list header names two read-only ranges and two cells; then, after the
-## 40-byte header, the ranges, {rva, size}: the pointer's in .rdata, then
-## .myro's at 0x5000, kept apart so .data between them stays read-only.
+## The list header names two read-only ranges and two cells, and .sealed at
+## 0x6000, holding the fill's done word; then, after the 40-byte header, the
+## ranges, {rva, size}: the pointer's in .rdata, then .myro's at 0x5000, kept
+## apart so .data between them stays read-only.
 # CHECK:      [[#%x,LIST]]      02000000 02000000 00000000 00000000
-# CHECK-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CHECK-NEXT: [[#%x,LIST+0x10]] 00600000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
 # CHECK-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 f0200000 08000000
 # CHECK-NEXT: [[#%x,LIST+0x30]] 00500000 08000000 {{.*}}
 
@@ -40,7 +41,7 @@
 # RUN: FileCheck --check-prefix=MERGED --input-file=merged.txt %s
 # MERGED:      leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
 # MERGED:      [[#%x,LIST]]      01000000 02000000 00000000 00000000
-# MERGED-NEXT: [[#%x,LIST+0x10]] 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# MERGED-NEXT: [[#%x,LIST+0x10]] 00500000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
 # MERGED-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 00210000 80000000
 # MERGED-NEXT: [[#%x,LIST+0x30]] 00000000 00000000 {{.*}}
 
@@ -73,6 +74,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .quad 0
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  callq __llvm_run_fill
+  retq
 
 ## A stand-in for the builtins' __llvm_fill: it loads its list and references
 ## the NtProtectVirtualMemory it makes read-only ranges writable with.

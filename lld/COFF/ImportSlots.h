@@ -129,7 +129,12 @@ public:
   // The names the fill resolves its cells by.
   ArrayRef<Chunk *> getRunTimeNames() const { return runTimeNames; }
   Defined *getFill() const { return fill; }
-  Chunk *getFillPointer() const { return fillPointer; }
+  // What __llvm_run_fill names where the image has no fill: a function that
+  // returns 0.
+  Chunk *getFillStub() const { return fillStub; }
+  // The fill's done word, first in .sealed, where the fill writes read-only
+  // memory.
+  Chunk *getDoneWord() const { return doneWord; }
   Chunk *getFillList() const { return fillList; }
   Chunk *getVagueOfferTable() const { return vagueOfferTable; }
 
@@ -175,11 +180,12 @@ private:
   // first such word.
   llvm::MapVector<ImportFile *, std::pair<SectionChunk *, uint32_t>>
       interiorBases;
-  // The builtins' fill, its pointer in the C initializer table and the list it
-  // works through; and the table through which another DLL's search finds
-  // this image's instances.
+  // The builtins' fill, or the function standing in for it where the image
+  // has none, and the list it works through; and the table through which
+  // another DLL's search finds this image's instances.
   Defined *fill = nullptr;
-  Chunk *fillPointer = nullptr;
+  Chunk *fillStub = nullptr;
+  Chunk *doneWord = nullptr;
   Chunk *fillList = nullptr;
   Chunk *vagueOfferTable = nullptr;
 

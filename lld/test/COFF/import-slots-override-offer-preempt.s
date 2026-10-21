@@ -100,6 +100,13 @@ __xi_a:
 __xi_z:
         .quad 0
 
+## The image's start-up, which calls its fill directly.
+        .section .text$start,"xr"
+        .globl __start
+__start:
+        callq __llvm_run_fill
+        retq
+
 ## A stand-in for the builtins' __llvm_fill: it loads its list and references
 ## the NtProtectVirtualMemory it makes read-only cells writable with.
         .def __llvm_fill

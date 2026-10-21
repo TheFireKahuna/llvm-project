@@ -3290,14 +3290,18 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     } while (run() || loadedImports);
   }
 
-  if (config->importSlots) {
+  if (config->importSlots)
     ctx.symtab.exportInteriorNames();
-    // The builtins' fill and copy of thread-local slots, which the writer keeps
-    // where the image needs them.
-    if (Symbol *s = ctx.symtab.find("__llvm_fill"); s && s->isLazy()) {
-      ctx.symtab.addUndefined("__llvm_fill");
-      run();
-    }
+  // The start-up's call of the image's fill, which the writer points at the
+  // builtins' fill where the image needs one and at a function returning 0
+  // where it does not.
+  if (Symbol *s = ctx.symtab.find("__llvm_run_fill"); s && isa<Undefined>(s)) {
+    if (config->importSlots)
+      if (Symbol *f = ctx.symtab.find("__llvm_fill"); f && f->isLazy()) {
+        ctx.symtab.addUndefined("__llvm_fill");
+        run();
+      }
+    replaceSymbol<DefinedSynthetic>(s, s->getName(), nullptr);
   }
 
   // Handle /includeglob

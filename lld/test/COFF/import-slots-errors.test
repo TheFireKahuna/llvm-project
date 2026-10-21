@@ -23,7 +23,7 @@
 # SHORT: error: short.obj: the address of variable at offset 0x4 extends past the end of .rdata (size 0x8)
 # END: error: end.obj: the address of variable at offset 0x8 extends past the end of .rdata (size 0x8)
 # OVERFLOW: error: overflow.obj: the address of variable at offset 0xffffffff extends past the end of .rdata (size 0x8)
-# ADDEND: error: addend.obj: .rdata holds the address of variable plus 4, imported from lib.dll, which exports no name for it, and the image has no C initializer table (__xi_a) to write it
+# ADDEND: error: addend.obj: .rdata holds the address of variable plus 4, imported from lib.dll, which exports no name for it, and the image's start-up does not call __llvm_run_fill to write it
 
 ## Touching words, an identical duplicate and unsorted relocations are valid;
 ## the last two make one run of two words, the DLL's only descriptor.

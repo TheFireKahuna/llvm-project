@@ -275,6 +275,13 @@ __llvm_fill:
 __xi_z:
   .quad 0
 
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  callq __llvm_run_fill
+  retq
+
 #--- ntdll.def
 LIBRARY ntdll.dll
 EXPORTS

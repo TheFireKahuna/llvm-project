@@ -31,12 +31,13 @@
 # CHECK:      StartAddressOfRawData: 0x140005000
 # CHECK:      AddressOfIndex: 0x140003000
 
-## The C initializer table holds the fill's pointer, and the TLS callback array,
-## after its opening null, the copy's; both point into the image's code.
+## The C initializer table holds no pointer to the fill, which the start-up
+## calls directly; the TLS callback array, after its opening null, holds the
+## copy's, which points into the image's code.
 # CHECK:      Contents of section .CRT:
-# CHECK-NEXT: 11111111 11111111 {{[0-9a-f]+}} 01000000
-# CHECK-NEXT: 33333333 33333333 00000000 00000000
-# CHECK-NEXT: {{[0-9a-f]+}} 01000000 00000000 00000000
+# CHECK-NEXT: 11111111 11111111 33333333 33333333
+# CHECK-NEXT: 00000000 00000000 {{[0-9a-f]+}} 01000000
+# CHECK-NEXT: 00000000 00000000
 
 ## The copy list: one slot, its count a 64-bit word; then the slot's RVA, the
 ## template start plus 8, and the lookup entry 0x20e8 the template holds for it.
@@ -61,11 +62,13 @@
 # RUN: od -A x -t x4 -j 0x1c -N 8 noslot.exe | FileCheck --check-prefix=NOTAG %s
 # NOTAG: 00000000 00000000
 
-## A DLL that imports from no executable keeps no fill pointer in its C
-## initializer table, so nothing runs a copy.
-# RUN: llvm-objdump -s -j .CRT tl.dll | FileCheck --check-prefix=NOCALL %s
-# NOCALL:      Contents of section .CRT:
-# NOCALL-NEXT: 11111111 11111111 33333333 33333333
+## A DLL that imports from no executable has no fill, so nothing runs a copy:
+## its start-up calls a function returning 0.
+# RUN: llvm-objdump -d --no-show-raw-insn tl.dll | \
+# RUN:   FileCheck --check-prefix=NOCALL %s
+# NOCALL:      180001000: xorl %eax, %eax
+# NOCALL-NEXT: retq
+# NOCALL-NEXT: callq 0x180001000
 
 ## A DLL that imports from an executable may call it from its initializers
 ## before the executable's TLS callbacks run, so the linker sets bit 0 of its
@@ -81,18 +84,20 @@
 
 # CALL:      <.text>:
 # CALL-NEXT: leaq {{.*}}(%rip), %rax # 0x[[#%x,LIST:]]
-## No cell or residual word, one run-time cell; the cell in .sealed at 0x4000;
+## No cell or residual word, one run-time cell; .sealed at 0x4000, the fill's
+## done word and then the cell;
 ## the flag word's bit 0 set to run the executable's copy; the run-time cell for
 ## hostfn, bound in the executable (dll word 0), whose name follows the list.
 # CALL:      [[#%x,LIST]]      00000000 00000000 00000000 01000000
-# CALL-NEXT: [[#%x,LIST+0x10]] 00400000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
-# CALL-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 00400000 {{[0-9a-f]+}}
+# CALL-NEXT: [[#%x,LIST+0x10]] 00400000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
+# CALL-NEXT: [[#%x,LIST+0x20]] 01000000 00000000 08400000 {{[0-9a-f]+}}
 # CALL-NEXT: [[#%x,LIST+0x30]] 00000000 {{.*}}
 
-## A DLL with a run-time host import but no C initializer table cannot bind it.
+## A DLL with a run-time host import but no start-up that calls the fill cannot
+## bind it.
 # RUN: not lld-link -import-slots -dll -noentry plug.obj host.lib \
 # RUN:   -out:nocrt.dll 2>&1 | FileCheck --check-prefix=NOCRTDLL %s
-# NOCRTDLL: error: cannot bind __declspec(dllimport) hostfn, imported from host.exe, at run time: the image has no C initializer table (__xi_a) to write it
+# NOCRTDLL: error: cannot bind __declspec(dllimport) hostfn, imported from host.exe, at run time: the image's start-up does not call __llvm_run_fill to write it
 
 ## Without a TLS callback array nothing runs the copy.
 # RUN: not lld-link -import-slots -entry:main -subsystem:console main.obj \
@@ -118,6 +123,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .quad 0x3333333333333333
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  callq __llvm_run_fill
+  retq
   .section .CRT$XLA,"dr"
   .globl __xl_a
 __xl_a:

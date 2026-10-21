@@ -90,12 +90,12 @@
 # FILL-NEXT: ImportLookupTableRVA:
 # FILL-NEXT: ImportAddressTableRVA: 0x3000
 # FILL-NEXT: Symbol: hook
-## The list: one read-only range over the import entry at 0x20C0, then the
-## cells {key, rva, kind}, the key's bit 0 marking a read-only cell; a default
+## The list: one read-only range over the import entry at 0x20C0, .sealed at
+## 0x5000 for the fill's done word, then the cells {key, rva, kind}, the key's bit 0 marking a read-only cell; a default
 ## bound by name is of kind 0: the writable word under hook's key, then the
 ## read-only import entry under the key with bit 0 set.
 # FILL:      180002000 01000000 02000000 00000000 00000000
-# FILL-NEXT: 180002010 00000000 00000000 {{[0-9a-f]+ [0-9a-f]+}}
+# FILL-NEXT: 180002010 00500000 08000000 {{[0-9a-f]+ [0-9a-f]+}}
 # FILL-NEXT: 180002020 01000000 00000000 c0200000 08000000
 # FILL-NEXT: 180002030 d2315e5a e1358eba 00300000 00000000
 # FILL-NEXT: 180002040 d3315e5a e1358eba c0200000 00000000
@@ -202,6 +202,13 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+## The image's start-up, which calls its fill directly.
+        .section .text$start,"xr"
+        .globl __start
+__start:
+        callq __llvm_run_fill
+        retq
 
         .def __llvm_fill
         .scl 2

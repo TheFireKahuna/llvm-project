@@ -34,9 +34,9 @@
 # LIB:      <g>:
 # LIB-NEXT: bl 0x[[#%x,THUNK:]]
 # LIB-NEXT: adrp x0, 0x180005000
-# LIB-NEXT: ldr x0, [x0]
+# LIB-NEXT: ldr x0, [x0, #0x8]
 # LIB:      [[#%x,THUNK]]: adrp x16, 0x180005000
-# LIB-NEXT: ldr x16, [x16]
+# LIB-NEXT: ldr x16, [x16, #0x8]
 # LIB-NEXT: br x16
 
 # RUN: llvm-readobj --coff-imports --sections user.dll | \
@@ -104,6 +104,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .quad 0
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  bl __llvm_run_fill
+  ret
 
 ## A stand-in for the builtins' __llvm_fill.
   .def __llvm_fill

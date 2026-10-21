@@ -452,11 +452,7 @@ void FillListChunk::writeTo(uint8_t *buf) const {
     header[5] = seal->getVirtualSize();
   }
   write64le(buf + 24, selfKey);
-  header[8] = callsCopy | (llvm::any_of(words, [](const ResidualWord &w) {
-                             return w.inPlace;
-                           })
-                               ? 2
-                               : 0);
+  header[8] = callsCopy;
   header[9] = llvm::count_if(
       words, [](const ResidualWord &w) { return w.threadLocal; });
   auto *range = reinterpret_cast<support::ulittle32_t *>(buf + headerSize);
@@ -1161,8 +1157,11 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     }
     sc->hasImportSlots = true;
     ctx.importSlots[sc] = std::move(slots);
-    // A chunk with residual words stays writable until the fill seals it.
+    // A chunk with residual words is in .sealed, linked read-only and laid
+    // out within the import address table directory, so the loader writes its
+    // slots while it binds, as it does the table's.
     if (sealedChunks.contains(sc)) {
+      slotSections.insert(".sealed");
       writable.push_back(sc);
     } else if (readOnly && name == ".rdata") {
       slotChunks.push_back(sc);
@@ -1272,7 +1271,7 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   llvm::erase_if(idata.imports,
                  [&](DefinedImportData *imp) { return unneeded.contains(imp); });
 
-  // A read-only chunk with residual words is writable until they are written.
+  // A slot in .sealed, which the fill opens and writes, is not read in place.
   auto readable = [&](const ImportSlot &s) {
     StringRef outName = getOutputSectionName(
         getPartialSectionName(s.chunk, config.mingw), config.mingw);
@@ -1381,7 +1380,7 @@ void ImportSlotContents::collectCells() {
   SymbolTable &symtab = ctx.symtab;
   symtab.readOverrideRecords();
   StringMap<StringSet<>> preemptibleOffers;
-  if (isa_and_nonnull<Defined>(symtab.findUnderscore("__xi_a")))
+  if (symtab.startCallsFill())
     preemptibleOffers = getPreemptibleOffers(ctx);
   // A word holding the address of name, an overridable default, imported
   // through imp or the image's own, is keyed by its slot or by its name; one
@@ -1416,7 +1415,7 @@ void ImportSlotContents::collectCells() {
   auto importName = [](DefinedImportData *imp) {
     return imp->getName().drop_front(strlen("__imp_"));
   };
-  // A chunk with residual words is writable until the fill seals it.
+  // A cell in .sealed is opened with it, so it names no range of its own.
   auto cellReadOnly = [&](SectionChunk *sc) {
     return !(sc->header->Characteristics & IMAGE_SCN_MEM_WRITE) &&
            !sealedChunks.contains(sc);
@@ -1520,8 +1519,9 @@ void ImportSlotContents::collectCells() {
   if (llvm::any_of(cells,
                    [](const OverrideCell &c) { return !c.key && c.slot >= 32; }))
     return fail("that the override table's mask cannot name");
-  if (!isa_and_nonnull<Defined>(symtab.findUnderscore("__xi_a")))
-    return fail("that the image has no C initializer table (__xi_a) to fill");
+  if (!symtab.startCallsFill())
+    return fail("that the image's start-up does not call __llvm_run_fill to "
+                "fill");
   fillList = make<FillListChunk>(ctx, std::move(cells));
 }
 
@@ -1586,23 +1586,71 @@ void ImportSlotContents::createOfferTable() {
   }
 }
 
-// Under -import-slots, the fill writes what the loader cannot: the cells, the
-// imports bound at run time and the residual words.
+// The fill's done word, at the head of .sealed: zero until the fill's bracket
+// closes.
+class FillDoneChunk : public NonSectionChunk {
+public:
+  FillDoneChunk() { setAlignment(8); }
+  size_t getSize() const override { return 8; }
+  void writeTo(uint8_t *buf) const override {}
+  uint32_t getOutputCharacteristics() const override {
+    return IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+  }
+};
+
+// The fill where an image has none: a function that returns 0.
+class FillStubChunk : public NonSectionChunk {
+public:
+  explicit FillStubChunk(bool arm64) : arm64(arm64) {
+    setAlignment(arm64 ? 4 : 16);
+  }
+  size_t getSize() const override { return arm64 ? 8 : 3; }
+  void writeTo(uint8_t *buf) const override {
+    if (arm64) {
+      write32le(buf, 0x52800000);     // mov w0, #0
+      write32le(buf + 4, 0xd65f03c0); // ret
+    } else {
+      buf[0] = 0x31; // xor eax, eax
+      buf[1] = 0xc0;
+      buf[2] = 0xc3; // ret
+    }
+  }
+  uint32_t getOutputCharacteristics() const override {
+    return IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ;
+  }
+
+private:
+  bool arm64;
+};
+
+// The fill writes what the loader cannot: the cells, the imports bound at run
+// time and the residual words. The image's start-up calls it, directly, as
+// __llvm_run_fill, which the linker defines as the builtins' __llvm_fill where
+// the image needs a fill and as a function returning 0 where it needs none,
+// so the fill is never a pointer in a table and never a valid target of an
+// indirect call.
 void ImportSlotContents::createFill() {
   llvm::TimeTraceScope timeScope("Create fill");
   Configuration &config = ctx.config;
   auto *list = cast_or_null<FillListChunk>(fillList);
-  bool hasXIA = isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("__xi_a"));
+  auto *run =
+      dyn_cast_or_null<DefinedSynthetic>(ctx.symtab.find("__llvm_run_fill"));
   // A DLL that imports from an executable, or whose cells may take the
   // executable's code, can run that code while the DLLs initialize, before the
   // executable's TLS callbacks, so it first runs the executable's copy.
   bool callsCopy =
-      config.importSlots && config.dll && hasXIA &&
+      config.importSlots && config.dll && run &&
       (list || llvm::any_of(ctx.importFileInstances, [](ImportFile *f) {
          return f->live && StringRef(f->dllName).ends_with_insensitive(".exe");
        }));
+  auto stub = [&] {
+    if (!run)
+      return;
+    fillStub = make<FillStubChunk>(config.machine == ARM64);
+    replaceSymbol<DefinedSynthetic>(run, run->getName(), fillStub);
+  };
   if (!callsCopy && !list && residualWords.empty() && runTimeCells.empty())
-    return;
+    return stub();
   if (!residualWords.empty() || !runTimeCells.empty()) {
     auto fail = [&](const Twine &why) {
       if (!runTimeCells.empty()) {
@@ -1619,11 +1667,14 @@ void ImportSlotContents::createFill() {
                << first.addend << ", imported from " << first.imp->getDLLName()
                << ", which exports no name for it, and " << why;
     };
-    if (!hasXIA)
-      return fail("the image has no C initializer table (__xi_a) to write it");
-    if ((!sealedChunks.empty() || !runTimeCells.empty()) && config.align % 4096)
-      return fail("its section alignment is smaller than a page, which the "
-                  "image cannot make read-only once written");
+    if (!run)
+      return fail("the image's start-up does not call __llvm_run_fill to "
+                  "write it");
+  }
+  if (!run) {
+    Err(ctx) << "the image needs a fill, but its start-up does not call "
+                "__llvm_run_fill";
+    return;
   }
   auto *f = dyn_cast_or_null<DefinedRegular>(ctx.symtab.find("__llvm_fill"));
   if (!f) {
@@ -1636,9 +1687,20 @@ void ImportSlotContents::createFill() {
   list->runTimeCells = runTimeCells;
   list->setWords(residualWords);
   list->callsCopy = callsCopy;
-  list->sealed = !runTimeCells.empty()   ? runTimeCells.front().cell
-                 : !sealedChunks.empty() ? sealedChunks.front()
-                                         : nullptr;
+  // A fill that writes read-only memory does so once, under a bracket that
+  // the done word at the head of .sealed, linked read-only, closes.
+  if (!sealedChunks.empty() || !runTimeCells.empty() ||
+      llvm::any_of(list->cells,
+                   [](const OverrideCell &c) { return c.readOnly; }) ||
+      llvm::any_of(residualWords,
+                   [](const ResidualWord &w) { return w.inPlace; })) {
+    if (config.align % 4096) {
+      Err(ctx) << "the image's fill writes read-only memory, which its "
+                  "section alignment, smaller than a page, cannot keep apart";
+      return;
+    }
+    list->sealed = doneWord = make<FillDoneChunk>();
+  }
   list->selfKey =
       overrideNameKey(sys::path::filename(config.outputFile).lower());
   // The fill calls ntdll.
@@ -1649,7 +1711,8 @@ void ImportSlotContents::createFill() {
             imp && !imp->file->live)
           addImport(imp);
   fill = useBuiltin(ctx, "__llvm_fill", "__llvm_fill_list", list);
-  fillPointer = make<LocalImportChunk>(ctx, fill);
+  replaceSymbol<DefinedSynthetic>(run, run->getName(), f->getChunk(),
+                                  f->getValue());
 }
 
 // The loader copies an executable's thread-local template into the main

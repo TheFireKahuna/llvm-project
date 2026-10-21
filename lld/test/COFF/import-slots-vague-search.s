@@ -7,9 +7,9 @@
 ## DLLs it delay-loads, then the buckets, each naming the DLL's pointer to an
 ## entity, which holds the instance it uses, then those keys. A DLL with
 ## cells, of its own entities or of an entity that a DLL it imports from keeps
-## preemptible, runs a search from its C initializer table: once the process
-## has initialized, for each entity the executable's table does not name, it
-## probes the table of each module loaded with the process, or that
+## preemptible, runs a search from the fill its start-up calls: once the
+## process has initialized, for each entity the executable's table does not
+## name, it probes the table of each module loaded with the process, or that
 ## delay-loads it, writes the instance into the entity's cells, and pins the
 ## module. The DLL itself is not pinned: the C runtime keeps it loaded only
 ## once it registers the destructor of an instance another image owns.
@@ -180,6 +180,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .quad 0
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  callq __llvm_run_fill
+  retq
   .text
   .globl __delayLoadHelper2
 __delayLoadHelper2:

@@ -64,6 +64,13 @@ __xi_a:
 __xi_z:
   .quad 0
 
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  bl __llvm_run_fill
+  ret
+
 ## A stand-in for the builtins' __llvm_fill: it loads its list and references
 ## the ntdll functions it pins a searched module and seals with.
   .def __llvm_fill

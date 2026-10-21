@@ -42,15 +42,15 @@
 # LOG: Keeping __imp_f for f, which the image gives up
 
 ## lib.dll keeps exporting its own f and g, imports f, and app.exe's identity,
-## from no descriptor, and reaches f through its cell in .sealed: g's call
-## through the import's thunk, its lea as a load, its data word from the fill's
-## list.
+## from no descriptor, and reaches f through its cell in .sealed, after the
+## fill's done word: g's call through the import's thunk, its lea as a load,
+## its data word from the fill's list.
 # RUN: llvm-readobj --coff-imports --coff-exports --sections lib.dll > lib.txt
 # RUN: llvm-objdump -d lib.dll >> lib.txt
 # RUN: llvm-objdump -s -j .rdata lib.dll >> lib.txt
 # RUN: FileCheck --check-prefix=LIB --input-file=lib.txt %s
 # LIB:      Name: .sealed
-# LIB-NEXT: VirtualSize: 0x10
+# LIB-NEXT: VirtualSize: 0x18
 # LIB-NEXT: VirtualAddress: 0x5000
 # LIB-NOT:  Name: app.exe
 # LIB:      Name: g
@@ -60,13 +60,13 @@
 # LIB:      <f>:
 # LIB:      <g>:
 # LIB-NEXT: callq 0x[[#%x,THUNK:]]
-# LIB-NEXT: movq {{.*}}(%rip), %rax # 0x180005000
-# LIB:      [[#%x,THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x180005000
+# LIB-NEXT: movq {{.*}}(%rip), %rax # 0x180005008
+# LIB:      [[#%x,THUNK]]: ff 25 {{.*}} jmpq *{{.*}}(%rip) # 0x180005008
 ## The residual word {.data, cell, addend} and the cells {cell, name, from the
 ## executable} of f and of the identity, after the list's 40-byte header.
-# LIB:      1800020a0 01000000 00000000 00300000 00500000
-# LIB-NEXT: 1800020b0 00000000 00000000 00500000 {{[0-9a-f]+}}
-# LIB-NEXT: 1800020c0 00000000 08500000 {{[0-9a-f]+}} 00000000
+# LIB:      1800020a0 01000000 00000000 00300000 08500000
+# LIB-NEXT: 1800020b0 00000000 00000000 08500000 {{[0-9a-f]+}}
+# LIB-NEXT: 1800020c0 00000000 10500000 {{[0-9a-f]+}} 00000000
 # LIB-NEXT: 1800020d0 66005f5f 6c6c766d 5f707269 76617465
 
 ## user.dll imports f from the executable, by name, which binds at run time,
@@ -193,6 +193,13 @@ __xi_a:
         .globl __xi_z
 __xi_z:
         .quad 0
+
+## The image's start-up, which calls its fill directly.
+        .section .text$start,"xr"
+        .globl __start
+__start:
+        callq __llvm_run_fill
+        retq
 
 ## A stand-in for the builtins' __llvm_fill.
         .def __llvm_fill; .scl 2; .type 32; .endef

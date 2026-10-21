@@ -92,7 +92,7 @@ namespace wincrt {
 // Start-up is single-threaded: a DLL's runs under the loader lock, and an
 // executable's before main.
 bool initializeImage() {
-  if (runTable(__xi_a, __xi_z))
+  if (__llvm_run_fill() || runTable(__xi_a, __xi_z))
     return false;
   runTable(__xc_a, __xc_z);
   return true;

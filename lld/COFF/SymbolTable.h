@@ -261,6 +261,9 @@ public:
   // images that no link joins compare one word. The DLL's references to it stay
   // direct: nothing reads its address but the comparison.
   bool isBoundTypeInfo(Symbol *s);
+  // Whether the image's start-up calls __llvm_run_fill, so that the image can
+  // have a fill: referenced, or defined by the linker for that reference.
+  bool startCallsFill();
 
   // Under -import-slots in an executable, for each vague entity two images of
   // its load closure keep preemptible, imports its owner's instance (from

@@ -8,10 +8,11 @@
 //
 // The words of an image linked with -import-slots that the loader cannot
 // write, written once at start-up from lists the linker builds. The linker
-// keeps each function only in an image that needs it: __llvm_fill first in the
-// C initializer table, and __llvm_thread_local_slot_copy as an executable's
-// first TLS callback. Both run before the security cookie is set, so they have
-// no stack protector, and call nothing that has a type check's prefix.
+// keeps each function only in an image that needs it: __llvm_fill as the
+// __llvm_run_fill the image's start-up calls, directly and before any C
+// initializer, and __llvm_thread_local_slot_copy as an executable's first TLS
+// callback. They have no stack protector, and call nothing that has a type
+// check's prefix.
 //
 //===----------------------------------------------------------------------===//
 
@@ -72,7 +73,10 @@ enum {
   cellNameWord = 0x80000000,
 };
 
-enum { fillCallsCopy = 1, fillWordsInPlace = 2 };
+enum { fillCallsCopy = 1 };
+
+// A word the fill wrote that read-only memory no longer holds.
+static const int32_t statusInvalidImageHash = (int32_t)0xC0000428;
 
 struct range {
   uint32_t rva, size;
@@ -99,10 +103,10 @@ struct runTimeCell {
 };
 
 // The fill's list: the number of each kind of entry, the section it seals,
-// this DLL's key, by which an image that delay-loads it lists it, and how many
-// of the residual words, the last, are in the thread-local template. The
-// ranges, the cells, the residual words and the run-time cells follow, in
-// that order.
+// which is linked read-only and opens with the fill's done word, this DLL's
+// key, by which an image that delay-loads it lists it, and how many of the
+// residual words, the last, are in the thread-local template. The ranges, the
+// cells, the residual words and the run-time cells follow, in that order.
 struct fillList {
   uint32_t ranges, cells, words, runTimeCells;
   uint32_t sealed, sealedSize;
@@ -217,18 +221,24 @@ static void copySlots(char *image, const struct copyList *l) {
   }
 }
 
-static int32_t protect(uint32_t rva, size_t size, uint32_t protection) {
+// The fill's protection changes are inline in it, so the image holds no
+// routine that changes a page's protection.
+static inline __attribute__((always_inline)) int32_t
+protect(uint32_t rva, size_t size, uint32_t protection) {
   void *base = __ImageBase + rva;
   uint32_t old;
   return NtProtectVirtualMemory((void *)-1, &base, &size, protection, &old);
 }
 
-// Makes each range of the read-only cells writable, failing at the first
-// call that fails, or read-only again, trying every range and failing if any
-// stays writable.
-static int32_t protectRanges(const struct fillList *l, uint32_t protection) {
+// Makes the sealed section and each range of read-only words writable,
+// failing at the first call that fails, or read-only again, trying every one
+// and failing if any stays writable.
+static inline __attribute__((always_inline)) int32_t
+protectAll(const struct fillList *l, uint32_t protection) {
   const struct range *r = (const struct range *)(l + 1);
-  int32_t result = 0;
+  int32_t result = protect(l->sealed, l->sealedSize, protection);
+  if (result && protection == pageReadWrite)
+    return result;
   for (uint32_t i = 0; i != l->ranges; ++i) {
     int32_t status = protect(r[i].rva, r[i].size, protection);
     if (status && protection == pageReadWrite)
@@ -237,6 +247,17 @@ static int32_t protectRanges(const struct fillList *l, uint32_t protection) {
       result = status;
   }
   return result;
+}
+
+// Whether the word at rva is in read-only memory the fill opens.
+static int readOnlyWord(const struct fillList *l, uint32_t rva) {
+  const struct range *r = (const struct range *)(l + 1);
+  if (rva - l->sealed < l->sealedSize)
+    return 1;
+  for (uint32_t i = 0; i != l->ranges; ++i)
+    if (rva - r[i].rva < r[i].size)
+      return 1;
+  return 0;
 }
 
 // Whether module m is in the executable's scope: the executable, one loaded
@@ -304,7 +325,7 @@ static int sameName(const char *s, const char *name, uint32_t limit) {
 // into that scope, and those of the modules that delay-load this DLL. Pins
 // the module whose instance it takes. Sets *status if a pin fails.
 static void *search(const struct fillList *l, char *peb, uint64_t key,
-                    const char *name, int32_t *status) {
+                    const char *name, int pin, int32_t *status) {
   char *head = readPointer(peb + pebLdr) + ldrInLoadOrderModuleList;
   char *exe = readPointer(head);
   for (char *m = exe; m != head; m = readPointer(m)) {
@@ -330,7 +351,7 @@ static void *search(const struct fillList *l, char *peb, uint64_t key,
       char *instance = base + b[i].rva;
       if (!(t->flags & 1))
         instance = readPointer(instance);
-      if (instance && m != exe)
+      if (instance && m != exe && pin)
         *status = LdrAddRefDll(1, base);
       return *status < 0 ? NULL : instance;
     }
@@ -364,21 +385,28 @@ static int lookUp(char *exe, const struct cell *c, uint64_t key, char **value) {
   return 0;
 }
 
-int __llvm_fill(void) {
-  const struct fillList *l = &__llvm_fill_list;
-  char *peb = readPointer(getTEB() + tebPeb);
-  int initializing = read32(peb + pebCrossProcessFlags) & 2;
-  char *exe = readPointer(peb + pebImageBase);
-  int32_t status = 0;
-  int writable = 0;
+// A word the fill writes: stored by the writing pass; compared by the
+// checking pass, which counts a word read-only memory no longer holds as
+// written.
+struct pass {
+  const struct fillList *l;
+  int check, mismatch;
+};
 
-  // Code of the executable that runs while the DLLs initialize, through this
-  // DLL's imports from it or its cells, sees its thread-local slots bound in
-  // the main thread.
-  if (l->flags & fillCallsCopy && initializing &&
-      read32(exe + copyTagOffset) == copyTag)
-    copySlots(exe,
-              (const struct copyList *)(exe + read32(exe + copyTagOffset + 4)));
+static void put(struct pass *p, uint32_t rva, uint64_t value) {
+  uint64_t *word = (uint64_t *)(__ImageBase + rva);
+  if (!p->check)
+    *word = value;
+  else if (*word != value && readOnlyWord(p->l, rva))
+    p->mismatch = 1;
+}
+
+// The cells, the imports bound at run time and the residual words: written,
+// or with check, recomputed and compared with what read-only memory holds,
+// which takes no side effect a second time.
+static int32_t walk(struct pass *p, char *peb, char *exe, int initializing) {
+  const struct fillList *l = p->l;
+  int32_t status = 0;
 
   // The cells, each key's written together where the executable's table or a
   // search gives it an address.
@@ -393,19 +421,14 @@ int __llvm_fill(void) {
     int found = exe && lookUp(exe, c, key, &value);
     if (!found && !initializing && (c->kind & ~cellNameWord) >= cellName) {
       value = search(l, peb, key, __ImageBase + (c->kind & ~cellNameWord),
-                     &status);
+                     !p->check, &status);
       if (status < 0)
-        goto done;
+        return status;
       found = value != NULL;
     }
     for (; c != cellsEnd && (c->key & ~(uint64_t)1) == key; ++c) {
       if (!found)
         continue;
-      if (c->key & 1 && !writable) {
-        writable = 1;
-        if ((status = protectRanges(l, pageReadWrite)))
-          goto done;
-      }
       // A type_info object's name word takes the instance's only where the two
       // describe the same type, so that a class of another layout under the
       // same name still compares unequal.
@@ -413,11 +436,11 @@ int __llvm_fill(void) {
         uint64_t *word = (uint64_t *)(__ImageBase + c->rva);
         uint64_t theirs = *(const uint64_t *)(value + 8);
         if (*word != theirs && sameType(*word, theirs))
-          *word = theirs;
+          put(p, c->rva, theirs);
         continue;
       }
-      *(char **)(__ImageBase + c->rva) = value;
-      if (c->kind < cellName && c->kind & cellThreadLocal)
+      put(p, c->rva, (uint64_t)value);
+      if (!p->check && c->kind < cellName && c->kind & cellThreadLocal)
         *(char **)(threadBlock(__ImageBase) + c->rva) = value;
     }
   }
@@ -442,39 +465,74 @@ int __llvm_fill(void) {
     String name = {length(__ImageBase + r->name),
                    (uint16_t)(length(__ImageBase + r->name) + 1),
                    __ImageBase + r->name};
-    int32_t lookup = LdrGetProcedureAddressForCaller(
-        module, &name, 0, (void **)(__ImageBase + r->cell), 1, __llvm_fill);
-    if (lookup < 0 && !r->dll) {
-      status = lookup;
-      goto done;
+    void *address;
+    int32_t lookup = LdrGetProcedureAddressForCaller(module, &name, 0, &address,
+                                                     1, __ImageBase);
+    if (lookup < 0) {
+      if (!r->dll)
+        return lookup;
+      continue;
     }
+    put(p, r->cell, (uint64_t)address);
   }
 
   // A residual word in read-only data outside the sealed section is written
   // where it is, and one in the thread-local template in the loading thread's
   // block too, which the loader copied from the template before.
-  if (l->flags & fillWordsInPlace && !writable) {
-    writable = 1;
-    if ((status = protectRanges(l, pageReadWrite)))
-      goto done;
-  }
   for (uint32_t i = 0; i != l->words; ++i, ++w) {
     uint64_t value = *(uint64_t *)(__ImageBase + w->import) + w->addend;
-    *(uint64_t *)(__ImageBase + w->word) = value;
-    if (i >= l->words - l->threadLocalWords)
+    put(p, w->word, value);
+    if (!p->check && i >= l->words - l->threadLocalWords)
       *(uint64_t *)(threadBlock(__ImageBase) + w->word) = value;
   }
+  return status;
+}
 
-done:
-  // A cell left writable fails the image's initialization, as one left
+// Writes the image's words once. The sealed section is linked read-only and
+// opens with the fill's done word, so a fill whose words are read-only does
+// its work once, under a bracket: it returns at once when the done word is
+// set; otherwise it makes the sealed section and the ranges writable, writes
+// every word and the done word, makes them read-only again, then recomputes
+// every word read-only memory holds and fails the image where one differs,
+// so that a write landing between the two is caught before any of the image's
+// code runs.
+int __llvm_fill(void) {
+  const struct fillList *l = &__llvm_fill_list;
+  uint64_t *done = (uint64_t *)(__ImageBase + l->sealed);
+  if (l->sealedSize && *done)
+    return 0;
+  char *peb = readPointer(getTEB() + tebPeb);
+  int initializing = read32(peb + pebCrossProcessFlags) & 2;
+  char *exe = readPointer(peb + pebImageBase);
+
+  // Code of the executable that runs while the DLLs initialize, through this
+  // DLL's imports from it or its cells, sees its thread-local slots bound in
+  // the main thread.
+  if (l->flags & fillCallsCopy && initializing &&
+      read32(exe + copyTagOffset) == copyTag)
+    copySlots(exe,
+              (const struct copyList *)(exe + read32(exe + copyTagOffset + 4)));
+
+  struct pass p = {l, 0, 0};
+  int32_t status = 0;
+  if (l->sealedSize && (status = protectAll(l, pageReadWrite)))
+    return status;
+  status = walk(&p, peb, exe, initializing);
+  if (!l->sealedSize)
+    return status;
+  if (!status)
+    *done = 1;
+  // A word left writable fails the image's initialization, as one left
   // unwritten does.
-  if (writable) {
-    int32_t reseal = protectRanges(l, pageReadOnly);
-    if (!status)
-      status = reseal;
+  int32_t reseal = protectAll(l, pageReadOnly);
+  if (!status)
+    status = reseal;
+  if (!status) {
+    p.check = 1;
+    status = walk(&p, peb, exe, initializing);
+    if (!status && (p.mismatch || !*done))
+      status = statusInvalidImageHash;
   }
-  if (!status && l->sealedSize)
-    status = protect(l->sealed, l->sealedSize, pageReadOnly);
   return status;
 }
 

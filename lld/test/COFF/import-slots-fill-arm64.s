@@ -1,10 +1,11 @@
 # REQUIRES: aarch64
 ## The ARM64 form of the image's fill, the builtins' __llvm_fill: each residual
 ## word of its list, {word, import, addend}, is written from its import's entry
-## plus its addend, and the read-only ones move to .sealed, whose RVA and size
-## the list names so the fill can make it read-only once written. The linker
-## keeps __llvm_fill in the image only where it is needed, defines its list, and
-## names it to the C initializer table.
+## plus its addend, and the read-only ones move to .sealed, linked read-only
+## behind the fill's done word, whose RVA and size the list names so the fill
+## can open it around its writes once. The linker keeps __llvm_fill in the image
+## only where it is needed, defines its list, and points the start-up's
+## __llvm_run_fill at it.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: lld-link -def:lib.def -out:lib.lib -machine:arm64
@@ -19,30 +20,33 @@
 # RUN: llvm-objdump -s -j .rdata out.dll >> out.txt
 # RUN: FileCheck --input-file=out.txt %s
 # RUN: llvm-readobj --sections out.dll | FileCheck --check-prefix=IMAGE %s
-# RUN: llvm-objdump -s -j .CRT out.dll | FileCheck --check-prefix=TABLE %s
 
 ## __llvm_fill loads its list, whose address its adrp and add name.
 # CHECK:      <.text>:
 # CHECK-NEXT: adrp x0, 0x[[#%x,LIST:]]
 # CHECK-NEXT: add x0, x0, #0x[[#%x,OFF:]]
+## The start-up calls the fill directly.
+# CHECK:      bl 0x180001000 <.text>
 
 ## The list header: no ranges, no cells, three residual words, no run-time
-## cells; the section it seals is .sealed at 0x5000, size 0x10; then the key of
-## this DLL's name, and a flag word that runs no copy.
+## cells; the section it opens is .sealed at 0x5000, size 0x18; then the key
+## of this DLL's name, and a flag word that runs no copy.
 # CHECK:      [[#%x,LIST+OFF]]      00000000 00000000 03000000 00000000
-# CHECK-NEXT: [[#%x,LIST+OFF+0x10]] 00500000 10000000 {{[0-9a-f]+ [0-9a-f]+}}
-## The words follow the 40-byte header: two in .sealed, arr + 12 and arr - 8,
-## and the one in .data, arr + 0x100002345, each from arr's entry at 0x20B8.
-# CHECK-NEXT: [[#%x,LIST+OFF+0x20]] 00000000 00000000 00500000 b8200000
-# CHECK-NEXT: [[#%x,LIST+OFF+0x30]] 0c000000 00000000 08500000 b8200000
+# CHECK-NEXT: [[#%x,LIST+OFF+0x10]] 00500000 18000000 {{[0-9a-f]+ [0-9a-f]+}}
+## The words follow the 40-byte header: two in .sealed after the done word,
+## arr + 12 and arr - 8, and the one in .data, arr + 0x100002345, each from
+## arr's entry at 0x20B8.
+# CHECK-NEXT: [[#%x,LIST+OFF+0x20]] 00000000 00000000 08500000 b8200000
+# CHECK-NEXT: [[#%x,LIST+OFF+0x30]] 0c000000 00000000 10500000 b8200000
 # CHECK-NEXT: [[#%x,LIST+OFF+0x40]] f8ffffff ffffffff 00300000 b8200000
 # CHECK-NEXT: [[#%x,LIST+OFF+0x50]] 45230000 01000000 {{.*}}
 
 # IMAGE:      Name: .sealed
-# IMAGE-NEXT: VirtualSize: 0x10
-# IMAGE:      IMAGE_SCN_MEM_WRITE
-
-# TABLE: 11111111 11111111 00100080 01000000
+# IMAGE-NEXT: VirtualSize: 0x18
+# IMAGE:      Characteristics [
+# IMAGE-NEXT:   IMAGE_SCN_CNT_INITIALIZED_DATA
+# IMAGE-NEXT:   IMAGE_SCN_MEM_READ
+# IMAGE-NEXT: ]
 
 ## With only writable words, the fill names no section to seal, and the image
 ## has no .sealed section.
@@ -79,6 +83,13 @@ __xi_a:
   .globl __xi_z
 __xi_z:
   .xword 0
+
+## The image's start-up, which calls its fill directly.
+  .section .text$start,"xr"
+  .globl __start
+__start:
+  bl __llvm_run_fill
+  ret
 
 ## A stand-in for the builtins' __llvm_fill: it loads its list and references
 ## the NtProtectVirtualMemory it seals with, so the linker adds that import.
