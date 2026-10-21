@@ -8,9 +8,11 @@
 ## the importer keeps, becomes an in-place slot. Unlike other vague data, a DLL
 ## reaches its own type_info object directly, through no cell: its fill writes
 ## only the object's name word, with the owner's where both name the same type
-## and layout, so that true siblings that both keep one compare one word. The
-## record of what it keeps lists the object for an executable to pick its
-## owner, and true siblings that both keep it are not reported.
+## and layout, so that true siblings that both keep one compare one word, and
+## the object moves to the section the fill seals. The record of what it keeps
+## lists the object, with the bytes its name word names, for an executable to
+## pick its owner; true siblings that both keep it are not reported, unless
+## those bytes differ.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
@@ -60,6 +62,15 @@
 # RUN: FileCheck --check-prefix=FILL --input-file=a.map %s
 # RUN: FileCheck --check-prefix=FILL --input-file=b.map %s
 # RUN: FileCheck --check-prefix=TABLE --input-file=twice.map %s
+# RUN: llvm-readobj --sections b.dll | FileCheck --check-prefix=SEALED %s
+# SEALED: Name: .sealed
+
+## A sibling whose object's name is followed by another layout shape.
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium c.s -o c.obj
+# RUN: lld-link -import-slots -dll -noentry c.obj crt.obj ntdll.lib -out:c.dll
+# RUN: not lld-link -import-slots -entry:main -subsystem:console twice.obj \
+# RUN:   a.lib c.lib -out:other.exe 2>&1 | FileCheck --check-prefix=OTHER %s
+# OTHER: error: _ZTI1V has different layouts in a.dll and c.dll, which neither binds to the other's
 # TWICE-NOT: error:
 # TWICE:     Preempting typeinfo for V in twice.obj with its instance in a.dll
 # TWICE-NOT: which owns it for the program
@@ -109,6 +120,34 @@ _ZTI1V:
 _ZTS1V:
   .linkbinding _ZTS1V, default
   .asciz "1V"
+
+  .section .rdata,"dr"
+__class_type_info:
+  .quad 0, 0, 0
+
+  .text
+  .globl fb
+fb:
+  movq __imp__ZTI1V(%rip), %rax
+  retq
+  .section .drectve,"yni"
+  .ascii " -export:fb"
+
+#--- c.s
+  .linkbindings
+  .section .rdata,"dr",discard,_ZTI1V
+  .globl _ZTI1V
+  .p2align 3
+_ZTI1V:
+  .linkbinding _ZTI1V, default
+  .quad __class_type_info+16
+  .quad _ZTS1V-9223372036854775808
+  .section .rdata,"dr",discard,_ZTS1V
+  .globl _ZTS1V
+_ZTS1V:
+  .linkbinding _ZTS1V, default
+  .asciz "1V"
+  .byte 16, 3, 9
 
   .section .rdata,"dr"
 __class_type_info:

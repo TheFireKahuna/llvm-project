@@ -325,6 +325,19 @@ enum LinkRecordKind : uint64_t {
   // image and index are indices of images of that group.
   LinkRecordDelayLoads = 28,
 
+  // The names and layout shapes of the type_info objects that the images of a
+  // LinkRecordVagueEntities group in the same member bind to the program's
+  // instance, so that the link of an executable that picks an owner for one
+  // that two of them keep compares them first, byte for byte:
+  //
+  //   payload := (image:ULEB128 count:ULEB128 (name blob){count})*
+  //   blob    := size:ULEB128 byte{size}
+  //
+  // image is the index of an image of that group, name the type_info object's
+  // and blob the bytes its name word names, the type's name, its NUL and the
+  // layout shape after it.
+  LinkRecordTypeNames = 38,
+
   // The layout relationships of each code section in which a linker may
   // change the size of an instruction its sites describe, so that it can
   // change sizes there, moving what follows, and keep every value that

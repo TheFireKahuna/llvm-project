@@ -51,6 +51,8 @@ struct Image {
   StringRef name, epoch;
   std::vector<StringRef> entities, preemptible, offers;
   SmallVector<uint32_t, 0> imports, delayLoads;
+  // The type_info objects it binds, each with the bytes its name word names.
+  std::vector<std::pair<StringRef, StringRef>> typeNames;
 };
 
 struct LoadClosure {
@@ -78,6 +80,8 @@ struct LoadClosure {
       image.offers = src.offers;
     if (image.preemptible.empty())
       image.preemptible = src.preemptible;
+    if (image.typeNames.empty())
+      image.typeNames = src.typeNames;
     for (auto [to, from] : {std::pair(&image.imports, &src.imports),
                             std::pair(&image.delayLoads, &src.delayLoads)})
       for (uint32_t j : *from)
@@ -127,7 +131,8 @@ static LoadClosure *parseRecord(COFFLinkerContext &ctx, MemoryBufferRef mb) {
         if (malformed || (kind != LinkRecordVagueEntities &&
                           kind != LinkRecordOverrideOffers &&
                           kind != LinkRecordPreemptibleEntities &&
-                          kind != LinkRecordDelayLoads))
+                          kind != LinkRecordDelayLoads &&
+                          kind != LinkRecordTypeNames))
           return;
         DataExtractor group(payload, /*IsLittleEndian=*/true);
         DataExtractor::Cursor c(0);
@@ -139,7 +144,10 @@ static LoadClosure *parseRecord(COFFLinkerContext &ctx, MemoryBufferRef mb) {
             for (uint64_t j = 0, n = group.getULEB128(c); c && j != n; ++j) {
               if (kind == LinkRecordDelayLoads)
                 src.delayLoads.push_back(group.getULEB128(c));
-              else
+              else if (kind == LinkRecordTypeNames) {
+                StringRef name = getString(group, c);
+                src.typeNames.emplace_back(name, getString(group, c));
+              } else
                 (kind == LinkRecordOverrideOffers ? src.offers
                                                   : src.preemptible)
                     .push_back(getString(group, c));
@@ -179,6 +187,16 @@ static LoadClosure *parseRecord(COFFLinkerContext &ctx, MemoryBufferRef mb) {
           member->merge(index[i], image, index);
       });
   return malformed || index.empty() ? nullptr : member;
+}
+
+// The bytes that the name word of the type_info object typeInfo names: its
+// name's symbol's contents, the name, its NUL and the layout shape after it.
+static StringRef getTypeNameBlob(SymbolTable &symtab, StringRef typeInfo) {
+  auto *d = dyn_cast_or_null<DefinedRegular>(
+      symtab.find(("_ZTS" + typeInfo.drop_front(4)).str()));
+  auto *sc = d ? dyn_cast_or_null<SectionChunk>(d->getChunk()) : nullptr;
+  return sc ? toStringRef(sc->getContents()).drop_front(d->getValue())
+            : StringRef();
 }
 
 // Adds mb's record (parsed once and cached on the context) to closure, and
@@ -357,12 +375,40 @@ chooseVagueOwners(COFFLinkerContext &ctx, const DenseSet<StringRef> &kept) {
   for (uint32_t i : order)
     for (StringRef name : closure.images[i].preemptible)
       ++keepers.try_emplace(name, i, 0).first->second.second;
+  // Images bind a type_info object to one instance only where they name the
+  // same type, with the same name and layout shape, which their records give;
+  // two that differ are reported, as ELF would have merged them silently.
+  auto sameType = [&](StringRef name, bool own) {
+    std::optional<std::pair<StringRef, StringRef>> first;
+    if (own)
+      first.emplace("the executable", getTypeNameBlob(ctx.symtab, name));
+    for (uint32_t i : order) {
+      const Image &image = closure.images[i];
+      if (!llvm::binary_search(image.preemptible, name))
+        continue;
+      auto it = llvm::find_if(image.typeNames,
+                              [&](const auto &t) { return t.first == name; });
+      if (it == image.typeNames.end())
+        continue;
+      if (!first) {
+        first.emplace(image.name, it->second);
+      } else if (first->second != it->second) {
+        Err(ctx) << name << " has different layouts in " << first->first
+                 << " and " << image.name
+                 << ", which neither binds to the other's; build both from "
+                    "one definition of the type, or give it hidden visibility";
+        return false;
+      }
+    }
+    return true;
+  };
   std::vector<std::pair<StringRef, StringRef>> owners;
   for (auto &[name, keeper] : keepers) {
     bool own = kept.contains(name);
     // An entity only delay-loaded DLLs keep has no start-up instance to import;
     // the first to load keeps its own and the others find it.
-    if (keeper.second + own < 2 || (!own && lazy.contains(keeper.first)))
+    if (keeper.second + own < 2 || (!own && lazy.contains(keeper.first)) ||
+        (isTypeInfoName(name) && !sameType(name, own)))
       continue;
     owners.emplace_back(name, own ? StringRef()
                                   : closure.images[keeper.first].name);
@@ -579,10 +625,15 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
   for (const Export &e : symtab.exports) {
     if (StringRef name = e.extName; name.consume_front(overrideOfferPrefix))
       image.offers.push_back(name);
-    if (e.sym && e.forwardTo.empty() &&
-        (symtab.isPreemptibleVagueEntity(e.sym) ||
-         symtab.isBoundTypeInfo(e.sym)))
+    if (!e.sym || !e.forwardTo.empty())
+      continue;
+    if (symtab.isPreemptibleVagueEntity(e.sym))
       image.preemptible.push_back(e.sym->getName());
+    if (symtab.isBoundTypeInfo(e.sym)) {
+      image.preemptible.push_back(e.sym->getName());
+      image.typeNames.emplace_back(e.sym->getName(),
+                                   getTypeNameBlob(symtab, e.sym->getName()));
+    }
   }
   llvm::sort(image.preemptible);
 
@@ -625,9 +676,15 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
     });
   };
   auto putIndex = [](raw_ostream &os, uint32_t i) { encodeULEB128(i, os); };
+  auto putTypeName = [](raw_ostream &os,
+                        const std::pair<StringRef, StringRef> &t) {
+    putString(os, t.first);
+    putString(os, t.second);
+  };
   addPerImage(LinkRecordOverrideOffers, &Image::offers, putString);
   addPerImage(LinkRecordPreemptibleEntities, &Image::preemptible, putString);
   addPerImage(LinkRecordDelayLoads, &Image::delayLoads, putIndex);
+  addPerImage(LinkRecordTypeNames, &Image::typeNames, putTypeName);
   // Defaults the DLL defines and exports with no fixed slot, replaced, offered
   // or reached by name by an image that links its import library.
   std::vector<StringRef> byName;

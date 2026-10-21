@@ -1466,7 +1466,10 @@ void ImportSlotContents::collectCells() {
     }
   }
   // A type_info object the DLL binds is offered and found through a pointer,
-  // as a preemptible entity is, and its name word takes the instance's.
+  // as a preemptible entity is, and its name word takes the instance's. The
+  // object moves to the section the fill seals, so that its write makes no
+  // other range writable, unless its own words are slots laid out with the
+  // import address table.
   for (const Export &e : symtab.exports) {
     auto *d = dyn_cast_or_null<DefinedRegular>(e.sym);
     if (!d || !e.forwardTo.empty() || !d->isLive() || !symtab.isBoundTypeInfo(d))
@@ -1475,6 +1478,11 @@ void ImportSlotContents::collectCells() {
     li->vagueEntity = d->getName();
     symtab.localImportChunks.push_back(li);
     auto *sc = cast<SectionChunk>(d->getChunk());
+    if (!sc->hasImportSlots && config.align % 4096 == 0 &&
+        getPartialSectionName(sc, config.mingw) == ".rdata") {
+      sealedChunks.insert(sc);
+      heldBackChunks.insert(sc);
+    }
     cells.push_back({sc, uint32_t(d->getValue() + ctx.config.wordsize),
                      nullptr, 0, overrideNameKey(d->getName()),
                      cellReadOnly(sc), false, /*indirect=*/true, d->getName(),
