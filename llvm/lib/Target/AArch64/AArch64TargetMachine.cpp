@@ -636,7 +636,10 @@ void AArch64TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
         if (Level != OptimizationLevel::O0)
           LPM.addPass(LoopIdiomVectorizePass());
       });
-  if (getTargetTriple().isOSWindows())
+  // Windows Itanium and NT-POSIX keep each ifunc to the AsmPrinter, which
+  // lowers it to a stub through a cell.
+  if (getTargetTriple().isOSWindows() &&
+      !getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     PB.registerPipelineEarlySimplificationEPCallback(
         [](ModulePassManager &PM, OptimizationLevel, ThinOrFullLTOPhase) {
           PM.addPass(LowerIFuncPass());

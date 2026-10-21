@@ -440,6 +440,8 @@ private:
                               MCSymbol *LazyPointer) override;
   void emitMachOIFuncStubHelperBody(Module &M, const GlobalIFunc &GI,
                                     MCSymbol *LazyPointer) override;
+  void emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
+                             MCSymbol *Pointer) override;
 
   /// Checks if this instruction is part of a sequence that is eligle for import
   /// call optimization and, if so, records it to be emitted in the import call
@@ -4994,6 +4996,28 @@ void AArch64AsmPrinter::emitMachOIFuncStubBody(Module &M, const GlobalIFunc &GI,
   EmitToStreamer(MCInstBuilder(TM.getTargetTriple().isArm64e() ? AArch64::BRAAZ
                                                                : AArch64::BR)
                      .addReg(AArch64::X16));
+}
+
+void AArch64AsmPrinter::emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
+                                              MCSymbol *Pointer) {
+  // ifunc:
+  //   adrp    x16, __imp_ifunc
+  //   ldr     x16, [x16, :lo12:__imp_ifunc]
+  //   br      x16
+  MCOperand Page, PageOff;
+  MCInstLowering.lowerOperand(
+      MachineOperand::CreateMCSymbol(Pointer, AArch64II::MO_PAGE), Page);
+  MCInstLowering.lowerOperand(
+      MachineOperand::CreateMCSymbol(Pointer,
+                                     AArch64II::MO_PAGEOFF | AArch64II::MO_NC),
+      PageOff);
+  EmitToStreamer(
+      MCInstBuilder(AArch64::ADRP).addReg(AArch64::X16).addOperand(Page));
+  EmitToStreamer(MCInstBuilder(AArch64::LDRXui)
+                     .addReg(AArch64::X16)
+                     .addReg(AArch64::X16)
+                     .addOperand(PageOff));
+  EmitToStreamer(MCInstBuilder(AArch64::BR).addReg(AArch64::X16));
 }
 
 void AArch64AsmPrinter::emitMachOIFuncStubHelperBody(Module &M,

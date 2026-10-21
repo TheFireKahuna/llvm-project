@@ -479,7 +479,11 @@ public:
   void emitBBAddrMapSection(const MachineFunction &MF);
 
   void emitKCFITrapEntry(const MachineFunction &MF, const MCSymbol *Symbol);
-  virtual void emitKCFITypeId(const MachineFunction &MF);
+  /// Emits the KCFI type of the function \p GO, whose entry is aligned to
+  /// \p Alignment, before the entry: \p MF's, or an indirect function's stub,
+  /// which has none.
+  virtual void emitKCFITypeId(const GlobalObject &GO, Align Alignment,
+                              const MachineFunction *MF);
 
   /// A KCFI type that a module opens on COFF, where the module defines the
   /// type's mismatch routine: dynamically, or statically by taking the address
@@ -808,6 +812,14 @@ public:
         "Mach-O IFunc lowering is not yet supported on this target");
   }
 
+  /// Emits the body of the stub that is an indirect function's address on
+  /// COFF, a jump through \p Pointer, which the image's start-up writes with
+  /// what the function's resolver returns.
+  virtual void emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
+                                     MCSymbol *Pointer) {
+    llvm_unreachable("COFF IFunc lowering is not yet supported on this target");
+  }
+
   /// Emit N NOP instructions.
   void emitNops(unsigned N);
 
@@ -1124,6 +1136,8 @@ private:
 
   GCMetadataPrinter *getOrCreateGCPrinter(GCStrategy &S);
   virtual void emitGlobalIFunc(Module &M, const GlobalIFunc &GI);
+  /// Emits \p GI as a stub that jumps through its import pointer.
+  void emitCOFFIFunc(Module &M, const GlobalIFunc &GI);
 
   /// This method decides whether the specified basic block requires a label.
   bool shouldEmitLabelForBasicBlock(const MachineBasicBlock &MBB) const;

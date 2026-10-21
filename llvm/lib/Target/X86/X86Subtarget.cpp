@@ -226,6 +226,12 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
   // call direct.
   bool NoPLT =
       TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() && M.getRtLibUseGOT();
+
+  // There an ifunc is a stub that jumps through the ifunc's import pointer,
+  // which holds the function its resolver chose, so a call reads the pointer.
+  if (isa_and_nonnull<GlobalIFunc>(GV) &&
+      TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment())
+    return X86II::MO_DLLIMPORT;
   if (NoPLT && F && !F->isDSOLocal() && !F->isIntrinsic() &&
       F->isDeclarationForLinker() && !F->hasExternalWeakLinkage())
     return X86II::MO_DLLIMPORT;

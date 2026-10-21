@@ -12,10 +12,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "WinCFGuard.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/IR/InstrTypes.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCStreamer.h"
@@ -61,6 +63,36 @@ static bool isDroppedStructor(const Constant *C) {
   });
 }
 
+// Whether F is only the resolver of indirect functions that Windows Itanium
+// and NT-POSIX lower to a cell, which the image's start-up writes with what F
+// returns, calling F from read-only data with no check.
+static bool isCellResolver(const Function &F) {
+  return F.getParent()
+             ->getTargetTriple()
+             .isWindowsItaniumOrNTPOSIXEnvironment() &&
+         !F.use_empty() && llvm::all_of(F.uses(), [](const Use &U) {
+           auto *GI = dyn_cast<GlobalIFunc>(U.getUser());
+           return GI && GI->getResolver() == U.get();
+         });
+}
+
+// Whether the value of I, an instruction of a cell's resolver, only flows to
+// what the resolver returns, through selects and phis.
+static bool isOnlyReturned(const Instruction *I) {
+  SmallVector<const Instruction *, 4> Work{I};
+  SmallPtrSet<const Instruction *, 4> Seen;
+  while (!Work.empty()) {
+    const Instruction *V = Work.pop_back_val();
+    if (isa<ReturnInst>(V))
+      continue;
+    if (!isa<SelectInst, PHINode>(V) || !Seen.insert(V).second)
+      return isa<SelectInst, PHINode>(V);
+    for (const User *U : V->users())
+      Work.push_back(cast<Instruction>(U));
+  }
+  return true;
+}
+
 static bool isPossibleIndirectCallTarget(const GlobalValue *GV) {
   SmallVector<const Value *, 4> Users{GV};
   while (!Users.empty()) {
@@ -74,6 +106,14 @@ static bool isPossibleIndirectCallTarget(const GlobalValue *GV) {
           // call. As an exception, ignore ARM64EC exit thunks.
           return true;
         }
+      } else if (auto *I = dyn_cast<Instruction>(FnUser);
+                 I && isCellResolver(*I->getFunction()) &&
+                 (isa<ReturnInst>(I) ||
+                  (isa<SelectInst, PHINode>(I) && isOnlyReturned(I) &&
+                   !(isa<SelectInst>(I) &&
+                     cast<SelectInst>(I)->getCondition() == U.get())))) {
+        // What a cell's resolver returns is reached only through the cell.
+        continue;
       } else if (isa<Instruction>(FnUser)) {
         // Consider any other instruction to be an escape. This has some weird
         // consequences like no-op intrinsics being an escape or a store *to* a
@@ -82,6 +122,11 @@ static bool isPossibleIndirectCallTarget(const GlobalValue *GV) {
       } else if (isa<GlobalAlias>(FnUser)) {
         // If the function is used via the alias, it's really the alias that's
         // a possible call target. See "Consider aliases" in endModule().
+        continue;
+      } else if (const auto *GI = dyn_cast<GlobalIFunc>(FnUser);
+                 GI && GI->getResolverFunction() &&
+                 isCellResolver(*GI->getResolverFunction())) {
+        // The start-up calls a cell's resolver, not a pointer.
         continue;
       } else if (const auto *G = dyn_cast<GlobalValue>(FnUser)) {
         // Ignore llvm.arm64ec.symbolmap; it doesn't lower to an actual address.
@@ -145,6 +190,12 @@ void WinCFGuard::endModule() {
       GFIDsEntries.push_back(Asm->getSymbol(&F));
     }
   }
+
+  // An indirect function lowered to a stub is a function at the stub.
+  for (const GlobalIFunc &GI : M->ifuncs())
+    if (M->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        isPossibleIndirectCallTarget(&GI))
+      GFIDsEntries.push_back(Asm->getSymbol(&GI));
 
   for (const GlobalAlias &GA : M->aliases()) {
     // Consider aliases to functions as possible call targets.

@@ -135,7 +135,8 @@ private:
 
   // KCFI specific lowering for X86.
   uint32_t MaskKCFIType(uint32_t Value);
-  void EmitKCFITypePadding(const MachineFunction &MF, unsigned TypeBytes);
+  void EmitKCFITypePadding(const MachineFunction *MF, Align Alignment,
+                           unsigned TypeBytes);
   void LowerKCFI_CHECK(const MachineInstr &MI);
 
   // Per-target emission of the KCFI thunks, scanners and open routines, which
@@ -180,6 +181,8 @@ private:
                               MCSymbol *LazyPointer) override;
   void emitMachOIFuncStubHelperBody(Module &M, const GlobalIFunc &GI,
                                     MCSymbol *LazyPointer) override;
+  void emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
+                             MCSymbol *Pointer) override;
 
   void emitCallInstruction(const llvm::MCInst &MCI);
   void maybeEmitNopAfterCallForWindowsEH(const MachineInstr *MI);
@@ -224,7 +227,8 @@ public:
   bool runOnMachineFunction(MachineFunction &MF) override;
   void emitFunctionBodyStart() override;
   void emitFunctionBodyEnd() override;
-  void emitKCFITypeId(const MachineFunction &MF) override;
+  void emitKCFITypeId(const GlobalObject &GO, Align Alignment,
+                      const MachineFunction *MF) override;
 
   bool shouldEmitWeakSwiftAsyncExtendedFramePointerFlags() const override {
     return ShouldEmitWeakSwiftAsyncExtendedFramePointerFlags;

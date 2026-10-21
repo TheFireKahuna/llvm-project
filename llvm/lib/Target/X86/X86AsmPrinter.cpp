@@ -235,41 +235,53 @@ uint32_t X86AsmPrinter::MaskKCFIType(uint32_t Value) {
   return getX86KCFIType(Value);
 }
 
-void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,
-                                        unsigned TypeBytes) {
+void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction *MF,
+                                        Align Alignment, unsigned TypeBytes) {
   // Keep the function entry aligned, taking patchable-function-prefix into
   // account if set.
-  int64_t PrefixBytes = MF.getFunction().getFnAttributeAsParsedInteger(
-      "patchable-function-prefix");
+  int64_t PrefixBytes = MF ? MF->getFunction().getFnAttributeAsParsedInteger(
+                                 "patchable-function-prefix")
+                           : 0;
 
   // Also take the type identifier into account if we're emitting
   // one. Otherwise, just pad with nops.
   PrefixBytes += TypeBytes;
 
-  emitNops(offsetToAlignment(PrefixBytes, MF.getPreferredAlignment()));
+  uint64_t Padding = offsetToAlignment(PrefixBytes, Alignment);
+  if (MF)
+    emitNops(Padding);
+  else
+    OutStreamer->emitNops(Padding, 0, SMLoc(), *Subtarget);
 }
 
 /// emitKCFITypeId - Emit the KCFI type information in architecture specific
 /// format.
-void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
-  const Function &F = MF.getFunction();
+void X86AsmPrinter::emitKCFITypeId(const GlobalObject &GO, Align Alignment,
+                                   const MachineFunction *MF) {
+  // An indirect function's stub has no machine function to count in.
+  auto EmitPrefixInstruction = [&](MCInst &Inst) {
+    if (MF)
+      EmitAndCountInstruction(Inst);
+    else
+      OutStreamer->emitInstruction(Inst, *Subtarget);
+  };
   // A Windows Itanium or NT-POSIX module with a marker gives every typed
   // function a prefix, whether or not it checks its own indirect calls.
   const ConstantInt *Marker = nullptr;
   if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     Marker = mdconst::extract_or_null<ConstantInt>(
-        F.getParent()->getModuleFlag("function-type-prefix"));
-  if (!Marker && !F.getParent()->getModuleFlag("kcfi"))
+        GO.getParent()->getModuleFlag("function-type-prefix"));
+  if (!Marker && !GO.getParent()->getModuleFlag("kcfi"))
     return;
 
   ConstantInt *Type = nullptr;
-  if (const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type))
+  if (const MDNode *MD = GO.getMetadata(LLVMContext::MD_kcfi_type))
     Type = mdconst::extract<ConstantInt>(MD->getOperand(0));
 
   // If we don't have a type to emit, just emit padding if needed to maintain
   // the same alignment for all functions.
   if (!Type) {
-    EmitKCFITypePadding(MF, /*TypeBytes=*/0);
+    EmitKCFITypePadding(MF, Alignment, /*TypeBytes=*/0);
     return;
   }
 
@@ -279,9 +291,9 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // symbols for weak parent functions. On COFF, however, a linker treats an
   // external symbol that only a discarded COMDAT copy defines as undefined, so
   // keep the symbol local there, which lets a copy without type data prevail.
-  MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + MF.getName());
+  MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + GO.getName());
   if (!TM.getTargetTriple().isOSBinFormatCOFF())
-    emitLinkage(&MF.getFunction(), FnSym);
+    emitLinkage(&GO, FnSym);
   if (MAI.hasDotTypeDotSizeDirective())
     OutStreamer->emitSymbolAttribute(FnSym, MCSA_ELF_TypeFunction);
   if (!Marker)
@@ -298,22 +310,22 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   ConstantInt *VfnType = nullptr;
   if (Marker) {
     TypeBytes += 7;
-    const MDNode *MD = F.getMetadata("kcfi_vfn_type");
+    const MDNode *MD = GO.getMetadata("kcfi_vfn_type");
     if (!MD)
-      MD = F.getMetadata("kcfi_member_tag");
+      MD = GO.getMetadata("kcfi_member_tag");
     if (MD) {
       VfnType = mdconst::extract<ConstantInt>(MD->getOperand(0));
       TypeBytes += 4;
     }
   }
-  EmitKCFITypePadding(MF, TypeBytes);
+  EmitKCFITypePadding(MF, Alignment, TypeBytes);
   // With a marker, the symbol follows the padding and marks the first type
   // word, as on targets that emit the type as data, so that the layout after
   // it tells a linker whether the prefix has a second type.
   if (Marker)
     OutStreamer->emitLabel(FnSym);
   // A linker tells a membership tag from a second type by the records.
-  if (VfnType && !F.hasMetadata("kcfi_vfn_type"))
+  if (VfnType && !GO.hasMetadata("kcfi_vfn_type"))
     OutStreamer->emitCOFFKCFIMemberTag(FnSym);
   if (VfnType)
     OutStreamer->emitInt32(MaskKCFIType(VfnType->getZExtValue()));
@@ -325,13 +337,13 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
                      .addImm(static_cast<int32_t>(Marker->getZExtValue()))
                      .addReg(X86::NoRegister);
     Nop.setFlags(X86::IP_USE_DISP32);
-    EmitAndCountInstruction(Nop);
+    EmitPrefixInstruction(Nop);
   }
   unsigned DestReg = X86::EAX;
 
-  if (F.getParent()->getModuleFlag("kcfi-arity")) {
+  if (MF && GO.getParent()->getModuleFlag("kcfi-arity")) {
     // The ArityToRegMap assumes the 64-bit SysV ABI.
-    [[maybe_unused]] const auto &Triple = MF.getTarget().getTargetTriple();
+    [[maybe_unused]] const auto &Triple = MF->getTarget().getTargetTriple();
     assert(Triple.isX86_64() && !Triple.isOSWindows());
 
     // Determine the function's arity (i.e., the number of arguments) at the ABI
@@ -345,11 +357,11 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     const unsigned ArityToRegMap[8] = {X86::EAX, X86::ECX, X86::EDX, X86::EBX,
                                        X86::ESP, X86::EBP, X86::ESI, X86::EDI};
     int Arity;
-    if (MF.getInfo<X86MachineFunctionInfo>()->getArgumentStackSize() > 0) {
+    if (MF->getInfo<X86MachineFunctionInfo>()->getArgumentStackSize() > 0) {
       Arity = 7;
     } else {
       Arity = 0;
-      for (const auto &LI : MF.getRegInfo().liveins()) {
+      for (const auto &LI : MF->getRegInfo().liveins()) {
         auto Reg = LI.first;
         if (X86::GR8RegClass.contains(Reg) || X86::GR16RegClass.contains(Reg) ||
             X86::GR32RegClass.contains(Reg) ||
@@ -361,9 +373,10 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     DestReg = ArityToRegMap[Arity];
   }
 
-  EmitAndCountInstruction(MCInstBuilder(X86::MOV32ri)
-                              .addReg(DestReg)
-                              .addImm(MaskKCFIType(Type->getZExtValue())));
+  MCInst Mov = MCInstBuilder(X86::MOV32ri)
+                   .addReg(DestReg)
+                   .addImm(MaskKCFIType(Type->getZExtValue()));
+  EmitPrefixInstruction(Mov);
 
   if (MAI.hasDotTypeDotSizeDirective()) {
     MCSymbol *EndSym = OutContext.createTempSymbol("cfi_func_end");
@@ -1227,6 +1240,21 @@ void X86AsmPrinter::emitMachOIFuncStubBody(Module &M, const GlobalIFunc &GI,
           .addReg(0)
           .addOperand(MCOperand::createExpr(
               MCSymbolRefExpr::create(LazyPointer, OutContext)))
+          .addReg(0),
+      *Subtarget);
+}
+
+void X86AsmPrinter::emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
+                                          MCSymbol *Pointer) {
+  // ifunc:
+  //   jmpq *__imp_ifunc(%rip)
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::JMP64m)
+          .addReg(X86::RIP)
+          .addImm(1)
+          .addReg(0)
+          .addOperand(MCOperand::createExpr(
+              MCSymbolRefExpr::create(Pointer, OutContext)))
           .addReg(0),
       *Subtarget);
 }

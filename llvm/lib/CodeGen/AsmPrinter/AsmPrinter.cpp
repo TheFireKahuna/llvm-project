@@ -1178,7 +1178,7 @@ void AsmPrinter::emitFunctionHeader() {
     emitFunctionPrefix({F.getPrefixData()});
 
   // Emit KCFI type information before patchable-function-prefix nops.
-  emitKCFITypeId(*MF);
+  emitKCFITypeId(F, MF->getPreferredAlignment(), MF);
 
   // Emit M NOPs for -fpatchable-function-entry=N,M where M>0. We arbitrarily
   // place prefix data before NOPs.
@@ -1782,18 +1782,18 @@ void AsmPrinter::emitKCFITrapEntry(const MachineFunction &MF,
   OutStreamer->popSection();
 }
 
-void AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
-  const Function &F = MF.getFunction();
-  const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type);
+void AsmPrinter::emitKCFITypeId(const GlobalObject &GO, Align Alignment,
+                                const MachineFunction *MF) {
+  const MDNode *MD = GO.getMetadata(LLVMContext::MD_kcfi_type);
   if (!MD)
     return;
   auto *Type = mdconst::extract<ConstantInt>(MD->getOperand(0));
   const ConstantInt *Marker = nullptr;
   if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     Marker = mdconst::extract_or_null<ConstantInt>(
-        F.getParent()->getModuleFlag("function-type-prefix"));
+        GO.getParent()->getModuleFlag("function-type-prefix"));
   if (!Marker) {
-    emitGlobalConstant(F.getDataLayout(), Type);
+    emitGlobalConstant(GO.getDataLayout(), Type);
     return;
   }
 
@@ -1804,13 +1804,13 @@ void AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // tag LTO gives a function of a type it checks by members. A __cfi_ symbol
   // marks the prefix, as on x86, with the function's linkage except on COFF,
   // where it is local.
-  MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + MF.getName());
+  MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + GO.getName());
   if (!TM.getTargetTriple().isOSBinFormatCOFF())
-    emitLinkage(&F, FnSym);
-  const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
+    emitLinkage(&GO, FnSym);
+  const MDNode *VfnMD = GO.getMetadata("kcfi_vfn_type");
   bool IsMemberTag = false;
   if (!VfnMD) {
-    VfnMD = F.getMetadata("kcfi_member_tag");
+    VfnMD = GO.getMetadata("kcfi_member_tag");
     IsMemberTag = VfnMD;
   }
 
@@ -1820,9 +1820,21 @@ void AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // data, and its nops are 4 bytes.
   uint64_t PrefixBytes =
       (VfnMD ? 16 : 12) +
-      4 * F.getFnAttributeAsParsedInteger("patchable-function-prefix");
+      4 * (MF ? MF->getFunction().getFnAttributeAsParsedInteger(
+                    "patchable-function-prefix")
+              : 0);
   emitAlignment(Align(16));
-  emitNops(offsetToAlignment(PrefixBytes, Align(16)) / 4);
+  uint64_t Padding = offsetToAlignment(PrefixBytes, Align(16));
+  if (MF) {
+    emitNops(Padding / 4);
+  } else {
+    // An indirect function's stub has no machine function; its resolver's
+    // subtarget gives the nop.
+    const Function *Resolver = cast<GlobalIFunc>(GO).getResolverFunction();
+    MCInst Nop = TM.getSubtargetImpl(*Resolver)->getInstrInfo()->getNop();
+    for (uint64_t N = Padding / 4; N; --N)
+      OutStreamer->emitInstruction(Nop, *getIFuncMCSubtargetInfo());
+  }
 
   OutStreamer->emitLabel(FnSym);
   // A linker tells a membership tag from a second type by the records.
@@ -2921,6 +2933,18 @@ void AsmPrinter::emitGlobalIFunc(Module &M, const GlobalIFunc &GI) {
     return;
   }
 
+  // On Windows Itanium and NT-POSIX an indirect function's address is a stub
+  // that jumps through its import pointer, which the linker makes a word of
+  // read-only data that the image's start-up writes with what the resolver
+  // returns, as a link record says. The stub carries the function's KCFI type,
+  // as any function does.
+  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    if (!getIFuncMCSubtargetInfo())
+      reportFatalUsageError("IFuncs are not supported on this platform");
+    emitCOFFIFunc(M, GI);
+    return;
+  }
+
   if (!TM.getTargetTriple().isOSBinFormatMachO() || !getIFuncMCSubtargetInfo())
     reportFatalUsageError("IFuncs are not supported on this platform");
 
@@ -2970,6 +2994,51 @@ void AsmPrinter::emitGlobalIFunc(Module &M, const GlobalIFunc &GI) {
   OutStreamer->emitLabel(StubHelper);
   emitVisibility(StubHelper, GI.getVisibility());
   emitMachOIFuncStubHelperBody(M, GI, LazyPointer);
+}
+
+void AsmPrinter::emitCOFFIFunc(Module &M, const GlobalIFunc &GI) {
+  const Function *Resolver = GI.getResolverFunction();
+  if (!Resolver)
+    reportFatalUsageError("the resolver of IFunc '" + GI.getName() +
+                          "' is not a function");
+  MCSymbol *Stub = getSymbol(&GI);
+
+  // The stub is in the section a function of the ifunc's linkage takes: for a
+  // weak ifunc a COMDAT, keyed by the stub where the ifunc names none, so its
+  // symbol is global, and shared along import paths where it has default
+  // visibility.
+  auto *Section = static_cast<MCSectionCOFF *>(
+      getObjFileLowering().SectionForGlobal(&GI, SectionKind::getText(), TM));
+  if (GI.isWeakForLinker() && !Section->getCOMDATSymbol())
+    Section = OutContext.getCOFFSection(
+        ".text",
+        COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
+            COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_LNK_COMDAT,
+        Stub->getName(), COFF::IMAGE_COMDAT_SELECT_ANY);
+  OutStreamer->switchSection(Section);
+  if (!GI.hasLocalLinkage())
+    OutStreamer->emitSymbolAttribute(Stub, MCSA_Global);
+  if (GI.isWeakForLinker() && GI.hasDefaultVisibility())
+    OutStreamer->emitCOFFLinkBinding(Stub, COFF::LinkBindingDefault);
+  OutStreamer->beginCOFFSymbolDef(Stub);
+  OutStreamer->emitCOFFSymbolStorageClass(GI.hasLocalLinkage()
+                                              ? COFF::IMAGE_SYM_CLASS_STATIC
+                                              : COFF::IMAGE_SYM_CLASS_EXTERNAL);
+  OutStreamer->emitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_FUNCTION
+                                  << COFF::SCT_COMPLEX_TYPE_SHIFT);
+  OutStreamer->endCOFFSymbolDef();
+  // Control Flow Guard suppresses an export only at a 16-byte aligned entry.
+  OutStreamer->emitCodeAlignment(Align(16), *getIFuncMCSubtargetInfo());
+  emitKCFITypeId(GI, Align(16), /*MF=*/nullptr);
+  OutStreamer->emitLabel(Stub);
+  emitCOFFIFuncStubBody(
+      M, GI, OutContext.getOrCreateSymbol("__imp_" + Stub->getName()));
+  OutStreamer->emitCOFFLinkIFunc(Stub, getSymbol(Resolver));
+  // The function a call reaches before the start-up runs the resolver.
+  if (const MDNode *MD = Resolver->getMetadata("resolver_fallback"))
+    if (auto *Fallback =
+            mdconst::dyn_extract_or_null<Function>(MD->getOperand(0)))
+      OutStreamer->emitCOFFLinkIFuncFallback(Stub, getSymbol(Fallback));
 }
 
 void AsmPrinter::emitRemarksSection(remarks::RemarkStreamer &RS) {
