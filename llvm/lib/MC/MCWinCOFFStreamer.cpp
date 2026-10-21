@@ -365,7 +365,25 @@ void MCWinCOFFStreamer::emitCOFFLinkBinding(const MCSymbol *Symbol,
 
 void MCWinCOFFStreamer::emitCOFFLinkForwarder(const MCSymbol *Forwarder,
                                               const MCSymbol *Pointer) {
-  getWriter().addLinkForwarder({Forwarder, Pointer});
+  getWriter().addLinkSymbolPair(
+      {COFF::LinkRecordForwarders, Forwarder, Pointer});
+}
+
+void MCWinCOFFStreamer::emitCOFFLinkIFunc(const MCSymbol *Function,
+                                          const MCSymbol *Resolver) {
+  // The record must reach the object even when nothing else names the
+  // resolver, or the stub would jump through a pointer to itself.
+  getAssembler().registerSymbol(*Function);
+  getAssembler().registerSymbol(*Resolver);
+  getWriter().addLinkSymbolPair({COFF::LinkRecordIFuncs, Function, Resolver});
+}
+
+void MCWinCOFFStreamer::emitCOFFLinkIFuncFallback(const MCSymbol *Function,
+                                                  const MCSymbol *Fallback) {
+  getAssembler().registerSymbol(*Function);
+  getAssembler().registerSymbol(*Fallback);
+  getWriter().addLinkSymbolPair(
+      {COFF::LinkRecordIFuncFallbacks, Function, Fallback});
 }
 
 void MCWinCOFFStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {

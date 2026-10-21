@@ -163,6 +163,26 @@ enum LinkRecordKind : uint64_t {
   // keeps the forwarders, which are correct as they are.
   LinkRecordForwarders = 6,
 
+  // The indirect functions the object defines, each a stub that jumps through
+  // its import pointer __imp_<function>, which a linker makes a word of
+  // read-only data that the image's start-up writes with what the resolver
+  // returns:
+  //
+  //   payload := (function:ULEB128 resolver:ULEB128)*
+  //
+  // function and resolver are symbol indices. The kind is critical, since a
+  // linker that ignored it would point the stub at itself.
+  LinkRecordIFuncs = 39,
+
+  // The function each indirect function of a LinkRecordIFuncs group reaches
+  // until the image's start-up writes its import pointer, the one its resolver
+  // returns where no feature beyond the target's baseline is present:
+  //
+  //   payload := (function:ULEB128 fallback:ULEB128)*
+  //
+  // A linker that does not know the kind leaves the pointer zero until then.
+  LinkRecordIFuncFallbacks = 40,
+
   // The ABI contracts that the object's references to symbols another image
   // may provide require, for a linker that checks each against the contracts
   // the symbol's image provides:

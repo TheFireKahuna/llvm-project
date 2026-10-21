@@ -92,6 +92,9 @@ class COFFAsmParser : public MCAsmParserExtension {
         ".linkbinding");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkForwarder>(
         ".linkforwarder");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkIFunc>(".linkifunc");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkIFuncFallback>(
+        ".linkifuncfallback");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkContract>(
         ".linkcontract");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedCall>(
@@ -181,6 +184,8 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkKCFITag(StringRef, SMLoc);
   bool parseDirectiveLinkBinding(StringRef, SMLoc);
   bool parseDirectiveLinkForwarder(StringRef, SMLoc);
+  bool parseDirectiveLinkIFunc(StringRef, SMLoc);
+  bool parseDirectiveLinkIFuncFallback(StringRef, SMLoc);
   bool parseDirectiveLinkContract(StringRef, SMLoc);
   bool parseDirectiveLinkFusedCall(StringRef, SMLoc);
   bool parseDirectiveLinkFusedRead(StringRef, SMLoc);
@@ -837,6 +842,38 @@ bool COFFAsmParser::parseDirectiveLinkForwarder(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkForwarder(Forwarder, Pointer);
+  return false;
+}
+
+/// parseDirectiveLinkIFunc
+///  ::= .linkifunc function, resolver
+bool COFFAsmParser::parseDirectiveLinkIFunc(StringRef, SMLoc) {
+  MCSymbol *Function, *Resolver;
+  if (getParser().parseSymbol(Function))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  if (getParser().parseSymbol(Resolver))
+    return TokError("expected identifier in directive");
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkIFunc(Function, Resolver);
+  return false;
+}
+
+/// parseDirectiveLinkIFuncFallback
+///  ::= .linkifuncfallback function, fallback
+bool COFFAsmParser::parseDirectiveLinkIFuncFallback(StringRef, SMLoc) {
+  MCSymbol *Function, *Fallback;
+  if (getParser().parseSymbol(Function))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma())
+    return true;
+  if (getParser().parseSymbol(Fallback))
+    return TokError("expected identifier in directive");
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkIFuncFallback(Function, Fallback);
   return false;
 }
 

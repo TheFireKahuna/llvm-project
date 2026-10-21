@@ -653,6 +653,17 @@ public:
   virtual void emitCOFFLinkForwarder(const MCSymbol *Forwarder,
                                      const MCSymbol *Pointer);
 
+  /// Tells the linker that \p Function is an indirect function, a stub that
+  /// jumps through its import pointer, which the image's start-up writes with
+  /// what \p Resolver returns.
+  virtual void emitCOFFLinkIFunc(const MCSymbol *Function,
+                                 const MCSymbol *Resolver);
+
+  /// Tells the linker that the indirect function \p Function reaches
+  /// \p Fallback until the image's start-up writes its import pointer.
+  virtual void emitCOFFLinkIFuncFallback(const MCSymbol *Function,
+                                         const MCSymbol *Fallback);
+
   /// Tells the linker that the KCFI prefix that \p Prefix marks holds a
   /// membership tag in the word before its marker, not a second type.
   virtual void emitCOFFKCFIMemberTag(const MCSymbol *Prefix);

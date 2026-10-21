@@ -69,6 +69,10 @@ public:
   void emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) override;
   void emitCOFFLinkForwarder(const MCSymbol *Forwarder,
                              const MCSymbol *Pointer) override;
+  void emitCOFFLinkIFunc(const MCSymbol *Function,
+                         const MCSymbol *Resolver) override;
+  void emitCOFFLinkIFuncFallback(const MCSymbol *Function,
+                                 const MCSymbol *Fallback) override;
   void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
   void emitCOFFLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
                             bool IsData, StringRef Identity,

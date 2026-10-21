@@ -334,6 +334,10 @@ public:
   void emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) override;
   void emitCOFFLinkForwarder(const MCSymbol *Forwarder,
                              const MCSymbol *Pointer) override;
+  void emitCOFFLinkIFunc(const MCSymbol *Function,
+                         const MCSymbol *Resolver) override;
+  void emitCOFFLinkIFuncFallback(const MCSymbol *Function,
+                                 const MCSymbol *Fallback) override;
   void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
   void emitCOFFLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
                             bool IsData, StringRef Identity,
@@ -1125,6 +1129,24 @@ void MCAsmStreamer::emitCOFFLinkForwarder(const MCSymbol *Forwarder,
   Forwarder->print(OS, MAI);
   OS << ", ";
   Pointer->print(OS, MAI);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkIFunc(const MCSymbol *Function,
+                                      const MCSymbol *Resolver) {
+  OS << "\t.linkifunc\t";
+  Function->print(OS, MAI);
+  OS << ", ";
+  Resolver->print(OS, MAI);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkIFuncFallback(const MCSymbol *Function,
+                                              const MCSymbol *Fallback) {
+  OS << "\t.linkifuncfallback\t";
+  Function->print(OS, MAI);
+  OS << ", ";
+  Fallback->print(OS, MAI);
   EmitEOL();
 }
 

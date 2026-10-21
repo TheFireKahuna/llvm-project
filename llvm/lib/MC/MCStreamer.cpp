@@ -1292,6 +1292,10 @@ void MCStreamer::emitCOFFKCFIThunk(const MCSymbol *Thunk, unsigned Kind,
 void MCStreamer::emitCOFFLinkBinding(const MCSymbol *Symbol, unsigned Role) {}
 void MCStreamer::emitCOFFLinkForwarder(const MCSymbol *Forwarder,
                                        const MCSymbol *Pointer) {}
+void MCStreamer::emitCOFFLinkIFunc(const MCSymbol *Function,
+                                   const MCSymbol *Resolver) {}
+void MCStreamer::emitCOFFLinkIFuncFallback(const MCSymbol *Function,
+                                           const MCSymbol *Fallback) {}
 void MCStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {}
 void MCStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
                                       const MCSymbol *Symbol, bool IsData,

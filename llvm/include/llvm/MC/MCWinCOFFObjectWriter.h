@@ -109,11 +109,14 @@ public:
     unsigned Role;
   };
 
-  /// A forwarder and the import pointer it jumps through, which the object's
-  /// link-only records carry (COFF::LinkRecordForwarders).
-  struct LinkForwarder {
-    const MCSymbol *Forwarder;
-    const MCSymbol *Pointer;
+  /// Two symbols a kind of the object's link-only records pairs: a forwarder
+  /// and the import pointer it jumps through (COFF::LinkRecordForwarders), or
+  /// an indirect function and its resolver (COFF::LinkRecordIFuncs) or its
+  /// fallback (COFF::LinkRecordIFuncFallbacks).
+  struct LinkSymbolPair {
+    uint64_t Kind;
+    const MCSymbol *First;
+    const MCSymbol *Second;
   };
 
   /// An ABI contract that the code in the section of Owner requires of the
@@ -241,8 +244,8 @@ private:
   SmallVector<const MCSymbol *, 0> KCFIMemberTags;
   // The roles of the object's definitions in COMDATs, in the order given.
   SmallVector<LinkBinding, 0> LinkBindings;
-  // The object's forwarders, in the order given.
-  SmallVector<LinkForwarder, 0> LinkForwarders;
+  // The object's pairs of symbols, in the order given.
+  SmallVector<LinkSymbolPair, 0> LinkSymbolPairs;
   // The ABI contracts the object's references require, in the order given.
   SmallVector<LinkContract, 0> LinkContracts;
   // The facts about the object's fused calls and the loads they read.
@@ -276,7 +279,7 @@ public:
   bool hasLinkRecordsSection() const {
     return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty() ||
            !KCFIThunks.empty() || !KCFIMemberTags.empty() ||
-           !LinkBindings.empty() || !LinkForwarders.empty() ||
+           !LinkBindings.empty() || !LinkSymbolPairs.empty() ||
            !LinkContracts.empty() || !LinkVTables.empty();
   }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
@@ -292,8 +295,8 @@ public:
   void addKCFIMemberTag(const MCSymbol *Prefix) {
     KCFIMemberTags.push_back(Prefix);
   }
-  void addLinkForwarder(const LinkForwarder &Forwarder) {
-    LinkForwarders.push_back(Forwarder);
+  void addLinkSymbolPair(const LinkSymbolPair &Pair) {
+    LinkSymbolPairs.push_back(Pair);
   }
   void addLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
                        bool IsData, StringRef Identity,

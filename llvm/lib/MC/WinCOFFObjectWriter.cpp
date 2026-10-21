@@ -1941,18 +1941,23 @@ uint64_t WinCOFFWriter::writeObject() {
       OS << Thunks;
     }
 
-    SmallString<0> Forwarders;
-    raw_svector_ostream ForwardersOS(Forwarders);
-    for (const WinCOFFObjectWriter::LinkForwarder &F : OWriter.LinkForwarders)
-      if (!F.Forwarder->isTemporary() && F.Forwarder->isRegistered() &&
-          !F.Pointer->isTemporary() && F.Pointer->isRegistered()) {
-        encodeULEB128(F.Forwarder->getIndex(), ForwardersOS);
-        encodeULEB128(F.Pointer->getIndex(), ForwardersOS);
+    for (uint64_t Kind : {COFF::LinkRecordForwarders, COFF::LinkRecordIFuncs,
+                          COFF::LinkRecordIFuncFallbacks}) {
+      SmallString<0> Pairs;
+      raw_svector_ostream PairsOS(Pairs);
+      for (const WinCOFFObjectWriter::LinkSymbolPair &P :
+           OWriter.LinkSymbolPairs)
+        if (P.Kind == Kind && !P.First->isTemporary() &&
+            P.First->isRegistered() && !P.Second->isTemporary() &&
+            P.Second->isRegistered()) {
+          encodeULEB128(P.First->getIndex(), PairsOS);
+          encodeULEB128(P.Second->getIndex(), PairsOS);
+        }
+      if (!Pairs.empty()) {
+        encodeULEB128(Kind, OS);
+        encodeULEB128(Pairs.size(), OS);
+        OS << Pairs;
       }
-    if (!Forwarders.empty()) {
-      encodeULEB128(COFF::LinkRecordForwarders, OS);
-      encodeULEB128(Forwarders.size(), OS);
-      OS << Forwarders;
     }
 
     SmallString<0> Tags;
@@ -2088,7 +2093,7 @@ void WinCOFFObjectWriter::reset() {
   KCFIThunks.clear();
   KCFIMemberTags.clear();
   LinkBindings.clear();
-  LinkForwarders.clear();
+  LinkSymbolPairs.clear();
   LinkContracts.clear();
   LinkFusedCalls.clear();
   LinkFusedReads.clear();
