@@ -134,6 +134,14 @@ void addEdit(SectionChunk *sc, RelaxEdit e);
 // to it in sc holds.
 uint32_t getSectionOffset(const SectionChunk *sc, Defined *d);
 
+// Where the rel32 field of a direct call or jump to target, at offset in sc's
+// contents, lands as sc is written: the field moved with its chunk, or that of
+// the direct call or jump the linker made of an instruction at offset, or
+// none where the linker made it anything else.
+std::optional<uint32_t> getBranchFieldOffset(const SectionChunk *sc,
+                                             uint32_t offset,
+                                             const Defined *target);
+
 // Writes n bytes of no-operations at buf, each at most maxNop bytes long.
 void writeNops(uint8_t *buf, size_t n, unsigned maxNop);
 

@@ -303,6 +303,7 @@ private:
   void addBaserelBlocks(std::vector<Baserel> &v);
   void createDynamicRelocs();
   void createFunctionOverrides();
+  std::vector<FunctionOverrideEntry> overrides;
 
   uint32_t getSizeOfInitializedData();
 
@@ -871,8 +872,10 @@ void Writer::writePEChecksum() {
 // A function whose body Windows selects is a stub whose jump to its default
 // body, the stub's first relocation, the function-override record names: the
 // body, the bodies the diagram may select instead, and the jump's field, which
-// Windows writes with the chosen one's displacement.
+// Windows writes with the chosen one's displacement, as it writes each direct
+// call or jump to the stub, so that those reach the chosen body at once.
 void Writer::createFunctionOverrides() {
+  DenseMap<Symbol *, size_t> entries;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (const SymbolTable::FunctionOverride &o : symtab.functionOverrides) {
       auto *stub = dyn_cast<DefinedRegular>(o.function);
@@ -899,7 +902,8 @@ void Writer::createFunctionOverrides() {
         fail("names a stub that does not jump to a body");
         continue;
       }
-      FunctionOverrideEntry e{original, {}, {{sc, jump->VirtualAddress}}, {}};
+      FunctionOverrideEntry e{
+          stub, original, {}, {{sc, jump->VirtualAddress}}, {}};
       for (Symbol *c : o.candidates)
         if (auto *d = dyn_cast<Defined>(c))
           e.candidates.push_back(d);
@@ -920,11 +924,53 @@ void Writer::createFunctionOverrides() {
         continue;
       }
       e.nodes.assign(o.nodes.begin(), o.nodes.end());
-      if (!ctx.dynamicRelocs)
-        ctx.dynamicRelocs = make<DynamicRelocsChunk>(/*arm64x=*/false);
-      ctx.dynamicRelocs->addFunctionOverride(std::move(e));
+      entries[o.function] = overrides.size();
+      overrides.push_back(std::move(e));
     }
   });
+  if (overrides.empty())
+    return;
+
+  // A REL32 in code that an object describing its sites leaves undescribed
+  // is a branch; a call or jump through the stub's import pointer becomes
+  // one where the linker bypasses the pointer.
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (!file->describesSites())
+      continue;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      if (!sc || !sc->live ||
+          !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
+        continue;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        if (rel.Type != IMAGE_REL_AMD64_REL32)
+          continue;
+        Symbol *s = file->getSymbol(rel.SymbolTableIndex);
+        bool viaPointer = false;
+        if (auto *li = dyn_cast_or_null<DefinedLocalImport>(s)) {
+          s = li->getTarget();
+          viaPointer = true;
+        }
+        auto it = entries.find(s);
+        if (it == entries.end())
+          continue;
+        FunctionOverrideEntry &e = overrides[it->second];
+        const ObjFile::RelocFact *fact = file->relocFact(sc, rel);
+        if (sc == e.sites.front().first &&
+            rel.VirtualAddress == e.sites.front().second)
+          continue;
+        if (viaPointer ? fact && fact->hasSite
+                       : (!fact || !fact->hasSite) &&
+                             read32le(sc->getContents().data() +
+                                      rel.VirtualAddress) == 0)
+          e.sites.push_back({sc, rel.VirtualAddress});
+      }
+    }
+  }
+  if (!ctx.dynamicRelocs)
+    ctx.dynamicRelocs = make<DynamicRelocsChunk>(/*arm64x=*/false);
+  for (FunctionOverrideEntry &e : overrides)
+    ctx.dynamicRelocs->addFunctionOverride(std::move(e));
 }
 
 // The main function of the writer.

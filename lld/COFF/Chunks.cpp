@@ -1509,8 +1509,10 @@ void DynamicRelocsChunk::finalize() {
   for (const FunctionOverrideEntry &e : functionOverrides) {
     std::vector<Baserel> sites;
     for (auto [chunk, offset] : e.sites)
-      sites.emplace_back(chunk->getRVA() + offset,
-                         IMAGE_FUNCTION_OVERRIDE_X64_REL32);
+      if (std::optional<uint32_t> field =
+              getBranchFieldOffset(chunk, offset, e.stub))
+        sites.emplace_back(chunk->getRVA() + *field,
+                           IMAGE_FUNCTION_OVERRIDE_X64_REL32);
     llvm::sort(sites, [](const Baserel &x, const Baserel &y) {
       return x.rva < y.rva;
     });

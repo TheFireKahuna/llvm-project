@@ -1064,9 +1064,12 @@ private:
 // body, the bodies it may select instead, the rel32 fields into which it
 // writes the chosen body's displacement, and the diagram that chooses.
 struct FunctionOverrideEntry {
+  Defined *stub;
   Defined *original;
   std::vector<Defined *> candidates;
-  std::vector<std::pair<const Chunk *, uint32_t>> sites;
+  // The calls and jumps to the stub, the stub's own jump first, by the
+  // offsets of their fields in their chunks' contents.
+  std::vector<std::pair<const SectionChunk *, uint32_t>> sites;
   std::vector<std::array<uint32_t, 3>> nodes;
 };
 

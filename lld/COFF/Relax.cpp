@@ -48,6 +48,27 @@ uint32_t Relaxation::getOutputOffset(uint32_t offset) const {
   return offset - (e.offset + e.oldSize) + e.newOffset + e.newSize;
 }
 
+std::optional<uint32_t> getBranchFieldOffset(const SectionChunk *sc,
+                                             uint32_t offset,
+                                             const Defined *target) {
+  auto &relaxations = sc->file->symtab.ctx.relaxations;
+  auto it = relaxations.find(sc);
+  if (it == relaxations.end())
+    return offset;
+  const RelaxEdit *e = it->second.findEdit(offset);
+  if (!e)
+    return it->second.getOutputOffset(offset);
+  if (e->target != target)
+    return std::nullopt;
+  // A call is E8 rel32, after an addr32 prefix where it keeps a pointer
+  // call's length; a jump E9 rel32, then padding.
+  if (e->kind == RelaxEdit::DirectCall)
+    return e->newOffset + e->newSize - 4;
+  if (e->kind == RelaxEdit::DirectJump)
+    return e->newOffset + 1;
+  return std::nullopt;
+}
+
 const RelaxEdit *Relaxation::findEdit(uint32_t offset) const {
   auto it = llvm::partition_point(
       edits, [&](const RelaxEdit &e) { return e.offset <= offset; });

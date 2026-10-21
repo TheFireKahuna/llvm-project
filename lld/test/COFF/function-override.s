@@ -1,9 +1,9 @@
 # REQUIRES: x86
 ## A function-override link record makes an entry of the dynamic value
 ## relocation table's function-override record: the body the stub jumps to,
-## the bodies Windows may select instead, the stub's jump as the field it
-## writes, and the diagram. The record keeps the bodies, and two stubs stay
-## two sites, however alike.
+## the bodies Windows may select instead, the stub's jump and each direct call
+## or jump to the stub as the fields it writes, and the diagram. The record
+## keeps the bodies, and two stubs stay two sites, however alike.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium fo.s -o fo.obj
@@ -20,6 +20,7 @@
 # CHECK-DAG: {{ }}f.base [[#%x,BASE:]] fo.obj
 # CHECK-DAG: {{ }}f [[#%x,F:]] fo.obj
 # CHECK-DAG: {{ }}g [[#%x,G:]] fo.obj
+# CHECK-DAG: {{ }}use [[#%x,USE:]] fo.obj
 
 # CHECK:      DynamicValueRelocTableSection:
 # CHECK:      DynamicRelocations [
@@ -35,6 +36,10 @@
 # CHECK-NEXT:         Fixup {
 # CHECK-NEXT:           Type: X64_REL32
 # CHECK-NEXT:           RVA: 0x[[#%X,F-0x180000000+1]]
+# CHECK-NEXT:         }
+# CHECK-NEXT:         Fixup {
+# CHECK-NEXT:           Type: X64_REL32
+# CHECK-NEXT:           RVA: 0x[[#%X,USE-0x180000000+1]]
 # CHECK-NEXT:         }
 # CHECK-NEXT:       ]
 # CHECK-NEXT:       BDD [
@@ -57,6 +62,11 @@
 # CHECK-NEXT:           Type: X64_REL32
 # CHECK-NEXT:           RVA: 0x[[#%X,G-0x180000000+1]]
 # CHECK-NEXT:         }
+# CHECK-NEXT:         Fixup {
+# CHECK-NEXT:           Type: X64_REL32
+# CHECK-NEXT:           RVA: 0x[[#%X,USE-0x180000000+13]]
+# CHECK-NEXT:         }
+# CHECK-NEXT:       ]
 
 ## A record whose diagram has an edge leading back, or whose stub does not
 ## jump to a body, is an error.
@@ -99,11 +109,14 @@ g:
   jmp f.base
   .linkfunctionoverride g, (f.wide, f.narrow), (2, 1, 0x13e), (1, 1, 0), (4, 3, 1), (3, 3, 1), (0, 0, 0)
 
+## A direct call is patched too; an address load is not. A call through the
+## stub's import pointer is patched once the linker makes it direct.
   .section .text$use,"xr"
   .globl use
 use:
   callq f
-  callq g
+  leaq g(%rip), %rax
+  callq *__imp_g(%rip)
   retq
 
 #--- bad.s
