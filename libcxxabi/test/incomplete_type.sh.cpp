@@ -27,11 +27,18 @@
 #include <typeinfo>
 
 // Check that the addresses of the typeinfo differ but still compare equal
-// via their NTBS.
+// via their NTBS. On Windows Itanium and NT-POSIX a unit that sees the class
+// incomplete refers to the complete class's typeinfo where the program has
+// one, and to one placeholder otherwise, so the two are one object.
 inline void
 AssertIncompleteTypeInfoEquals(std::type_info const& LHS, std::type_info const& RHS)
 {
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+  assert(&LHS == &RHS);
+  assert(LHS == RHS);
+#else
   assert(&LHS != &RHS);
+#endif
   assert(strcmp(LHS.name(), RHS.name()) == 0);
 }
 

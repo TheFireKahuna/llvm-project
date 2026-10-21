@@ -4384,7 +4384,7 @@ class ItaniumRTTIBuilder {
   /// follows it.
   llvm::GlobalValue *
   GetAddrOfTypeName(QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage,
-                    uint64_t &Length);
+                    uint64_t &Length, bool Placeholder);
 
   /// GetAddrOfExternalRTTIDescriptor - Returns the constant for the RTTI
   /// descriptor of the given type.
@@ -4472,26 +4472,39 @@ public:
       llvm::GlobalValue::VisibilityTypes Visibility,
       llvm::GlobalValue::DLLStorageClassTypes DLLStorageClass,
       llvm::GlobalValue::VisibilityTypes TypeInfoVisibility,
-      llvm::GlobalValue::DLLStorageClassTypes TypeInfoDLLStorageClass);
+      llvm::GlobalValue::DLLStorageClassTypes TypeInfoDLLStorageClass,
+      bool Placeholder = false);
 };
 }
 
+/// The prefix of the name of the placeholder that stands, on Windows Itanium
+/// and NT-POSIX, for a type_info object that reaches a class incomplete in the
+/// translation unit.
+static constexpr llvm::StringLiteral IncompletePrefix = "__llvm_incomplete$";
+
 llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
-    QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage, uint64_t &Length) {
+    QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage, uint64_t &Length,
+    bool Placeholder) {
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
+  // A placeholder for an incomplete class has a name of its own, since the
+  // complete class's name is followed by its layout shape.
+  if (Placeholder)
+    Out << IncompletePrefix;
   CGM.getCXXABI().getMangleContext().mangleCXXRTTIName(Ty, Out);
 
   // We know that the mangled name of the type starts at index 4 of the
   // mangled name of the typename, so we can just index into it in order to
   // get the mangled name of the type.
+  StringRef TypeString = StringRef(Name).drop_front(
+      Placeholder ? IncompletePrefix.size() + 4 : 4);
   llvm::Constant *Init;
   if (CGM.getTriple().isOSzOS()) {
     // On z/OS, typename is stored as 2 encodings: EBCDIC followed by ASCII.
     SmallString<256> DualEncodedName;
-    llvm::ConverterEBCDIC::convertToEBCDIC(Name.substr(4), DualEncodedName);
+    llvm::ConverterEBCDIC::convertToEBCDIC(TypeString, DualEncodedName);
     DualEncodedName += '\0';
-    DualEncodedName += Name.substr(4);
+    DualEncodedName += TypeString;
     Init = llvm::ConstantDataArray::getString(VMContext, DualEncodedName);
   } else if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
     Init = llvm::ConstantDataArray::getString(
@@ -4500,7 +4513,7 @@ llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
             .getTypeNameBlob(Ty, Linkage),
         /*AddNull=*/false);
   } else
-    Init = llvm::ConstantDataArray::getString(VMContext, Name.substr(4));
+    Init = llvm::ConstantDataArray::getString(VMContext, TypeString);
   Length = cast<llvm::ArrayType>(Init->getType())->getNumElements();
 
   // On Windows Itanium and NT-POSIX the type_info object's name word holds
@@ -5097,6 +5110,8 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
 
     return OldGV;
   }
+  if (llvm::GlobalAlias *Alias = CGM.getModule().getNamedAlias(Name))
+    return Alias;
 
   // Check if there is already an external RTTI descriptor for this type.
   if (IsStandardLibraryRTTIDescriptor(Ty) ||
@@ -5105,6 +5120,20 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
 
   // Emit the standard library with external linkage.
   llvm::GlobalVariable::LinkageTypes Linkage = getTypeInfoLinkage(CGM, Ty);
+
+  // The Itanium ABI keeps a type_info object that reaches a class incomplete
+  // in the translation unit apart from the complete class's, since that need
+  // not exist. On Windows Itanium and NT-POSIX the unit instead refers to the
+  // complete class's weakly, through a weak external whose default is a
+  // placeholder under a name of its own, kept once in an image like any other
+  // non-unique type_info object, so that the link binds the reference to the
+  // complete class's wherever it exists and the type compares by address.
+  bool Placeholder =
+      CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23) &&
+      ContainsIncompleteClassType(Ty);
+  if (Placeholder)
+    Linkage = llvm::GlobalValue::LinkOnceODRLinkage;
 
   // Give the type_info object and name the formal visibility of the
   // type itself.
@@ -5120,7 +5149,7 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
 
   llvm::GlobalValue::DLLStorageClassTypes DLLStorageClass =
       llvm::GlobalValue::DefaultStorageClass;
-  if (auto RD = Ty->getAsCXXRecordDecl()) {
+  if (auto RD = Placeholder ? nullptr : Ty->getAsCXXRecordDecl()) {
     if ((CGM.getTriple().isWindowsItaniumEnvironment() &&
          RD->hasAttr<DLLExportAttr>()) ||
         (CGM.shouldMapDefinitionToDLLExport(RD, Linkage) &&
@@ -5145,7 +5174,8 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
       getRTTIVisibility(llvmVisibility, TypeInfoDLLStorageClass);
 
   return BuildTypeInfo(Ty, Linkage, llvmVisibility, DLLStorageClass,
-                       TypeInfoVisibility, TypeInfoDLLStorageClass);
+                       TypeInfoVisibility, TypeInfoDLLStorageClass,
+                       Placeholder);
 }
 
 llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
@@ -5153,23 +5183,26 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
     llvm::GlobalValue::VisibilityTypes Visibility,
     llvm::GlobalValue::DLLStorageClassTypes DLLStorageClass,
     llvm::GlobalValue::VisibilityTypes TypeInfoVisibility,
-    llvm::GlobalValue::DLLStorageClassTypes TypeInfoDLLStorageClass) {
+    llvm::GlobalValue::DLLStorageClassTypes TypeInfoDLLStorageClass,
+    bool Placeholder) {
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
   CGM.getCXXABI().getMangleContext().mangleCXXRTTI(Ty, Out);
   llvm::Module &M = CGM.getModule();
   llvm::GlobalVariable *OldGV = M.getNamedGlobal(Name);
   // int8 is an arbitrary type to be replaced later with replaceInitializer.
-  llvm::GlobalVariable *GV =
-      new llvm::GlobalVariable(M, CGM.Int8Ty, /*isConstant=*/true, Linkage,
-                               /*Initializer=*/nullptr, Name);
+  llvm::GlobalVariable *GV = new llvm::GlobalVariable(
+      M, CGM.Int8Ty, /*isConstant=*/true, Linkage,
+      /*Initializer=*/nullptr,
+      Placeholder ? Twine(IncompletePrefix) + Name : Twine(Name));
 
   // Add the vtable pointer.
   BuildVTablePointer(cast<Type>(Ty), GV);
 
   // And the name.
   uint64_t TypeNameLength;
-  llvm::GlobalValue *TypeName = GetAddrOfTypeName(Ty, Linkage, TypeNameLength);
+  llvm::GlobalValue *TypeName = GetAddrOfTypeName(
+      Ty, Linkage, TypeNameLength, Placeholder && Ty->isRecordType());
   llvm::Constant *TypeNameField;
 
   // If we're supposed to demote the visibility, be sure to set a flag
@@ -5298,11 +5331,22 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
 
   GV->replaceInitializer(llvm::ConstantStruct::getAnon(Fields));
 
+  // References to a placeholder go through a weak alias of the type_info
+  // object's own name, which the link resolves to the complete one where any
+  // input defines it.
+  llvm::GlobalValue *Result = GV;
+  if (Placeholder)
+    Result = llvm::GlobalAlias::create(GV->getValueType(), 0,
+                                       llvm::GlobalValue::WeakAnyLinkage, "",
+                                       GV, &M);
+
   // If there's already an old global variable, replace it with the new one.
   if (OldGV) {
-    GV->takeName(OldGV);
-    OldGV->replaceAllUsesWith(GV);
+    Result->takeName(OldGV);
+    OldGV->replaceAllUsesWith(Result);
     OldGV->eraseFromParent();
+  } else if (Placeholder) {
+    Result->setName(Name);
   }
 
   if (CGM.supportsCOMDAT() && GV->isWeakForLinker())
@@ -5343,7 +5387,7 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
     if (const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl())
       Contracts->addTypeInfo(GV, RD);
 
-  return GV;
+  return Result;
 }
 
 /// BuildObjCObjectTypeInfo - Build the appropriate kind of type_info
