@@ -12,6 +12,7 @@
 
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/IR/DerivedTypes.h"
@@ -511,4 +512,27 @@ bool llvm::lowerGlobalIFuncUsersAsGlobalCtor(
   appendToGlobalCtors(M, NewCtor, Priority,
                       ConstantPointerNull::get(ConstantDataTy));
   return UnhandledUsers;
+}
+
+bool llvm::collectFunctionVersions(
+    Value *V, SmallVectorImpl<Function *> &Versions,
+    function_ref<TargetTransformInfo &(Function &)> GetTTI) {
+  if (auto *F = dyn_cast<Function>(V)) {
+    if (!GetTTI(*F).isMultiversionedFunction(*F))
+      return false;
+    Versions.push_back(F);
+  } else if (auto *Sel = dyn_cast<SelectInst>(V)) {
+    if (!collectFunctionVersions(Sel->getTrueValue(), Versions, GetTTI))
+      return false;
+    if (!collectFunctionVersions(Sel->getFalseValue(), Versions, GetTTI))
+      return false;
+  } else if (auto *Phi = dyn_cast<PHINode>(V)) {
+    for (unsigned I = 0, E = Phi->getNumIncomingValues(); I != E; ++I)
+      if (!collectFunctionVersions(Phi->getIncomingValue(I), Versions, GetTTI))
+        return false;
+  } else {
+    // Unknown instruction type. Bail.
+    return false;
+  }
+  return true;
 }

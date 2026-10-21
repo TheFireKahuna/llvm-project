@@ -30,6 +30,7 @@ class Function;
 class FunctionCallee;
 class GlobalIFunc;
 class GlobalValue;
+class TargetTransformInfo;
 class Constant;
 class ConstantStruct;
 class Value;
@@ -162,6 +163,13 @@ LLVM_ABI GlobalVariable *embedBufferInModule(Module &M, MemoryBufferRef Buf,
 LLVM_ABI bool
 lowerGlobalIFuncUsersAsGlobalCtor(Module &M,
                                   ArrayRef<GlobalIFunc *> IFuncsToLower = {});
+
+/// Follows the use-def chain of \p V backwards until it finds a Function,
+/// in which case it collects in \p Versions. Return true on successful
+/// use-def chain traversal, false otherwise.
+LLVM_ABI bool
+collectFunctionVersions(Value *V, SmallVectorImpl<Function *> &Versions,
+                        function_ref<TargetTransformInfo &(Function &)> GetTTI);
 
 } // End llvm namespace
 

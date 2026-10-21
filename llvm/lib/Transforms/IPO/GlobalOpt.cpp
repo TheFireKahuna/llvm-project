@@ -64,6 +64,7 @@
 #include "llvm/Transforms/Utils/Evaluator.h"
 #include "llvm/Transforms/Utils/GlobalStatus.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <cassert>
 #include <cstdint>
 #include <optional>
@@ -2491,32 +2492,6 @@ DeleteDeadIFuncs(Module &M,
   return Changed;
 }
 
-// Follows the use-def chain of \p V backwards until it finds a Function,
-// in which case it collects in \p Versions. Return true on successful
-// use-def chain traversal, false otherwise.
-static bool
-collectVersions(Value *V, SmallVectorImpl<Function *> &Versions,
-                function_ref<TargetTransformInfo &(Function &)> GetTTI) {
-  if (auto *F = dyn_cast<Function>(V)) {
-    if (!GetTTI(*F).isMultiversionedFunction(*F))
-      return false;
-    Versions.push_back(F);
-  } else if (auto *Sel = dyn_cast<SelectInst>(V)) {
-    if (!collectVersions(Sel->getTrueValue(), Versions, GetTTI))
-      return false;
-    if (!collectVersions(Sel->getFalseValue(), Versions, GetTTI))
-      return false;
-  } else if (auto *Phi = dyn_cast<PHINode>(V)) {
-    for (unsigned I = 0, E = Phi->getNumIncomingValues(); I != E; ++I)
-      if (!collectVersions(Phi->getIncomingValue(I), Versions, GetTTI))
-        return false;
-  } else {
-    // Unknown instruction type. Bail.
-    return false;
-  }
-  return true;
-}
-
 // Try to statically resolve calls to versioned functions when possible. First
 // we identify the function versions which are associated with an IFUNC symbol.
 // We do that by examining the resolver function of the IFUNC. Once we have
@@ -2570,7 +2545,8 @@ static bool OptimizeNonTrivialIFuncs(
     // Discover the versioned functions.
     if (any_of(*Resolver, [&](BasicBlock &BB) {
           if (auto *Ret = dyn_cast_or_null<ReturnInst>(BB.getTerminator()))
-            if (!collectVersions(Ret->getReturnValue(), Versions, GetTTI))
+            if (!collectFunctionVersions(Ret->getReturnValue(), Versions,
+                                         GetTTI))
               return true;
           return false;
         }))
