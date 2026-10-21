@@ -486,25 +486,32 @@
 // ERROR: unsupported argument 'foo' to option '-mapx-features='
 // ERROR: unsupported argument 'bar' to option '-mapx-features='
 
-// Windows Itanium and NT-POSIX default to x86-64-v3, plus features outside
-// that level that every x86-64-v3 processor Windows 11 supports has. An
-// explicit -march= replaces both.
+// Windows Itanium and NT-POSIX default to x86-64-v3, and every compilation for
+// them uses their hardware floor: that level, with features outside it that
+// every processor they support has. An explicit -march= or /arch: only tunes.
 // RUN: %clang --target=x86_64-unknown-windows-itanium -### -S %s 2>&1 \
-// RUN:   | FileCheck --check-prefix=WIN-V3 %s
+// RUN:   | FileCheck --check-prefixes=WIN-V3,WIN-FLOOR %s
 // RUN: %clang --target=x86_64-pc-windows-ntposix -### -S %s 2>&1 \
-// RUN:   | FileCheck --check-prefix=WIN-V3 %s
-// WIN-V3: "-target-cpu" "x86-64-v3"
-// WIN-V3-SAME: "-target-feature" "+aes"
-// WIN-V3-SAME: "-target-feature" "+pclmul"
-// WIN-V3-SAME: "-target-feature" "+fsgsbase"
-// WIN-V3-SAME: "-target-feature" "+adx"
-// WIN-V3-SAME: "-target-feature" "+rdrnd"
-// WIN-V3-SAME: "-target-feature" "+rdseed"
-// WIN-V3-SAME: "-target-feature" "+clflushopt"
-// WIN-V3-SAME: "-target-feature" "+xsavec"
-// WIN-V3-NOT: "+xsaves"
-
+// RUN:   | FileCheck --check-prefixes=WIN-V3,WIN-FLOOR %s
 // RUN: %clang --target=x86_64-unknown-windows-itanium -march=x86-64 -### -S \
-// RUN:   %s 2>&1 | FileCheck --check-prefix=WIN-MARCH %s
+// RUN:   %s 2>&1 | FileCheck --check-prefixes=WIN-MARCH,WIN-FLOOR %s
+// RUN: %clang --target=x86_64-unknown-windows-itanium --driver-mode=cl \
+// RUN:   /arch:AVX -### -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=WIN-ARCH,WIN-FLOOR %s
+// WIN-V3: "-target-cpu" "x86-64-v3"
 // WIN-MARCH: "-target-cpu" "x86-64"
-// WIN-MARCH-NOT: "+aes"
+// WIN-ARCH: "-target-cpu" "sandybridge"
+// WIN-FLOOR: "-target-feature" "+avx2"
+// WIN-FLOOR-SAME: "-target-feature" "+fma"
+// WIN-FLOOR-SAME: "-target-feature" "+bmi2"
+// WIN-FLOOR-SAME: "-target-feature" "+cx16"
+// WIN-FLOOR-SAME: "-target-feature" "+aes"
+// WIN-FLOOR-SAME: "-target-feature" "+pclmul"
+// WIN-FLOOR-SAME: "-target-feature" "+fsgsbase"
+// WIN-FLOOR-SAME: "-target-feature" "+adx"
+// WIN-FLOOR-SAME: "-target-feature" "+rdrnd"
+// WIN-FLOOR-SAME: "-target-feature" "+rdseed"
+// WIN-FLOOR-SAME: "-target-feature" "+clflushopt"
+// WIN-FLOOR-SAME: "-target-feature" "+xsavec"
+// WIN-FLOOR-NOT: "+xsaves"
+

@@ -21,6 +21,7 @@
 namespace llvm {
 template <typename T> class SmallVectorImpl;
 class StringRef;
+class Triple;
 
 namespace X86 {
 
@@ -165,6 +166,13 @@ LLVM_ABI ProcessorFeatures getKeyFeature(CPUKind Kind);
 LLVM_ABI void getFeaturesForCPU(StringRef CPU,
                                 SmallVectorImpl<StringRef> &Features,
                                 bool NeedPlus = false);
+
+/// Fill in the features that every processor \p TT supports has, whatever CPU
+/// a compilation names, for a target that states such a floor. "+" will be
+/// append in front of each feature if NeedPlus is true.
+LLVM_ABI void getTripleBaselineFeatures(const Triple &TT,
+                                        SmallVectorImpl<StringRef> &Features,
+                                        bool NeedPlus = false);
 
 /// Set or clear entries in \p Features that are implied to be enabled/disabled
 /// by the provided \p Feature.

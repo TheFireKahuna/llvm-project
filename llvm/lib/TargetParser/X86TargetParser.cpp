@@ -14,6 +14,7 @@
 #include "llvm/ADT/Bitset.h"
 #include "llvm/ADT/Enum.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/TargetParser/Triple.h"
 #include <numeric>
 
 using namespace llvm;
@@ -709,6 +710,21 @@ void llvm::X86::getFeaturesForCPU(StringRef CPU,
     if (Bits[i] && !Name.empty())
       EnabledFeatures.push_back(Name);
   }
+}
+
+void llvm::X86::getTripleBaselineFeatures(const Triple &TT,
+                                          SmallVectorImpl<StringRef> &Features,
+                                          bool NeedPlus) {
+  // Windows Itanium and NT-POSIX support only x86-64 processors with the
+  // x86-64-v3 level and the features beside it that each of them has. XSAVES
+  // is left out because it is privileged.
+  if (TT.getArch() != Triple::x86_64 ||
+      !TT.isWindowsItaniumOrNTPOSIXEnvironment())
+    return;
+  getFeaturesForCPU("x86-64-v3", Features, NeedPlus);
+  for (StringRef Name : {"+aes", "+pclmul", "+fsgsbase", "+adx", "+rdrnd",
+                         "+rdseed", "+clflushopt", "+xsavec"})
+    Features.push_back(Name.drop_front(!NeedPlus));
 }
 
 // For each feature that is (transitively) implied by this feature, set it.

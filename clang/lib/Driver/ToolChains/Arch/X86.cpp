@@ -166,21 +166,12 @@ void x86::getX86TargetFeatures(const Driver &D, const llvm::Triple &Triple,
       Features.push_back("+ssse3");
   }
 
-  // With their default CPU, Windows Itanium and NT-POSIX also use the features
-  // outside the x86-64-v3 level that every x86-64-v3 processor Windows 11
-  // supports has. XSAVES is left out because it is privileged.
-  if (ArchType == llvm::Triple::x86_64 &&
-      Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !Args.hasArg(options::OPT_march_EQ, options::OPT__SLASH_arch)) {
-    Features.push_back("+aes");
-    Features.push_back("+pclmul");
-    Features.push_back("+fsgsbase");
-    Features.push_back("+adx");
-    Features.push_back("+rdrnd");
-    Features.push_back("+rdseed");
-    Features.push_back("+clflushopt");
-    Features.push_back("+xsavec");
-  }
+  // A target's hardware floor, which every processor it supports has, is used
+  // whatever CPU the compilation is tuned for.
+  SmallVector<StringRef, 32> Baseline;
+  llvm::X86::getTripleBaselineFeatures(Triple, Baseline, /*NeedPlus=*/true);
+  for (StringRef F : Baseline)
+    Features.push_back(Args.MakeArgString(F));
 
   // Translate the high level `-mretpoline` flag to the specific target feature
   // flags. We also detect if the user asked for retpoline external thunks but
