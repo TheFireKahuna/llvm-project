@@ -13,8 +13,10 @@
 // name. Unlike Apple's, a linkonce_odr one keeps default visibility, so that
 // the linker can bind the images an import path joins to one owner's. A
 // strong, hidden or internal type_info object is unique. Every name pointer
-// holds the name's length with its NUL in bits 48 to 62, so that comparing two
-// names needs no scan; under -fclang-abi-compat=23 neither is set.
+// holds the name's length with its NUL and what follows it in bits 48 to 62,
+// so that comparing two names needs no scan. A non-unique class's name is
+// followed by its layout shape, here its size, alignment and vtable pointer.
+// Under -fclang-abi-compat=23 none of this is done.
 
 namespace std {
 class type_info;
@@ -47,9 +49,11 @@ struct Internal {
 // FLAG-DAG: @_ZTI3Key = dso_local constant { ptr, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTS3Key to i64), i64 1407374883553280) to ptr) }
 // COMPAT-DAG: @_ZTI3Key = dso_local constant { ptr, ptr } { ptr {{.*}}, ptr @_ZTS3Key }
 
-// FLAG-DAG: @_ZTI5NoKey = linkonce_odr constant { ptr, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTS5NoKey to i64), i64 -9221401712017801216) to ptr) }
-// FLAG-DAG: @_ZTS5NoKey = linkonce_odr constant
-// FLAG-DAG: @_ZTI4TmplIiE = weak_odr constant { ptr, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTS4TmplIiE to i64), i64 -9220838762064379904) to ptr) }
+// FLAG-DAG: @_ZTI5NoKey = linkonce_odr constant { ptr, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTS5NoKey to i64), i64 -9220557287087669248) to ptr) }
+// FLAG-DAG: @_ZTS5NoKey = linkonce_odr constant [10 x i8] c"5NoKey\00\08\03\09", comdat
+// FLAG-DAG: @_ZTSP5NoKey = linkonce_odr constant [8 x i8] c"P5NoKey\00", comdat
+// COMPAT-DAG: @_ZTS5NoKey = linkonce_odr constant [7 x i8] c"5NoKey\00", comdat
+// FLAG-DAG: @_ZTI4TmplIiE = weak_odr constant { ptr, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTS4TmplIiE to i64), i64 -9219994337134247936) to ptr) }
 // FLAG-DAG: @_ZTIP5NoKey = linkonce_odr constant { ptr, ptr, i32, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTSP5NoKey to i64), i64 -9221120237041090560) to ptr), i32 0, ptr @_ZTI5NoKey }
 
 // COMPAT-DAG: @_ZTI5NoKey = linkonce_odr constant { ptr, ptr } { ptr {{.*}}, ptr @_ZTS5NoKey }

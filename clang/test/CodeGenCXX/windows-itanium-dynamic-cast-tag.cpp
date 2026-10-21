@@ -43,14 +43,15 @@ struct M final : X, A { virtual void f() {} };
 // CHECK: %[[N:.*]] = load i64, ptr %[[NP]]
 // CHECK: %[[ON:.*]] = load i64, ptr getelementptr {{.*}}@_ZTI1C, i64 8)
 // CHECK: icmp eq i64 %[[N]], %[[ON]]
-// The flag and the length of "1C" with its NUL, 0x8003, in the top 16 bits.
+// The flag and the length, 0x8006, in the top 16 bits: "1C" with its NUL,
+// then the layout shape, the size, the alignment and the vtable pointer.
 // CHECK: dynamic_cast.flag:
 // CHECK: %[[TOP:.*]] = lshr i64 %[[N]], 48
-// CHECK: icmp eq i64 %[[TOP]], 32771
+// CHECK: icmp eq i64 %[[TOP]], 32774
 // CHECK: dynamic_cast.compare:
 // CHECK: %[[OS:.*]] = and i64 %[[N]], 281474976710655
 // CHECK: %[[S:.*]] = and i64 %[[ON]], 281474976710655
-// CHECK: call i32 @memcmp(ptr {{.*}}, ptr {{.*}}, i64 3)
+// CHECK: call i32 @memcmp(ptr {{.*}}, ptr {{.*}}, i64 6)
 // CHECK: dynamic_cast.tag.end:
 // CHECK: phi i1 [ true, %dynamic_cast.notnull ], [ false, %dynamic_cast.tag ],
 // CHECK-SAME: [ true, %dynamic_cast.rtti ], [ false, %dynamic_cast.name ],

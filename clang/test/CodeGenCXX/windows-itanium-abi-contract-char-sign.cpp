@@ -42,5 +42,5 @@ struct API Unsigned {
 void Unsigned::f() {}
 
 // The rows of Chars, Signed and Unsigned, in that order.
-// CHECK: !{!"/abiprovide:dH0T-csPZaUaQVDTodeYfDm3Eyg0FAjBg,T2JKrmYnm2c3YVML0QOOWU5gEqr1McDnA,3qnhPVEHJ9Q73eS6nuIf1MyTbowoBop5w"}
-// WIDER: !{!"/abiprovide:dH0T-csPZaU8Ag2FGIuhpNmh0PZjJnCpw,T2JKrmYnm2c3YVML0QOOWU5gEqr1McDnA,3qnhPVEHJ9Q73eS6nuIf1MyTbowoBop5w"}
+// CHECK: !{!"/abiprovide:dH0T-csPZaUkRBzSrvT0DBCO9HizNXE4w,T2JKrmYnm2cusg4k4ZeWG87q1fumlHY3w,3qnhPVEHJ9QrJg-Gb9sY8AoT5BsAiFHfg"}
+// WIDER: !{!"/abiprovide:dH0T-csPZaUbfGCfqWrpySlatnW8mInUg,T2JKrmYnm2cusg4k4ZeWG87q1fumlHY3w,3qnhPVEHJ9QrJg-Gb9sY8AoT5BsAiFHfg"}

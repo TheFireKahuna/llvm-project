@@ -52,7 +52,7 @@ static constexpr unsigned ContractSchemaVersion = 1;
 // The version of the rule that places vtables and of the representation of
 // type_info objects, which every digest also covers, so that an image built
 // under another rule fails to load against one whose types it requires.
-static constexpr unsigned LayoutVersion = 1;
+static constexpr unsigned LayoutVersion = 2;
 
 CodeGenABIContracts::CodeGenABIContracts(CodeGenModule &CGM)
     : CGM(CGM), Context(CGM.getContext()),
@@ -474,6 +474,262 @@ void CodeGenABIContracts::encodeVTable(const CXXRecordDecl *RD,
     encodeULEB128(VTLayout.getVTableOffset(I), OS);
     encodeULEB128(VTLayout.getAddressPointIndices()[I], OS);
   }
+}
+
+// The kinds of the items of a layout shape, in the low four bits of each
+// item's first byte. The high four bits give the bits of padding ahead of the
+// item, or, as 15, that a ULEB128 count of them follows the byte.
+enum ShapeKind : uint8_t {
+  ShapeInt8,
+  ShapeInt16,
+  ShapeInt32,
+  ShapeInt64,
+  ShapeInt128,
+  ShapeFloat32,
+  ShapeFloat64,
+  ShapeFloat80,
+  ShapePointer,
+  ShapeVTablePointer,
+  ShapeMemberFunctionPointer,
+  ShapeBitField,
+  ShapeArray,
+  ShapeUnion,
+  ShapeEnd,
+  ShapeExtended,
+};
+
+// The kinds that follow ShapeExtended, in a byte of their own.
+enum ShapeExtendedKind : uint8_t {
+  ShapeFloat16,
+  ShapeBFloat16,
+  ShapeFloat128,
+  ShapeMemberDataPointer,
+  ShapeVector,
+  ShapeBitInt,
+  ShapeOpaque,
+};
+
+// An item of a layout shape: the bits it covers and its encoding, the
+// padding ahead of it left out.
+struct CodeGenABIContracts::ShapeItem {
+  uint64_t Begin;
+  uint64_t End;
+  std::string Bytes;
+};
+
+// Encodes Items, a sequence's, after the bits of padding ahead of each. A run
+// of two or more equal items with none between them, as the elements of an
+// array are, is one array item, so that the encoding is canonical.
+std::string
+CodeGenABIContracts::encodeShapeItems(SmallVectorImpl<ShapeItem> &Items) {
+  llvm::stable_sort(Items, [](const auto &A, const auto &B) {
+    return std::tie(A.Begin, A.End) < std::tie(B.Begin, B.End);
+  });
+  std::string Out;
+  llvm::raw_string_ostream OS(Out);
+  uint64_t Previous = 0;
+  for (size_t I = 0; I != Items.size();) {
+    size_t J = I + 1;
+    while (J != Items.size() && Items[J].Bytes == Items[I].Bytes &&
+           Items[J].Begin == Items[J - 1].End)
+      ++J;
+    std::string Run;
+    StringRef Item = Items[I].Bytes;
+    if (J - I > 1) {
+      llvm::raw_string_ostream RunOS(Run);
+      RunOS << char(ShapeArray);
+      encodeULEB128(J - I, RunOS);
+      RunOS << Item << char(ShapeEnd);
+      Item = Run;
+    }
+    uint64_t Padding =
+        Items[I].Begin > Previous ? Items[I].Begin - Previous : 0;
+    OS << char(uint8_t(Item[0]) | std::min<uint64_t>(Padding, 15) << 4);
+    if (Padding >= 15)
+      encodeULEB128(Padding, OS);
+    OS << Item.drop_front();
+    Previous = Items[J - 1].End;
+    I = J;
+  }
+  return Out;
+}
+
+// Adds the items of the layout of a T at Offset bits: a scalar's kind, every
+// leaf of a record held by value, an array's count and its element's items, a
+// union's alternatives. A pointer is a pointer only, whatever it points to.
+void CodeGenABIContracts::addShapeItems(QualType T, uint64_t Offset,
+                                        SmallVectorImpl<ShapeItem> &Items) {
+  T = Context.getCanonicalType(T).getUnqualifiedType();
+  uint64_t Width = Context.getTypeSize(T);
+  auto Add = [&](std::string Bytes) {
+    Items.push_back({Offset, Offset + Width, std::move(Bytes)});
+  };
+  auto AddKind = [&](ShapeKind Kind) { Add(std::string(1, char(Kind))); };
+  auto AddExtended = [&](ShapeExtendedKind Kind, StringRef Operands = "") {
+    Add((Twine(char(ShapeExtended)) + Twine(char(Kind)) + Operands).str());
+  };
+  auto Nested = [&](QualType Element) {
+    SmallVector<ShapeItem, 4> ElementItems;
+    addShapeItems(Element, 0, ElementItems);
+    return encodeShapeItems(ElementItems) + char(ShapeEnd);
+  };
+
+  if (const auto *AT = Context.getAsConstantArrayType(T)) {
+    if (AT->getZExtSize() == 0)
+      return;
+    std::string Bytes(1, char(ShapeArray));
+    llvm::raw_string_ostream OS(Bytes);
+    encodeULEB128(AT->getZExtSize(), OS);
+    Add(Bytes + Nested(AT->getElementType()));
+    return;
+  }
+  if (const RecordDecl *RD = T->getAsRecordDecl()) {
+    const RecordDecl *Def = RD->getDefinition();
+    if (!Def)
+      return AddExtended(ShapeOpaque);
+    if (!Def->isUnion())
+      return addRecordShapeItems(Def, Offset, /*Complete=*/true, Items);
+    std::string Bytes(1, char(ShapeUnion));
+    llvm::raw_string_ostream OS(Bytes);
+    encodeULEB128(std::distance(Def->field_begin(), Def->field_end()), OS);
+    for (const FieldDecl *FD : Def->fields())
+      OS << Nested(FD->getType());
+    return Add(Bytes);
+  }
+  if (const auto *ED = T->getAsEnumDecl()) {
+    const EnumDecl *Def = ED->getDefinition();
+    if (QualType Int = (Def ? Def : ED)->getIntegerType(); !Int.isNull())
+      return addShapeItems(Int, Offset, Items);
+  }
+  if (const auto *CT = T->getAs<ComplexType>()) {
+    std::string Bytes(1, char(ShapeArray));
+    llvm::raw_string_ostream OS(Bytes);
+    encodeULEB128(2, OS);
+    return Add(Bytes + Nested(CT->getElementType()));
+  }
+  if (const auto *VT = T->getAs<VectorType>()) {
+    std::string Operands;
+    llvm::raw_string_ostream OS(Operands);
+    encodeULEB128(VT->getNumElements(), OS);
+    return AddExtended(ShapeVector, Operands + Nested(VT->getElementType()));
+  }
+  if (const auto *AT = T->getAs<AtomicType>()) {
+    if (Context.getTypeSize(AT->getValueType()) == Width)
+      return addShapeItems(AT->getValueType(), Offset, Items);
+  } else if (const auto *BT = T->getAs<BitIntType>()) {
+    std::string Operands;
+    llvm::raw_string_ostream OS(Operands);
+    encodeULEB128(BT->getNumBits(), OS);
+    return AddExtended(ShapeBitInt, Operands);
+  } else if (T->isIntegerType()) {
+    switch (Width) {
+    case 8:
+      return AddKind(ShapeInt8);
+    case 16:
+      return AddKind(ShapeInt16);
+    case 32:
+      return AddKind(ShapeInt32);
+    case 64:
+      return AddKind(ShapeInt64);
+    case 128:
+      return AddKind(ShapeInt128);
+    }
+  } else if (T->isRealFloatingType()) {
+    const llvm::fltSemantics &S = Context.getFloatTypeSemantics(T);
+    if (&S == &llvm::APFloat::IEEEhalf())
+      return AddExtended(ShapeFloat16);
+    if (&S == &llvm::APFloat::BFloat())
+      return AddExtended(ShapeBFloat16);
+    if (&S == &llvm::APFloat::IEEEsingle())
+      return AddKind(ShapeFloat32);
+    if (&S == &llvm::APFloat::IEEEdouble())
+      return AddKind(ShapeFloat64);
+    if (&S == &llvm::APFloat::x87DoubleExtended())
+      return AddKind(ShapeFloat80);
+    if (&S == &llvm::APFloat::IEEEquad())
+      return AddExtended(ShapeFloat128);
+  } else if (T->isAnyPointerType() || T->isReferenceType() ||
+             T->isBlockPointerType() || T->isNullPtrType()) {
+    return AddKind(ShapePointer);
+  } else if (T->isMemberFunctionPointerType()) {
+    return AddKind(ShapeMemberFunctionPointer);
+  } else if (T->isMemberDataPointerType()) {
+    return AddExtended(ShapeMemberDataPointer);
+  }
+  std::string Operands;
+  llvm::raw_string_ostream OS(Operands);
+  encodeULEB128(Width, OS);
+  AddExtended(ShapeOpaque, Operands);
+}
+
+// Adds the items of the record RD at Offset bits: the vtable pointer it
+// introduces, its bases' and fields' items at their offsets, and, as a
+// complete object, its virtual bases'.
+void CodeGenABIContracts::addRecordShapeItems(
+    const RecordDecl *RD, uint64_t Offset, bool Complete,
+    SmallVectorImpl<ShapeItem> &Items) {
+  const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
+  if (const auto *CRD = dyn_cast<CXXRecordDecl>(RD)) {
+    if (CRD->isDynamicClass() && !Layout.getPrimaryBase())
+      Items.push_back({Offset,
+                       Offset + Context.getTargetInfo().getPointerWidth(
+                                    LangAS::Default),
+                       std::string(1, char(ShapeVTablePointer))});
+    for (const CXXBaseSpecifier &B : CRD->bases())
+      if (!B.isVirtual()) {
+        const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+        addRecordShapeItems(
+            Base,
+            Offset + Context.toBits(Layout.getBaseClassOffset(Base)),
+            /*Complete=*/false, Items);
+      }
+    if (Complete)
+      for (const CXXBaseSpecifier &B : CRD->vbases()) {
+        const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+        addRecordShapeItems(
+            Base,
+            Offset + Context.toBits(Layout.getVBaseClassOffset(Base)),
+            /*Complete=*/false, Items);
+      }
+  }
+  for (const FieldDecl *FD : RD->fields()) {
+    uint64_t FieldOffset = Offset + Layout.getFieldOffset(FD->getFieldIndex());
+    if (!FD->isBitField()) {
+      addShapeItems(FD->getType(), FieldOffset, Items);
+      continue;
+    }
+    unsigned Width = FD->getBitWidthValue();
+    if (Width == 0)
+      continue;
+    std::string Bytes(1, char(ShapeBitField));
+    llvm::raw_string_ostream OS(Bytes);
+    encodeULEB128(Width, OS);
+    Items.push_back({FieldOffset, FieldOffset + Width, Bytes});
+  }
+}
+
+// The layout of RD as section 14's canonical form gives it, projected onto
+// what an access to a complete object reads: its size and alignment, then
+// every leaf, by-value members and bases flattened in, each a kind with the
+// bits of padding ahead of it, and the vtable pointers. The definition alone
+// fixes it, so every translation unit emits the same bytes.
+StringRef CodeGenABIContracts::getLayoutShape(const RecordDecl *RD) {
+  auto [It, Inserted] = LayoutShapes.try_emplace(RD);
+  if (!Inserted)
+    return It->second;
+  const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
+  std::string Shape;
+  llvm::raw_string_ostream OS(Shape);
+  encodeULEB128(Layout.getSize().getQuantity(), OS);
+  OS << char(llvm::Log2_64(Layout.getAlignment().getQuantity()));
+  SmallVector<ShapeItem, 8> Items;
+  if (RD->isUnion())
+    addShapeItems(Context.getCanonicalTagType(RD), 0, Items);
+  else
+    addRecordShapeItems(RD, 0, /*Complete=*/true, Items);
+  OS << encodeShapeItems(Items);
+  // The walk adds no entry to the map, so It is still valid.
+  return It->second = std::move(Shape);
 }
 
 llvm::MDNode *CodeGenABIContracts::getTypeContract(const RecordDecl *RD) {

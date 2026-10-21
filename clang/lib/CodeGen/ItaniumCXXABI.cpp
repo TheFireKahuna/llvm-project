@@ -53,6 +53,9 @@ using namespace CodeGen;
 /// the name.
 static constexpr uint64_t MaxTypeNameLength = 0x7FFF;
 
+static llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(CodeGenModule &CGM,
+                                                             QualType Ty);
+
 namespace {
 class ItaniumCXXABI : public CodeGen::CGCXXABI {
   /// VTables - All the vtables which have been defined.
@@ -79,6 +82,8 @@ protected:
   bool isTaggedVTableClass(const CXXRecordDecl *RD);
   uint64_t getVTableTagResidue(const CXXRecordDecl *RD);
   uint64_t getTypeNameLength(QualType Ty);
+  std::string getTypeNameBlob(QualType Ty,
+                              llvm::GlobalValue::LinkageTypes Linkage);
   llvm::Value *emitTaggedExactCastCheck(CodeGenFunction &CGF,
                                         llvm::Value *VTable,
                                         llvm::Value *LocalMatch,
@@ -2461,16 +2466,33 @@ bool ItaniumCXXABI::isTaggedVTableClass(const CXXRecordDecl *RD) {
          RD->isExternallyVisible() && !getContext().getCurrentKeyFunction(RD);
 }
 
-/// The length of the name that a type_info object for \p Ty holds, with its
-/// NUL, which bits 48 to 62 of its name word give on Windows Itanium and
-/// NT-POSIX.
-uint64_t ItaniumCXXABI::getTypeNameLength(QualType Ty) {
+/// The bytes that a type_info object for \p Ty, with \p Linkage, holds as its
+/// name on Windows Itanium and NT-POSIX: the mangled name and its NUL, then,
+/// for a class whose type_info object is not unique, its layout shape, so that
+/// images that no link joins compare the class's layout with its name.
+std::string
+ItaniumCXXABI::getTypeNameBlob(QualType Ty,
+                               llvm::GlobalValue::LinkageTypes Linkage) {
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
   getMangleContext().mangleCXXRTTIName(Ty, Out);
   // The name of the name object starts with _ZTS, after which it spells the
   // type.
-  return Name.size() - 4 + 1;
+  std::string Blob = Name.substr(4).str();
+  Blob += '\0';
+  if (!CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23) &&
+      classifyRTTIUniqueness(Ty, Linkage) != RUK_Unique)
+    if (const RecordDecl *RD = Ty->getAsRecordDecl())
+      if (const RecordDecl *Def = RD->getDefinition())
+        Blob += CGM.getABIContracts()->getLayoutShape(Def);
+  return Blob;
+}
+
+/// The length of the name that a type_info object for \p Ty holds, with its
+/// NUL and what follows it, which bits 48 to 62 of its name word give on
+/// Windows Itanium and NT-POSIX.
+uint64_t ItaniumCXXABI::getTypeNameLength(QualType Ty) {
+  return getTypeNameBlob(Ty, getTypeInfoLinkage(CGM, Ty)).size();
 }
 
 /// The residue modulo a page at which \p RD's tagged vtables put their
@@ -4471,6 +4493,12 @@ llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
     DualEncodedName += '\0';
     DualEncodedName += Name.substr(4);
     Init = llvm::ConstantDataArray::getString(VMContext, DualEncodedName);
+  } else if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    Init = llvm::ConstantDataArray::getString(
+        VMContext,
+        static_cast<ItaniumCXXABI &>(CGM.getCXXABI())
+            .getTypeNameBlob(Ty, Linkage),
+        /*AddNull=*/false);
   } else
     Init = llvm::ConstantDataArray::getString(VMContext, Name.substr(4));
   Length = cast<llvm::ArrayType>(Init->getType())->getNumElements();

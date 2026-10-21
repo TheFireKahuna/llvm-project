@@ -26,10 +26,11 @@ struct LONG {
   virtual void f() {}
 };
 
-// The length, 5 + 32768 + 1 = 32774, ahead of the name.
+// The length, 5 + 32768 + 1 = 32774 and a layout shape of 3 bytes, ahead of
+// the name.
 // CHECK: $_ZTS[[N:32768abcd[a-d]+]] = comdat any
 // CHECK: @_ZTI[[N]] = linkonce_odr constant { ptr, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTS[[N]] to i64), i64 -281474976710656) to ptr) }
-// CHECK: @_ZTS[[N]].length = private constant <{ i64, [32774 x i8] }> <{ i64 32774, {{.*}}comdat($_ZTS[[N]]), align 8
+// CHECK: @_ZTS[[N]].length = private constant <{ i64, [32777 x i8] }> <{ i64 32777, {{.*}}comdat($_ZTS[[N]]), align 8
 // CHECK: @_ZTS[[N]] = {{.*}}alias i8, getelementptr inbounds (i8, ptr @_ZTS[[N]].length, i64 8)
 
 const std::type_info &get() { return typeid(LONG); }

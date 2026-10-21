@@ -60,6 +60,10 @@ public:
   /// abi.requirements metadata.
   void emit();
 
+  /// Returns the layout shape of RD, a definition, which a non-unique
+  /// type_info object's name holds after its NUL.
+  StringRef getLayoutShape(const RecordDecl *RD);
+
 private:
   using Digest = std::array<uint8_t, 16>;
   using RecordSet = llvm::SmallSetVector<const RecordDecl *, 4>;
@@ -80,6 +84,14 @@ private:
   void encodeType(QualType T, llvm::raw_ostream &OS);
   void encodeVTable(const CXXRecordDecl *RD, llvm::raw_ostream &OS);
 
+  struct ShapeItem;
+  static std::string encodeShapeItems(llvm::SmallVectorImpl<ShapeItem> &Items);
+  void addShapeItems(QualType T, uint64_t Offset,
+                     llvm::SmallVectorImpl<ShapeItem> &Items);
+  void addRecordShapeItems(const RecordDecl *RD, uint64_t Offset,
+                           bool Complete,
+                           llvm::SmallVectorImpl<ShapeItem> &Items);
+
   llvm::MDNode *getTypeContract(const RecordDecl *RD);
   llvm::MDNode *getDataContract(const VarDecl *VD, StringRef Identity);
 
@@ -87,6 +99,7 @@ private:
   ASTContext &Context;
   MangleContext &Mangler;
   llvm::DenseMap<const RecordDecl *, Digest> RecordDigests;
+  llvm::DenseMap<const RecordDecl *, std::string> LayoutShapes;
   llvm::DenseMap<const RecordDecl *, RecordSet> RecordPointees;
   llvm::DenseSet<const RecordDecl *> UsedLayouts;
   llvm::SmallVector<std::pair<llvm::GlobalValue *, const CXXRecordDecl *>, 0>
