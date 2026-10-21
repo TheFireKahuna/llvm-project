@@ -137,14 +137,23 @@ public:
   std::vector<Symbol *> weakData;
   // Under -import-slots, the image's sealed values: the word __imp_X$val, which
   // the fill writes with the word import X holds, and __imp_X$init, which it
-  // writes with what X returns when called with the image's base.
+  // writes with what X returns when called with the image's base. A copy of
+  // another image's cell holds, until then, a thunk through the import of its
+  // function, early.
   struct SealedValue {
     Chunk *word;
     DefinedImportData *imp;
     bool init;
+    ImportThunkChunk *early = nullptr;
   };
   std::vector<SealedValue> sealedValues;
   void bindSealedValues();
+  // Another image's indirect functions, each import with the copy of its cell
+  // that the image's calls of it read.
+  llvm::DenseMap<DefinedImportData *, Defined *> importedCells;
+  bool addImportedCellValues();
+  // Exports each exported indirect function's cell.
+  void exportIFuncCells();
   static bool isSealedValueName(StringRef name);
   static StringRef sealedValueImport(StringRef name);
 

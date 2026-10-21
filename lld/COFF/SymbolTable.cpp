@@ -1278,15 +1278,26 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
 }
 
 namespace {
-// A sealed value's word, in .sealed: zero until the fill writes it.
+// A sealed value's word, in .sealed: zero, or the address of early, until the
+// fill writes it.
 class SealedValueChunk : public NonSectionChunk {
 public:
-  SealedValueChunk() { setAlignment(8); }
+  SealedValueChunk(COFFLinkerContext &ctx) : ctx(ctx) { setAlignment(8); }
   size_t getSize() const override { return 8; }
-  void writeTo(uint8_t *buf) const override {}
+  void writeTo(uint8_t *buf) const override {
+    if (early)
+      support::endian::write64le(buf,
+                                 early->getRVA() + ctx.config.imageBase);
+  }
+  void getBaserels(std::vector<Baserel> *res) override {
+    if (early)
+      res->emplace_back(getRVA(), IMAGE_REL_BASED_DIR64);
+  }
   uint32_t getOutputCharacteristics() const override {
     return IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
   }
+  COFFLinkerContext &ctx;
+  ImportThunkChunk *early = nullptr;
 };
 } // namespace
 
@@ -1325,10 +1336,80 @@ void SymbolTable::bindSealedValues() {
                << base.drop_front(strlen("__imp_")) << " is not imported";
       continue;
     }
-    auto *word = make<SealedValueChunk>();
+    auto *word = make<SealedValueChunk>(ctx);
     replaceSymbol<DefinedSynthetic>(s, s->getName(), word);
     sealedValues.push_back({word, imp, init});
+    // The copy of another image's cell, which calls of its function read, the
+    // thunk of its import among them; until the fill writes the copy, it holds
+    // a thunk through that import, which reaches the function's stub.
+    if (init || !base.ends_with("$cell"))
+      continue;
+    auto *fn = dyn_cast_or_null<DefinedImportData>(
+        find(base.drop_back(strlen("$cell"))));
+    if (!fn || !fn->file->thunkSym || fn->file->isBoundAtRunTime() ||
+        !StringRef(fn->getDLLName()).equals_insensitive(imp->getDLLName()))
+      continue;
+    word->early = sealedValues.back().early = fn->file->makeImportThunk();
+    word->early->live = true;
+    cast<DefinedImportThunk>(fn->file->thunkSym)->getChunk()->impSymbol =
+        cast<Defined>(s);
+    importedCells[fn] = cast<Defined>(s);
   }
+}
+
+// Another image's indirect function is a stub there that jumps through its
+// cell, which the DLL exports as X$cell. The image's calls of it read a copy
+// of the cell, __imp_X$cell$val, which the fill writes, except where the DLL
+// is the executable or is delay-loaded, whose cell is written after this
+// image's fill runs, or the import is bound at run time.
+bool SymbolTable::addImportedCellValues() {
+  SmallVector<std::string, 0> names;
+  for (ImportFile *f : ctx.importFileInstances) {
+    if (&f->symtab != this || !f->impSym || !f->thunkSym ||
+        f->isDelayLoaded() || f->isBoundAtRunTime() ||
+        StringRef(f->dllName).ends_with_insensitive(".exe"))
+      continue;
+    std::string cell = (f->impSym->getName() + "$cell").str();
+    if (Symbol *c = find(cell);
+        c && (c->isLazy() || isa<DefinedImportData>(c)))
+      names.push_back(cell);
+  }
+  for (StringRef name : names) {
+    addUndefined(name);
+    addUndefined(saver().save(name + "$val"));
+  }
+  return !names.empty();
+}
+
+// A DLL exports each indirect function it exports with the function's cell,
+// as X$cell, which importers copy.
+void SymbolTable::exportIFuncCells() {
+  if (!ctx.config.importSlots || !ctx.config.dll || ifuncs.empty())
+    return;
+  std::vector<Export> added;
+  for (const Export &e : exports) {
+    auto *stub = dyn_cast_or_null<Defined>(e.sym);
+    if (!stub || e.data || !e.forwardTo.empty() || !getIFunc(stub))
+      continue;
+    auto *cell = dyn_cast_or_null<DefinedLocalImport>(
+        find(("__imp_" + stub->getName()).str()));
+    if (!cell)
+      continue;
+    // As /export:X$cell=__imp_X would.
+    Export c;
+    c.name = cell->getName();
+    c.extName = saver().save((e.extName.empty() ? e.name : e.extName) + "$cell");
+    if (!e.exportAs.empty())
+      c.exportAs = saver().save(e.exportAs + "$cell");
+    c.noname = e.noname;
+    c.isPrivate = e.isPrivate;
+    c.data = true;
+    c.source = e.source;
+    c.symbolName = cell->getName();
+    c.sym = cell;
+    added.push_back(c);
+  }
+  llvm::append_range(exports, added);
 }
 
 const SymbolTable::IFunc *SymbolTable::getIFunc(Defined *d) {

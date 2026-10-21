@@ -32,7 +32,8 @@ struct RelaxEdit {
     // prefix, a jump a trailing int3 (a jump ends an epilogue only so).
     DirectCall,
     DirectJump,
-    // call [rip+d] or jmp [rip+d] with REX.W, through target, a pointer.
+    // call [rip+d], or jmp [rip+d] with REX.W where it has 7 bytes, through
+    // target, a pointer.
     PointerCall,
     PointerJump,
     // A RIP-relative mov or lea of target in place of the instruction's opcode,

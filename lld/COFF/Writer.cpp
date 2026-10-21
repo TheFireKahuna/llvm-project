@@ -1926,6 +1926,11 @@ void Writer::appendImportThunks() {
       textSec->addChunk(file->impchkThunk);
   }
 
+  // The thunks that copies of other images' cells hold until the fill.
+  for (const SymbolTable::SealedValue &v : ctx.symtab.sealedValues)
+    if (v.early)
+      textSec->addChunk(v.early);
+
   if (!delayIdata.empty()) {
     delayIdata.create();
     // A protected delay-load IAT starts .didat: the loader makes only the

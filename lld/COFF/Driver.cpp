@@ -3490,11 +3490,18 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Under -import-slots, a word of static data holding an address inside
   // imported data takes a name no input references. Such imports load once
   // automatic import resolves the data, while liveness can still be decided.
-  if (config->importSlots)
+  if (config->importSlots) {
     for (bool loaded = true; loaded;) {
       loaded = ctx.symtab.loadInteriorImports();
       run();
     }
+    // Calls of other images' indirect functions read copies of their cells,
+    // once the imports bound at run time, which have none, are known.
+    if (ctx.symtab.addImportedCellValues()) {
+      run();
+      ctx.symtab.bindSealedValues();
+    }
+  }
 
   // A joint link's member may derive a pointer to another member's data from
   // a register holding a pointer to other data of it, and then imports the
@@ -3608,6 +3615,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   addContractWitnessExports(ctx);
   bindContractWitnesses(ctx);
   addVTableRunExports(ctx);
+  ctx.symtab.exportIFuncCells();
   bindVTableOwnerRuns(ctx);
   checkVersionScriptGlobals();
   // So does one whose identity its layout names.

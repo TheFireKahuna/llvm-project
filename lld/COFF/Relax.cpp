@@ -515,12 +515,17 @@ static void writeEdit(const SectionChunk *sc, const RelaxEdit &e, uint8_t *buf,
     buf[1] = 0x15;
     write32le(buf + 2, e.target->getRVA() - (p + 6));
     break;
-  case RelaxEdit::PointerJump:
-    buf[0] = 0x48;
-    buf[1] = 0xFF;
-    buf[2] = 0x25;
-    write32le(buf + 3, e.target->getRVA() - (p + 7));
+  case RelaxEdit::PointerJump: {
+    // REX.W where the site has room for it, as a jump ending an epilogue
+    // needs.
+    uint8_t *inst = buf;
+    if (e.newSize == 7)
+      *inst++ = 0x48;
+    inst[0] = 0xFF;
+    inst[1] = 0x25;
+    write32le(inst + 2, e.target->getRVA() - (p + e.newSize));
     break;
+  }
   case RelaxEdit::LoadPointer:
   case RelaxEdit::LoadAddress: {
     // The load of an add's sum writes the add's register: ModRM.reg, and its

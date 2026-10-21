@@ -717,6 +717,7 @@ public:
   // /delayload and -ignore-offers are, so each is found when first asked.
   bool isDelayLoaded() const;
   bool ignoresOffers() const;
+  ImportThunkChunk *makeImportThunk();
 
   DefinedImportData *impSym = nullptr;
   Defined *thunkSym = nullptr;
@@ -726,7 +727,6 @@ public:
 
 private:
   void parse() override;
-  ImportThunkChunk *makeImportThunk();
   void findDLLOptions() const;
 
   mutable bool dllOptionsFound = false;

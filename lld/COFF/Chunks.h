@@ -666,8 +666,10 @@ public:
   // to avoid generating unnecessary thunks.
   bool live;
 
-protected:
+  // The pointer the thunk jumps through.
   Defined *impSymbol;
+
+protected:
   COFFLinkerContext &ctx;
 };
 

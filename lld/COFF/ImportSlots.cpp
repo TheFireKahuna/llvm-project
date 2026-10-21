@@ -687,6 +687,9 @@ struct SlotScan {
   };
   std::vector<Pending> pending;
   std::vector<Site> addressSites;
+  // The calls and jumps through another image's indirect function's import,
+  // rewritten to read the copy of its cell.
+  std::vector<std::pair<SectionChunk *, RelaxEdit>> cellCalls;
   // The offered functions some reference keeps the image's copy of, and those
   // an object may take the address of in an instruction it does not describe,
   // which keep the copy as their address, so it is not split.
@@ -974,6 +977,21 @@ void ImportSlotContents::scanReference(SlotScan &scan, SectionChunk *sc,
                  : arm64     ? load
                              : form && *form != LinkSiteAddress;
     noteUse(data, whole ? ImportFile::ReadWhole : ImportFile::UsedOtherwise);
+    // Another image's indirect function's: a call or jump through it reads
+    // the copy of its cell instead, as the import's thunk does.
+    if (Defined *copy = ctx.symtab.importedCells.lookup(data);
+        copy && code && !arm64 && form &&
+        (*form == LinkSiteCall || *form == LinkSiteJump ||
+         *form == LinkSiteJumpOnePrefix)) {
+      uint32_t off = rel.VirtualAddress;
+      scan.cellCalls.push_back(
+          {sc, *form == LinkSiteCall
+                   ? RelaxEdit(off - 2, 6, 6, RelaxEdit::PointerCall, copy)
+               : *form == LinkSiteJump
+                   ? RelaxEdit(off - 2, 6, 6, RelaxEdit::PointerJump, copy)
+                   : RelaxEdit(off - 3, 7, 7, RelaxEdit::PointerJump, copy)});
+      return;
+    }
     // A delay-loaded function's: a load in code takes the thunk's address,
     // mov becoming lea and ldr add.
     if (!data->file->thunkSym || !data->file->isDelayLoaded())
@@ -1149,6 +1167,8 @@ void ImportSlotContents::resolve(SlotScan &scan) {
   // ARM64 loads of a delay-loaded function's entry are rewritten all or none,
   // since an adrp may serve several loads.
   bool arm64 = config.machine == ARM64;
+  for (auto &[sc, edit] : scan.cellCalls)
+    addSite(sc, edit);
   for (const SlotScan::Site &site : scan.addressSites) {
     ImportFile *f = site.imp->file;
     if (f->thunkIsAddress || (arm64 && f->isDelayLoaded() && f->delayLoadRead))
@@ -1777,10 +1797,14 @@ void ImportSlotContents::createFill() {
   }
   list->selfKey =
       overrideNameKey(sys::path::filename(config.outputFile).lower());
-  // The fill reads each sealed value's import.
+  // The fill reads each sealed value's import, and the thunk a copy of a cell
+  // holds until then its function's.
   for (const SymbolTable::SealedValue &v : values)
-    if (!v.imp->file->live)
-      addImport(v.imp);
+    for (Defined *d : {cast<Defined>(v.imp), v.early ? v.early->impSymbol
+                                                     : nullptr})
+      if (auto *imp = dyn_cast_or_null<DefinedImportData>(d);
+          imp && !imp->file->live)
+        addImport(imp);
   // The fill calls ntdll.
   for (Chunk *c : cast<ObjFile>(f->getFile())->getChunks())
     if (auto *sc = dyn_cast<SectionChunk>(c))
