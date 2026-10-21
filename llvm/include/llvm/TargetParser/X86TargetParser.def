@@ -277,6 +277,20 @@ X86_FEATURE       (LVI_LOAD_HARDENING,          "lvi-load-hardening")
 // Max number of priorities. Priorities form a consecutive range.
 #define MAX_PRIORITY 38
 
+// The capability numbers by which Windows selects, as it maps an image, among
+// a function's bodies (the dynamic value relocation table's function-override
+// diagrams). Each is set only when the processor has the feature and the
+// operating system enabled any register state it needs.
+#ifdef X86_FUNCTION_OVERRIDE
+X86_FUNCTION_OVERRIDE(ERMSB,   0x000)
+X86_FUNCTION_OVERRIDE(FSRM,    0x001)
+X86_FUNCTION_OVERRIDE(AVX,     0x13c)
+X86_FUNCTION_OVERRIDE(AVX2,    0x13d)
+X86_FUNCTION_OVERRIDE(AVX512F, 0x13e)
+X86_FUNCTION_OVERRIDE(SSE4_1,  0x144)
+#undef X86_FUNCTION_OVERRIDE
+#endif
+
 #undef X86_FEATURE_COMPAT
 #undef X86_FEATURE
 #undef X86_MICROARCH_LEVEL

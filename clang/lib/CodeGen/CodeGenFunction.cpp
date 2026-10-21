@@ -3057,28 +3057,13 @@ CodeGenFunction::FormAArch64ResolverCondition(const FMVResolverOption &RO) {
   return RO.Features.empty() ? nullptr : EmitAArch64CpuSupports(RO.Features);
 }
 
-// Whether every processor the target supports has the __builtin_cpu_supports
-// feature Name, or every feature of the x86-64 level it names. A resolver
-// tests only the others: whatever a unit's own flags enable, the resolver it
+// A resolver tests only the features and x86-64 levels that some processor the
+// target supports lacks: whatever a unit's own flags enable, the resolver it
 // emits may be the one the program keeps, and run where they are absent.
-static bool isX86BaselineFeature(const llvm::StringMap<bool> &Baseline,
-                                 StringRef Name) {
-  if (!Name.starts_with("x86-64"))
-    return Baseline.lookup(Name);
-  SmallVector<StringRef, 32> Level;
-  llvm::X86::getFeaturesForCPU(Name, Level);
-  return llvm::all_of(Level, [&](StringRef F) { return Baseline.lookup(F); });
-}
-
 llvm::Value *
 CodeGenFunction::FormX86ResolverCondition(const FMVResolverOption &RO) {
   llvm::StringMap<bool> Baseline;
-  SmallVector<StringRef, 32> Floor;
-  llvm::X86::getTripleBaselineFeatures(getTarget().getTriple(), Floor);
-  for (StringRef F : Floor) {
-    Baseline[F] = true;
-    llvm::X86::updateImpliedFeatures(F, true, Baseline);
-  }
+  llvm::X86::getTripleBaseline(getTarget().getTriple(), Baseline);
 
   llvm::Value *Condition = nullptr;
 
@@ -3088,13 +3073,13 @@ CodeGenFunction::FormX86ResolverCondition(const FMVResolverOption &RO) {
     // with __builtin_cpu_supports, otherwise use __builtin_cpu_is.
     if (!Arch.starts_with("x86-64"))
       Condition = EmitX86CpuIs(Arch);
-    else if (!isX86BaselineFeature(Baseline, Arch))
+    else if (!llvm::X86::isBaselineFeature(Baseline, Arch))
       Condition = EmitX86CpuSupports({Arch});
   }
 
   SmallVector<StringRef, 8> Features;
   for (StringRef F : RO.Features)
-    if (!isX86BaselineFeature(Baseline, F))
+    if (!llvm::X86::isBaselineFeature(Baseline, F))
       Features.push_back(F);
   if (!Features.empty()) {
     llvm::Value *FeatureCond = EmitX86CpuSupports(Features);

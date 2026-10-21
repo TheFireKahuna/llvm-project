@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Compiler.h"
 #include <array>
+#include <optional>
 
 namespace llvm {
 template <typename T> class SmallVectorImpl;
@@ -175,6 +176,15 @@ LLVM_ABI void getTripleBaselineFeatures(const Triple &TT,
                                         SmallVectorImpl<StringRef> &Features,
                                         bool NeedPlus = false);
 
+/// Set in \p Baseline each feature that every processor \p TT supports has,
+/// and each feature those imply.
+LLVM_ABI void getTripleBaseline(const Triple &TT, StringMap<bool> &Baseline);
+
+/// Whether \p Baseline, from getTripleBaseline, has the feature \p Name or
+/// every feature of the x86-64 level it names.
+LLVM_ABI bool isBaselineFeature(const StringMap<bool> &Baseline,
+                                StringRef Name);
+
 /// Set or clear entries in \p Features that are implied to be enabled/disabled
 /// by the provided \p Feature.
 LLVM_ABI void updateImpliedFeatures(StringRef Feature, bool Enabled,
@@ -182,6 +192,10 @@ LLVM_ABI void updateImpliedFeatures(StringRef Feature, bool Enabled,
 
 /// Whether \p Name is a feature or x86-64 level __builtin_cpu_supports takes.
 LLVM_ABI bool isCpuSupportsFeature(StringRef Name);
+
+/// The number by which a Windows function-override diagram tests the
+/// multiversioning feature \p Name, if it has one.
+LLVM_ABI std::optional<uint32_t> getFunctionOverrideCapability(StringRef Name);
 
 /// The priority of a multiversioned function's version requiring \p Features,
 /// each a feature __builtin_cpu_supports takes or a processor name.

@@ -731,6 +731,24 @@ void llvm::X86::getTripleBaselineFeatures(const Triple &TT,
     Features.push_back(Name.drop_front(!NeedPlus));
 }
 
+void llvm::X86::getTripleBaseline(const Triple &TT, StringMap<bool> &Baseline) {
+  SmallVector<StringRef, 32> Floor;
+  getTripleBaselineFeatures(TT, Floor);
+  for (StringRef F : Floor) {
+    Baseline[F] = true;
+    updateImpliedFeatures(F, true, Baseline);
+  }
+}
+
+bool llvm::X86::isBaselineFeature(const StringMap<bool> &Baseline,
+                                  StringRef Name) {
+  if (!Name.starts_with("x86-64"))
+    return Baseline.lookup(Name);
+  SmallVector<StringRef, 32> Level;
+  getFeaturesForCPU(Name, Level);
+  return all_of(Level, [&](StringRef F) { return Baseline.lookup(F); });
+}
+
 // For each feature that is (transitively) implied by this feature, set it.
 static void getImpliedEnabledFeatures(FeatureBitset &Bits,
                                       const FeatureBitset &Implies) {
@@ -821,6 +839,23 @@ APInt llvm::X86::getFMVPriority(ArrayRef<StringRef> Features) {
     if (!Feature.empty())
       Priority = std::max(Priority, getPriority(Feature));
   return APInt(32, Priority);
+}
+
+std::optional<uint32_t>
+llvm::X86::getFunctionOverrideCapability(StringRef Name) {
+  ProcessorFeatures Feat = StringSwitch<ProcessorFeatures>(Name)
+#define X86_FEATURE_COMPAT(ENUM, STR, PRIORITY, ABI_VALUE)                     \
+  .Case(STR, FEATURE_##ENUM)
+#include "llvm/TargetParser/X86TargetParser.def"
+                               .Default(CPU_FEATURE_MAX);
+  switch (Feat) {
+#define X86_FUNCTION_OVERRIDE(ENUM, NUMBER)                                    \
+  case FEATURE_##ENUM:                                                         \
+    return NUMBER;
+#include "llvm/TargetParser/X86TargetParser.def"
+  default:
+    return std::nullopt;
+  }
 }
 
 char llvm::X86::getCPUDispatchMangling(StringRef CPU) {
