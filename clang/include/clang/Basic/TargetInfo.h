@@ -1586,6 +1586,10 @@ public:
   bool supportsIFunc() const {
     if (getTriple().isOSBinFormatMachO())
       return true;
+    // Windows Itanium and NT-POSIX lower an ifunc to a stub through a cell
+    // that the image's start-up writes.
+    if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      return true;
     if (getTriple().isOSWindows() && getTriple().isAArch64())
       return true;
     if (getTriple().getArch() == llvm::Triple::ArchType::avr)

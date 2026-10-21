@@ -14,9 +14,9 @@
 __attribute__((target_clones("sse4.2", "default"))) int narrow(void) {
   return 1;
 }
-// FLOOR-LABEL: define weak_odr dso_local i32 @narrow()
+// FLOOR-LABEL: define weak_odr hidden ptr @narrow.resolver()
 // FLOOR-NEXT:  resolver_entry:
-// FLOOR-NEXT:    musttail call i32 @narrow.sse4.2.0()
+// FLOOR-NEXT:    ret ptr @narrow.sse4.2.0
 
 // OTHER-LABEL: define weak_odr ptr @narrow.resolver()
 // OTHER:         call void @__cpu_indicator_init()
@@ -25,27 +25,27 @@ __attribute__((target_clones("sse4.2", "default"))) int narrow(void) {
 __attribute__((target_clones("avx2", "avx512f", "default"))) int wide(void) {
   return 0;
 }
-// FLOOR-LABEL: define weak_odr dso_local i32 @wide()
+// FLOOR-LABEL: define weak_odr hidden ptr @wide.resolver()
 // FLOOR:         call void @__cpu_indicator_init()
 // FLOOR:         and i32 %{{.*}}, 32768
 // FLOOR:       resolver_else:
-// FLOOR-NEXT:    musttail call i32 @wide.avx2.0()
-// FLOOR-NOT:   @wide.default
+// FLOOR-NEXT:    ret ptr @wide.avx2.0
+// FLOOR-NEXT:  }
 
 __attribute__((target_clones("arch=x86-64-v3", "arch=x86-64-v4", "default")))
 int level(void) {
   return 2;
 }
-// FLOOR-LABEL: define weak_odr dso_local i32 @level()
+// FLOOR-LABEL: define weak_odr hidden ptr @level.resolver()
 // FLOOR:         load i32, ptr getelementptr {{.*}}@__cpu_features2
 // FLOOR:       resolver_else:
-// FLOOR-NEXT:    musttail call i32 @level.arch_x86-64-v3.0()
+// FLOOR-NEXT:    ret ptr @level.arch_x86-64-v3.0
 
 // A named processor is tested by identity, which no baseline implies.
 __attribute__((target_clones("arch=znver4", "default"))) int cpu(void) {
   return 3;
 }
-// FLOOR-LABEL: define weak_odr dso_local i32 @cpu()
+// FLOOR-LABEL: define weak_odr hidden ptr @cpu.resolver()
 // FLOOR:         call void @__cpu_indicator_init()
 // FLOOR:         icmp eq i32 %{{.*}}, 29
 

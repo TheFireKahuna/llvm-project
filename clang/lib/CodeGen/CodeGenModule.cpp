@@ -3967,8 +3967,9 @@ uint32_t CodeGenModule::getTypePrefixMarker() const {
       CodeGenOpts.SanitizeKcfiHash);
 }
 
-void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
-  if (KCFI && KCFI->setVTableSlotType(GD, F))
+void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::GlobalObject *F) {
+  if (auto *Fn = dyn_cast<llvm::Function>(F);
+      Fn && KCFI && KCFI->setVTableSlotType(GD, Fn))
     return;
   const auto *FD = cast<FunctionDecl>(GD.getDecl());
   llvm::LLVMContext &Ctx = F->getContext();
@@ -5534,7 +5535,15 @@ void CodeGenModule::emitMultiVersionFunctions() {
         }
         assert(Func && "This should have just been created");
       }
-      return cast<llvm::Function>(Func);
+      auto *F = cast<llvm::Function>(Func);
+      // On Windows Itanium and NT-POSIX every image reaches the ifunc, a stub;
+      // its versions are the image's own.
+      if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+        F->setVisibility(llvm::GlobalValue::HiddenVisibility);
+        F->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+        setDSOLocal(F);
+      }
+      return F;
     };
 
     // For AArch64, a resolver is only emitted if a function marked with
@@ -5593,7 +5602,8 @@ void CodeGenModule::emitMultiVersionFunctions() {
       ResolverConstant = IFunc->getResolver();
       if (FD->isTargetClonesMultiVersion() &&
           !getTarget().getTriple().isAArch64() &&
-          !getTarget().getTriple().isOSAIX()) {
+          !getTarget().getTriple().isOSAIX() &&
+          !getTarget().getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
         std::string MangledName = getMangledNameImpl(
             *this, GD, FD, /*OmitMultiVersionMangling=*/true);
         if (!GetGlobalValue(MangledName + ".ifunc")) {
@@ -5765,7 +5775,13 @@ void CodeGenModule::emitCPUDispatchDefinition(GlobalDecl GD) {
     llvm::erase_if(Features, [&Target](StringRef Feat) {
       return !Target.validateCpuSupports(Feat);
     });
-    Options.emplace_back(cast<llvm::Function>(Func), Features);
+    auto *F = cast<llvm::Function>(Func);
+    if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+      F->setVisibility(llvm::GlobalValue::HiddenVisibility);
+      F->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+      setDSOLocal(F);
+    }
+    Options.emplace_back(F, Features);
     ++Index;
   }
 
@@ -5804,6 +5820,9 @@ void CodeGenModule::emitCPUDispatchDefinition(GlobalDecl GD) {
     if (!isa<llvm::GlobalIFunc>(IFunc)) {
       auto *GI = llvm::GlobalIFunc::create(DeclTy, AS, Linkage, "",
                                            ResolverFunc, &getModule());
+      if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+          hasFunctionTypePrefix())
+        setKCFIType(GD, GI);
       replaceDeclarationWith(IFunc, GI);
       IFunc = GI;
     }
@@ -5903,6 +5922,11 @@ llvm::Constant *CodeGenModule::GetOrCreateMultiVersionResolver(GlobalDecl GD) {
                                                        Resolver, &getModule());
     GIF->setName(ResolverName);
     SetCommonAttributes(FD, GIF);
+    // Where the ifunc's address is a stub of its own, a call through it
+    // checks the stub's type.
+    if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        hasFunctionTypePrefix())
+      setKCFIType(GD, GIF);
     if (ResolverGV)
       replaceDeclarationWith(ResolverGV, GIF);
     return GIF;
@@ -5928,7 +5952,13 @@ void CodeGenModule::setMultiVersionResolverAttributes(llvm::Function *Resolver,
 
   // The resolver is the definition callers reach, so it takes the DLL storage
   // of one, replacing any dllimport its declaration took from an earlier call.
+  // On Windows Itanium and NT-POSIX callers reach the ifunc's stub, and the
+  // resolver is the image's own.
   setDLLImportDLLExport(Resolver, D);
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    Resolver->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    Resolver->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+  }
 
   setDSOLocal(Resolver);
 
@@ -8026,6 +8056,9 @@ void CodeGenModule::emitIFuncDefinition(GlobalDecl GD) {
   } else
     GIF->setName(MangledName);
   SetCommonAttributes(GD, GIF);
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      hasFunctionTypePrefix())
+    setKCFIType(GD, GIF);
 }
 
 llvm::Function *CodeGenModule::getIntrinsic(unsigned IID,

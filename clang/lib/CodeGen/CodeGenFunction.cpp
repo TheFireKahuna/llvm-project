@@ -3104,6 +3104,19 @@ CodeGenFunction::FormX86ResolverCondition(const FMVResolverOption &RO) {
   return Condition;
 }
 
+// On Windows Itanium and NT-POSIX an ifunc's stub jumps through a pointer that
+// the image's start-up writes, and reaches the version a resolver falls back
+// to, which every processor the target supports can run, until then.
+void CodeGenFunction::setResolverFallback(llvm::Function *Resolver,
+                                          llvm::Function *Fallback) {
+  if (getTarget().getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      getTarget().supportsIFunc() && Fallback)
+    Resolver->setMetadata(
+        "resolver_fallback",
+        llvm::MDNode::get(getLLVMContext(),
+                          llvm::ValueAsMetadata::get(Fallback)));
+}
+
 static void CreateMultiVersionResolverReturn(CodeGenModule &CGM,
                                              llvm::Function *Resolver,
                                              CGBuilderTy &Builder,
@@ -3377,6 +3390,7 @@ void CodeGenFunction::EmitAArch64MultiVersionResolver(
     if (!Condition) {
       CreateMultiVersionResolverReturn(CGM, Resolver, Builder, RO.Function,
                                        SupportsIFunc);
+      setResolverFallback(Resolver, RO.Function);
       return;
     }
 
@@ -3422,6 +3436,7 @@ void CodeGenFunction::EmitX86MultiVersionResolver(
     if (!Condition) {
       CreateMultiVersionResolverReturn(CGM, Resolver, Builder, RO.Function,
                                        SupportsIFunc);
+      setResolverFallback(Resolver, RO.Function);
       return;
     }
 

@@ -5752,6 +5752,7 @@ private:
   llvm::Value *EmitX86CpuSupports(std::array<uint32_t, 4> FeatureMask);
   llvm::Value *EmitX86CpuInit();
   llvm::Value *FormX86ResolverCondition(const FMVResolverOption &RO);
+  void setResolverFallback(llvm::Function *Resolver, llvm::Function *Fallback);
   llvm::Value *EmitAArch64CpuInit();
   llvm::Value *FormAArch64ResolverCondition(const FMVResolverOption &RO);
   llvm::Value *EmitAArch64CpuSupports(const CallExpr *E);

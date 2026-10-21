@@ -1921,7 +1921,7 @@ public:
   void createCalleeTypeMetadataForIcall(const QualType &QT, llvm::CallBase *CB);
 
   /// Set type metadata to the given function.
-  void setKCFIType(GlobalDecl GD, llvm::Function *F);
+  void setKCFIType(GlobalDecl GD, llvm::GlobalObject *F);
 
   /// Emit KCFI type identifier constants and remove unused identifiers.
   void finalizeKCFITypes();
