@@ -100,6 +100,9 @@ private:
   MangleContext &Mangler;
   llvm::DenseMap<const RecordDecl *, Digest> RecordDigests;
   llvm::DenseMap<const RecordDecl *, std::string> LayoutShapes;
+  // The declared types of the leaves of the shape being built whose kinds
+  // leave their types open, in walk order.
+  llvm::SmallVectorImpl<QualType> *ShapeFieldTypes = nullptr;
   llvm::DenseMap<const RecordDecl *, RecordSet> RecordPointees;
   llvm::DenseSet<const RecordDecl *> UsedLayouts;
   llvm::SmallVector<std::pair<llvm::GlobalValue *, const CXXRecordDecl *>, 0>

@@ -509,6 +509,10 @@ enum ShapeExtendedKind : uint8_t {
   ShapeOpaque,
 };
 
+// The kind that ends an array's element or a union's alternative, and that
+// separates a shape's items from its field-type signature.
+static_assert(ShapeEnd == 14, "the end marker's code is part of the format");
+
 // An item of a layout shape: the bits it covers and its encoding, the
 // padding ahead of it left out.
 struct CodeGenABIContracts::ShapeItem {
@@ -556,7 +560,9 @@ CodeGenABIContracts::encodeShapeItems(SmallVectorImpl<ShapeItem> &Items) {
 
 // Adds the items of the layout of a T at Offset bits: a scalar's kind, every
 // leaf of a record held by value, an array's count and its element's items, a
-// union's alternatives. A pointer is a pointer only, whatever it points to.
+// union's alternatives. A pointer is a pointer only, whatever it points to; the
+// type of a leaf whose kind leaves it open, a pointer's, a reference's, a
+// member pointer's or an enumeration's, goes to the field-type signature.
 void CodeGenABIContracts::addShapeItems(QualType T, uint64_t Offset,
                                         SmallVectorImpl<ShapeItem> &Items) {
   T = Context.getCanonicalType(T).getUnqualifiedType();
@@ -597,6 +603,7 @@ void CodeGenABIContracts::addShapeItems(QualType T, uint64_t Offset,
     return Add(Bytes);
   }
   if (const auto *ED = T->getAsEnumDecl()) {
+    ShapeFieldTypes->push_back(T);
     const EnumDecl *Def = ED->getDefinition();
     if (QualType Int = (Def ? Def : ED)->getIntegerType(); !Int.isNull())
       return addShapeItems(Int, Offset, Items);
@@ -650,10 +657,13 @@ void CodeGenABIContracts::addShapeItems(QualType T, uint64_t Offset,
       return AddExtended(ShapeFloat128);
   } else if (T->isAnyPointerType() || T->isReferenceType() ||
              T->isBlockPointerType() || T->isNullPtrType()) {
+    ShapeFieldTypes->push_back(T);
     return AddKind(ShapePointer);
   } else if (T->isMemberFunctionPointerType()) {
+    ShapeFieldTypes->push_back(T);
     return AddKind(ShapeMemberFunctionPointer);
   } else if (T->isMemberDataPointerType()) {
+    ShapeFieldTypes->push_back(T);
     return AddExtended(ShapeMemberDataPointer);
   }
   std::string Operands;
@@ -711,8 +721,11 @@ void CodeGenABIContracts::addRecordShapeItems(
 // The layout of RD as section 14's canonical form gives it, projected onto
 // what an access to a complete object reads: its size and alignment, then
 // every leaf, by-value members and bases flattened in, each a kind with the
-// bits of padding ahead of it, and the vtable pointers. The definition alone
-// fixes it, so every translation unit emits the same bytes.
+// bits of padding ahead of it, and the vtable pointers. Where a leaf's kind
+// leaves its type open, an end marker and the field-type signature follow:
+// those leaves' types in walk order, mangled as the parameters of one function
+// type, whose substitutions write each repeated name once. The definition
+// alone fixes all of it, so every translation unit emits the same bytes.
 StringRef CodeGenABIContracts::getLayoutShape(const RecordDecl *RD) {
   auto [It, Inserted] = LayoutShapes.try_emplace(RD);
   if (!Inserted)
@@ -723,11 +736,32 @@ StringRef CodeGenABIContracts::getLayoutShape(const RecordDecl *RD) {
   encodeULEB128(Layout.getSize().getQuantity(), OS);
   OS << char(llvm::Log2_64(Layout.getAlignment().getQuantity()));
   SmallVector<ShapeItem, 8> Items;
+  SmallVector<QualType, 8> FieldTypes;
+  ShapeFieldTypes = &FieldTypes;
   if (RD->isUnion())
     addShapeItems(Context.getCanonicalTagType(RD), 0, Items);
   else
     addRecordShapeItems(RD, 0, /*Complete=*/true, Items);
+  ShapeFieldTypes = nullptr;
   OS << encodeShapeItems(Items);
+  if (!FieldTypes.empty()) {
+    // The class leads the types, so that the substitutions may refer to the
+    // parts of its name, which the name object holds already, and is left
+    // out of the signature: the name object starts with _ZTS, after which the
+    // function type spells its void result after F, then the class, the
+    // types and E.
+    QualType Class = Context.getCanonicalTagType(RD);
+    FieldTypes.insert(FieldTypes.begin(), Class);
+    SmallString<64> Signature;
+    llvm::raw_svector_ostream SignatureOS(Signature);
+    Mangler.mangleCXXRTTIName(
+        Context.getFunctionType(Context.VoidTy, FieldTypes,
+                                FunctionProtoType::ExtProtoInfo()),
+        SignatureOS);
+    size_t Name = getIdentity(RD).size();
+    OS << char(ShapeEnd)
+       << StringRef(Signature).drop_front(strlen("_ZTSFv") + Name).drop_back();
+  }
   // The walk adds no entry to the map, so It is still valid.
   return It->second = std::move(Shape);
 }
