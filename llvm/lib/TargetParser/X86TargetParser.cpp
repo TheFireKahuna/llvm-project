@@ -670,6 +670,7 @@ constexpr FeatureBitset ImpliedFeaturesAVX10_V2_AUX = FeatureAVX10_1;
 // Fast string operations.
 constexpr FeatureBitset ImpliedFeaturesERMSB = {};
 constexpr FeatureBitset ImpliedFeaturesFSRM = {};
+constexpr FeatureBitset ImpliedFeaturesFSRS = {};
 
 // APX Features
 constexpr FeatureBitset ImpliedFeaturesEGPR = {};

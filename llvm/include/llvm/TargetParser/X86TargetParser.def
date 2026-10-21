@@ -247,6 +247,7 @@ X86_FEATURE_COMPAT(AVX512BMM,          "avx512bmm",              0, 123)
 X86_FEATURE_COMPAT(AVX10_V2_AUX,       "avx10v2aux",             0, 124)
 X86_FEATURE_COMPAT(ERMSB,              "ermsb",                 37, 125)
 X86_FEATURE_COMPAT(FSRM,               "fsrm",                  38, 126)
+X86_FEATURE_COMPAT(FSRS,               "fsrs",                  39, 127)
 
 // Features we don't multiversion on.
 X86_FEATURE       (NF,                 "nf")
@@ -275,7 +276,7 @@ X86_FEATURE       (LVI_CFI,                     "lvi-cfi")
 X86_FEATURE       (LVI_LOAD_HARDENING,          "lvi-load-hardening")
 
 // Max number of priorities. Priorities form a consecutive range.
-#define MAX_PRIORITY 38
+#define MAX_PRIORITY 39
 
 // The capability numbers by which Windows selects, as it maps an image, among
 // a function's bodies (the dynamic value relocation table's function-override
@@ -284,6 +285,7 @@ X86_FEATURE       (LVI_LOAD_HARDENING,          "lvi-load-hardening")
 #ifdef X86_FUNCTION_OVERRIDE
 X86_FUNCTION_OVERRIDE(ERMSB,   0x000)
 X86_FUNCTION_OVERRIDE(FSRM,    0x001)
+X86_FUNCTION_OVERRIDE(FSRS,    0x003)
 X86_FUNCTION_OVERRIDE(AVX,     0x13c)
 X86_FUNCTION_OVERRIDE(AVX2,    0x13d)
 X86_FUNCTION_OVERRIDE(AVX512F, 0x13e)

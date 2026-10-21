@@ -8,7 +8,7 @@ __attribute__((target_clones("avx2", "arch=x86-64-v4", "arch=znver4",
                              "default")))
 int clones(void) { return 0; }
 
-__attribute__((target_clones("fsrm", "ermsb", "default"))) int strings(void) {
+__attribute__((target_clones("fsrs", "fsrm", "ermsb", "default"))) int strings(void) {
   return 3;
 }
 
@@ -21,8 +21,9 @@ int use(void) { return clones() + strings() + targets(); }
 // CHECK: define {{.*}}i32 @clones.arch_x86-64-v4.1() #[[V4:[0-9]+]]
 // CHECK: define {{.*}}i32 @clones.arch_znver4.2() #[[ZNVER4:[0-9]+]]
 // CHECK: define {{.*}}i32 @clones.default.3() #[[DEFAULT:[0-9]+]]
-// CHECK: define {{.*}}i32 @strings.fsrm.0() #[[FSRM:[0-9]+]]
-// CHECK: define {{.*}}i32 @strings.ermsb.1() #[[ERMSB:[0-9]+]]
+// CHECK: define {{.*}}i32 @strings.fsrs.0() #[[FSRS:[0-9]+]]
+// CHECK: define {{.*}}i32 @strings.fsrm.1() #[[FSRM:[0-9]+]]
+// CHECK: define {{.*}}i32 @strings.ermsb.2() #[[ERMSB:[0-9]+]]
 // CHECK: define {{.*}}i32 @targets.avx512f() #[[AVX512F:[0-9]+]]
 // CHECK: define {{.*}}i32 @targets() #[[DEFAULT2:[0-9]+]]
 
@@ -30,6 +31,7 @@ int use(void) { return clones() + strings() + targets(); }
 // CHECK: attributes #[[V4]] = {{.*}}"fmv-features"="x86-64-v4"
 // CHECK-NOT: attributes #[[ZNVER4]] = {{.*}}"fmv-features"
 // CHECK: attributes #[[DEFAULT]] = {{.*}}"fmv-features" {{.*}}
+// CHECK: attributes #[[FSRS]] = {{.*}}"fmv-features"="fsrs" {{.*}}"target-features"="{{.*}}+fsrs
 // CHECK: attributes #[[FSRM]] = {{.*}}"fmv-features"="fsrm" {{.*}}"target-features"="{{.*}}+fsrm
 // CHECK: attributes #[[ERMSB]] = {{.*}}"fmv-features"="ermsb" {{.*}}"target-features"="{{.*}}+ermsb
 // CHECK: attributes #[[AVX512F]] = {{.*}}"fmv-features"="avx512f"

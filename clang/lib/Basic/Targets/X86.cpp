@@ -392,6 +392,8 @@ bool X86TargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasERMSB = true;
     } else if (Feature == "+fsrm") {
       HasFSRM = true;
+    } else if (Feature == "+fsrs") {
+      HasFSRS = true;
     } else if (Feature == "+invpcid") {
       HasINVPCID = true;
     } else if (Feature == "+enqcmd") {
@@ -1144,6 +1146,7 @@ bool X86TargetInfo::isValidFeatureName(StringRef Name) const {
       .Case("fma4", true)
       .Case("fsgsbase", true)
       .Case("fsrm", true)
+      .Case("fsrs", true)
       .Case("fxsr", true)
       .Case("general-regs-only", true)
       .Case("gfni", true)
@@ -1270,6 +1273,7 @@ bool X86TargetInfo::hasFeature(StringRef Feature) const {
       .Case("fma4", XOPLevel >= FMA4)
       .Case("fsgsbase", HasFSGSBASE)
       .Case("fsrm", HasFSRM)
+      .Case("fsrs", HasFSRS)
       .Case("fxsr", HasFXSR)
       .Case("gfni", HasGFNI)
       .Case("hreset", HasHRESET)

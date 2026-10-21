@@ -406,6 +406,12 @@ def FeatureFSRM
           "fsrm", "HasFSRM", "true",
           "REP MOVSB of short lengths is faster">;
 
+// Alder Lake and newer processors have Fast Short REP STOSB.
+def FeatureFSRS
+    : SubtargetFeature<
+          "fsrs", "HasFSRS", "true",
+          "REP STOSB of short lengths is faster">;
+
 def FeatureSoftFloat
     : SubtargetFeature<"soft-float", "UseSoftFloat", "true",
                        "Use software floating point features">;

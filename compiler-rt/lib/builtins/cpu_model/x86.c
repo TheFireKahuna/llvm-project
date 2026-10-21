@@ -245,6 +245,7 @@ enum ProcessorFeatures {
   FEATURE_AVX10_V2_AUX,
   FEATURE_ERMSB,
   FEATURE_FSRM,
+  FEATURE_FSRS,
   CPU_FEATURE_MAX
 };
 
@@ -1116,6 +1117,8 @@ static void getAvailableFeatures(unsigned ECX, unsigned EDX, unsigned MaxLeaf,
     setFeature(FEATURE_AVX512BF16);
   if (HasLeaf7Subleaf1 && ((EAX >> 7) & 1))
     setFeature(FEATURE_CMPCCXADD);
+  if (HasLeaf7Subleaf1 && ((EAX >> 11) & 1))
+    setFeature(FEATURE_FSRS);
   if (HasLeaf7Subleaf1 && ((EAX >> 21) & 1) && HasAMXSave)
     setFeature(FEATURE_AMX_FP16);
   if (HasLeaf7Subleaf1 && ((EAX >> 22) & 1))

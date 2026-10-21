@@ -556,3 +556,8 @@ TEST_CPU_SUPPORTS(ermsb, "ermsb")
 // CHECK: [[LOAD:%[^ ]+]] = load i32, ptr getelementptr inbounds nuw (i8, ptr @__cpu_features2, i64 8)
 // CHECK: = and i32 [[LOAD]], 1073741824
 TEST_CPU_SUPPORTS(fsrm, "fsrm")
+
+// CHECK-LABEL: define{{.*}} void @test_fsrs(
+// CHECK: [[LOAD:%[^ ]+]] = load i32, ptr getelementptr inbounds nuw (i8, ptr @__cpu_features2, i64 8)
+// CHECK: = and i32 [[LOAD]], -2147483648
+TEST_CPU_SUPPORTS(fsrs, "fsrs")

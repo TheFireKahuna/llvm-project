@@ -144,6 +144,7 @@ void verifyfeaturestrings(void) {
   (void)__builtin_cpu_supports("movrs");
   (void)__builtin_cpu_supports("ermsb");
   (void)__builtin_cpu_supports("fsrm");
+  (void)__builtin_cpu_supports("fsrs");
 }
 
 void verifycpustrings(void) {
