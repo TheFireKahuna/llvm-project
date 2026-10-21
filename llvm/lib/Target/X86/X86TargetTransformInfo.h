@@ -238,6 +238,9 @@ public:
   bool isFCmpOrdCheaperThanFCmpZero(Type *Ty) const override;
   bool areInlineCompatible(const Function *Caller,
                            const Function *Callee) const override;
+  APInt getFeatureMask(const Function &F) const override;
+  APInt getPriorityMask(const Function &F) const override;
+  bool isMultiversionedFunction(const Function &F) const override;
   bool areTypesABICompatible(const Function *Caller, const Function *Callee,
                              ArrayRef<Type *> Type) const override;
 

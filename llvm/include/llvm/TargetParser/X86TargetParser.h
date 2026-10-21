@@ -13,6 +13,7 @@
 #ifndef LLVM_TARGETPARSER_X86TARGETPARSER_H
 #define LLVM_TARGETPARSER_X86TARGETPARSER_H
 
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Compiler.h"
@@ -178,6 +179,13 @@ LLVM_ABI void getTripleBaselineFeatures(const Triple &TT,
 /// by the provided \p Feature.
 LLVM_ABI void updateImpliedFeatures(StringRef Feature, bool Enabled,
                                     StringMap<bool> &Features);
+
+/// Whether \p Name is a feature or x86-64 level __builtin_cpu_supports takes.
+LLVM_ABI bool isCpuSupportsFeature(StringRef Name);
+
+/// The priority of a multiversioned function's version requiring \p Features,
+/// each a feature __builtin_cpu_supports takes or a processor name.
+LLVM_ABI APInt getFMVPriority(ArrayRef<StringRef> Features);
 
 LLVM_ABI char getCPUDispatchMangling(StringRef Name);
 LLVM_ABI bool validateCPUSpecificCPUDispatch(StringRef Name);

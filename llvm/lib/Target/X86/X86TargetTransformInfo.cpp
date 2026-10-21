@@ -57,6 +57,7 @@
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/TargetParser/X86TargetParser.h"
 #include <optional>
 
 using namespace llvm;
@@ -7433,6 +7434,58 @@ bool X86TTIImpl::isExpensiveToSpeculativelyExecute(const Instruction *I) const {
 }
 
 bool X86TTIImpl::isFCmpOrdCheaperThanFCmpZero(Type *Ty) const { return false; }
+
+// A multiversioned function's version requires the features its
+// "fmv-features" names, as __builtin_cpu_supports takes them. Any other
+// function may rely on its target features: those __builtin_cpu_supports
+// names, and each x86-64 level they complete.
+static void getCpuSupportsFeatures(const Function &F, bool Multiversioned,
+                                   StringMap<bool> &Enabled,
+                                   SmallVectorImpl<StringRef> &Features) {
+  if (Multiversioned) {
+    F.getFnAttribute("fmv-features")
+        .getValueAsString()
+        .split(Features, ",", -1, /*KeepEmpty=*/false);
+    return;
+  }
+  SmallVector<StringRef, 64> Attr;
+  F.getFnAttribute("target-features")
+      .getValueAsString()
+      .split(Attr, ",", -1, /*KeepEmpty=*/false);
+  for (StringRef A : Attr)
+    if (A.size() > 1)
+      Enabled[A.drop_front()] = A.front() == '+';
+  for (const auto &E : Enabled)
+    if (E.getValue() && X86::isCpuSupportsFeature(E.getKey()))
+      Features.push_back(E.getKey());
+  for (StringRef Level : {"x86-64", "x86-64-v2", "x86-64-v3", "x86-64-v4"}) {
+    SmallVector<StringRef, 32> LevelFeatures;
+    X86::getFeaturesForCPU(Level, LevelFeatures);
+    if (all_of(LevelFeatures, [&](StringRef L) { return Enabled.lookup(L); }))
+      Features.push_back(Level);
+  }
+}
+
+APInt X86TTIImpl::getFeatureMask(const Function &F) const {
+  StringMap<bool> Enabled;
+  SmallVector<StringRef, 32> Features;
+  getCpuSupportsFeatures(F, isMultiversionedFunction(F), Enabled, Features);
+  std::array<uint32_t, 4> Mask = X86::getCpuSupportsMask(Features);
+  uint64_t Words[] = {Mask[0] | uint64_t(Mask[1]) << 32,
+                      Mask[2] | uint64_t(Mask[3]) << 32};
+  return APInt(128, Words);
+}
+
+APInt X86TTIImpl::getPriorityMask(const Function &F) const {
+  StringMap<bool> Enabled;
+  SmallVector<StringRef, 32> Features;
+  getCpuSupportsFeatures(F, isMultiversionedFunction(F), Enabled, Features);
+  return X86::getFMVPriority(Features);
+}
+
+bool X86TTIImpl::isMultiversionedFunction(const Function &F) const {
+  return F.hasFnAttribute("fmv-features");
+}
 
 bool X86TTIImpl::areInlineCompatible(const Function *Caller,
                                      const Function *Callee) const {

@@ -290,7 +290,7 @@ int isa_level(int) { return 0; }
 // DARWIN: define linkonce i32 @foo_inline.sse4.2.1() #[[SSE42:[0-9]+]]
 
 // WINDOWS: define linkonce_odr dso_local i32 @foo_inline.arch_sandybridge.0() #[[SB:[0-9]+]]
-// WINDOWS: define linkonce_odr dso_local i32 @foo_inline.default.2() #[[DEF]]
+// WINDOWS: define linkonce_odr dso_local i32 @foo_inline.default.2() #[[DEF:[0-9]+]]
 // WINDOWS: define linkonce_odr dso_local i32 @foo_inline.sse4.2.1() #[[SSE42:[0-9]+]]
 
 

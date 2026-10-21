@@ -2831,8 +2831,17 @@ void CodeGenModule::UpdateMultiVersionNames(GlobalDecl GD,
       // If this is the current decl is being created, make sure we update the name.
       if (GD.getCanonicalDecl() == OtherGD.getCanonicalDecl())
         CurName = OtherNameRef;
-      if (llvm::GlobalValue *Entry = GetGlobalValue(NonTargetName))
+      if (llvm::GlobalValue *Entry = GetGlobalValue(NonTargetName)) {
         Entry->setName(OtherName);
+        // An x86 version emitted before a second version made it one was
+        // emitted as an ordinary function, without the features it records.
+        llvm::AttrBuilder Attrs(getLLVMContext());
+        if (auto *F = dyn_cast<llvm::Function>(Entry);
+            F && getTriple().isX86() &&
+            GetCPUAndFeaturesAttributes(OtherGD, Attrs) &&
+            Attrs.contains("fmv-features"))
+          F->addFnAttr(Attrs.getAttribute("fmv-features"));
+      }
     }
   }
 }
@@ -3764,6 +3773,36 @@ bool CodeGenModule::GetCPUAndFeaturesAttributes(GlobalDecl GD,
       for (StringRef F : OrderedFeats)
         FMVFeatures.append("," + F.str());
       Attrs.addAttribute("fmv-features", FMVFeatures.substr(1));
+      AddedAttr = true;
+    }
+  } else if (getTarget().getTriple().isX86() && FD &&
+             ((TD && FD->isTargetMultiVersion()) || TC)) {
+    // An x86 version records the features its resolver tests, so that a call
+    // whose caller has them resolves to it statically. A version chosen by
+    // the processor's identity records none: no feature set implies it.
+    llvm::SmallVector<StringRef, 8> Feats;
+    std::optional<StringRef> Arch;
+    bool IsDefault;
+    if (TC) {
+      unsigned Index = GD.getMultiVersionIndex();
+      IsDefault = TC->isDefaultVersion(Index);
+      TC->getX86Feature(Feats, Index);
+      Arch = TC->getX86Architecture(Index);
+    } else {
+      IsDefault = TD->isDefaultVersion();
+      TD->getX86AddedFeatures(Feats);
+      Arch = TD->getX86Architecture();
+    }
+    if (Arch)
+      Feats.push_back(*Arch);
+    if (IsDefault) {
+      Attrs.addAttribute("fmv-features");
+      AddedAttr = true;
+    } else if (llvm::all_of(Feats, llvm::X86::isCpuSupportsFeature)) {
+      std::set<StringRef> OrderedFeats(Feats.begin(), Feats.end());
+      Attrs.addAttribute("fmv-features",
+                         llvm::join(OrderedFeats.begin(), OrderedFeats.end(),
+                                    ","));
       AddedAttr = true;
     }
   }
