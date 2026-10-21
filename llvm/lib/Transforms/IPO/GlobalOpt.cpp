@@ -2456,18 +2456,26 @@ static Function *hasSideeffectFreeStaticResolution(GlobalIFunc &IF) {
 }
 
 /// Find IFuncs that have resolvers that always point at the same statically
-/// known callee, and replace their callers with a direct call.
+/// known callee, and replace their callers with a direct call. Other uses keep
+/// the IFunc: its address is the one every other module takes of it, which a
+/// format may give the IFunc's own symbol rather than the callee.
 static bool OptimizeStaticIFuncs(Module &M) {
   bool Changed = false;
-  for (GlobalIFunc &IF : M.ifuncs())
-    if (Function *Callee = hasSideeffectFreeStaticResolution(IF))
-      if (!IF.use_empty() &&
-          (!Callee->isDeclaration() ||
-           none_of(IF.users(), [](User *U) { return isa<GlobalAlias>(U); }))) {
-        IF.replaceAllUsesWith(Callee);
-        NumIFuncsResolved++;
-        Changed = true;
+  for (GlobalIFunc &IF : M.ifuncs()) {
+    Function *Callee = hasSideeffectFreeStaticResolution(IF);
+    if (!Callee)
+      continue;
+    bool Resolved = false;
+    for (Use &U : make_early_inc_range(IF.uses()))
+      if (auto *CB = dyn_cast<CallBase>(U.getUser()); CB && CB->isCallee(&U)) {
+        U.set(Callee);
+        Resolved = true;
       }
+    if (Resolved) {
+      NumIFuncsResolved++;
+      Changed = true;
+    }
+  }
   return Changed;
 }
 
