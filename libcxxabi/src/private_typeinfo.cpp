@@ -79,7 +79,11 @@ static inline bool is_equal(const std::type_info* x, const std::type_info* y, bo
     return *x == *y;
   }
   // Still allow pointer equality to short circut.
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+  return x == y || __cxxabiv1::__shim_type_info::equal_names(x, y);
+#else
   return x == y || strcmp(x->name(), y->name()) == 0;
+#endif
 }
 
 // Whether the pointee of either pointer or pointer to member type, or the class
@@ -110,6 +114,37 @@ static inline ptrdiff_t update_offset_to_base(const char* vtable, ptrdiff_t offs
 }
 
 namespace __cxxabiv1 {
+
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+// Bits 48 to 62 of a type_info's name word hold the length of the type's blob:
+// its name, the name's NUL and, for a class, the layout shape that follows; a
+// length those bits cannot hold is the 64-bit word ahead of the name, and a
+// word with none comes from an object that predates them. The names are equal
+// when the shorter blob starts the other, which ends with the name's NUL
+// unless it holds a shape too; two blobs that hold shapes must be equal.
+bool __shim_type_info::equal_names(const std::type_info* x, const std::type_info* y) {
+  auto length = [](uintptr_t word) -> size_t {
+    size_t n = (word >> 48) & 0x7FFF;
+    if (n != 0x7FFF)
+      return n;
+    uint64_t exact;
+    memcpy(&exact, reinterpret_cast<const char*>(word & ((uintptr_t(1) << 48) - 1)) - sizeof(exact), sizeof(exact));
+    return exact;
+  };
+  uintptr_t wx = static_cast<const __shim_type_info*>(x)->__type_name;
+  uintptr_t wy = static_cast<const __shim_type_info*>(y)->__type_name;
+  size_t nx = length(wx);
+  size_t ny = length(wy);
+  if (nx == 0 || ny == 0)
+    return wx == wy;
+  const char* px = x->name();
+  const char* py = y->name();
+  size_t n = nx < ny ? nx : ny;
+  if ((nx < ny ? px : py)[n - 1] != '\0')
+    return nx == ny && memcmp(px, py, n) == 0;
+  return memcmp(px, py, n) == 0;
+}
+#endif
 
 namespace {
 

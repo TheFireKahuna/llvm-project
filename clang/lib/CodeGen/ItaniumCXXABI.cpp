@@ -48,6 +48,11 @@
 using namespace clang;
 using namespace CodeGen;
 
+/// The largest length that bits 48 to 62 of a type_info object's name word
+/// hold on Windows Itanium and NT-POSIX, which stands for one held ahead of
+/// the name.
+static constexpr uint64_t MaxTypeNameLength = 0x7FFF;
+
 namespace {
 class ItaniumCXXABI : public CodeGen::CGCXXABI {
   /// VTables - All the vtables which have been defined.
@@ -73,6 +78,7 @@ protected:
 
   bool isTaggedVTableClass(const CXXRecordDecl *RD);
   uint64_t getVTableTagResidue(const CXXRecordDecl *RD);
+  uint64_t getTypeNameLength(QualType Ty);
   llvm::Value *emitTaggedExactCastCheck(CodeGenFunction &CGF,
                                         llvm::Value *VTable,
                                         llvm::Value *LocalMatch,
@@ -1974,7 +1980,7 @@ llvm::Value *ItaniumCXXABI::emitTaggedExactCastCheck(
   llvm::BasicBlock *TypeInfoBlock = CGF.createBasicBlock("dynamic_cast.rtti");
   llvm::BasicBlock *NameBlock = CGF.createBasicBlock("dynamic_cast.name");
   llvm::BasicBlock *FlagBlock = CGF.createBasicBlock("dynamic_cast.flag");
-  llvm::BasicBlock *CompareBlock = CGF.createBasicBlock("dynamic_cast.strcmp");
+  llvm::BasicBlock *CompareBlock = CGF.createBasicBlock("dynamic_cast.compare");
   llvm::BasicBlock *End = CGF.createBasicBlock("dynamic_cast.tag.end");
   SmallVector<std::pair<llvm::Value *, llvm::BasicBlock *>, 6> Results;
   llvm::Constant *True = Builder.getTrue(), *False = Builder.getFalse();
@@ -2011,8 +2017,11 @@ llvm::Value *ItaniumCXXABI::emitTaggedExactCastCheck(
   Builder.CreateCondBr(Builder.CreateICmpEQ(ObjectTypeInfo, TypeInfo), End,
                        NameBlock);
 
-  // As std::type_info compares: equal names, or two non-unique ones, whose
-  // top bit is set, that spell the same string.
+  // As std::type_info compares: equal name words, or two non-unique ones,
+  // whose top bit is set, of one length, in bits 48 to 62, whose names and
+  // what follows them are equal. The class's own word is non-unique, so one
+  // compare of the object's top 16 bits checks both, without reading either
+  // name, and the length known here bounds every read.
   CGF.EmitBlock(NameBlock);
   llvm::BasicBlock *NotNull = CGF.createBasicBlock("dynamic_cast.rtti.nonnull");
   Results.push_back({False, NameBlock});
@@ -2030,24 +2039,57 @@ llvm::Value *ItaniumCXXABI::emitTaggedExactCastCheck(
   Builder.CreateCondBr(Builder.CreateICmpEQ(ObjectName, Name), End,
                        FlagBlock);
   CGF.EmitBlock(FlagBlock);
-  llvm::Value *BothNonUnique = Builder.CreateIsNeg(
-      Builder.CreateAnd(ObjectName, Name));
+  uint64_t Length = getTypeNameLength(DestRecordTy);
+  uint64_t Top = 0x8000 | std::min(Length, MaxTypeNameLength);
   Results.push_back({False, FlagBlock});
-  Builder.CreateCondBr(BothNonUnique, CompareBlock, End);
+  Builder.CreateCondBr(
+      Builder.CreateICmpEQ(Builder.CreateLShr(ObjectName, 48),
+                           llvm::ConstantInt::get(CGF.IntPtrTy, Top)),
+      CompareBlock, End);
   CGF.EmitBlock(CompareBlock);
-  llvm::Constant *Mask = llvm::ConstantInt::get(
-      CGF.IntPtrTy,
-      llvm::APInt::getSignedMaxValue(CGF.IntPtrTy->getIntegerBitWidth()));
-  llvm::Type *StrcmpArgs[] = {CGF.Int8PtrTy, CGF.Int8PtrTy};
-  llvm::FunctionCallee Strcmp = CGM.CreateRuntimeFunction(
-      llvm::FunctionType::get(CGF.IntTy, StrcmpArgs, false), "strcmp");
-  llvm::Value *Cmp = CGF.EmitNounwindRuntimeCall(
-      Strcmp,
-      {Builder.CreateIntToPtr(Builder.CreateAnd(ObjectName, Mask),
-                              CGF.Int8PtrTy),
-       Builder.CreateIntToPtr(Builder.CreateAnd(Name, Mask), CGF.Int8PtrTy)});
-  Results.push_back(
-      {Builder.CreateIsNull(Cmp), Builder.GetInsertBlock()});
+  llvm::Constant *Mask =
+      llvm::ConstantInt::get(CGF.IntPtrTy, (uint64_t(1) << 48) - 1);
+  llvm::Value *ObjectString =
+      Builder.CreateIntToPtr(Builder.CreateAnd(ObjectName, Mask), CGF.Int8PtrTy);
+  llvm::Value *String =
+      Builder.CreateIntToPtr(Builder.CreateAnd(Name, Mask), CGF.Int8PtrTy);
+  // A length the bits cannot hold is the 64-bit word ahead of the name.
+  if (Length >= MaxTypeNameLength) {
+    llvm::BasicBlock *Next = CGF.createBasicBlock("dynamic_cast.length");
+    llvm::Value *ObjectLength = Builder.CreateAlignedLoad(
+        CGM.Int64Ty,
+        Builder.CreateConstGEP1_64(CGM.Int8Ty, ObjectString, -8),
+        CharUnits::One(), "rtti.length");
+    Results.push_back({False, Builder.GetInsertBlock()});
+    Builder.CreateCondBr(
+        Builder.CreateICmpEQ(ObjectLength,
+                             llvm::ConstantInt::get(CGM.Int64Ty, Length)),
+        Next, End);
+    CGF.EmitBlock(Next);
+  }
+  // Compares at most 64 bytes at a time, the last comparison ending where the
+  // name's bytes do, so that each expands inline with no call.
+  llvm::Type *MemcmpArgs[] = {CGF.Int8PtrTy, CGF.Int8PtrTy, CGF.SizeTy};
+  llvm::FunctionCallee Memcmp = CGM.CreateRuntimeFunction(
+      llvm::FunctionType::get(CGF.IntTy, MemcmpArgs, false), "memcmp");
+  for (uint64_t Offset = 0;;) {
+    uint64_t Size = std::min<uint64_t>(Length, 64);
+    llvm::Value *Cmp = CGF.EmitNounwindRuntimeCall(
+        Memcmp,
+        {Builder.CreateConstInBoundsGEP1_64(CGM.Int8Ty, ObjectString, Offset),
+         Builder.CreateConstInBoundsGEP1_64(CGM.Int8Ty, String, Offset),
+         llvm::ConstantInt::get(CGF.SizeTy, Size)});
+    llvm::Value *Equal = Builder.CreateIsNull(Cmp);
+    if (Offset + Size == Length) {
+      Results.push_back({Equal, Builder.GetInsertBlock()});
+      break;
+    }
+    llvm::BasicBlock *Next = CGF.createBasicBlock("dynamic_cast.compare.next");
+    Results.push_back({False, Builder.GetInsertBlock()});
+    Builder.CreateCondBr(Equal, Next, End);
+    CGF.EmitBlock(Next);
+    Offset = std::min(Offset + 64, Length - 64);
+  }
   Builder.CreateBr(End);
 
   CGF.EmitBlock(End);
@@ -2417,6 +2459,18 @@ bool ItaniumCXXABI::isTaggedVTableClass(const CXXRecordDecl *RD) {
   return CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
          RD->isDynamicClass() && RD->isEffectivelyFinal() &&
          RD->isExternallyVisible() && !getContext().getCurrentKeyFunction(RD);
+}
+
+/// The length of the name that a type_info object for \p Ty holds, with its
+/// NUL, which bits 48 to 62 of its name word give on Windows Itanium and
+/// NT-POSIX.
+uint64_t ItaniumCXXABI::getTypeNameLength(QualType Ty) {
+  SmallString<256> Name;
+  llvm::raw_svector_ostream Out(Name);
+  getMangleContext().mangleCXXRTTIName(Ty, Out);
+  // The name of the name object starts with _ZTS, after which it spells the
+  // type.
+  return Name.size() - 4 + 1;
 }
 
 /// The residue modulo a page at which \p RD's tagged vtables put their
@@ -4303,9 +4357,12 @@ class ItaniumRTTIBuilder {
   /// Fields - The fields of the RTTI descriptor currently being built.
   SmallVector<llvm::Constant *, 16> Fields;
 
-  /// GetAddrOfTypeName - Returns the mangled type name of the given type.
-  llvm::GlobalVariable *
-  GetAddrOfTypeName(QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage);
+  /// GetAddrOfTypeName - Returns the mangled type name of the given type,
+  /// setting \p Length to the length of the name, its NUL and whatever
+  /// follows it.
+  llvm::GlobalValue *
+  GetAddrOfTypeName(QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage,
+                    uint64_t &Length);
 
   /// GetAddrOfExternalRTTIDescriptor - Returns the constant for the RTTI
   /// descriptor of the given type.
@@ -4397,8 +4454,8 @@ public:
 };
 }
 
-llvm::GlobalVariable *ItaniumRTTIBuilder::GetAddrOfTypeName(
-    QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage) {
+llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
+    QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage, uint64_t &Length) {
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
   CGM.getCXXABI().getMangleContext().mangleCXXRTTIName(Ty, Out);
@@ -4416,6 +4473,41 @@ llvm::GlobalVariable *ItaniumRTTIBuilder::GetAddrOfTypeName(
     Init = llvm::ConstantDataArray::getString(VMContext, DualEncodedName);
   } else
     Init = llvm::ConstantDataArray::getString(VMContext, Name.substr(4));
+  Length = cast<llvm::ArrayType>(Init->getType())->getNumElements();
+
+  // On Windows Itanium and NT-POSIX the type_info object's name word holds
+  // the length in bits 48 to 62. A length those bits cannot hold is the 64-bit
+  // word ahead of the name, in one object with it, whose symbol still labels
+  // the name; the object's own name is private, and the symbol is its alias,
+  // the key of its COMDAT.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23) &&
+      Length >= MaxTypeNameLength) {
+    llvm::Constant *Fields[] = {llvm::ConstantInt::get(CGM.Int64Ty, Length),
+                                Init};
+    Init = llvm::ConstantStruct::getAnon(Fields, /*Packed=*/true);
+    auto *Object = new llvm::GlobalVariable(
+        CGM.getModule(), Init->getType(), /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, Init, Twine(Name) + ".length");
+    Object->setAlignment(llvm::Align(8));
+    bool Weak = llvm::GlobalValue::isWeakForLinker(Linkage);
+    if (CGM.supportsCOMDAT() && Weak)
+      Object->setComdat(CGM.getModule().getOrInsertComdat(Name));
+    auto *Alias = llvm::GlobalAlias::create(
+        CGM.Int8Ty, 0, Weak ? llvm::GlobalValue::ExternalLinkage : Linkage, "",
+        llvm::ConstantExpr::getInBoundsPtrAdd(
+            Object, llvm::ConstantInt::get(CGM.Int64Ty, 8)),
+        &CGM.getModule());
+    if (llvm::GlobalValue *Old = CGM.getModule().getNamedValue(Name)) {
+      assert(Old->isDeclaration() && "Declaration has wrong type!");
+      Alias->takeName(Old);
+      Old->replaceAllUsesWith(Alias);
+      Old->eraseFromParent();
+    } else {
+      Alias->setName(Name);
+    }
+    return Alias;
+  }
 
   auto Align = CGM.getContext().getTypeAlignInChars(CGM.getContext().CharTy);
 
@@ -5048,20 +5140,29 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
   BuildVTablePointer(cast<Type>(Ty), GV);
 
   // And the name.
-  llvm::GlobalVariable *TypeName = GetAddrOfTypeName(Ty, Linkage);
+  uint64_t TypeNameLength;
+  llvm::GlobalValue *TypeName = GetAddrOfTypeName(Ty, Linkage, TypeNameLength);
   llvm::Constant *TypeNameField;
 
   // If we're supposed to demote the visibility, be sure to set a flag
   // to use a string comparison for type_info comparisons.
   ItaniumCXXABI::RTTIUniquenessKind RTTIUniqueness =
       CXXABI.classifyRTTIUniqueness(Ty, Linkage);
-  if (RTTIUniqueness != ItaniumCXXABI::RUK_Unique) {
+  uint64_t TypeNameBits = 0;
+  if (RTTIUniqueness != ItaniumCXXABI::RUK_Unique)
     // The flag is the sign bit, which on ARM64 is defined to be clear
     // for global pointers, as it is for user-mode addresses on Windows.
+    TypeNameBits = uint64_t(1) << 63;
+  // On Windows Itanium and NT-POSIX bits 48 to 62, clear in a user-mode
+  // address too, hold the name's length, so that comparing two names needs no
+  // scan of either.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23))
+    TypeNameBits |= std::min(TypeNameLength, MaxTypeNameLength) << 48;
+  if (TypeNameBits) {
     TypeNameField = llvm::ConstantExpr::getPtrToInt(TypeName, CGM.Int64Ty);
-    llvm::Constant *flag =
-        llvm::ConstantInt::get(CGM.Int64Ty, ((uint64_t)1) << 63);
-    TypeNameField = llvm::ConstantExpr::getAdd(TypeNameField, flag);
+    TypeNameField = llvm::ConstantExpr::getAdd(
+        TypeNameField, llvm::ConstantInt::get(CGM.Int64Ty, TypeNameBits));
     TypeNameField =
         llvm::ConstantExpr::getIntToPtr(TypeNameField, CGM.GlobalsInt8PtrTy);
   } else {

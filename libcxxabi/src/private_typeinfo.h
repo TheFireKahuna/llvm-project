@@ -40,6 +40,9 @@ public:
   _LIBCXXABI_TYPE_INFO_ENTRY virtual void noop2() const;
   _LIBCXXABI_HIDDEN virtual bool can_catch(const __shim_type_info *thrown_type,
                                            void *&adjustedPtr) const = 0;
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+  _LIBCXXABI_HIDDEN static bool equal_names(const std::type_info* x, const std::type_info* y);
+#endif
 };
 
 class _LIBCXXABI_TYPE_VIS __fundamental_type_info _LIBCXXABI_TYPE_INFO_FINAL : public __shim_type_info {

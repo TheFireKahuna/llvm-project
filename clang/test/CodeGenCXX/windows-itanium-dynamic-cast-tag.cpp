@@ -43,21 +43,23 @@ struct M final : X, A { virtual void f() {} };
 // CHECK: %[[N:.*]] = load i64, ptr %[[NP]]
 // CHECK: %[[ON:.*]] = load i64, ptr getelementptr {{.*}}@_ZTI1C, i64 8)
 // CHECK: icmp eq i64 %[[N]], %[[ON]]
+// The flag and the length of "1C" with its NUL, 0x8003, in the top 16 bits.
 // CHECK: dynamic_cast.flag:
-// CHECK: %[[BOTH:.*]] = and i64 %[[N]], %[[ON]]
-// CHECK: icmp slt i64 %[[BOTH]], 0
-// CHECK: dynamic_cast.strcmp:
-// CHECK: and i64 %[[N]], 9223372036854775807
-// CHECK: and i64 %[[ON]], 9223372036854775807
-// CHECK: call i32 @strcmp(
+// CHECK: %[[TOP:.*]] = lshr i64 %[[N]], 48
+// CHECK: icmp eq i64 %[[TOP]], 32771
+// CHECK: dynamic_cast.compare:
+// CHECK: %[[OS:.*]] = and i64 %[[N]], 281474976710655
+// CHECK: %[[S:.*]] = and i64 %[[ON]], 281474976710655
+// CHECK: call i32 @memcmp(ptr {{.*}}, ptr {{.*}}, i64 3)
 // CHECK: dynamic_cast.tag.end:
 // CHECK: phi i1 [ true, %dynamic_cast.notnull ], [ false, %dynamic_cast.tag ],
 // CHECK-SAME: [ true, %dynamic_cast.rtti ], [ false, %dynamic_cast.name ],
 // CHECK-SAME: [ true, %dynamic_cast.rtti.nonnull ], [ false, %dynamic_cast.flag ],
-// CHECK-SAME: [ %{{.*}}, %dynamic_cast.strcmp ]
+// CHECK-SAME: [ %{{.*}}, %dynamic_cast.compare ]
 // CHECK-NOT: @__dynamic_cast
+// CHECK-NOT: @strcmp
 // CHECK: ret ptr
-// CHECK: declare {{.*}}i32 @strcmp(ptr{{.*}}, ptr{{.*}})
+// CHECK: declare {{.*}}i32 @memcmp(ptr{{.*}}, ptr{{.*}}, i64{{.*}})
 C *cast_c(A *a) { return dynamic_cast<C *>(a); }
 
 // CHECK-LABEL: define {{.*}} @_Z6cast_dP1A(

@@ -8,6 +8,11 @@
 
 // UNSUPPORTED: no-rtti
 
+// On Windows Itanium and NT-POSIX the compiler puts the name's length in the
+// high bits of every type_info name pointer, which only the platform's own
+// comparison reads.
+// UNSUPPORTED: target={{.*}}-windows-itanium, target={{.*}}-windows-ntposix
+
 // RUN: %{cxx} %s %{flags} %{compile_flags} -c -o %t.tu1.o -DTU1 -D_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2
 // RUN: %{cxx} %s %{flags} %{compile_flags} -c -o %t.tu2.o -DTU2 -D_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2
 // RUN: %{cxx} %s %{flags} %{compile_flags} -c -o %t.main.o -DMAIN -D_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2

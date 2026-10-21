@@ -240,12 +240,47 @@ struct __non_unique_arm_rtti_bit_impl {
   typedef uintptr_t __type_name_t;
 
   _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE static const char* __type_name_to_string(__type_name_t __v) _NOEXCEPT {
-    return reinterpret_cast<const char*>(__v & ~__non_unique_rtti_bit::value);
+    return reinterpret_cast<const char*>(__v & __name_mask::value);
   }
   _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE static __type_name_t __string_to_type_name(const char* __v) _NOEXCEPT {
     return reinterpret_cast<__type_name_t>(__v);
   }
 
+#      if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE static size_t __hash(__type_name_t __v) _NOEXCEPT {
+    size_t __n = __blob_length(__v);
+    if (__is_type_name_unique(__v) || __n == 0)
+      return __v;
+    const char* __p = __type_name_to_string(__v);
+    size_t __hash   = 5381;
+    for (size_t __i = 0; __i != __n; ++__i)
+      __hash = (__hash * 33) ^ static_cast<unsigned char>(__p[__i]);
+    return __hash;
+  }
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE static bool __eq(__type_name_t __lhs, __type_name_t __rhs) _NOEXCEPT {
+    if (__lhs == __rhs)
+      return true;
+    if (__is_type_name_unique(__lhs) || __is_type_name_unique(__rhs))
+      return false;
+    // Blobs of different lengths differ, which needs neither read; a word with
+    // no length comes from an object that predates them and equals only
+    // itself.
+    size_t __n = __blob_length(__lhs);
+    return __n != 0 && __n == __blob_length(__rhs) &&
+           __blob_eq(__type_name_to_string(__lhs), __type_name_to_string(__rhs), __n);
+  }
+  _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE static bool __lt(__type_name_t __lhs, __type_name_t __rhs) _NOEXCEPT {
+    if (__is_type_name_unique(__lhs) || __is_type_name_unique(__rhs))
+      return __lhs < __rhs;
+    size_t __nl = __blob_length(__lhs);
+    size_t __nr = __blob_length(__rhs);
+    if (__nl != __nr)
+      return __nl < __nr;
+    if (__nl == 0)
+      return __lhs < __rhs;
+    return __builtin_memcmp(__type_name_to_string(__lhs), __type_name_to_string(__rhs), __nl) < 0;
+  }
+#      else
   _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE static size_t __hash(__type_name_t __v) _NOEXCEPT {
     if (__is_type_name_unique(__v))
       return __v;
@@ -265,12 +300,51 @@ struct __non_unique_arm_rtti_bit_impl {
       return __lhs < __rhs;
     return __builtin_strcmp(__type_name_to_string(__lhs), __type_name_to_string(__rhs)) < 0;
   }
+#      endif
 
 private:
   // The unique bit is the top bit. It is expected that __type_name_t is 64 bits when
   // this implementation is actually used.
   typedef integral_constant<__type_name_t, (1ULL << ((__CHAR_BIT__ * sizeof(__type_name_t)) - 1))>
       __non_unique_rtti_bit;
+
+#      if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+  // On Windows Itanium and NT-POSIX bits 48 to 62 of the word hold the length
+  // of the type's blob: its name, the name's NUL and, for a class, the layout
+  // shape that follows. A length those bits cannot hold is the 64-bit word
+  // ahead of the name.
+  typedef integral_constant<__type_name_t, (__type_name_t(1) << 48) - 1> __name_mask;
+
+  _LIBCPP_HIDE_FROM_ABI static size_t __blob_length(__type_name_t __v) _NOEXCEPT {
+    size_t __n = (__v >> 48) & 0x7FFF;
+    if (__n != 0x7FFF)
+      return __n;
+    uint64_t __length;
+    __builtin_memcpy(&__length, __type_name_to_string(__v) - sizeof(__length), sizeof(__length));
+    return __length;
+  }
+
+  // Compares two blobs of length __n with fixed-size comparisons that cover
+  // them, overlapping, which the compiler expands without a call, up to 64
+  // bytes.
+  _LIBCPP_HIDE_FROM_ABI static bool __blob_eq(const char* __a, const char* __b, size_t __n) _NOEXCEPT {
+    if (__n < 2)
+      return __builtin_memcmp(__a, __b, __n) == 0;
+    if (__n < 4)
+      return __builtin_memcmp(__a, __b, 2) == 0 && __builtin_memcmp(__a + __n - 2, __b + __n - 2, 2) == 0;
+    if (__n <= 8)
+      return __builtin_memcmp(__a, __b, 4) == 0 && __builtin_memcmp(__a + __n - 4, __b + __n - 4, 4) == 0;
+    if (__n <= 16)
+      return __builtin_memcmp(__a, __b, 8) == 0 && __builtin_memcmp(__a + __n - 8, __b + __n - 8, 8) == 0;
+    if (__n <= 32)
+      return __builtin_memcmp(__a, __b, 16) == 0 && __builtin_memcmp(__a + __n - 16, __b + __n - 16, 16) == 0;
+    if (__n <= 64)
+      return __builtin_memcmp(__a, __b, 32) == 0 && __builtin_memcmp(__a + __n - 32, __b + __n - 32, 32) == 0;
+    return __builtin_memcmp(__a, __b, __n) == 0;
+  }
+#      else
+  typedef integral_constant<__type_name_t, ~__non_unique_rtti_bit::value> __name_mask;
+#      endif
 
   _LIBCPP_HIDE_FROM_ABI static bool __is_type_name_unique(__type_name_t __lhs) _NOEXCEPT {
     return !(__lhs & __non_unique_rtti_bit::value);

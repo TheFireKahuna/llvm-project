@@ -32,8 +32,11 @@ namespace std {
     const char *__type_name;
 
     __type_name_t name() const {
-#if (defined(__APPLE__) && defined(__LP64__) && !defined(__x86_64__)) ||     \
-      defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+      // Bits 48 to 62 hold the length of the name and what follows it, and bit
+      // 63 the non-unique flag.
+      return (__type_name_t)((uintptr_t)__type_name & ((1ULL << 48) - 1));
+#elif defined(__APPLE__) && defined(__LP64__) && !defined(__x86_64__)
       uintptr_t __non_unique_rtti_bit =
           (1ULL << ((__CHAR_BIT__ * sizeof(__type_name_t)) - 1));
       return (__type_name_t)((uintptr_t)__type_name & ~__non_unique_rtti_bit);
