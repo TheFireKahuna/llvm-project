@@ -57,17 +57,21 @@ void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots) {
             runChunks[bound] = run.chunks;
   });
 
-  // A live indirect function's stub keeps its resolver and fallback, which
-  // only the function's link records name.
-  llvm::DenseMap<SectionChunk *, SmallVector<Symbol *, 1>> resolvers;
+  // A live indirect function's stub keeps its resolver and fallback, or the
+  // bodies Windows may select, which only the function's link records name.
+  llvm::DenseMap<SectionChunk *, SmallVector<Symbol *, 1>> recordKept;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (const SymbolTable::IFunc &f : symtab.ifuncs)
       if (auto *stub = dyn_cast<DefinedRegular>(f.function);
           stub && stub->getFile() == f.file) {
-        resolvers[stub->getChunk()].push_back(f.resolver);
+        recordKept[stub->getChunk()].push_back(f.resolver);
         if (f.fallback)
-          resolvers[stub->getChunk()].push_back(f.fallback);
+          recordKept[stub->getChunk()].push_back(f.fallback);
       }
+    for (const SymbolTable::FunctionOverride &o : symtab.functionOverrides)
+      if (auto *stub = dyn_cast<DefinedRegular>(o.function);
+          stub && stub->getFile() == o.file)
+        llvm::append_range(recordKept[stub->getChunk()], o.candidates);
   });
 
   std::function<void(Symbol *)> addSym;
@@ -120,8 +124,8 @@ void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots) {
     for (Symbol *b : sc->symbols())
       if (b)
         addSym(b);
-    if (!resolvers.empty())
-      for (Symbol *b : resolvers.lookup(sc))
+    if (!recordKept.empty())
+      for (Symbol *b : recordKept.lookup(sc))
         addSym(b);
 
     // Mark associative sections if any.

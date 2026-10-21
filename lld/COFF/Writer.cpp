@@ -302,6 +302,7 @@ private:
   void addBaserels();
   void addBaserelBlocks(std::vector<Baserel> &v);
   void createDynamicRelocs();
+  void createFunctionOverrides();
 
   uint32_t getSizeOfInitializedData();
 
@@ -867,6 +868,65 @@ void Writer::writePEChecksum() {
   peHeader->CheckSum = sum;
 }
 
+// A function whose body Windows selects is a stub whose jump to its default
+// body, the stub's first relocation, the function-override record names: the
+// body, the bodies the diagram may select instead, and the jump's field, which
+// Windows writes with the chosen one's displacement.
+void Writer::createFunctionOverrides() {
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (const SymbolTable::FunctionOverride &o : symtab.functionOverrides) {
+      auto *stub = dyn_cast<DefinedRegular>(o.function);
+      if (!stub || stub->getFile() != o.file || !stub->getChunk()->live)
+        continue;
+      auto fail = [&](StringRef why) {
+        Err(ctx) << o.file << ": the function override of "
+                 << o.file->symtab.printSymbol(o.function) << " " << why;
+      };
+      if (ctx.config.machine != AMD64) {
+        fail("is not supported on this machine");
+        continue;
+      }
+      SectionChunk *sc = stub->getChunk();
+      const coff_relocation *jump = nullptr;
+      for (const coff_relocation &rel : sc->getRelocs())
+        if (rel.VirtualAddress >= stub->getValue() &&
+            (!jump || rel.VirtualAddress < jump->VirtualAddress))
+          jump = &rel;
+      auto *original = jump ? dyn_cast_or_null<Defined>(
+                                  o.file->getSymbol(jump->SymbolTableIndex))
+                            : nullptr;
+      if (!original || jump->Type != IMAGE_REL_AMD64_REL32) {
+        fail("names a stub that does not jump to a body");
+        continue;
+      }
+      FunctionOverrideEntry e{original, {}, {{sc, jump->VirtualAddress}}, {}};
+      for (Symbol *c : o.candidates)
+        if (auto *d = dyn_cast<Defined>(c))
+          e.candidates.push_back(d);
+      if (e.candidates.size() != o.candidates.size())
+        continue;
+      // A node is the terminal, a leaf selecting a candidate, or a test whose
+      // edges both lead forward, so that every walk ends.
+      bool valid = !o.nodes.empty() && o.nodes.size() <= 0x10000;
+      for (auto [i, n] : llvm::enumerate(o.nodes)) {
+        bool terminal = n[0] == 0 && n[1] == 0;
+        bool leaf = n[0] == i && n[1] == i && n[2] < e.candidates.size();
+        bool test = n[0] > i && n[1] > i && n[0] < o.nodes.size() &&
+                    n[1] < o.nodes.size();
+        valid &= terminal || leaf || test;
+      }
+      if (!valid) {
+        fail("has a malformed diagram");
+        continue;
+      }
+      e.nodes.assign(o.nodes.begin(), o.nodes.end());
+      if (!ctx.dynamicRelocs)
+        ctx.dynamicRelocs = make<DynamicRelocsChunk>(/*arm64x=*/false);
+      ctx.dynamicRelocs->addFunctionOverride(std::move(e));
+    }
+  });
+}
+
 // The main function of the writer.
 void Writer::run() {
   {
@@ -876,6 +936,7 @@ void Writer::run() {
     calculateStubDependentSizes();
     if (ctx.config.machine == ARM64X)
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
+    createFunctionOverrides();
     createImportTables();
     ctx.forEachSymtab([&](SymbolTable &symtab) {
       slots.scan(symtab);
@@ -4050,7 +4111,7 @@ void Writer::addBaserelBlocks(std::vector<Baserel> &v) {
 }
 
 void Writer::createDynamicRelocs() {
-  if (!ctx.dynamicRelocs)
+  if (ctx.config.machine != ARM64X)
     return;
 
   // Adjust the Machine field in the COFF header to AMD64.

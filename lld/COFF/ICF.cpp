@@ -254,8 +254,9 @@ void ICF::run() {
 
   // Mark the sections ICF must keep distinct, so isEligible tests one bit
   // instead of searching several side tables per section: a pinned chunk or a
-  // vtable in a run (load-bearing address), and a function the guard tables
-  // mark suppressed (differs from one they do not).
+  // vtable in a run (load-bearing address), a function the guard tables
+  // mark suppressed (differs from one they do not), and a stub whose jump
+  // Windows patches (each is a site of its own).
   auto keepDistinct = [](const Chunk *c) {
     if (auto *sc = dyn_cast_or_null<SectionChunk>(const_cast<Chunk *>(c)))
       sc->ineligibleForICF = true;
@@ -266,6 +267,11 @@ void ICF::run() {
     keepDistinct(run.first);
   for (Defined *d : ctx.guardSuppressed)
     keepDistinct(d->getChunk());
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (const SymbolTable::FunctionOverride &o : symtab.functionOverrides)
+      if (auto *stub = dyn_cast<DefinedRegular>(o.function))
+        keepDistinct(stub->getChunk());
+  });
 
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;

@@ -19,6 +19,7 @@
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
+#include <array>
 #include <optional>
 #include <vector>
 
@@ -245,6 +246,17 @@ public:
   std::vector<IFunc> ifuncs;
   // The indirect function d, as the object defining d lists it.
   const IFunc *getIFunc(Defined *d);
+
+  // The functions objects' link records list whose body Windows selects as it
+  // maps the image: each a stub that jumps to its default body, the bodies it
+  // may jump to instead, and the diagram that chooses among them.
+  struct FunctionOverride {
+    ObjFile *file;
+    Symbol *function;
+    SmallVector<Symbol *, 4> candidates;
+    SmallVector<std::array<uint32_t, 3>, 8> nodes;
+  };
+  std::vector<FunctionOverride> functionOverrides;
 
   // Replaces each forwarder whose import pointer reaches an image definition by
   // that definition, so references reach it directly and liveness discards the

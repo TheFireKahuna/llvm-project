@@ -1060,10 +1060,21 @@ private:
   uint8_t size;
 };
 
-// Dynamic relocation chunk containing ARM64X relocations for the hybrid image.
+// A function whose body Windows selects as it maps the image: the default
+// body, the bodies it may select instead, the rel32 fields into which it
+// writes the chosen body's displacement, and the diagram that chooses.
+struct FunctionOverrideEntry {
+  Defined *original;
+  std::vector<Defined *> candidates;
+  std::vector<std::pair<const Chunk *, uint32_t>> sites;
+  std::vector<std::array<uint32_t, 3>> nodes;
+};
+
+// The dynamic value relocation table: the ARM64X relocations of a hybrid image
+// and the function-override record.
 class DynamicRelocsChunk : public NonSectionChunk {
 public:
-  DynamicRelocsChunk() {}
+  DynamicRelocsChunk(bool arm64x = true) : arm64x(arm64x) {}
   size_t getSize() const override { return size; }
   void writeTo(uint8_t *buf) const override;
   void finalize();
@@ -1075,8 +1086,16 @@ public:
 
   void set(Arm64XRelocVal offset, Arm64XRelocVal value);
 
+  void addFunctionOverride(FunctionOverrideEntry entry) {
+    functionOverrides.push_back(std::move(entry));
+  }
+
 private:
+  bool arm64x;
   std::vector<Arm64XDynamicRelocEntry> arm64xRelocs;
+  std::vector<FunctionOverrideEntry> functionOverrides;
+  // Each function override's fixups, as base relocation blocks.
+  std::vector<std::vector<BaserelChunk *>> overrideFixups;
   size_t size;
 };
 

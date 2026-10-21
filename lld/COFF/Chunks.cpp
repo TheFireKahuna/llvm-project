@@ -1476,25 +1476,57 @@ void Arm64XDynamicRelocEntry::writeTo(uint8_t *buf) const {
 }
 
 void DynamicRelocsChunk::finalize() {
-  llvm::stable_sort(arm64xRelocs, [=](const Arm64XDynamicRelocEntry &a,
-                                      const Arm64XDynamicRelocEntry &b) {
-    return a.offset.get() < b.offset.get();
-  });
+  size = sizeof(coff_dynamic_reloc_table);
+  if (arm64x) {
+    llvm::stable_sort(arm64xRelocs, [=](const Arm64XDynamicRelocEntry &a,
+                                        const Arm64XDynamicRelocEntry &b) {
+      return a.offset.get() < b.offset.get();
+    });
 
-  size = sizeof(coff_dynamic_reloc_table) + sizeof(coff_dynamic_relocation64);
-  uint32_t prevPage = 0xfff;
+    size += sizeof(coff_dynamic_relocation64);
+    uint32_t prevPage = 0xfff;
 
-  for (const Arm64XDynamicRelocEntry &entry : arm64xRelocs) {
-    uint32_t page = entry.offset.get() & ~0xfff;
-    if (page != prevPage) {
-      size = alignTo(size, sizeof(uint32_t)) +
-             sizeof(coff_base_reloc_block_header);
-      prevPage = page;
+    for (const Arm64XDynamicRelocEntry &entry : arm64xRelocs) {
+      uint32_t page = entry.offset.get() & ~0xfff;
+      if (page != prevPage) {
+        size = alignTo(size, sizeof(uint32_t)) +
+               sizeof(coff_base_reloc_block_header);
+        prevPage = page;
+      }
+      size += entry.getSize();
     }
-    size += entry.getSize();
+
+    size = alignTo(size, sizeof(uint32_t));
   }
 
-  size = alignTo(size, sizeof(uint32_t));
+  // The function-override record: its header, the entries, each with its
+  // candidates and its fixups' blocks, then the diagrams.
+  overrideFixups.clear();
+  if (functionOverrides.empty())
+    return;
+  size +=
+      sizeof(coff_dynamic_relocation64) + sizeof(coff_function_override_header);
+  for (const FunctionOverrideEntry &e : functionOverrides) {
+    std::vector<Baserel> sites;
+    for (auto [chunk, offset] : e.sites)
+      sites.emplace_back(chunk->getRVA() + offset,
+                         IMAGE_FUNCTION_OVERRIDE_X64_REL32);
+    llvm::sort(sites, [](const Baserel &x, const Baserel &y) {
+      return x.rva < y.rva;
+    });
+    std::vector<BaserelChunk *> &blocks = overrideFixups.emplace_back();
+    for (size_t i = 0, j = 0; i != sites.size(); i = j) {
+      uint32_t page = sites[i].rva & ~0xfff;
+      while (j != sites.size() && (sites[j].rva & ~0xfff) == page)
+        ++j;
+      blocks.push_back(make<BaserelChunk>(page, &sites[i], &sites[0] + j));
+    }
+    size += sizeof(coff_function_override_dynamic_relocation) +
+            e.candidates.size() * sizeof(uint32_t) + sizeof(coff_bdd_info) +
+            e.nodes.size() * sizeof(coff_bdd_dynamic_relocation);
+    for (BaserelChunk *block : blocks)
+      size += block->getSize();
+  }
 }
 
 // Set the reloc value. The reloc entry must be allocated beforehand.
@@ -1512,38 +1544,88 @@ void DynamicRelocsChunk::set(Arm64XRelocVal offset, Arm64XRelocVal value) {
 void DynamicRelocsChunk::writeTo(uint8_t *buf) const {
   auto table = reinterpret_cast<coff_dynamic_reloc_table *>(buf);
   table->Version = 1;
-  table->Size = sizeof(coff_dynamic_relocation64);
+  table->Size = 0;
   buf += sizeof(*table);
 
-  auto header = reinterpret_cast<coff_dynamic_relocation64 *>(buf);
-  header->Symbol = IMAGE_DYNAMIC_RELOCATION_ARM64X;
-  buf += sizeof(*header);
+  if (arm64x) {
+    auto header = reinterpret_cast<coff_dynamic_relocation64 *>(buf);
+    header->Symbol = IMAGE_DYNAMIC_RELOCATION_ARM64X;
+    buf += sizeof(*header);
 
-  coff_base_reloc_block_header *pageHeader = nullptr;
-  size_t relocSize = 0;
-  for (const Arm64XDynamicRelocEntry &entry : arm64xRelocs) {
-    uint32_t page = entry.offset.get() & ~0xfff;
-    if (!pageHeader || page != pageHeader->PageRVA) {
-      relocSize = alignTo(relocSize, sizeof(uint32_t));
-      if (pageHeader)
-        pageHeader->BlockSize =
-            buf + relocSize - reinterpret_cast<uint8_t *>(pageHeader);
-      pageHeader =
-          reinterpret_cast<coff_base_reloc_block_header *>(buf + relocSize);
-      pageHeader->PageRVA = page;
-      relocSize += sizeof(*pageHeader);
+    coff_base_reloc_block_header *pageHeader = nullptr;
+    size_t relocSize = 0;
+    for (const Arm64XDynamicRelocEntry &entry : arm64xRelocs) {
+      uint32_t page = entry.offset.get() & ~0xfff;
+      if (!pageHeader || page != pageHeader->PageRVA) {
+        relocSize = alignTo(relocSize, sizeof(uint32_t));
+        if (pageHeader)
+          pageHeader->BlockSize =
+              buf + relocSize - reinterpret_cast<uint8_t *>(pageHeader);
+        pageHeader =
+            reinterpret_cast<coff_base_reloc_block_header *>(buf + relocSize);
+        pageHeader->PageRVA = page;
+        relocSize += sizeof(*pageHeader);
+      }
+
+      entry.writeTo(buf + relocSize);
+      relocSize += entry.getSize();
     }
+    relocSize = alignTo(relocSize, sizeof(uint32_t));
+    pageHeader->BlockSize =
+        buf + relocSize - reinterpret_cast<uint8_t *>(pageHeader);
 
-    entry.writeTo(buf + relocSize);
-    relocSize += entry.getSize();
+    header->BaseRelocSize = relocSize;
+    table->Size += sizeof(*header) + relocSize;
+    buf += relocSize;
   }
-  relocSize = alignTo(relocSize, sizeof(uint32_t));
-  pageHeader->BlockSize =
-      buf + relocSize - reinterpret_cast<uint8_t *>(pageHeader);
 
-  header->BaseRelocSize = relocSize;
-  table->Size += relocSize;
-  assert(size == sizeof(*table) + sizeof(*header) + relocSize);
+  if (functionOverrides.empty()) {
+    assert(size == sizeof(*table) + table->Size);
+    return;
+  }
+  auto header = reinterpret_cast<coff_dynamic_relocation64 *>(buf);
+  header->Symbol = IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE;
+  uint8_t *start = buf += sizeof(*header);
+  auto foHeader = reinterpret_cast<coff_function_override_header *>(buf);
+  buf += sizeof(*foHeader);
+  uint32_t bddOffset = 0;
+  for (auto [e, blocks] : llvm::zip_equal(functionOverrides, overrideFixups)) {
+    auto entry =
+        reinterpret_cast<coff_function_override_dynamic_relocation *>(buf);
+    entry->OriginalRva = e.original->getRVA();
+    entry->BDDOffset = bddOffset;
+    entry->RvaSize = e.candidates.size() * sizeof(uint32_t);
+    entry->BaseRelocSize = 0;
+    buf += sizeof(*entry);
+    for (Defined *candidate : e.candidates) {
+      write32le(buf, candidate->getRVA());
+      buf += sizeof(uint32_t);
+    }
+    for (BaserelChunk *block : blocks) {
+      block->writeTo(buf);
+      buf += block->getSize();
+      entry->BaseRelocSize += block->getSize();
+    }
+    bddOffset += sizeof(coff_bdd_info) +
+                 e.nodes.size() * sizeof(coff_bdd_dynamic_relocation);
+  }
+  foHeader->FuncOverrideSize = buf - start - sizeof(*foHeader);
+  for (const FunctionOverrideEntry &e : functionOverrides) {
+    auto info = reinterpret_cast<coff_bdd_info *>(buf);
+    info->Version = 1;
+    info->BDDSize = e.nodes.size() * sizeof(coff_bdd_dynamic_relocation);
+    buf += sizeof(*info);
+    for (const std::array<uint32_t, 3> &n : e.nodes) {
+      auto node = reinterpret_cast<coff_bdd_dynamic_relocation *>(buf);
+      node->Left = n[0];
+      node->Right = n[1];
+      node->Value = n[2];
+      buf += sizeof(*node);
+    }
+  }
+  header->BaseRelocSize = buf - start;
+  table->Size += sizeof(*header) + header->BaseRelocSize;
+  assert(size == sizeof(*table) + table->Size);
 }
 
 } // namespace lld::coff

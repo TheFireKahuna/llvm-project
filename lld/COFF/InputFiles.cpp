@@ -717,6 +717,27 @@ void ObjFile::readLinkRecords() {
         if (symbol(t[0]) && symbol(t[1]))
           symtab.ifuncs.push_back({this, symbol(t[0]), symbol(t[1])});
       });
+    case LinkRecordFunctionOverrides: {
+      DataExtractor data(payload, /*IsLittleEndian=*/true);
+      DataExtractor::Cursor cur(0);
+      while (cur && !data.eof(cur)) {
+        SymbolTable::FunctionOverride o{
+            this, symbol(data.getULEB128(cur)), {}, {}};
+        for (uint64_t n = data.getULEB128(cur); cur && n; --n)
+          o.candidates.push_back(symbol(data.getULEB128(cur)));
+        for (uint64_t n = data.getULEB128(cur); cur && n; --n) {
+          std::array<uint32_t, 3> node;
+          for (uint32_t &field : node)
+            field = data.getULEB128(cur);
+          o.nodes.push_back(node);
+        }
+        if (!cur || !o.function ||
+            !llvm::all_of(o.candidates, [](Symbol *s) { return s; }))
+          continue;
+        symtab.functionOverrides.push_back(std::move(o));
+      }
+      return malformed(cur);
+    }
     case LinkRecordIFuncFallbacks:
       return readIndices(payload, 2, [&](ArrayRef<uint64_t> t) {
         for (SymbolTable::IFunc &f : symtab.ifuncs)
