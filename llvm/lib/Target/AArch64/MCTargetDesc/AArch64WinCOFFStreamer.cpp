@@ -9,6 +9,7 @@
 #include "AArch64WinCOFFStreamer.h"
 #include "AArch64AddressingModes.h"
 #include "AArch64MCTargetDesc.h"
+#include "TargetInfo/AArch64TargetInfo.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
@@ -20,6 +21,7 @@
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
+#include "llvm/MC/TargetRegistry.h"
 
 using namespace llvm;
 
@@ -43,7 +45,10 @@ public:
   AArch64WinCOFFStreamer(MCContext &C, std::unique_ptr<MCAsmBackend> AB,
                          std::unique_ptr<MCCodeEmitter> CE,
                          std::unique_ptr<MCObjectWriter> OW)
-      : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {}
+      : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {
+    if (getWriter().hasLinkRecords())
+      MCII.reset(getTheAArch64leTarget().createMCInstrInfo());
+  }
 
   void reset() override {
     FusedUse = NoFusedUse;
@@ -51,16 +56,33 @@ public:
   }
   void emitInstruction(const MCInst &Inst,
                        const MCSubtargetInfo &STI) override {
-    if (FusedUse == NoFusedUse) {
+    if (FusedUse == NoFusedUse && !MCII) {
       MCWinCOFFStreamer::emitInstruction(Inst, STI);
       return;
     }
     // A fused access or add is labeled where it begins.
-    MCSymbol *Start = getContext().createTempSymbol();
-    emitLabel(Start);
+    MCSymbol *Start = nullptr;
+    if (FusedUse != NoFusedUse) {
+      Start = getContext().createTempSymbol();
+      emitLabel(Start);
+    }
+    const MCFragment *F = getCurrentFragment();
+    uint64_t Offset = getCurFragSize();
     MCWinCOFFStreamer::emitInstruction(Inst, STI);
-    describeFusedUse(Inst, Start);
-    FusedUse = NoFusedUse;
+    if (Start) {
+      if (MCII)
+        checkFusedUse(Inst, FusedUseReg);
+      describeFusedUse(Inst, Start);
+      FusedUse = NoFusedUse;
+    }
+    // A copy is orr of the register to the zero register, unshifted.
+    if (MCII)
+      noteInstruction(Inst, F, Offset,
+                      Inst.getOpcode() == AArch64::ORRXrs &&
+                              Inst.getOperand(1).getReg() == AArch64::XZR &&
+                              !Inst.getOperand(3).getImm()
+                          ? Inst.getOperand(2).getReg()
+                          : MCRegister());
   }
   void emitCOFFLinkFusedAccess(const MCSymbol *Load, MCRegister Reg) override {
     MCWinCOFFStreamer::emitCOFFLinkFusedAccess(Load, Reg);

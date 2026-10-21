@@ -38,7 +38,7 @@
 // Then a group of kind 30 and 3 bytes says that .text, whose fused calls and
 // loads may change size, is covered, with no value depending on them.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070229 000b3b02 02046802
+// CHECK-NEXT: 0000 4c4c5243 010f0229 000b3b02 02046802
 // CHECK-NEXT: 0010 01069b01 0202007b 02020778 0301aa01
 // CHECK-NEXT: 0020 780301c7 03680301 88059301 73c301b3
 // CHECK-NEXT: 0030 011e0300 0000

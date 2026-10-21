@@ -13,7 +13,7 @@
 
 // A group of kind 2 and 21 bytes: .text with 4 sites.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01020215 00044b02 07018b02
+// CHECK-NEXT: 0000 4c4c5243 010a0215 00044b02 07018b02
 // CHECK-NEXT: 0010 0207028b 01020700 8b010207 00
 // CHECK-EMPTY:
 

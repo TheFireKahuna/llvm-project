@@ -15,7 +15,7 @@
 // - 48 04 08808040: an index at 0xc of site 1, x11 the offset register.
 // - 48 04 08808041: at 0x10, x11 the add's first source (1 << 14).
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01020218 00044b02 06004804
+// CHECK-NEXT: 0000 4c4c5243 010a0218 00044b02 06004804
 // CHECK-NEXT: 0010 03000900 48040880 80404804 08808041
 
   .text

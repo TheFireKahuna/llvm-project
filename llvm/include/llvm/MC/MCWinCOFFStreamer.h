@@ -9,7 +9,9 @@
 #ifndef LLVM_MC_MCWINCOFFSTREAMER_H
 #define LLVM_MC_MCWINCOFFSTREAMER_H
 
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/MC/MCDirectives.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectStreamer.h"
 
 namespace llvm {
@@ -34,6 +36,10 @@ public:
   /// state management
   void reset() override {
     CurSymbol = nullptr;
+    FusionUnits.clear();
+    FusionLabel = false;
+    FusionLoads.clear();
+    FusionChecks.clear();
     MCObjectStreamer::reset();
   }
 
@@ -101,9 +107,56 @@ public:
 protected:
   MCSymbol *CurSymbol;
 
+  /// The descriptions of the target's instructions, which a target streamer
+  /// sets where the object's link-only records describe instructions, so that
+  /// the facts it is given about instructions that read the register a load
+  /// filled are checked against the instructions it emits.
+  std::unique_ptr<const MCInstrInfo> MCII;
+
   void finalizeCGProfileEntry(const MCSymbolRefExpr *&S);
 
+  /// Notes Inst, which the target streamer emitted where the current fragment
+  /// F held Start bytes, and which copies CopySrc in full to the register it
+  /// writes if CopySrc is set.
+  void noteInstruction(const MCInst &Inst, const MCFragment *F, uint64_t Start,
+                       MCRegister CopySrc = MCRegister());
+  /// Reports Inst, which a fact says reads Reg, if it does not.
+  void checkFusedUse(const MCInst &Inst, MCRegister Reg);
+
 private:
+  // What a register unit holds as far as the noted instructions show: the
+  // value that the instruction that began at Start in Frag gave it, directly
+  // or through copies, or a value of no load for a null Frag; while Run is the
+  // current run, the instructions since the last that execution may not fall
+  // through from, and otherwise a value from code the streamer cannot see.
+  struct FusionValue {
+    const MCFragment *Frag = nullptr;
+    uint64_t Start = 0;
+    unsigned Run = 0;
+    bool Copied = false;
+    bool operator==(const FusionValue &O) const {
+      return Frag == O.Frag && Start == O.Start && Run == O.Run &&
+             Copied == O.Copied;
+    }
+  };
+  SmallVector<FusionValue, 0> FusionUnits;
+  unsigned FusionRun = 1;
+  // Whether a label has been emitted since the last noted instruction.
+  bool FusionLabel = false;
+  // Where each labeled load begins, and the register it fills.
+  DenseMap<std::pair<const MCFragment *, uint64_t>, MCRegister> FusionLoads;
+  // The loads that facts name, checked once every load is emitted: each must
+  // fill Reg, if set.
+  struct FusionCheck {
+    const MCSymbol *Load;
+    MCRegister Reg;
+    SMLoc Loc;
+  };
+  SmallVector<FusionCheck, 0> FusionChecks;
+
+  FusionValue getFusionValue(MCRegister Reg) const;
+  void checkFusedLoad(const MCSymbol *Load, MCRegister Reg, bool Copies);
+
   void Error(const Twine &Msg) const;
 };
 

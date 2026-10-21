@@ -15,7 +15,7 @@
 // One group of 3 sites: 0x3 a jump after one prefix (form 5), 0x3c likewise,
 // and 0x7c other (form 0), after four.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070207 00033595 078008
+// CHECK-NEXT: 0000 4c4c5243 010f0207 00033595 078008
 // CHECK-EMPTY:
 
   .text

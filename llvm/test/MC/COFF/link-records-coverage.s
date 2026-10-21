@@ -34,13 +34,13 @@
 // The ADDR64 relocation to .Lloop+2 at 0xd has the place's offset as its
 // addend, so it needs no entry; .text$u, with data alignment, has no group.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070206 00017108 01211e1d
+// CHECK-NEXT: 0000 4c4c5243 010f0206 00017108 01211e1d
 // CHECK-NEXT: 0010 0000024a 1207e001 0ee40310 0a000409
 // CHECK-NEXT: 0020 40200b43 00491300 7519406b 00
 // CHECK-EMPTY:
 
 // PAD:      Contents of section .llvm_link_records:
-// PAD-NEXT: 0000 4c4c5243 01070206 00017108 0121
+// PAD-NEXT: 0000 4c4c5243 010f0206 00017108 0121
 // PAD-EMPTY:
 
   .text

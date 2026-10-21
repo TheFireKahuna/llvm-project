@@ -14,7 +14,7 @@
 // A group of kind 30 and 6 bytes: .text$a and .text$b are covered. Then a
 // group of kind 32 and 1 byte: .text$a, 06, ends in a tail jump.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01071e06 06060008 08002001
+// CHECK-NEXT: 0000 4c4c5243 010f1e06 06060008 08002001
 // CHECK-NEXT: 0010 06
 // CHECK-EMPTY:
 

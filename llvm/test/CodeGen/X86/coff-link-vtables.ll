@@ -19,7 +19,7 @@
 
 ; "LLRC", version 1, the x86-64 capabilities, then a group of kind 9.
 ; OBJ:      Contents of section .llvm_link_records:
-; OBJ-NEXT: 0000 4c4c5243 010709
+; OBJ-NEXT: 0000 4c4c5243 010f09
 
 !0 = !{i64 16, !"1B", !""}
 !1 = !{i64 32, !"1D", !"1B"}

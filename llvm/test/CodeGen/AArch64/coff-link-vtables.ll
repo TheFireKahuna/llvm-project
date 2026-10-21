@@ -19,7 +19,7 @@
 
 ; "LLRC", version 1, the AArch64 capabilities, then a group of kind 9.
 ; OBJ:      Contents of section .llvm_link_records:
-; OBJ-NEXT: 0000 4c4c5243 010209
+; OBJ-NEXT: 0000 4c4c5243 010a09
 
 !0 = !{i64 16, !"1B", !""}
 !1 = !{i64 32, !"1D", !"1B"}

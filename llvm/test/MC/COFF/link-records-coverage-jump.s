@@ -11,7 +11,7 @@
 // - 2a 42 8e01: the displacement at 0x2, of je with 4 bytes, to 0x90.
 // - 5a 12 07: the displacement at 0x7, of je with 1 byte, to 0xe.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070204 0001a101 1e0a0000
+// CHECK-NEXT: 0000 4c4c5243 010f0204 0001a101 1e0a0000
 // CHECK-NEXT: 0010 022a428e 015a1207
 // CHECK-EMPTY:
 

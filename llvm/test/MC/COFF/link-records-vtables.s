@@ -30,7 +30,7 @@
 // "1D", base "1B"; .Linner, 8 bytes into its section, as the section's symbol
 // (12) at 8 + 16 = 24.
 // OBJ:      Contents of section .llvm_link_records:
-// OBJ-NEXT: 0000 4c4c5243 01070928 08100231 42000b20
+// OBJ-NEXT: 0000 4c4c5243 010f0928 08100231 42000b20
 // OBJ-NEXT: 0010 02314402 31420c18 144e3132 5f474c4f
 // OBJ-NEXT: 0020 42414c5f 5f4e5f31 314c452e 78023144
 

@@ -11,7 +11,7 @@
 // "LLRC", version 1, the call-only capability (2), then a group of kind 4 and
 // 3 bytes: .xdata's symbol (index 6), one reference, at offset 8.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01020403 060108
+// CHECK-NEXT: 0000 4c4c5243 010a0403 060108
 // RELOC:      0000000000000008 IMAGE_REL_ARM64_ADDR32NB __gxx_personality_seh0
 // NONE-NOT:   .llvm_link_records
 

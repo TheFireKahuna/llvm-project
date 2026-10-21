@@ -40,7 +40,9 @@ public:
                      TheTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {}
 
   uint64_t getLinkRecordCapabilities() const override {
-    return ListCallOnly ? COFF::LinkRecordsCallOnly : 0;
+    return ListCallOnly
+               ? COFF::LinkRecordsCallOnly | COFF::LinkRecordsCheckedFusion
+               : 0;
   }
 
   // A 64-bit load at the offset of a symbol in its page is the load of a

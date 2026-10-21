@@ -11,7 +11,7 @@
 // 1 (call) at 0x19. The call may become shorter, so a group of kind 30 and 3
 // bytes says that .text is covered, with no value depending on the call.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070208 00043386 01840161
+// CHECK-NEXT: 0000 4c4c5243 010f0208 00043386 01840161
 // CHECK-NEXT: 0010 1e030000 00
 // CHECK-EMPTY:
 

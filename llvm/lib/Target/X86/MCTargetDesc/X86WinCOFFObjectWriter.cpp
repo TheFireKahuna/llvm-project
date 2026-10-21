@@ -32,7 +32,8 @@ public:
   uint64_t getLinkRecordCapabilities() const override {
     return DescribeSites
                ? COFF::LinkRecordsX86_64Sites | COFF::LinkRecordsCallOnly |
-                     COFF::LinkRecordsFunctionSites
+                     COFF::LinkRecordsFunctionSites |
+                     COFF::LinkRecordsCheckedFusion
                : 0;
   }
   std::optional<unsigned> getLinkSiteForm(const MCFixup &Fixup,

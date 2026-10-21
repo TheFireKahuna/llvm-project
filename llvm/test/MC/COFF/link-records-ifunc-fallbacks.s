@@ -12,7 +12,7 @@
 // After kind 39's group, one of kind 40 and 2 bytes: symbol 8, f, and symbol
 // 11, fallback.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070203 0001221e 03000000
+// CHECK-NEXT: 0000 4c4c5243 010f0203 0001221e 03000000
 // CHECK-NEXT: 0010 2702080a 2802080b
 
 // SYMS: fallback

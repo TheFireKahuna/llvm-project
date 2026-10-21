@@ -152,6 +152,7 @@ void MCWinCOFFStreamer::initSections(const MCSubtargetInfo &STI) {
 
 void MCWinCOFFStreamer::changeSection(MCSection *Section, uint32_t Subsection) {
   MCObjectStreamer::changeSection(Section, Subsection);
+  ++FusionRun;
   // Ensure that the first and the second symbols relative to the section are
   // the section symbol and the COMDAT symbol.
   getAssembler().registerSymbol(*Section->getBeginSymbol());
@@ -163,6 +164,7 @@ void MCWinCOFFStreamer::changeSection(MCSection *Section, uint32_t Subsection) {
 void MCWinCOFFStreamer::emitLabel(MCSymbol *S, SMLoc Loc) {
   auto *Symbol = static_cast<MCSymbolCOFF *>(S);
   MCObjectStreamer::emitLabel(Symbol, Loc);
+  FusionLabel = true;
 }
 
 bool MCWinCOFFStreamer::emitSymbolAttribute(MCSymbol *S,
@@ -397,11 +399,126 @@ void MCWinCOFFStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
   getWriter().addLinkContract(Owner, Symbol, IsData, Identity, Digest);
 }
 
+// The value Reg holds, or a value of no load where its units hold different
+// ones. An artificial unit, such as one a target gives the upper half of a
+// register that writing its lower half clears, holds no value of its own.
+MCWinCOFFStreamer::FusionValue
+MCWinCOFFStreamer::getFusionValue(MCRegister Reg) const {
+  const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  std::optional<FusionValue> Value;
+  for (MCRegUnit U : MRI.regunits(Reg)) {
+    if (MRI.isArtificialRegUnit(U))
+      continue;
+    FusionValue UnitValue;
+    if (!FusionUnits.empty() &&
+        FusionUnits[static_cast<unsigned>(U)].Run == FusionRun)
+      UnitValue = FusionUnits[static_cast<unsigned>(U)];
+    if (Value && !(*Value == UnitValue))
+      return {nullptr, 0, FusionRun, false};
+    Value = UnitValue;
+  }
+  return Value.value_or(FusionValue());
+}
+
+// A fact names the load whose register an instruction reads, which a linker
+// may then rewrite as though nothing else wrote it. In the current run the
+// value in Reg must be the load's, or with Copies a copy of it, where the
+// load's own value must also be in the register it fills; that the load is a
+// load is checked once every load is emitted. Where the run began after the
+// load, the instructions that may have written Reg are out of view.
+void MCWinCOFFStreamer::checkFusedLoad(const MCSymbol *Load, MCRegister Reg,
+                                       bool Copies) {
+  SMLoc Loc = getStartTokLoc();
+  FusionValue Value = getFusionValue(Reg);
+  if (Value.Run == FusionRun &&
+      (Value.Frag ? Value.Frag != Load->getFragment() ||
+                        Value.Start != Load->getOffset()
+                  : !Value.Copied)) {
+    getContext().reportError(
+        Loc, "fused instruction reads " +
+                 Twine(getContext().getRegisterInfo()->getName(Reg)) +
+                 ", which an instruction other than the load at '" +
+                 Load->getName() + "' last wrote");
+    return;
+  }
+  if (Value.Run == FusionRun && Value.Copied && !Copies) {
+    getContext().reportError(
+        Loc, "fused instruction reads " +
+                 Twine(getContext().getRegisterInfo()->getName(Reg)) +
+                 ", which a copy last wrote");
+    return;
+  }
+  FusionChecks.push_back({Load, Copies ? MCRegister() : Reg, Loc});
+}
+
+void MCWinCOFFStreamer::noteInstruction(const MCInst &Inst,
+                                        const MCFragment *F, uint64_t Start,
+                                        MCRegister CopySrc) {
+  const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
+  const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  // A fact names a load by a label where it begins.
+  if (FusionLabel && Desc.mayLoad() && Desc.getNumDefs() &&
+      Inst.getOperand(0).isReg())
+    FusionLoads[{F, Start}] = Inst.getOperand(0).getReg();
+  FusionLabel = false;
+  // A call may not return, and execution does not fall through a jump, a
+  // return or a trap, so that what follows is reached from elsewhere.
+  if (Desc.isCall() || Desc.isBarrier() || Desc.isTrap()) {
+    ++FusionRun;
+    return;
+  }
+
+  if (FusionUnits.empty())
+    FusionUnits.resize(MRI.getNumRegUnits());
+  FusionValue Written{F, Start, FusionRun, false};
+  // A copy carries the value it copies within the run: a load's, or one from
+  // before the run.
+  FusionValue Copy = Written;
+  if (CopySrc) {
+    FusionValue Src = getFusionValue(CopySrc);
+    if (Src.Run != FusionRun)
+      Copy = {nullptr, 0, FusionRun, true};
+    else if (Src.Frag)
+      Copy = {Src.Frag, Src.Start, FusionRun, true};
+  }
+  auto Write = [&](MCRegister Reg, const FusionValue &Value) {
+    for (MCRegUnit U : MRI.regunits(Reg))
+      if (!MRI.isArtificialRegUnit(U))
+        FusionUnits[static_cast<unsigned>(U)] = Value;
+  };
+  for (unsigned I = 0, E = Inst.getNumOperands(); I != E; ++I) {
+    const MCOperand &MO = Inst.getOperand(I);
+    if ((I < Desc.getNumDefs() ||
+         (Desc.variadicOpsAreDefs() && I >= Desc.getNumOperands())) &&
+        MO.isReg() && MO.getReg())
+      Write(MO.getReg(), CopySrc && I == 0 ? Copy : Written);
+  }
+  for (MCPhysReg Reg : Desc.implicit_defs())
+    Write(Reg, Written);
+}
+
+void MCWinCOFFStreamer::checkFusedUse(const MCInst &Inst, MCRegister Reg) {
+  const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
+  const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  for (unsigned I = Desc.getNumDefs(), E = Inst.getNumOperands(); I != E; ++I)
+    if (Inst.getOperand(I).isReg() && Inst.getOperand(I).getReg() &&
+        MRI.regsOverlap(Inst.getOperand(I).getReg(), Reg))
+      return;
+  if (any_of(Desc.implicit_uses(),
+             [&](MCPhysReg Use) { return MRI.regsOverlap(Use, Reg); }))
+    return;
+  getContext().reportError(getStartTokLoc(),
+                           "fused instruction does not read " +
+                               Twine(MRI.getName(Reg)));
+}
+
 // A fused call is known only once a target's streamer has seen it in the form
 // the records describe. A fused read names the place where the load begins,
 // which the object's records match to the load's site.
 void MCWinCOFFStreamer::emitCOFFLinkFusedCall(const MCSymbol *Load,
                                               MCRegister Reg) {
+  if (MCII)
+    checkFusedLoad(Load, Reg, /*Copies=*/false);
   getWriter().addLinkFusedCall(
       {nullptr, Load, getContext().getRegisterInfo()->getEncodingValue(Reg),
        false});
@@ -417,17 +534,23 @@ void MCWinCOFFStreamer::emitCOFFLinkFusedRead() {
 // a form the records describe.
 void MCWinCOFFStreamer::emitCOFFLinkFusedAccess(const MCSymbol *Load,
                                                 MCRegister Reg) {
+  if (MCII)
+    checkFusedLoad(Load, Reg, /*Copies=*/true);
   getWriter().addLinkFusedAccess({nullptr, Load, 0, 0, 0, 0, false, 0, 0});
 }
 
 void MCWinCOFFStreamer::emitCOFFLinkFusedIndex(const MCSymbol *Load,
                                                MCRegister Reg) {
+  if (MCII)
+    checkFusedLoad(Load, Reg, /*Copies=*/true);
   getWriter().addLinkFusedAccess(
       {nullptr, Load, 0, 0, 0, 0, false, 0, 0, /*Index=*/true});
 }
 
 void MCWinCOFFStreamer::emitCOFFLinkFusedAdd(const MCSymbol *Load,
                                              MCRegister Reg) {
+  if (MCII)
+    checkFusedLoad(Load, Reg, /*Copies=*/false);
   getWriter().addLinkFusedAdd({nullptr, Load, 0, 0});
 }
 
@@ -449,6 +572,8 @@ void MCWinCOFFStreamer::emitCOFFLinkValueOnly(const MCSymbol *Page) {
 // So does a load that may derive its pointer from another's register.
 void MCWinCOFFStreamer::emitCOFFLinkAnchor(const MCSymbol *Load,
                                            MCRegister Reg) {
+  if (MCII)
+    checkFusedLoad(Load, Reg, /*Copies=*/false);
   MCSymbol *Site = getContext().createTempSymbol();
   emitLabel(Site);
   getWriter().addLinkAnchor(
@@ -536,6 +661,27 @@ void MCWinCOFFStreamer::finalizeCGProfileEntry(const MCSymbolRefExpr *&SRE) {
 }
 
 void MCWinCOFFStreamer::finishImpl() {
+  // Every load that a fact names is emitted by now. One that is not defined
+  // the object writer reports.
+  const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  for (const FusionCheck &Check : FusionChecks) {
+    if (!Check.Load->isInSection())
+      continue;
+    auto Load = FusionLoads.find(
+        {Check.Load->getFragment(), Check.Load->getOffset()});
+    if (Load == FusionLoads.end())
+      getContext().reportError(Check.Loc,
+                               "fused instruction reads the instruction at '" +
+                                   Check.Load->getName() +
+                                   "', which is not a load");
+    else if (Check.Reg && !MRI.isSubRegisterEq(Check.Reg, Load->second))
+      getContext().reportError(Check.Loc, "fused instruction reads " +
+                                              Twine(MRI.getName(Check.Reg)) +
+                                              ", which the load at '" +
+                                              Check.Load->getName() +
+                                              "' does not fill");
+  }
+
   getContext().getCVContext().finish();
   MCAssembler &Asm = getAssembler();
   if (Asm.getWriter().getEmitAddrsigSection()) {

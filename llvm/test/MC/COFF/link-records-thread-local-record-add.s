@@ -13,7 +13,7 @@
 //   of r9, its source, with REX at 0, ModRM at 2, 3 bytes.
 // - 38 04 08828649: at 0xe, an add to r9, its destination (1 << 14).
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070219 00043b02 06004805
+// CHECK-NEXT: 0000 4c4c5243 010f0219 00043b02 06004805
 // CHECK-NEXT: 0010 03822809 00480408 82864838 04088286
 // CHECK-NEXT: 0020 491e0300 0000
 // CHECK-EMPTY:

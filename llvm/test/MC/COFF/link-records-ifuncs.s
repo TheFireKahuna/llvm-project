@@ -13,7 +13,7 @@
 // "LLRC", version 1, the capabilities and the site records, then a group of
 // kind 39 and 2 bytes: symbol 8, f, and symbol 10, resolve.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070203 0001221e 03000000
+// CHECK-NEXT: 0000 4c4c5243 010f0203 0001221e 03000000
 // CHECK-NEXT: 0010 2702080a
 
 // SYMS: resolve

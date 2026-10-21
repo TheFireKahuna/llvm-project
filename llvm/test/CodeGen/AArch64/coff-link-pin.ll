@@ -8,6 +8,6 @@
 
 ; "LLRC", version 1, the call-only capability (2), then a group of kind 1.
 ; OBJ:      Contents of section .llvm_link_records:
-; OBJ-NEXT: 0000 4c4c5243 010201
+; OBJ-NEXT: 0000 4c4c5243 010a01
 
 !0 = !{i64 16, i64 12, i64 4088, i64 1}

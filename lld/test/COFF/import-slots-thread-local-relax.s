@@ -36,7 +36,7 @@
 # CHECK:      8b 0d {{.*}} movl {{.*}}(%rip), %ecx # 0x140003000
 # CHECK-NEXT: 65 48 8b 14 25 58 00 00 00 movq %gs:0x58, %rdx
 # CHECK-NEXT: 48 8b 0c ca movq (%rdx,%rcx,8), %rcx
-# CHECK-NEXT: 40 8b 81 0c 00 00 00 movl 0xc(%rcx), %eax
+# CHECK-NEXT: 40 8b b1 0c 00 00 00 movl 0xc(%rcx), %esi
 # CHECK-NEXT: c4 c1 7a 10 84 24 08 00 00 00 vmovss 0x8(%r12), %xmm0
 # CHECK-NEXT: 48 8d 94 24 08 00 00 00 leaq 0x8(%rsp), %rdx
 # CHECK-NEXT: 48 81 c3 08 00 00 00 addq $0x8, %rbx
@@ -99,7 +99,7 @@ direct:
   .linkfusedread
   movl 8(%rax), %r9d
   .linkfusedindex .Lc, %r9
-  movl 4(%rcx,%r9), %eax
+  movl 4(%rcx,%r9), %esi
   .linkfusedindex .Lc, %r9
   vmovss (%r9,%r12), %xmm0
   .linkfusedindex .Lc, %r9

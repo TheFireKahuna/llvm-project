@@ -86,6 +86,14 @@ const uint64_t LinkRecordsCallOnly = 2;
 // assembler keeps every relocation to a function, in its own section too.
 const uint64_t LinkRecordsFunctionSites = 4;
 
+// The capability that says the assembler checked each fact of the object's
+// sites that names a load and a register against the instructions it encoded:
+// that the load fills the register, that an instruction the fact says reads it
+// does, and that no instruction from which execution falls through to the
+// site writes it after the load. A linker acts on such facts only in an object
+// with this capability, and otherwise leaves the instructions as they are.
+const uint64_t LinkRecordsCheckedFusion = 8;
+
 enum LinkRecordKind : uint64_t {
   // Addresses that symbols must take modulo a power of two, so that a value
   // computed from a symbol's address alone, such as a tag in the low bits of

@@ -18,7 +18,7 @@
 //   register into x3 (3), with the constant -16384 (kind 5).
 // - 8301: the load at 0x20, whose register its access stores, which is not
 //   described, nor so the load as one only accesses read.
-// CHECK:      4c4c5243 0102021a 00064b02 06004802
+// CHECK:      4c4c5243 010a021a 00064b02 06004802
 // CHECK-NEXT: 03004802 03008301 48060463 05ffff01
 // CHECK-NEXT: 8301
 

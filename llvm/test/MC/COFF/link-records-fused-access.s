@@ -39,7 +39,7 @@
 // - 73: the load at 0x55, whose add is not described.
 // Then .text is covered, with no value depending on what may change size.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070242 000e3b02 06044803
+// CHECK-NEXT: 0000 4c4c5243 010f0242 000e3b02 06044803
 // CHECK-NEXT: 0010 03f10528 03038228 480303f1 4fa30148
 // CHECK-NEXT: 0020 050382aa 8102d801 0503848c 83029301
 // CHECK-NEXT: 0030 480504e0 01052073 480604a1 0205ff0f

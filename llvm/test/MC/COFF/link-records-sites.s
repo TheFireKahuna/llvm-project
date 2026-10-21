@@ -32,7 +32,7 @@
 // 11 bytes says that .text and .text$c are covered and describes one value:
 // that jump's 4-byte displacement at 0x37, to 0xc0, a jump field.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070214 000b2162 75737374
+// CHECK-NEXT: 0000 4c4c5243 010f0214 000b2162 75737374
 // CHECK-NEXT: 0010 70709312 e4014006 02a30161 1e0b0000
 // CHECK-NEXT: 0020 01fa0642 89010606 00
 // CHECK-EMPTY:

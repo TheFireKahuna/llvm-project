@@ -12,7 +12,7 @@
 // capabilities (7), then one group of kind 2 and 3 bytes: .text's symbol
 // (index 0) with 1 site, an address at offset 3 (3 << 4 | 4).
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070203 000134
+// CHECK-NEXT: 0000 4c4c5243 010f0203 000134
 // CHECK-EMPTY:
 
 // RELOC:      leaq

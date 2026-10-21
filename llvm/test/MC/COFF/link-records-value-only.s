@@ -19,7 +19,7 @@
 // - 64: the lea at 0x17, which has no fact.
 // Then .text is covered.
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070216 00043b02 0700ab01
+// CHECK-NEXT: 0000 4c4c5243 010f0216 00043b02 0700ab01
 // CHECK-NEXT: 0010 04060607 00480603 f1a74007 00641e03
 // CHECK-NEXT: 0020 000000
 // CHECK-EMPTY:

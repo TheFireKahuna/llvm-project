@@ -23,7 +23,7 @@
 // differences in two bytes (20) and no constant: at 0x45 (d908), 0x6 - 0x0,
 // and at 0x4a (5d, the same field), 0xe - 0x7, each place delta-coded.
 // RECORDS:      Contents of section .llvm_link_records:
-// RECORDS-NEXT: 0000 4c4c5243 01070204 00022171 1e0e0000
+// RECORDS-NEXT: 0000 4c4c5243 010f0204 00022171 1e0e0000
 // RECORDS-NEXT: 0010 00080002 d9082006 005d0807
 // RECORDS-EMPTY:
 

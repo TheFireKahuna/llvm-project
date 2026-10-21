@@ -6,11 +6,11 @@
 // RUN: llvm-mc -triple x86_64-unknown-windows-itanium -filetype=obj %s -o %t.o
 // RUN: llvm-objdump -s -j .llvm_link_records %t.o | FileCheck %s
 
-// "LLRC", version 1, capabilities 7, then one group of kind 2 and 5 bytes:
+// "LLRC", version 1, capabilities 15, then one group of kind 2 and 5 bytes:
 // .text's symbol (index 0) with 3 sites, each ULEB128 (delta << 4 | form):
 // 0x3 address with an offset (7), 0xa address (4) and 0x11 other (0).
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01070205 00033774 70
+// CHECK-NEXT: 0000 4c4c5243 010f0205 00033774 70
 // CHECK-EMPTY:
 
   .text

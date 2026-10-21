@@ -21,7 +21,7 @@
 // "LLRC", version 1, the capabilities, then one group of kind 2: .text's symbol
 // with three sites, a load at 3, a call at 9 and a load at 0x10.
 // REC:      Contents of section .llvm_link_records:
-// REC-NEXT: 0000 4c4c5243 01070205 00033361 70
+// REC-NEXT: 0000 4c4c5243 010f0205 00033361 70
 
   .text
   movq v@GOTPCREL(%rip), %rax

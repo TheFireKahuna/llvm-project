@@ -27,7 +27,7 @@
 // (11), flags 6 << 1 = 0x0c, residue 56 (0x38); .Linner, 8 bytes into its
 // section, as the section's symbol (12) with residue (40 - 8) mod 64 = 32.
 // OBJ:      Contents of section .llvm_link_records:
-// OBJ-NEXT: 0000 4c4c5243 0107010a 0819e81f 0b0c380c
+// OBJ-NEXT: 0000 4c4c5243 010f010a 0819e81f 0b0c380c
 // OBJ-NEXT: 0010 0c20
 
 // The group is written for any target the directive is used on.

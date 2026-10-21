@@ -31,9 +31,8 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   // An object that describes its instruction sites says how many prefix
   // bytes precede each indirect jump's opcode, since a linker that makes it
   // a direct jump rewrites it from its first byte. A prefix may be an
-  // instruction of its own, so the streamer tracks what precedes each one.
-  std::unique_ptr<const MCInstrInfo> MCII;
-  // Where the last instruction ends, and the bytes of the run of prefixes
+  // instruction of its own, so the streamer tracks what precedes each one:
+  // where the last instruction ends, and the bytes of the run of prefixes
   // alone that ends with it, with nothing between them.
   MCFragment *LastInstFrag = nullptr;
   size_t LastInstEnd = 0;
@@ -239,6 +238,7 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
                Tail->getOpcode() == X86::JMP_1))
     Resizable = true;
   if (FusedUse != NoFusedUse) {
+    checkFusedUse(Inst, FusedUseReg);
     if (Fixups.empty())
       Resizable |= describeFusedUse(Inst, UseStart, Bytes);
     FusedUse = NoFusedUse;
@@ -291,6 +291,12 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
 
   if (Resizable)
     markResizable(Tail);
+
+  unsigned Opcode = Inst.getOpcode();
+  noteInstruction(Inst, F, Start,
+                  Opcode == X86::MOV64rr || Opcode == X86::MOV64rr_REV
+                      ? Inst.getOperand(1).getReg()
+                      : MCRegister());
 }
 
 // Marks the instruction just emitted, in Tail where the backend may still
@@ -577,6 +583,7 @@ bool X86WinCOFFStreamer::continueFusedCall(const MCInst &Inst, bool Follows,
     return false;
   }
   FusedCall = NoFusedCall;
+  checkFusedUse(Inst, FusedCallReg);
   bool ThroughReg = Inst.getNumOperands() && Inst.getOperand(0).isReg() &&
                     Inst.getOperand(0).getReg() == FusedCallReg;
   if (!ThroughReg || Preceding != int(FusedCallOverrides))
