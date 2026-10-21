@@ -71,6 +71,14 @@ struct ResidualWord {
   bool threadLocal = false;
 };
 
+// Under -import-slots, the cell of an indirect function the image defines, the
+// import pointer its stub jumps through: a word of .sealed that the fill writes
+// with what the resolver returns.
+struct ResolverCell {
+  Chunk *chunk;
+  Defined *resolver;
+};
+
 // Under -import-slots, an import bound by name at image start: its cell (read
 // in place of an IAT entry), its name, and, for a weak DLL import, the DLL's.
 struct RunTimeCell {
@@ -126,6 +134,7 @@ public:
   }
   bool hasRdataGroupSlots() const { return slotRdataGroups; }
   ArrayRef<RunTimeCell> getRunTimeCells() const { return runTimeCells; }
+  ArrayRef<ResolverCell> getResolverCells() const { return resolverCells; }
   // The names the fill resolves its cells by.
   ArrayRef<Chunk *> getRunTimeNames() const { return runTimeNames; }
   Defined *getFill() const { return fill; }
@@ -146,6 +155,7 @@ public:
 
 private:
   void addRunTimeCells();
+  void addResolverCells();
   void scanReference(SlotScan &scan, SectionChunk *sc, size_t &i,
                      SlotScanPending &p);
   void resolve(SlotScan &scan);
@@ -176,6 +186,8 @@ private:
   // .sealed before sealedChunks, and the names it binds them by.
   std::vector<RunTimeCell> runTimeCells;
   std::vector<Chunk *> runTimeNames;
+  // The cells of the image's indirect functions, laid out in .sealed.
+  std::vector<ResolverCell> resolverCells;
   // The imports some of whose words take an interior name instead, with the
   // first such word.
   llvm::MapVector<ImportFile *, std::pair<SectionChunk *, uint32_t>>

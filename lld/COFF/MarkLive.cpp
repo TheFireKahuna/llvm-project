@@ -57,6 +57,19 @@ void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots) {
             runChunks[bound] = run.chunks;
   });
 
+  // A live indirect function's stub keeps its resolver and fallback, which
+  // only the function's link records name.
+  llvm::DenseMap<SectionChunk *, SmallVector<Symbol *, 1>> resolvers;
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (const SymbolTable::IFunc &f : symtab.ifuncs)
+      if (auto *stub = dyn_cast<DefinedRegular>(f.function);
+          stub && stub->getFile() == f.file) {
+        resolvers[stub->getChunk()].push_back(f.resolver);
+        if (f.fallback)
+          resolvers[stub->getChunk()].push_back(f.fallback);
+      }
+  });
+
   std::function<void(Symbol *)> addSym;
 
   auto addImportFile = [&](ImportFile *file) {
@@ -106,6 +119,9 @@ void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots) {
     // Mark all symbols listed in the relocation table for this section.
     for (Symbol *b : sc->symbols())
       if (b)
+        addSym(b);
+    if (!resolvers.empty())
+      for (Symbol *b : resolvers.lookup(sc))
         addSym(b);
 
     // Mark associative sections if any.

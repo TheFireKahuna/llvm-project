@@ -1108,13 +1108,18 @@ void ThreadLocalRecordChunk::writeTo(uint8_t *buf) const {
 
 // An absolute address does not move with the image.
 void LocalImportChunk::getBaserels(std::vector<Baserel> *res) {
-  if (!isa<DefinedAbsolute>(sym))
+  if (resolver ? fallback != nullptr : !isa<DefinedAbsolute>(sym))
     res->emplace_back(getRVA(), ctx.config.machine);
 }
 
 size_t LocalImportChunk::getSize() const { return ctx.config.wordsize; }
 
 void LocalImportChunk::writeTo(uint8_t *buf) const {
+  if (resolver) {
+    if (fallback)
+      write64le(buf, fallback->getRVA() + ctx.config.imageBase);
+    return;
+  }
   if (ctx.config.is64()) {
     write64le(buf, sym->getRVA() + ctx.config.imageBase);
   } else {

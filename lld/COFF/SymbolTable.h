@@ -224,6 +224,19 @@ public:
   };
   std::vector<Forwarder> forwarders;
 
+  // The indirect functions objects' link records list, each a stub that jumps
+  // through its import pointer, which the image's fill writes with what the
+  // resolver returns, and which holds the fallback's address until then.
+  struct IFunc {
+    ObjFile *file;
+    Symbol *function;
+    Symbol *resolver;
+    Symbol *fallback = nullptr;
+  };
+  std::vector<IFunc> ifuncs;
+  // The indirect function d, as the object defining d lists it.
+  const IFunc *getIFunc(Defined *d);
+
   // Replaces each forwarder whose import pointer reaches an image definition by
   // that definition, so references reach it directly and liveness discards the
   // forwarder; one to an import stays. Runs before liveness.

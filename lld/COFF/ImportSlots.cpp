@@ -130,6 +130,21 @@ static bool canBypass(Symbol *s) {
          (!isa<DefinedAbsolute>(li->getTarget()) || isZeroPointer(li));
 }
 
+// Whether a reference of sc reads an indirect function's import pointer, its
+// cell, rather than reaching the function's stub: the stub's own jump, and on
+// x86-64 a call or jump through it, which reaches the chosen function without
+// the stub's. Any other reference takes the stub's address.
+static bool readsCell(DefinedLocalImport *li, const SectionChunk *sc,
+                      std::optional<LinkSiteForm> form) {
+  if (!li->getChunk()->resolver)
+    return false;
+  if (auto *stub = dyn_cast<DefinedRegular>(li->getTarget());
+      stub && stub->getChunk() == sc)
+    return true;
+  return form && (*form == LinkSiteCall || *form == LinkSiteJump ||
+                  *form == LinkSiteJumpOnePrefix);
+}
+
 bool isArm64AddressPair(const SectionChunk *sc, const coff_relocation &adrp,
                         const coff_relocation &add, int64_t addend) {
   ArrayRef<uint8_t> data = sc->getContents();
@@ -324,10 +339,15 @@ private:
 // fill_windows.c describes. It leaves room for a range of read-only cells for
 // each output section their input sections name, which merging can only
 // reduce.
-// A word's kind, in the top two bits of its import's RVA: the import's
-// address, the word the import holds, or what the import returns when called
-// with the image's base.
-enum : uint32_t { fillWordAddress, fillWordValue, fillWordResolver };
+// A word's kind, in the top two bits of its source's RVA: an import's address,
+// the word an import holds, what an import returns when called with the
+// image's base, or what a function of the image returns when called with 0.
+enum : uint32_t {
+  fillWordAddress,
+  fillWordValue,
+  fillWordResolver,
+  fillWordLocalResolver
+};
 
 enum : uint32_t {
   fillCellByName = 0,
@@ -351,7 +371,8 @@ public:
   static constexpr uint32_t headerSize = 40;
   size_t getSize() const override {
     return headerSize + 8 * maxRanges +
-           16 * (cells.size() + words.size() + values.size()) +
+           16 * (cells.size() + words.size() + values.size() +
+                 resolverCells.size()) +
            12 * runTimeCells.size();
   }
   void writeTo(uint8_t *buf) const override;
@@ -376,6 +397,7 @@ public:
   std::vector<RunTimeCell> runTimeCells;
   std::vector<ResidualWord> words;
   ArrayRef<SymbolTable::SealedValue> values;
+  ArrayRef<ResolverCell> resolverCells;
   size_t maxRanges;
   // Where a vague entity's name is: its export's, or its hint/name record's.
   DenseMap<StringRef, const Export *> exports;
@@ -452,7 +474,7 @@ void FillListChunk::writeTo(uint8_t *buf) const {
   auto *header = reinterpret_cast<support::ulittle32_t *>(buf);
   header[0] = ranges.size();
   header[1] = cells.size();
-  header[2] = words.size() + values.size();
+  header[2] = words.size() + values.size() + resolverCells.size();
   header[3] = runTimeCells.size();
   if (OutputSection *seal = sealed ? ctx.getOutputSection(sealed) : nullptr) {
     header[4] = seal->getRVA();
@@ -475,14 +497,15 @@ void FillListChunk::writeTo(uint8_t *buf) const {
     buf += 16;
   }
   // The words: the residual words but the thread-local ones, the sealed
-  // values, then the thread-local words, the import's RVA carrying the kind.
-  auto writeWord = [&](uint32_t rva, DefinedImportData *imp, uint32_t kind,
+  // values, the resolver cells, then the thread-local words, the source's RVA
+  // carrying the kind.
+  auto writeWord = [&](uint32_t rva, Defined *source, uint32_t kind,
                        int64_t addend) {
-    if (imp->getRVA() >> 30)
-      Err(ctx) << "the fill cannot name " << imp->getName()
-               << ", whose entry lies past 1 GiB";
+    if (source->getRVA() >> 30)
+      Err(ctx) << "the fill cannot name " << source->getName()
+               << ", which lies past 1 GiB";
     write32le(buf, rva);
-    write32le(buf + 4, imp->getRVA() | kind << 30);
+    write32le(buf + 4, source->getRVA() | kind << 30);
     write64le(buf + 8, addend);
     buf += 16;
   };
@@ -492,6 +515,8 @@ void FillListChunk::writeTo(uint8_t *buf) const {
   for (const SymbolTable::SealedValue &v : values)
     writeWord(v.word->getRVA(), v.imp,
               v.init ? fillWordResolver : fillWordValue, 0);
+  for (const ResolverCell &c : resolverCells)
+    writeWord(c.chunk->getRVA(), c.resolver, fillWordLocalResolver, 0);
   for (const ResidualWord &w : words)
     if (w.threadLocal)
       writeWord(w.chunk->getRVA() + w.offset, w.imp, fillWordAddress, w.addend);
@@ -747,6 +772,24 @@ void ImportSlotContents::addRunTimeCells() {
     addCell(imp, end ? 16 : 1);
     if (end)
       addCell(end, 1);
+  }
+}
+
+// The cell of each indirect function whose stub is live: its import pointer,
+// which the stub reads.
+void ImportSlotContents::addResolverCells() {
+  for (Chunk *c : ctx.symtab.localImportChunks) {
+    auto *li = cast<LocalImportChunk>(c);
+    if (!li->resolver)
+      continue;
+    auto *resolver = dyn_cast<DefinedRegular>(li->resolver);
+    if (!resolver) {
+      Err(ctx) << "the resolver of " << li->getTarget()->getName() << ", "
+               << ctx.symtab.printSymbol(li->resolver)
+               << ", is not defined in the image";
+      continue;
+    }
+    resolverCells.push_back({li, resolver});
   }
 }
 
@@ -1674,8 +1717,10 @@ void ImportSlotContents::createFill() {
     replaceSymbol<DefinedSynthetic>(run, run->getName(), fillStub);
   };
   ArrayRef<SymbolTable::SealedValue> values = ctx.symtab.sealedValues;
+  if (config.importSlots)
+    addResolverCells();
   if (!callsCopy && !list && residualWords.empty() && runTimeCells.empty() &&
-      values.empty())
+      values.empty() && resolverCells.empty())
     return stub();
   if (!residualWords.empty() || !runTimeCells.empty()) {
     auto fail = [&](const Twine &why) {
@@ -1713,10 +1758,12 @@ void ImportSlotContents::createFill() {
   list->runTimeCells = runTimeCells;
   list->setWords(residualWords);
   list->values = values;
+  list->resolverCells = resolverCells;
   list->callsCopy = callsCopy;
   // A fill that writes read-only memory does so once, under a bracket that
   // the done word at the head of .sealed, linked read-only, closes.
   if (!sealedChunks.empty() || !runTimeCells.empty() || !values.empty() ||
+      !resolverCells.empty() ||
       llvm::any_of(list->cells,
                    [](const OverrideCell &c) { return c.readOnly; }) ||
       llvm::any_of(residualWords,
@@ -2379,6 +2426,17 @@ void bindPointerCells(SymbolTable &symtab) {
 // rewrite. Under -import-slots it also gathers, for bind, the references to
 // imports and offered functions.
 void ImportSlotContents::scan(SymbolTable &symtab) {
+  // Only an -import-slots link has a fill to write an indirect function's
+  // cell, through which its stub would otherwise jump to zero.
+  if (!ctx.config.importSlots)
+    for (const SymbolTable::IFunc &f : symtab.ifuncs)
+      if (auto *stub = dyn_cast<DefinedRegular>(f.function);
+          stub && stub->isLive()) {
+        Err(ctx) << stub->getFile() << ": defines the indirect function "
+                 << stub->getName() << ", whose cell only a link with "
+                 << "-import-slots writes";
+        break;
+      }
   std::vector<Chunk *> &localImportChunks = symtab.localImportChunks;
   bool arm64 = symtab.machine == ARM64 && !ctx.hybridSymtab;
   bool locals = !localImportChunks.empty() &&
@@ -2488,12 +2546,13 @@ void ImportSlotContents::scan(SymbolTable &symtab) {
         }
         bool rewritable = false;
         if (arm64) {
-          rewritable = canBypass(li) && isArm64PointerLoad(sc, rel);
+          rewritable = canBypass(li) && isArm64PointerLoad(sc, rel) &&
+                       !readsCell(li, sc, std::nullopt);
           if (rewritable)
             arm64Sites.push_back({sc, &rel});
         } else if (std::optional<LinkSiteForm> form = getSiteForm(sc, rel);
                    canBypass(li) && form && *form != LinkSiteOther &&
-                   *form != LinkSiteAddress) {
+                   *form != LinkSiteAddress && !readsCell(li, sc, form)) {
           // A jump through a zero pointer keeps reading it.
           if (!isSiteForm(sc->getContents(), rel.VirtualAddress, *form))
             reportMismatch(sc, rel.VirtualAddress);
@@ -2517,7 +2576,8 @@ void ImportSlotContents::scan(SymbolTable &symtab) {
     if (defersLocalImportWarning(file, arm64))
       for (auto [li, rewritable] : seen)
         if (!li->getName().starts_with(".refptr.") && !isZeroPointer(li) &&
-            !li->getChunk()->isCell() && !li->getChunk()->copy)
+            !li->getChunk()->isCell() && !li->getChunk()->copy &&
+            !li->getChunk()->resolver)
           refs.push_back({file, li, rewritable});
   }
   if (!locals)
@@ -2539,10 +2599,13 @@ void ImportSlotContents::scan(SymbolTable &symtab) {
   }
   // The adrp and ldr of a bypassed pointer become adrp and add of its symbol,
   // or movz of zero.
+  // An indirect function's cell is read only by its stub, whose chunk no
+  // other load shares an adrp with, so every other load becomes the stub's
+  // address.
   for (auto [sc, rel] : arm64Sites) {
     auto *li =
         cast<DefinedLocalImport>(sc->file->getSymbol(rel->SymbolTableIndex));
-    if (li->getChunk()->bypassed)
+    if (li->getChunk()->bypassed || li->getChunk()->resolver)
       addEdit(sc, getRetarget(sc, *rel, LinkSiteOther, li->getTarget(),
                               isZeroPointer(li)));
   }

@@ -1331,6 +1331,16 @@ void SymbolTable::bindSealedValues() {
   }
 }
 
+const SymbolTable::IFunc *SymbolTable::getIFunc(Defined *d) {
+  auto *stub = dyn_cast<DefinedRegular>(d);
+  if (!stub)
+    return nullptr;
+  for (const IFunc &f : ifuncs)
+    if (f.function == stub && f.file == stub->getFile())
+      return &f;
+  return nullptr;
+}
+
 bool SymbolTable::startCallsFill() {
   Symbol *s = find("__llvm_run_fill");
   return isa_and_nonnull<Undefined>(s) || isa_and_nonnull<DefinedSynthetic>(s);
@@ -2050,6 +2060,13 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
         newLocalImports.push_back(cast<DefinedLocalImport>(sym));
+        // An indirect function's import pointer is the cell its stub jumps
+        // through, which the fill writes with what the resolver returns.
+        if (const IFunc *f = getIFunc(imp)) {
+          LocalImportChunk *cell = cast<DefinedLocalImport>(sym)->getChunk();
+          cell->resolver = f->resolver;
+          cell->fallback = dyn_cast_or_null<Defined>(f->fallback);
+        }
         // A DLL's own address-take of its default replaced by name reads a
         // cell, as every other image's does, which its fill writes.
         if (ctx.config.importSlots && ctx.config.dll &&
@@ -2061,9 +2078,11 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
           cast<DefinedLocalImport>(sym)->getChunk()->vagueEntity = impName;
         // Under -import-slots, a pointer to the zero default of an absent
         // weak X imports nothing that the image defines.
+        // Nor does an indirect function's, which its stub reads.
         auto *abs = dyn_cast<DefinedAbsolute>(imp);
-        if (!ctx.config.importSlots || !abs || abs->getVA() != 0 ||
-            !isa<Undefined>(find(impName)))
+        if ((!ctx.config.importSlots || !abs || abs->getVA() != 0 ||
+             !isa<Undefined>(find(impName))) &&
+            !cast<DefinedLocalImport>(sym)->getChunk()->resolver)
           localImports[sym] = imp;
         continue;
       }

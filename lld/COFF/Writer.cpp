@@ -1419,7 +1419,7 @@ void Writer::createSections() {
   // import cells get their own pages, linked read-only and written under the
   // fill's bracket.
   if (slots.getDoneWord() || !slots.getSealedChunks().empty() ||
-      !slots.getRunTimeCells().empty()) {
+      !slots.getRunTimeCells().empty() || !slots.getResolverCells().empty()) {
     OutputSection *sec = createSection(".sealed", data | r);
     if (Chunk *done = slots.getDoneWord())
       sec->addChunk(done);
@@ -1427,6 +1427,8 @@ void Writer::createSections() {
       sec->addChunk(v.word);
     for (const RunTimeCell &c : slots.getRunTimeCells())
       sec->addChunk(c.cell);
+    for (const ResolverCell &c : slots.getResolverCells())
+      sec->addChunk(c.chunk);
     for (SectionChunk *sc : slots.getSealedChunks())
       sec->addChunk(sc);
   }
@@ -1476,7 +1478,8 @@ void Writer::createMiscChunks() {
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     if (!symtab.localImportChunks.empty()) {
       for (Chunk *c : symtab.localImportChunks)
-        rdataSec->addChunk(c);
+        if (!cast<LocalImportChunk>(c)->resolver)
+          rdataSec->addChunk(c);
     }
     // Thread-local variable records the image writes, ordered by variable name
     // so layout does not depend on symbol-table walk order.

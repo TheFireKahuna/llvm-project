@@ -12,7 +12,9 @@
 // __llvm_run_fill the image's start-up calls, directly and before any C
 // initializer, and __llvm_thread_local_slot_copy as an executable's first TLS
 // callback. They have no stack protector, and call nothing that has a type
-// check's prefix.
+// check's prefix. Every function they call through a pointer comes from the
+// loader's import address table or the linker's list, both read-only, so
+// those calls are not checked.
 //
 //===----------------------------------------------------------------------===//
 
@@ -20,7 +22,8 @@
 #include <stdint.h>
 
 #pragma clang attribute push(                                                  \
-    __attribute__((no_stack_protector, no_sanitize("kcfi"), minsize)),         \
+    __attribute__((no_stack_protector, no_sanitize("kcfi"), guard(nocf),       \
+                   minsize)),                                                  \
     apply_to = function)
 
 typedef uint64_t __attribute__((aligned(4))) uint64_a4;
@@ -90,16 +93,18 @@ struct cell {
   uint32_t rva, kind;
 };
 
-// A word the fill writes from an import, whose kind is in the top two bits of
-// the import's entry RVA: the import's address plus addend, the word the
-// import holds plus addend, or what the import returns when called with the
-// image's base, which is the same for every call and negative on failure.
+// A word the fill writes, whose kind is in the top two bits of its source's
+// RVA: an import's address plus addend, the word an import holds plus addend,
+// what an import returns when called with the image's base, or what a
+// function of the image, an indirect function's resolver, returns when called
+// with 0. A resolver gives the same answer for every call, negative on
+// failure.
 struct residualWord {
   uint32_t word, import;
   int64_t addend;
 };
 
-enum { wordAddress, wordValue, wordResolver };
+enum { wordAddress, wordValue, wordResolver, wordLocalResolver };
 
 // name is the RVA of the import's name, and dll that of the UTF-16 name of the
 // DLL a weak import is resolved in, or, for an import from the executable, 1 if it
@@ -487,16 +492,22 @@ static int32_t walk(struct pass *p, char *peb, char *exe, int initializing) {
   // where it is, and one in the thread-local template in the loading thread's
   // block too, which the loader copied from the template before.
   for (uint32_t i = 0; i != l->words; ++i, ++w) {
-    uint64_t entry = *(uint64_t *)(__ImageBase + (w->import & 0x3FFFFFFF));
+    uint32_t kind = w->import >> 30;
+    char *source = __ImageBase + (w->import & 0x3FFFFFFF);
     uint64_t value;
-    if (w->import >> 30 == wordResolver) {
-      int64_t result = ((int64_t (*)(void *))(uintptr_t)entry)(__ImageBase);
+    if (kind == wordResolver || kind == wordLocalResolver) {
+      // An image's own resolver takes no argument; an AArch64 one that reads
+      // hwcap there sees none.
+      int64_t result = kind == wordResolver
+                           ? ((int64_t (*)(void *))(uintptr_t)*(
+                                 uint64_t *)source)(__ImageBase)
+                           : ((int64_t (*)(void *))(uintptr_t)source)(NULL);
       if (result < 0)
         return (int32_t)result;
       value = result;
     } else {
-      value = (w->import >> 30 == wordValue ? *(uint64_t *)(uintptr_t)entry
-                                            : entry) +
+      uint64_t entry = *(uint64_t *)source;
+      value = (kind == wordValue ? *(uint64_t *)(uintptr_t)entry : entry) +
               w->addend;
     }
     put(p, w->word, value);

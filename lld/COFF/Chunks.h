@@ -824,6 +824,12 @@ public:
   // executable's table names one.
   StringRef vagueEntity;
 
+  // For an indirect function's pointer, its cell, the resolver whose result
+  // the fill writes in it. Until then it holds the fallback's address, or zero
+  // where the function has none.
+  Symbol *resolver = nullptr;
+  Defined *fallback = nullptr;
+
   // Whether the pointer leads to the image's own copy of immutable data, which
   // value-only loads read instead of the import another image provides, so no
   // dllimport declaration names it.

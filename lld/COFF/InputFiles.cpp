@@ -711,6 +711,17 @@ void ObjFile::readLinkRecords() {
         if (symbol(t[0]) && symbol(t[1]))
           symtab.forwarders.push_back({this, symbol(t[0]), symbol(t[1])});
       });
+    case LinkRecordIFuncs:
+      return readIndices(payload, 2, [&](ArrayRef<uint64_t> t) {
+        if (symbol(t[0]) && symbol(t[1]))
+          symtab.ifuncs.push_back({this, symbol(t[0]), symbol(t[1])});
+      });
+    case LinkRecordIFuncFallbacks:
+      return readIndices(payload, 2, [&](ArrayRef<uint64_t> t) {
+        for (SymbolTable::IFunc &f : symtab.ifuncs)
+          if (f.file == this && f.function == symbol(t[0]))
+            f.fallback = symbol(t[1]);
+      });
     case LinkRecordBinding:
       linkRecords->listsBindings = true;
       return readIndices(payload, 2, [&](ArrayRef<uint64_t> t) {
