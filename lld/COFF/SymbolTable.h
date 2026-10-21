@@ -135,6 +135,19 @@ public:
   // Under -import-slots, the leaders of the data COMDAT groups a DLL's instance
   // may preempt, visited by loadLocalImportMembers and preemptWeakData.
   std::vector<Symbol *> weakData;
+  // Under -import-slots, the image's sealed values: the word __imp_X$val, which
+  // the fill writes with the word import X holds, and __imp_X$init, which it
+  // writes with what X returns when called with the image's base.
+  struct SealedValue {
+    Chunk *word;
+    DefinedImportData *imp;
+    bool init;
+  };
+  std::vector<SealedValue> sealedValues;
+  void bindSealedValues();
+  static bool isSealedValueName(StringRef name);
+  static StringRef sealedValueImport(StringRef name);
+
   // The thread-local variables bitcode defines, not shown thread-local pre-LTO.
   llvm::DenseSet<Symbol *> threadLocalBitcodeData;
 

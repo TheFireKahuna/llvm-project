@@ -1277,6 +1277,60 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
   return preemptibleVagueEntities->contains(s);
 }
 
+namespace {
+// A sealed value's word, in .sealed: zero until the fill writes it.
+class SealedValueChunk : public NonSectionChunk {
+public:
+  SealedValueChunk() { setAlignment(8); }
+  size_t getSize() const override { return 8; }
+  void writeTo(uint8_t *buf) const override {}
+  uint32_t getOutputCharacteristics() const override {
+    return IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+  }
+};
+} // namespace
+
+bool SymbolTable::isSealedValueName(StringRef name) {
+  return name.starts_with("__imp_") &&
+         (name.ends_with("$val") || name.ends_with("$init"));
+}
+
+// The import a sealed value's name is written from: __imp_X.
+StringRef SymbolTable::sealedValueImport(StringRef name) {
+  return name.drop_back(name.ends_with("$init") ? strlen("$init")
+                                                : strlen("$val"));
+}
+
+// Binds each __imp_X$val and __imp_X$init the image references to a word of
+// its own, once import X is loaded.
+void SymbolTable::bindSealedValues() {
+  SmallVector<Symbol *, 4> refs;
+  forEachSymbol([&](Symbol *s) {
+    if (isa<Undefined>(s) && isSealedValueName(s->getName()))
+      refs.push_back(s);
+  });
+  // The fill writes the values in this order: every $init, then every $val,
+  // each by name.
+  llvm::sort(refs, [](Symbol *a, Symbol *b) {
+    return std::make_tuple(!a->getName().ends_with("$init"), a->getName()) <
+           std::make_tuple(!b->getName().ends_with("$init"), b->getName());
+  });
+  for (Symbol *s : refs) {
+    StringRef name = s->getName();
+    bool init = name.ends_with("$init");
+    StringRef base = sealedValueImport(name);
+    auto *imp = dyn_cast_or_null<DefinedImportData>(find(base));
+    if (!imp) {
+      Err(ctx) << "the image reads " << name << ", but "
+               << base.drop_front(strlen("__imp_")) << " is not imported";
+      continue;
+    }
+    auto *word = make<SealedValueChunk>();
+    replaceSymbol<DefinedSynthetic>(s, s->getName(), word);
+    sealedValues.push_back({word, imp, init});
+  }
+}
+
 bool SymbolTable::startCallsFill() {
   Symbol *s = find("__llvm_run_fill");
   return isa_and_nonnull<Undefined>(s) || isa_and_nonnull<DefinedSynthetic>(s);

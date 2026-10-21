@@ -1415,13 +1415,16 @@ void Writer::createSections() {
       sec->splitECChunks();
   }
 
-  // The fill's done word, residual words and run-time-bound import cells get
-  // their own pages, linked read-only and written under the fill's bracket.
+  // The fill's done word, the sealed values, residual words and run-time-bound
+  // import cells get their own pages, linked read-only and written under the
+  // fill's bracket.
   if (slots.getDoneWord() || !slots.getSealedChunks().empty() ||
       !slots.getRunTimeCells().empty()) {
     OutputSection *sec = createSection(".sealed", data | r);
     if (Chunk *done = slots.getDoneWord())
       sec->addChunk(done);
+    for (const SymbolTable::SealedValue &v : ctx.symtab.sealedValues)
+      sec->addChunk(v.word);
     for (const RunTimeCell &c : slots.getRunTimeCells())
       sec->addChunk(c.cell);
     for (SectionChunk *sc : slots.getSealedChunks())

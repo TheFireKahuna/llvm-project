@@ -324,6 +324,11 @@ private:
 // fill_windows.c describes. It leaves room for a range of read-only cells for
 // each output section their input sections name, which merging can only
 // reduce.
+// A word's kind, in the top two bits of its import's RVA: the import's
+// address, the word the import holds, or what the import returns when called
+// with the image's base.
+enum : uint32_t { fillWordAddress, fillWordValue, fillWordResolver };
+
 enum : uint32_t {
   fillCellByName = 0,
   fillCellNoName = 1,
@@ -345,7 +350,8 @@ public:
   }
   static constexpr uint32_t headerSize = 40;
   size_t getSize() const override {
-    return headerSize + 8 * maxRanges + 16 * (cells.size() + words.size()) +
+    return headerSize + 8 * maxRanges +
+           16 * (cells.size() + words.size() + values.size()) +
            12 * runTimeCells.size();
   }
   void writeTo(uint8_t *buf) const override;
@@ -369,6 +375,7 @@ public:
   std::vector<OverrideCell> cells;
   std::vector<RunTimeCell> runTimeCells;
   std::vector<ResidualWord> words;
+  ArrayRef<SymbolTable::SealedValue> values;
   size_t maxRanges;
   // Where a vague entity's name is: its export's, or its hint/name record's.
   DenseMap<StringRef, const Export *> exports;
@@ -445,7 +452,7 @@ void FillListChunk::writeTo(uint8_t *buf) const {
   auto *header = reinterpret_cast<support::ulittle32_t *>(buf);
   header[0] = ranges.size();
   header[1] = cells.size();
-  header[2] = words.size();
+  header[2] = words.size() + values.size();
   header[3] = runTimeCells.size();
   if (OutputSection *seal = sealed ? ctx.getOutputSection(sealed) : nullptr) {
     header[4] = seal->getRVA();
@@ -467,12 +474,27 @@ void FillListChunk::writeTo(uint8_t *buf) const {
     write32le(buf + 12, getKind(c));
     buf += 16;
   }
-  for (const ResidualWord &w : words) {
-    write32le(buf, w.chunk->getRVA() + w.offset);
-    write32le(buf + 4, w.imp->getRVA());
-    write64le(buf + 8, w.addend);
+  // The words: the residual words but the thread-local ones, the sealed
+  // values, then the thread-local words, the import's RVA carrying the kind.
+  auto writeWord = [&](uint32_t rva, DefinedImportData *imp, uint32_t kind,
+                       int64_t addend) {
+    if (imp->getRVA() >> 30)
+      Err(ctx) << "the fill cannot name " << imp->getName()
+               << ", whose entry lies past 1 GiB";
+    write32le(buf, rva);
+    write32le(buf + 4, imp->getRVA() | kind << 30);
+    write64le(buf + 8, addend);
     buf += 16;
-  }
+  };
+  for (const ResidualWord &w : words)
+    if (!w.threadLocal)
+      writeWord(w.chunk->getRVA() + w.offset, w.imp, fillWordAddress, w.addend);
+  for (const SymbolTable::SealedValue &v : values)
+    writeWord(v.word->getRVA(), v.imp,
+              v.init ? fillWordResolver : fillWordValue, 0);
+  for (const ResidualWord &w : words)
+    if (w.threadLocal)
+      writeWord(w.chunk->getRVA() + w.offset, w.imp, fillWordAddress, w.addend);
   for (const RunTimeCell &c : runTimeCells) {
     write32le(buf, c.cell->getRVA());
     write32le(buf + 4, c.name->getRVA());
@@ -1184,6 +1206,8 @@ void ImportSlotContents::resolve(SlotScan &scan) {
     noteUse(imp, ImportFile::ReadWhole);
   for (const ResidualWord &w : residualWords)
     noteUse(w.imp, ImportFile::ReadWhole);
+  for (const SymbolTable::SealedValue &v : ctx.symtab.sealedValues)
+    noteUse(v.imp, ImportFile::ReadWhole);
   for (const KCFIState::ImportedRange &r : ctx.kcfi.importedRanges)
     for (DefinedImportData *imp : {r.start, r.end})
       noteUse(imp, ImportFile::UsedOtherwise);
@@ -1649,7 +1673,9 @@ void ImportSlotContents::createFill() {
     fillStub = make<FillStubChunk>(config.machine == ARM64);
     replaceSymbol<DefinedSynthetic>(run, run->getName(), fillStub);
   };
-  if (!callsCopy && !list && residualWords.empty() && runTimeCells.empty())
+  ArrayRef<SymbolTable::SealedValue> values = ctx.symtab.sealedValues;
+  if (!callsCopy && !list && residualWords.empty() && runTimeCells.empty() &&
+      values.empty())
     return stub();
   if (!residualWords.empty() || !runTimeCells.empty()) {
     auto fail = [&](const Twine &why) {
@@ -1686,10 +1712,11 @@ void ImportSlotContents::createFill() {
     fillList = list = make<FillListChunk>(ctx, std::vector<OverrideCell>());
   list->runTimeCells = runTimeCells;
   list->setWords(residualWords);
+  list->values = values;
   list->callsCopy = callsCopy;
   // A fill that writes read-only memory does so once, under a bracket that
   // the done word at the head of .sealed, linked read-only, closes.
-  if (!sealedChunks.empty() || !runTimeCells.empty() ||
+  if (!sealedChunks.empty() || !runTimeCells.empty() || !values.empty() ||
       llvm::any_of(list->cells,
                    [](const OverrideCell &c) { return c.readOnly; }) ||
       llvm::any_of(residualWords,
@@ -1703,6 +1730,10 @@ void ImportSlotContents::createFill() {
   }
   list->selfKey =
       overrideNameKey(sys::path::filename(config.outputFile).lower());
+  // The fill reads each sealed value's import.
+  for (const SymbolTable::SealedValue &v : values)
+    if (!v.imp->file->live)
+      addImport(v.imp);
   // The fill calls ntdll.
   for (Chunk *c : cast<ObjFile>(f->getFile())->getChunks())
     if (auto *sc = dyn_cast<SectionChunk>(c))

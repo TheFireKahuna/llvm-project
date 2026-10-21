@@ -3290,8 +3290,20 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     } while (run() || loadedImports);
   }
 
-  if (config->importSlots)
+  if (config->importSlots) {
     ctx.symtab.exportInteriorNames();
+    // The imports the image's sealed values are written from.
+    SmallVector<StringRef, 4> imports;
+    ctx.symtab.forEachSymbol([&](Symbol *s) {
+      if (isa<Undefined>(s) && SymbolTable::isSealedValueName(s->getName()))
+        imports.push_back(SymbolTable::sealedValueImport(s->getName()));
+    });
+    for (StringRef name : imports)
+      ctx.symtab.addUndefined(name);
+    if (!imports.empty())
+      run();
+    ctx.symtab.bindSealedValues();
+  }
   // The start-up's call of the image's fill, which the writer points at the
   // builtins' fill where the image needs one and at a function returning 0
   // where it does not.

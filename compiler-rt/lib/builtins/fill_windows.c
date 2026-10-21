@@ -90,10 +90,16 @@ struct cell {
   uint32_t rva, kind;
 };
 
+// A word the fill writes from an import, whose kind is in the top two bits of
+// the import's entry RVA: the import's address plus addend, the word the
+// import holds plus addend, or what the import returns when called with the
+// image's base, which is the same for every call and negative on failure.
 struct residualWord {
   uint32_t word, import;
   int64_t addend;
 };
+
+enum { wordAddress, wordValue, wordResolver };
 
 // name is the RVA of the import's name, and dll that of the UTF-16 name of the
 // DLL a weak import is resolved in, or, for an import from the executable, 1 if it
@@ -395,8 +401,9 @@ struct pass {
 
 static void put(struct pass *p, uint32_t rva, uint64_t value) {
   uint64_t *word = (uint64_t *)(__ImageBase + rva);
+  // Release: a reader that sees a word written later sees this one.
   if (!p->check)
-    *word = value;
+    __atomic_store_n(word, value, __ATOMIC_RELEASE);
   else if (*word != value && readOnlyWord(p->l, rva))
     p->mismatch = 1;
 }
@@ -480,7 +487,18 @@ static int32_t walk(struct pass *p, char *peb, char *exe, int initializing) {
   // where it is, and one in the thread-local template in the loading thread's
   // block too, which the loader copied from the template before.
   for (uint32_t i = 0; i != l->words; ++i, ++w) {
-    uint64_t value = *(uint64_t *)(__ImageBase + w->import) + w->addend;
+    uint64_t entry = *(uint64_t *)(__ImageBase + (w->import & 0x3FFFFFFF));
+    uint64_t value;
+    if (w->import >> 30 == wordResolver) {
+      int64_t result = ((int64_t (*)(void *))(uintptr_t)entry)(__ImageBase);
+      if (result < 0)
+        return (int32_t)result;
+      value = result;
+    } else {
+      value = (w->import >> 30 == wordValue ? *(uint64_t *)(uintptr_t)entry
+                                            : entry) +
+              w->addend;
+    }
     put(p, w->word, value);
     if (!p->check && i >= l->words - l->threadLocalWords)
       *(uint64_t *)(threadBlock(__ImageBase) + w->word) = value;
