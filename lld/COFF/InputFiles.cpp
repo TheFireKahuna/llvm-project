@@ -661,6 +661,7 @@ void ObjFile::readLinkRecords() {
         (capabilities & LinkRecordsFunctionSites);
     linkRecords->listsCallOnly =
         (capabilities & LinkRecordsCallOnly) && !symtab.isEC();
+    linkRecords->checkedFusion = capabilities & LinkRecordsCheckedFusion;
     // Per-relocation facts go straight into a slot for each relocation as the
     // records are read, so size that up front from the sections' relocation
     // counts.
@@ -983,6 +984,9 @@ Error ObjFile::readCallOnlyRefs(ArrayRef<uint8_t> payload) {
 Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
   std::vector<LinkFusion> &fusions = linkRecords->fusions;
   bool describes = linkRecords->describesSites;
+  // A fact that names a load's register is taken only where the assembler
+  // checked it against the instructions; elsewhere they stay as compiled.
+  bool fused = linkRecords->checkedFusion;
   bool ec = symtab.isEC();
   DataExtractor data(payload, /*IsLittleEndian=*/true);
   DataExtractor::Cursor cur(0);
@@ -1063,7 +1067,7 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
         }
         // The load's index, resolved once the section's sites are read.
         if (kind == LinkSiteAnchor) {
-          if (form == LinkSiteLoad)
+          if (form == LinkSiteLoad && fused)
             linkRecords->anchors.push_back(
                 {*section, uint32_t(offset),
                  uint32_t(std::min<uint64_t>(value >> 5, UINT32_MAX)),
@@ -1112,7 +1116,7 @@ Error ObjFile::readLinkSites(ArrayRef<uint8_t> payload) {
       }
       if (Error e = factCur.takeError())
         consumeError(std::move(e));
-      else if (f.isLoad || f.use != LinkFusion::None)
+      else if (fused && (f.isLoad || f.use != LinkFusion::None))
         fusions.push_back(f);
     }
 

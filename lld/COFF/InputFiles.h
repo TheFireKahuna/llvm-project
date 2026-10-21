@@ -614,6 +614,7 @@ private:
     bool protectsDelayIat = false;
     bool listsCallOnly = false;
     bool listsBindings = false;
+    bool checkedFusion = false;
     std::vector<LinkFusion> fusions;
     std::vector<LinkValueOnly> valueOnlyLoads;
     std::vector<LinkAnchor> anchors;
