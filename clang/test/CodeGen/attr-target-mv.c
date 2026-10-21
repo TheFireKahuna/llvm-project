@@ -558,10 +558,11 @@ void calls_pr50025c(void) { pr50025c(); }
 // WINDOWS: call i32 @fwd_decl_default.resolver()
 // WINDOWS: call i32 @fwd_decl_avx.resolver()
 
+// A resolver with nothing to test does not initialize the CPU model.
 // ITANIUM: define weak_odr ptr @fwd_decl_default.resolver() #[[ATTR_RESOLVER]]
 // LINUX-SAME: comdat
-// ITANIUM: call void @__cpu_indicator_init()
-// ITANIUM: ret ptr @fwd_decl_default
+// ITANIUM-NEXT: resolver_entry:
+// ITANIUM-NEXT: ret ptr @fwd_decl_default
 // ITANIUM: define weak_odr ptr @fwd_decl_avx.resolver() #[[ATTR_RESOLVER]]
 // LINUX-SAME: comdat
 // ITANIUM: call void @__cpu_indicator_init()
@@ -569,8 +570,8 @@ void calls_pr50025c(void) { pr50025c(); }
 // ITANIUM: ret ptr @fwd_decl_avx
 
 // WINDOWS: define weak_odr dso_local i32 @fwd_decl_default.resolver() #[[ATTR_RESOLVER]] comdat
-// WINDOWS: call void @__cpu_indicator_init()
-// WINDOWS: call i32 @fwd_decl_default
+// WINDOWS-NEXT: resolver_entry:
+// WINDOWS-NEXT: musttail call i32 @fwd_decl_default
 // WINDOWS: define weak_odr dso_local i32 @fwd_decl_avx.resolver() #[[ATTR_RESOLVER]] comdat
 // WINDOWS: call void @__cpu_indicator_init()
 // WINDOWS: call i32 @fwd_decl_avx.avx
