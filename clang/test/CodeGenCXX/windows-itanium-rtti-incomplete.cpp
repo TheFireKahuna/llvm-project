@@ -2,8 +2,6 @@
 // RUN:   | FileCheck %s
 // RUN: %clang_cc1 -triple aarch64-pc-windows-ntposix -emit-llvm -o - %s \
 // RUN:   | FileCheck %s
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm \
-// RUN:   -fclang-abi-compat=23 -o - %s | FileCheck --check-prefix=COMPAT %s
 
 // On Windows Itanium and NT-POSIX a type_info object that reaches a class
 // incomplete in the translation unit is a weak alias of its own name, whose
@@ -29,10 +27,6 @@ struct Foo;
 // CHECK-DAG: @_ZTIP3Foo = weak alias { ptr, ptr, i32, ptr }, ptr @"__llvm_incomplete$_ZTIP3Foo"
 // CHECK-DAG: @_ZTIPP3Foo = weak alias { ptr, ptr, i32, ptr }, ptr @"__llvm_incomplete$_ZTIPP3Foo"
 // CHECK-DAG: @_ZTIM3Fooi = weak alias { ptr, ptr, i32, ptr, ptr }, ptr @"__llvm_incomplete$_ZTIM3Fooi"
-
-// COMPAT-DAG: @_ZTIPP3Foo = internal constant
-// COMPAT-DAG: @_ZTI3Foo = internal constant
-// COMPAT-NOT: __llvm_incomplete
 
 const std::type_info &pp() { return typeid(Foo **); }
 const std::type_info &mp() { return typeid(int Foo::*); }

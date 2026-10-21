@@ -237,9 +237,9 @@ struct __type_info_implementations {
 
 #    if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
     _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE static size_t __hash(__type_name_t __v) _NOEXCEPT {
-      size_t __n = __blob_length(__v);
-      if (__is_type_name_unique(__v) || __n == 0)
+      if (__is_type_name_unique(__v))
         return __v;
+      size_t __n = __blob_length(__v);
       const char* __p = __type_name_to_string(__v);
       size_t __hash   = 5381;
       for (size_t __i = 0; __i != __n; ++__i)
@@ -251,11 +251,9 @@ struct __type_info_implementations {
         return true;
       if (__is_type_name_unique(__lhs) || __is_type_name_unique(__rhs))
         return false;
-      // Blobs of different lengths differ, which needs neither read; a word with
-      // no length comes from an object that predates them and equals only
-      // itself.
+      // Blobs of different lengths differ, which needs neither read.
       size_t __n = __blob_length(__lhs);
-      return __n != 0 && __n == __blob_length(__rhs) &&
+      return __n == __blob_length(__rhs) &&
              __blob_eq(__type_name_to_string(__lhs), __type_name_to_string(__rhs), __n);
     }
     _LIBCPP_HIDE_FROM_ABI _LIBCPP_ALWAYS_INLINE static bool __lt(__type_name_t __lhs, __type_name_t __rhs) _NOEXCEPT {
@@ -265,8 +263,6 @@ struct __type_info_implementations {
       size_t __nr = __blob_length(__rhs);
       if (__nl != __nr)
         return __nl < __nr;
-      if (__nl == 0)
-        return __lhs < __rhs;
       return __builtin_memcmp(__type_name_to_string(__lhs), __type_name_to_string(__rhs), __nl) < 0;
     }
 #    else

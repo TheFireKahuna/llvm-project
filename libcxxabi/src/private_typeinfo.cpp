@@ -118,10 +118,10 @@ namespace __cxxabiv1 {
 #if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
 // Bits 48 to 62 of a type_info's name word hold the length of the type's blob:
 // its name, the name's NUL and, for a class, the layout shape that follows; a
-// length those bits cannot hold is the 64-bit word ahead of the name, and a
-// word with none comes from an object that predates them. The names are equal
-// when the shorter blob starts the other, which ends with the name's NUL
-// unless it holds a shape too; two blobs that hold shapes must be equal.
+// length those bits cannot hold is the 64-bit word ahead of the name. The
+// names are equal when the shorter blob starts the other, which ends with the
+// name's NUL unless it holds a shape too; two blobs that hold shapes must be
+// equal.
 bool __shim_type_info::equal_names(const std::type_info* x, const std::type_info* y) {
   auto length = [](uintptr_t word) -> size_t {
     size_t n = (word >> 48) & 0x7FFF;
@@ -135,8 +135,6 @@ bool __shim_type_info::equal_names(const std::type_info* x, const std::type_info
   uintptr_t wy = static_cast<const __shim_type_info*>(y)->__type_name;
   size_t nx = length(wx);
   size_t ny = length(wy);
-  if (nx == 0 || ny == 0)
-    return wx == wy;
   const char* px = x->name();
   const char* py = y->name();
   size_t n = nx < ny ? nx : ny;

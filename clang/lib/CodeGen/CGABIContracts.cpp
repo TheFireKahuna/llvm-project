@@ -52,7 +52,7 @@ static constexpr unsigned ContractSchemaVersion = 1;
 // The version of the rule that places vtables and of the representation of
 // type_info objects, which every digest also covers, so that an image built
 // under another rule fails to load against one whose types it requires.
-static constexpr unsigned LayoutVersion = 2;
+static constexpr unsigned LayoutVersion = 1;
 
 CodeGenABIContracts::CodeGenABIContracts(CodeGenModule &CGM)
     : CGM(CGM), Context(CGM.getContext()),

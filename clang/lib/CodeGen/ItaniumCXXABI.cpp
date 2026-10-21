@@ -2480,8 +2480,7 @@ ItaniumCXXABI::getTypeNameBlob(QualType Ty,
   // type.
   std::string Blob = Name.substr(4).str();
   Blob += '\0';
-  if (!CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23) &&
-      classifyRTTIUniqueness(Ty, Linkage) != RUK_Unique)
+  if (classifyRTTIUniqueness(Ty, Linkage) != RUK_Unique)
     if (const RecordDecl *RD = Ty->getAsRecordDecl())
       if (const RecordDecl *Def = RD->getDefinition())
         Blob += CGM.getABIContracts()->getLayoutShape(Def);
@@ -4522,7 +4521,6 @@ llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
   // the name; the object's own name is private, and the symbol is its alias,
   // the key of its COMDAT.
   if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23) &&
       Length >= MaxTypeNameLength) {
     llvm::Constant *Fields[] = {llvm::ConstantInt::get(CGM.Int64Ty, Length),
                                 Init};
@@ -5128,10 +5126,8 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
   // placeholder under a name of its own, kept once in an image like any other
   // non-unique type_info object, so that the link binds the reference to the
   // complete class's wherever it exists and the type compares by address.
-  bool Placeholder =
-      CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23) &&
-      ContainsIncompleteClassType(Ty);
+  bool Placeholder = CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+                     ContainsIncompleteClassType(Ty);
   if (Placeholder)
     Linkage = llvm::GlobalValue::LinkOnceODRLinkage;
 
@@ -5217,8 +5213,7 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
   // On Windows Itanium and NT-POSIX bits 48 to 62, clear in a user-mode
   // address too, hold the name's length, so that comparing two names needs no
   // scan of either.
-  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23))
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     TypeNameBits |= std::min(TypeNameLength, MaxTypeNameLength) << 48;
   if (TypeNameBits) {
     TypeNameField = llvm::ConstantExpr::getPtrToInt(TypeName, CGM.Int64Ty);

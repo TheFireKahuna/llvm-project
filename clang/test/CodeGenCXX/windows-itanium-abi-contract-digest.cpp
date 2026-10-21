@@ -58,5 +58,5 @@ struct API WithEnum {
 
 void WithEnum::g() {}
 
-// SAME: !{!"/abiprovide:bYVgnX5b3087i9cGzl6ERWNa63Pww70jw,_JxiUs3TwoUfi_Jw4Bc_soyNBQZU_8p_w"}
-// WIDE: !{!"/abiprovide:bYVgnX5b308KWcGc8JXZouai4rQDr9yUg,_JxiUs3TwoUfi_Jw4Bc_soyNBQZU_8p_w"}
+// SAME: !{!"/abiprovide:bYVgnX5b3082C4uyG6tcxDE6hrq6WDBbg,_JxiUs3TwoUWTmcUCigZPOZB4ND2-E-Pg"}
+// WIDE: !{!"/abiprovide:bYVgnX5b308pa8Ei5rlFv6O0NNUzIZN_Q,_JxiUs3TwoUWTmcUCigZPOZB4ND2-E-Pg"}
