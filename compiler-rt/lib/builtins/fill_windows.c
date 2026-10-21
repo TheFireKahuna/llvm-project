@@ -61,13 +61,15 @@ static const uint32_t offerTableMagic = 0x4F7A1D2B;
 // A cell's kind: bound by name or by the override table's slot, either one
 // possibly in the thread-local template; or, for a vague entity, whose entry
 // names a word holding the instance, the RVA of the name a search of the
-// loaded modules binds it by, or cellNoName.
+// loaded modules binds it by, or cellNoName, with cellNameWord where the cell
+// is a type_info object's name word, which takes the instance's.
 enum {
   cellByName = 0,
   cellNoName = 1,
   cellSlot = 2,
   cellThreadLocal = 4,
   cellName = 0x1000,
+  cellNameWord = 0x80000000,
 };
 
 enum { fillCallsCopy = 1, fillWordsInPlace = 2 };
@@ -169,6 +171,30 @@ static char *threadBlock(char *image) {
   const char *dir = image + read32(nt + 24 + 112 + 9 * 8);
   char **blocks = (char **)readPointer(getTEB() + tebThreadLocalStoragePointer);
   return blocks[read32(readPointer(dir + 16))] - (readPointer(dir) - image);
+}
+
+// The length that bits 48 to 62 of a type_info object's name word give its
+// name, the name's NUL and the layout shape after it, or the 64-bit word ahead
+// of the name where they cannot.
+static uint64_t blobLength(uint64_t word) {
+  uint64_t n = word >> 48 & 0x7FFF;
+  return n != 0x7FFF ? n
+                     : *(const uint64_a4 *)(uintptr_t)((word & 0xFFFFFFFFFFFF) -
+                                                       8);
+}
+
+// Whether two non-unique name words name the same type: the same name and
+// layout shape, byte for byte.
+static int sameType(uint64_t a, uint64_t b) {
+  uint64_t n = blobLength(a);
+  if (!(a >> 63) || !(b >> 63) || !n || n != blobLength(b))
+    return 0;
+  const char *p = (const char *)(uintptr_t)(a & 0xFFFFFFFFFFFF);
+  const char *q = (const char *)(uintptr_t)(b & 0xFFFFFFFFFFFF);
+  for (; n; --n)
+    if (*p++ != *q++)
+      return 0;
+  return 1;
 }
 
 static uint16_t length(const char *s) {
@@ -326,11 +352,12 @@ static int lookUp(char *exe, const struct cell *c, uint64_t key, char **value) {
   const uint64_t *entry =
       (const uint64_t *)(anchor + 16 +
                          8 * *(const uint16_t *)(exe + overrideCount));
+  uint32_t kind = c->kind & ~cellNameWord;
   for (uint32_t n = read32(anchor + 12); n; --n, entry += 2) {
     if (entry[0] != key)
       continue;
     *value = (char *)entry[1];
-    if (c->kind == cellNoName || c->kind >= cellName)
+    if (kind == cellNoName || kind >= cellName)
       *value = readPointer(*value);
     return 1;
   }
@@ -364,8 +391,9 @@ int __llvm_fill(void) {
     uint64_t key = c->key & ~(uint64_t)1;
     char *value = NULL;
     int found = exe && lookUp(exe, c, key, &value);
-    if (!found && !initializing && c->kind >= cellName) {
-      value = search(l, peb, key, __ImageBase + c->kind, &status);
+    if (!found && !initializing && (c->kind & ~cellNameWord) >= cellName) {
+      value = search(l, peb, key, __ImageBase + (c->kind & ~cellNameWord),
+                     &status);
       if (status < 0)
         goto done;
       found = value != NULL;
@@ -377,6 +405,16 @@ int __llvm_fill(void) {
         writable = 1;
         if ((status = protectRanges(l, pageReadWrite)))
           goto done;
+      }
+      // A type_info object's name word takes the instance's only where the two
+      // describe the same type, so that a class of another layout under the
+      // same name still compares unequal.
+      if (c->kind & cellNameWord) {
+        uint64_t *word = (uint64_t *)(__ImageBase + c->rva);
+        uint64_t theirs = *(const uint64_t *)(value + 8);
+        if (*word != theirs && sameType(*word, theirs))
+          *word = theirs;
+        continue;
       }
       *(char **)(__ImageBase + c->rva) = value;
       if (c->kind < cellName && c->kind & cellThreadLocal)

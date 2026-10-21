@@ -279,6 +279,9 @@ struct OverrideCell {
   // the name by which a DLL loaded at run time searches for it.
   bool indirect = false;
   StringRef name = {};
+  // The name word of a type_info object, which takes the instance's where
+  // both describe the same type.
+  bool nameWord = false;
 
   uint64_t getRVA() const {
     return chunk ? chunk->getRVA() + offset : imp->getRVA();
@@ -326,6 +329,7 @@ enum : uint32_t {
   fillCellNoName = 1,
   fillCellSlot = 2,
   fillCellThreadLocal = 4,
+  fillCellNameWord = 0x80000000,
 };
 
 class FillListChunk : public NonSectionChunk {
@@ -431,7 +435,8 @@ uint32_t FillListChunk::getKind(const OverrideCell &c) const {
     return hint ? hint->getRVA() + 2 : fillCellNoName;
   }
   const Export *e = exports.lookup(c.name);
-  return e && e->nameChunk ? e->nameChunk->getRVA() : fillCellNoName;
+  return (e && e->nameChunk ? e->nameChunk->getRVA() : fillCellNoName) |
+         (c.nameWord ? fillCellNameWord : 0);
 }
 
 void FillListChunk::writeTo(uint8_t *buf) const {
@@ -1460,6 +1465,21 @@ void ImportSlotContents::collectCells() {
       symtab.localImportChunks.push_back(li);
     }
   }
+  // A type_info object the DLL binds is offered and found through a pointer,
+  // as a preemptible entity is, and its name word takes the instance's.
+  for (const Export &e : symtab.exports) {
+    auto *d = dyn_cast_or_null<DefinedRegular>(e.sym);
+    if (!d || !e.forwardTo.empty() || !d->isLive() || !symtab.isBoundTypeInfo(d))
+      continue;
+    auto *li = make<LocalImportChunk>(ctx, d);
+    li->vagueEntity = d->getName();
+    symtab.localImportChunks.push_back(li);
+    auto *sc = cast<SectionChunk>(d->getChunk());
+    cells.push_back({sc, uint32_t(d->getValue() + ctx.config.wordsize),
+                     nullptr, 0, overrideNameKey(d->getName()),
+                     cellReadOnly(sc), false, /*indirect=*/true, d->getName(),
+                     /*nameWord=*/true});
+  }
   for (Chunk *c : symtab.localImportChunks) {
     auto *li = cast<LocalImportChunk>(c);
     if (!li->overrideDefault.empty())
@@ -1525,9 +1545,9 @@ void ImportSlotContents::createOfferTable() {
   };
   std::vector<uint64_t> delayLoads;
   if (!config.dll) {
-    // The executable offers the vague entities it exports, but no type_info,
-    // which such images compare by name. A thread-local variable's instance
-    // is its record.
+    // The executable offers the vague entities it exports, type_info objects
+    // included, whose name words a DLL loaded later binds. A thread-local
+    // variable's instance is its record.
     DenseSet<Symbol *> vague;
     vague.insert_range(ctx.symtab.weakData);
     vague.insert_range(ctx.symtab.weakFunctions);
@@ -1536,7 +1556,7 @@ void ImportSlotContents::createOfferTable() {
       if (DefinedRegular *var = ctx.symtab.getRecordVariable(e.sym))
         d = var;
       if (d && d->isLive() && vague.contains(d) &&
-          isShareableVagueName(d->getName()) && !isTypeInfoName(d->getName()))
+          isShareableVagueName(d->getName()))
         offer(e.exportName, nullptr, cast<Defined>(e.sym));
     }
   } else {

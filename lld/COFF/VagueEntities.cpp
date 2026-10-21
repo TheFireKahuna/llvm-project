@@ -579,7 +579,9 @@ void addVagueEntityRecord(COFFLinkerContext &ctx, StringRef dllName,
   for (const Export &e : symtab.exports) {
     if (StringRef name = e.extName; name.consume_front(overrideOfferPrefix))
       image.offers.push_back(name);
-    if (e.sym && e.forwardTo.empty() && symtab.isPreemptibleVagueEntity(e.sym))
+    if (e.sym && e.forwardTo.empty() &&
+        (symtab.isPreemptibleVagueEntity(e.sym) ||
+         symtab.isBoundTypeInfo(e.sym)))
       image.preemptible.push_back(e.sym->getName());
   }
   llvm::sort(image.preemptible);

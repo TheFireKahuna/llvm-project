@@ -255,6 +255,13 @@ public:
   bool isPreemptibleVagueEntity(Symbol *s);
   std::optional<llvm::DenseSet<Symbol *>> preemptibleVagueEntities;
 
+  // Under -import-slots in a DLL with a fill, whether s is a type_info object
+  // it keeps with default visibility, whose name word the fill binds to that
+  // of the program's instance where both describe the same type, so that
+  // images that no link joins compare one word. The DLL's references to it stay
+  // direct: nothing reads its address but the comparison.
+  bool isBoundTypeInfo(Symbol *s);
+
   // Under -import-slots in an executable, for each vague entity two images of
   // its load closure keep preemptible, imports its owner's instance (from
   // chooseVagueOwners) or points to its own, and names it in the override

@@ -1278,6 +1278,15 @@ bool SymbolTable::isPreemptibleVagueEntity(Symbol *s) {
   return preemptibleVagueEntities->contains(s);
 }
 
+bool SymbolTable::isBoundTypeInfo(Symbol *s) {
+  auto *d = dyn_cast_or_null<DefinedRegular>(s);
+  return d && ctx.config.importSlots && ctx.config.dll &&
+         ctx.config.bsymbolic != Configuration::Bsymbolic::All && d->isCOMDAT &&
+         isTypeInfoName(d->getName()) && isa<ObjFile>(d->getFile()) &&
+         isDefaultVisibility(d) &&
+         isa_and_nonnull<Defined>(findUnderscore("__xi_a"));
+}
+
 void SymbolTable::keepThreadLocalRecord(Defined *record) {
   auto *c = dyn_cast_or_null<ThreadLocalRecordChunk>(record->getChunk());
   if (!c)

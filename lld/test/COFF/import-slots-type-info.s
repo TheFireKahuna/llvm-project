@@ -6,9 +6,11 @@
 ## the import, and a word of its static data that holds the object's address,
 ## a kept vtable's or a base pointer in a derived type_info object that only
 ## the importer keeps, becomes an in-place slot. Unlike other vague data, a DLL
-## reaches its own type_info object directly, through no cell, and the record
-## of what it keeps leaves the object out, so that true siblings that both
-## keep one, which compare it by name, are not reported.
+## reaches its own type_info object directly, through no cell: its fill writes
+## only the object's name word, with the owner's where both name the same type
+## and layout, so that true siblings that both keep one compare one word. The
+## record of what it keeps lists the object for an executable to pick its
+## owner, and true siblings that both keep it are not reported.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium a.s -o a.obj
@@ -19,7 +21,8 @@
 # RUN:   -o twice.obj
 # RUN: lld-link -def:ntdll.def -out:ntdll.lib -machine:x64
 
-# RUN: lld-link -import-slots -dll -noentry a.obj crt.obj ntdll.lib -out:a.dll
+# RUN: lld-link -import-slots -dll -noentry a.obj crt.obj ntdll.lib -out:a.dll \
+# RUN:   -map:a.map
 # RUN: llvm-readobj --coff-exports a.dll | FileCheck --check-prefix=OFFERS %s
 # RUN: llvm-objdump -d a.dll | FileCheck --check-prefix=LOCAL %s
 # OFFERS-NOT: Name: _ZTS1V
@@ -46,15 +49,24 @@
 # SLOTS-NEXT: Symbol: _ZTI1V (0)
 
 ## Two DLLs that both keep the object, which no import path joins, are not
-## reported: the executable takes the first one's offer.
-# RUN: lld-link -import-slots -dll -noentry b.obj crt.obj ntdll.lib -out:b.dll
+## reported: the executable takes the first one's offer, which its table names
+## for the second's fill, and each DLL's fill has the object's name word to
+## write.
+# RUN: lld-link -import-slots -dll -noentry b.obj crt.obj ntdll.lib -out:b.dll \
+# RUN:   -map:b.map
 # RUN: lld-link -import-slots -entry:main -subsystem:console twice.obj a.lib \
-# RUN:   b.lib -out:twice.exe -verbose 2>&1 | \
+# RUN:   b.lib -out:twice.exe -map:twice.map -verbose 2>&1 | \
 # RUN:   FileCheck --check-prefix=TWICE %s
+# RUN: FileCheck --check-prefix=FILL --input-file=a.map %s
+# RUN: FileCheck --check-prefix=FILL --input-file=b.map %s
+# RUN: FileCheck --check-prefix=TABLE --input-file=twice.map %s
 # TWICE-NOT: error:
 # TWICE:     Preempting typeinfo for V in twice.obj with its instance in a.dll
 # TWICE-NOT: which owns it for the program
 # TWICE-NOT: error:
+# FILL:      __llvm_fill_list
+## The table's check, live only where the executable names an owner.
+# TABLE:     __ovr_check
 
 #--- a.s
   .linkbindings
@@ -197,11 +209,28 @@ main:
   movq vptr(%rip), %rax
   retq
 
+## A stand-in for the runtime's check of the override table.
+  .data
+  .globl __ovr_check
+__ovr_check:
+  .quad 0
+
 #--- crt.s
   .section .CRT$XIA,"dr"
   .globl __xi_a
 __xi_a:
   .quad 0
+
+## A stand-in for the builtins' __llvm_fill.
+  .def __llvm_fill
+  .scl 2
+  .type 32
+  .endef
+  .section .text,"xr",one_only,__llvm_fill
+  .globl __llvm_fill
+__llvm_fill:
+  leaq __llvm_fill_list(%rip), %rax
+  retq
   .section .CRT$XIZ,"dr"
   .globl __xi_z
 __xi_z:
