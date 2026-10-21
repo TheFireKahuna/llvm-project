@@ -142,6 +142,8 @@ void verifyfeaturestrings(void) {
   (void)__builtin_cpu_supports("avx10.2");
   (void)__builtin_cpu_supports("avx10v2aux");
   (void)__builtin_cpu_supports("movrs");
+  (void)__builtin_cpu_supports("ermsb");
+  (void)__builtin_cpu_supports("fsrm");
 }
 
 void verifycpustrings(void) {

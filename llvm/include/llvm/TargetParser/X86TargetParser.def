@@ -245,6 +245,8 @@ X86_FEATURE_COMPAT(MOVRS,              "movrs",                  0, 121)
 X86_FEATURE_COMPAT(AMX_MOVRS,          "amx-movrs",              0, 122)
 X86_FEATURE_COMPAT(AVX512BMM,          "avx512bmm",              0, 123)
 X86_FEATURE_COMPAT(AVX10_V2_AUX,       "avx10v2aux",             0, 124)
+X86_FEATURE_COMPAT(ERMSB,              "ermsb",                 37, 125)
+X86_FEATURE_COMPAT(FSRM,               "fsrm",                  38, 126)
 
 // Features we don't multiversion on.
 X86_FEATURE       (NF,                 "nf")
@@ -273,7 +275,7 @@ X86_FEATURE       (LVI_CFI,                     "lvi-cfi")
 X86_FEATURE       (LVI_LOAD_HARDENING,          "lvi-load-hardening")
 
 // Max number of priorities. Priorities form a consecutive range.
-#define MAX_PRIORITY 36
+#define MAX_PRIORITY 38
 
 #undef X86_FEATURE_COMPAT
 #undef X86_FEATURE
