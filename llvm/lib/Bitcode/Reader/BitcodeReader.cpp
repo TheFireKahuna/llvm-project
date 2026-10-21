@@ -4607,6 +4607,10 @@ Error BitcodeReader::parseGlobalIndirectSymbolRecord(
       return error("Malformed partition, too large.");
     NewGA->setPartition(
         StringRef(Strtab.data() + Record[OpNum], Record[OpNum + 1]));
+    // An ifunc's DLL storage class follows its partition.
+    if (BitCode == bitc::MODULE_CODE_IFUNC && OpNum + 2 < Record.size() &&
+        !NewGA->hasLocalLinkage())
+      NewGA->setDLLStorageClass(getDecodedDLLStorageClass(Record[OpNum + 2]));
   }
 
   ValueList.push_back(NewGA, getVirtualTypeID(NewGA->getType(), TypeID));

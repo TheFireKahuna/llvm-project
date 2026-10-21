@@ -4168,6 +4168,7 @@ void AssemblyWriter::printIFunc(const GlobalIFunc *GI) {
   Out << getLinkageNameWithSpace(GI->getLinkage());
   printDSOLocation(*GI, Out);
   printVisibility(GI->getVisibility(), Out);
+  printDLLStorageClass(GI->getDLLStorageClass(), Out);
 
   Out << "ifunc ";
 

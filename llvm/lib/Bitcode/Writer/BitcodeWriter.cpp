@@ -1787,7 +1787,8 @@ void ModuleBitcodeWriter::writeModuleInfo() {
   // Emit the ifunc information.
   for (const GlobalIFunc &I : M.ifuncs()) {
     // IFUNC: [strtab offset, strtab size, ifunc type, address space, resolver
-    //         val#, linkage, visibility, DSO_Local]
+    //         val#, linkage, visibility, DSO_Local, partition strtab offset,
+    //         partition strtab size, dllstorageclass]
     Vals.push_back(addToStrtab(I.getName()));
     Vals.push_back(I.getName().size());
     Vals.push_back(VE.getTypeID(I.getValueType()));
@@ -1798,6 +1799,7 @@ void ModuleBitcodeWriter::writeModuleInfo() {
     Vals.push_back(I.isDSOLocal());
     Vals.push_back(addToStrtab(I.getPartition()));
     Vals.push_back(I.getPartition().size());
+    Vals.push_back(getEncodedDLLStorageClass(I));
     Stream.EmitRecord(bitc::MODULE_CODE_IFUNC, Vals);
     Vals.clear();
   }
