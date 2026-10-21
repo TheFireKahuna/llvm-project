@@ -102,6 +102,9 @@ class X86WindowsImportFusion {
   bool isFusibleIndex(const MachineInstr &MI, Register Reg) const;
   bool isFusibleAdd(const MachineInstr &MI, Register Reg) const;
   bool isValueRead(const MachineInstr &MI, Register Reg) const;
+#ifdef EXPENSIVE_CHECKS
+  void verify(MachineFunction &MF) const;
+#endif
 
 public:
   bool run(MachineFunction &MF, function_ref<ReachingDefInfo &()> GetRDI);
@@ -441,7 +444,8 @@ void X86WindowsImportFusion::undefDebugValues(MachineInstr &Load,
 // A load the linker disposes of gives its bytes to the instruction that
 // follows it, which must then be in its block rather than after the padding
 // that may align the next one. Moving the load back over an instruction that
-// neither reads nor writes its register costs nothing.
+// neither reads nor writes its register costs nothing. A load that the linker
+// may make an lea from another load's register reads that register.
 void X86WindowsImportFusion::moveOffBlockEnd(MachineInstr &Load,
                                              Register Reg) const {
   MachineBasicBlock *MBB = Load.getParent();
@@ -449,10 +453,17 @@ void X86WindowsImportFusion::moveOffBlockEnd(MachineInstr &Load,
       Load.getIterator() == MBB->instr_begin())
     return;
   auto Prev = prev_nodbg(Load.getIterator(), MBB->instr_begin());
+  const auto &Anchors =
+      MBB->getParent()->getInfo<X86MachineFunctionInfo>()->getImportAnchors();
+  auto Anchored = Anchors.find(&*Prev);
   if (Prev->isMetaInstruction() || Prev->isPseudo() || Prev->isBundled() ||
       Prev->readsRegister(Reg, TRI) || Prev->modifiesRegister(Reg, TRI) ||
       Prev->getFlag(MachineInstr::FrameSetup) ||
-      Prev->getFlag(MachineInstr::FrameDestroy))
+      Prev->getFlag(MachineInstr::FrameDestroy) ||
+      (Anchored != Anchors.end() &&
+       any_of(Anchored->second, [&](const auto &Anchor) {
+         return TRI->regsOverlap(Anchor.second, Reg);
+       })))
     return;
   MBB->splice(Prev, MBB, Load.getIterator());
 }
@@ -868,8 +879,12 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
   for (auto [Load, Anchor] : Anchors)
     FI->addImportAnchor(Load, Anchor, Anchor->getOperand(0).getReg());
   NumAnchored += Anchors.size();
-  if (Work.empty())
+  if (Work.empty()) {
+#ifdef EXPENSIVE_CHECKS
+    verify(MF);
+#endif
     return !ValueOnly.empty() || !Anchors.empty();
+  }
 
   SmallVector<MachineBasicBlock *, 8> LiveInBlocks;
   using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
@@ -954,8 +969,60 @@ bool X86WindowsImportFusion::run(MachineFunction &MF,
   }
   if (!LiveInBlocks.empty())
     fullyRecomputeLiveIns(LiveInBlocks);
+#ifdef EXPENSIVE_CHECKS
+  verify(MF);
+#endif
   return true;
 }
+
+#ifdef EXPENSIVE_CHECKS
+// The linker rewrites a described instruction as though the register it reads
+// held only what the load it names gave it, which MC can check only where
+// execution falls through from the load. Reaching definitions computed afresh
+// check it on every path, through copies for an access or index, once the
+// pass has changed the code; and that an anchor's register still holds what
+// its load gave it.
+void X86WindowsImportFusion::verify(MachineFunction &MF) const {
+  const X86MachineFunctionInfo *FI = MF.getInfo<X86MachineFunctionInfo>();
+  ReachingDefInfo RDI;
+  RDI.run(MF);
+  using UseKind = X86MachineFunctionInfo::ImportFusedUseKind;
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : MBB) {
+      auto Use = FI->getImportFusedUses().find(&MI);
+      if (Use != FI->getImportFusedUses().end()) {
+        auto [Load, Reg, Kind] = Use->second;
+        bool Copies = Kind == UseKind::Access || Kind == UseKind::Index;
+        SmallVector<std::pair<MachineInstr *, Register>, 4> Work = {
+            {&MI, Reg}};
+        SmallPtrSet<MachineInstr *, 4> Seen;
+        while (!Work.empty()) {
+          auto [Reader, R] = Work.pop_back_val();
+          SmallPtrSet<MachineInstr *, 2> Defs;
+          RDI.getGlobalReachingDefs(Reader, R, Defs);
+          assert(!Defs.empty() && "fused instruction reads a value from entry");
+          for (MachineInstr *Def : Defs) {
+            if (Def == Load || !Seen.insert(Def).second)
+              continue;
+            assert(Copies && Def->getOpcode() == X86::MOV64rr &&
+                   "fused instruction reads a value its load did not give");
+            Work.push_back({Def, Def->getOperand(1).getReg()});
+          }
+        }
+      }
+      auto Anchored = FI->getImportAnchors().find(&MI);
+      if (Anchored == FI->getImportAnchors().end())
+        continue;
+      for (auto [Anchor, Reg] : Anchored->second) {
+        SmallVector<MachineBasicBlock *, 8> Blocks;
+        assert(reachesUnmodified(const_cast<MachineInstr &>(*Anchor), MI, Reg,
+                                 Blocks) &&
+               "anchor's register no longer holds its load's pointer");
+      }
+    }
+  }
+}
+#endif
 
 bool X86WindowsImportFusionLegacy::runOnMachineFunction(MachineFunction &MF) {
   if (skipFunction(MF.getFunction()))
