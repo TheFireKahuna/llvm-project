@@ -820,6 +820,21 @@ public:
     llvm_unreachable("COFF IFunc lowering is not yet supported on this target");
   }
 
+  /// Emits the body of the stub that is an indirect function's address on
+  /// COFF where Windows can select the body it jumps to as it maps the image,
+  /// with the records that say how, and returns whether it did.
+  virtual bool emitCOFFFunctionOverride(Module &M, const GlobalIFunc &GI,
+                                        MCSymbol *Stub) {
+    return false;
+  }
+
+  /// Emits the record by which Windows selects the body the stub \p Stub
+  /// jumps to: the first of \p Candidates whose capabilities, the numbers in
+  /// \p Conditions, are all present, or else the body the stub jumps to.
+  void emitCOFFFunctionOverrideRecord(MCSymbol *Stub,
+                                      ArrayRef<const MCSymbol *> Candidates,
+                                      ArrayRef<ArrayRef<uint32_t>> Conditions);
+
   /// Emit N NOP instructions.
   void emitNops(unsigned N);
 

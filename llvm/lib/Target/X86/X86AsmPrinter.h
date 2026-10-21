@@ -183,6 +183,8 @@ private:
                                     MCSymbol *LazyPointer) override;
   void emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
                              MCSymbol *Pointer) override;
+  bool emitCOFFFunctionOverride(Module &M, const GlobalIFunc &GI,
+                                MCSymbol *Stub) override;
 
   void emitCallInstruction(const llvm::MCInst &MCI);
   void maybeEmitNopAfterCallForWindowsEH(const MachineInstr *MI);

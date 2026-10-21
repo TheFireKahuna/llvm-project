@@ -18,6 +18,7 @@
 #include "X86.h"
 #include "X86MacroFusion.h"
 #include "X86TargetMachine.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelector.h"
@@ -25,7 +26,9 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalIFunc.h"
 #include "llvm/IR/GlobalValue.h"
+#include "llvm/IR/Instructions.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CodeGen.h"
@@ -34,6 +37,8 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/TargetParser/X86TargetParser.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -207,6 +212,70 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
   return X86II::MO_GOT;
 }
 
+// The kernel tests a capability per feature, so a multiversioned function's
+// resolver, which returns the highest-priority version whose features are
+// present, is a chain of tests over its versions in priority order. The chain
+// ends at the first version within the baseline, and each version before it
+// needs a number for every feature it requires beyond the baseline.
+bool X86Subtarget::getFunctionOverride(
+    const GlobalIFunc &GI, SmallVectorImpl<FunctionOverrideOption> &Options,
+    const Function *&Fallback) const {
+  Fallback = nullptr;
+  Options.clear();
+  const Function *Resolver = GI.getResolverFunction();
+  if (!is64Bit() || !TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() ||
+      !Resolver || Resolver->isDeclaration() || GI.isInterposable())
+    return false;
+  std::optional<TargetTransformInfo> TTI;
+  auto GetTTI = [&](Function &F) -> TargetTransformInfo & {
+    TTI.emplace(TM.getTargetTransformInfo(F));
+    return *TTI;
+  };
+  SmallVector<Function *, 4> Versions;
+  for (const BasicBlock &BB : *Resolver)
+    if (auto *Ret = dyn_cast_or_null<ReturnInst>(BB.getTerminator()))
+      if (!collectFunctionVersions(Ret->getReturnValue(), Versions, GetTTI))
+        return false;
+  if (Versions.empty())
+    return false;
+  SmallVector<std::pair<APInt, Function *>, 4> Ranked;
+  for (Function *V : Versions)
+    if (!is_contained(make_second_range(Ranked), V))
+      Ranked.push_back({GetTTI(*V).getPriorityMask(*V), V});
+  stable_sort(Ranked, [](const auto &A, const auto &B) {
+    return A.first.ugt(B.first);
+  });
+
+  StringMap<bool> Baseline;
+  X86::getTripleBaseline(TargetTriple, Baseline);
+  for (auto [I, Entry] : enumerate(Ranked)) {
+    Function *V = Entry.second;
+    FunctionOverrideOption Option{V, {}};
+    SmallVector<StringRef, 8> Features;
+    V->getFnAttribute("fmv-features")
+        .getValueAsString()
+        .split(Features, ',', -1, false);
+    for (StringRef F : Features) {
+      if (X86::isBaselineFeature(Baseline, F))
+        continue;
+      std::optional<uint32_t> Capability =
+          X86::getFunctionOverrideCapability(F);
+      if (!Capability)
+        return false;
+      Option.Capabilities.push_back(*Capability);
+    }
+    if (Option.Capabilities.empty()) {
+      Fallback = V;
+      return true;
+    }
+    // Of two versions of one priority the resolver's order is unknown.
+    if (I + 1 != Ranked.size() && Ranked[I + 1].first == Entry.first)
+      return false;
+    Options.push_back(std::move(Option));
+  }
+  return false;
+}
+
 unsigned char
 X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV) const {
   return classifyGlobalFunctionReference(GV, *GV->getParent());
@@ -227,11 +296,16 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
   bool NoPLT =
       TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() && M.getRtLibUseGOT();
 
-  // There an ifunc is a stub that jumps through the ifunc's import pointer,
-  // which holds the function its resolver chose, so a call reads the pointer.
-  if (isa_and_nonnull<GlobalIFunc>(GV) &&
-      TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment())
-    return X86II::MO_DLLIMPORT;
+  // There an ifunc is a stub that jumps to the body Windows selected, or else
+  // through the ifunc's import pointer, which holds the function its resolver
+  // chose, so a call reads the pointer.
+  if (auto *GI = dyn_cast_or_null<GlobalIFunc>(GV);
+      GI && TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    SmallVector<FunctionOverrideOption, 4> Options;
+    const Function *Fallback;
+    return getFunctionOverride(*GI, Options, Fallback) ? X86II::MO_NO_FLAG
+                                                       : X86II::MO_DLLIMPORT;
+  }
   if (NoPLT && F && !F->isDSOLocal() && !F->isIntrinsic() &&
       F->isDeclarationForLinker() && !F->hasExternalWeakLinkage())
     return X86II::MO_DLLIMPORT;

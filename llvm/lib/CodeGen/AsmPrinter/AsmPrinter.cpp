@@ -2996,6 +2996,24 @@ void AsmPrinter::emitGlobalIFunc(Module &M, const GlobalIFunc &GI) {
   emitMachOIFuncStubHelperBody(M, GI, LazyPointer);
 }
 
+// The diagram is a chain: each candidate's tests in turn, a false edge leading
+// to the next candidate's, a true edge to its next test or, after its last, to
+// a leaf selecting it; after the last candidate a terminal that keeps the
+// body the stub jumps to. Every edge leads forward, as Windows requires.
+void AsmPrinter::emitCOFFFunctionOverrideRecord(
+    MCSymbol *Stub, ArrayRef<const MCSymbol *> Candidates,
+    ArrayRef<ArrayRef<uint32_t>> Conditions) {
+  SmallVector<std::array<uint32_t, 3>, 8> Nodes;
+  for (auto [I, Condition] : enumerate(Conditions)) {
+    uint32_t Leaf = Nodes.size() + Condition.size();
+    for (auto [J, Capability] : enumerate(Condition))
+      Nodes.push_back({Leaf + 1, uint32_t(Nodes.size() + 1), Capability});
+    Nodes.push_back({Leaf, Leaf, uint32_t(I)});
+  }
+  Nodes.push_back({0, 0, 0});
+  OutStreamer->emitCOFFLinkFunctionOverride(Stub, Candidates, Nodes);
+}
+
 void AsmPrinter::emitCOFFIFunc(Module &M, const GlobalIFunc &GI) {
   const Function *Resolver = GI.getResolverFunction();
   if (!Resolver)
@@ -3031,6 +3049,8 @@ void AsmPrinter::emitCOFFIFunc(Module &M, const GlobalIFunc &GI) {
   OutStreamer->emitCodeAlignment(Align(16), *getIFuncMCSubtargetInfo());
   emitKCFITypeId(GI, Align(16), /*MF=*/nullptr);
   OutStreamer->emitLabel(Stub);
+  if (emitCOFFFunctionOverride(M, GI, Stub))
+    return;
   emitCOFFIFuncStubBody(
       M, GI, OutContext.getOrCreateSymbol("__imp_" + Stub->getName()));
   OutStreamer->emitCOFFLinkIFunc(Stub, getSymbol(Resolver));
