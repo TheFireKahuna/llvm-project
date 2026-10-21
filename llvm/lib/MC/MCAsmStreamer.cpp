@@ -338,6 +338,9 @@ public:
                          const MCSymbol *Resolver) override;
   void emitCOFFLinkIFuncFallback(const MCSymbol *Function,
                                  const MCSymbol *Fallback) override;
+  void emitCOFFLinkFunctionOverride(
+      const MCSymbol *Function, ArrayRef<const MCSymbol *> Candidates,
+      ArrayRef<std::array<uint32_t, 3>> Nodes) override;
   void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
   void emitCOFFLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
                             bool IsData, StringRef Identity,
@@ -1147,6 +1150,23 @@ void MCAsmStreamer::emitCOFFLinkIFuncFallback(const MCSymbol *Function,
   Function->print(OS, MAI);
   OS << ", ";
   Fallback->print(OS, MAI);
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFLinkFunctionOverride(
+    const MCSymbol *Function, ArrayRef<const MCSymbol *> Candidates,
+    ArrayRef<std::array<uint32_t, 3>> Nodes) {
+  OS << "\t.linkfunctionoverride\t";
+  Function->print(OS, MAI);
+  OS << ", (";
+  ListSeparator LS;
+  for (const MCSymbol *C : Candidates) {
+    OS << LS;
+    C->print(OS, MAI);
+  }
+  OS << ')';
+  for (const std::array<uint32_t, 3> &N : Nodes)
+    OS << ", (" << N[0] << ", " << N[1] << ", " << format_hex(N[2], 1) << ')';
   EmitEOL();
 }
 

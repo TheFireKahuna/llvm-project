@@ -388,6 +388,17 @@ void MCWinCOFFStreamer::emitCOFFLinkIFuncFallback(const MCSymbol *Function,
       {COFF::LinkRecordIFuncFallbacks, Function, Fallback});
 }
 
+void MCWinCOFFStreamer::emitCOFFLinkFunctionOverride(
+    const MCSymbol *Function, ArrayRef<const MCSymbol *> Candidates,
+    ArrayRef<std::array<uint32_t, 3>> Nodes) {
+  getAssembler().registerSymbol(*Function);
+  for (const MCSymbol *C : Candidates)
+    getAssembler().registerSymbol(*C);
+  getWriter().addLinkFunctionOverride(
+      {Function, SmallVector<const MCSymbol *, 4>(Candidates),
+       SmallVector<std::array<uint32_t, 3>, 8>(Nodes)});
+}
+
 void MCWinCOFFStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {
   getWriter().addKCFIMemberTag(Prefix);
 }

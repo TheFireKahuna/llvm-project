@@ -191,6 +191,21 @@ enum LinkRecordKind : uint64_t {
   // A linker that does not know the kind leaves the pointer zero until then.
   LinkRecordIFuncFallbacks = 40,
 
+  // Functions whose body Windows selects as it maps the image, each a stub
+  // that jumps to its default body, with the bodies it may jump to instead and
+  // the binary decision diagram that chooses among them, as a dynamic value
+  // relocation table's function-override record states them:
+  //
+  //   payload := (function:ULEB128 count:ULEB128 candidate:ULEB128*
+  //               nodes:ULEB128 (left:ULEB128 right:ULEB128 value:ULEB128)*)*
+  //
+  // function and candidate are symbol indices; a node's left edge is taken
+  // when the processor lacks the capability its value numbers, and a node
+  // whose edges both lead to itself selects the candidate its value indexes.
+  // A linker that does not know the kind leaves each stub jumping to its
+  // default body.
+  LinkRecordFunctionOverrides = 42,
+
   // The ABI contracts that the object's references to symbols another image
   // may provide require, for a linker that checks each against the contracts
   // the symbol's image provides:

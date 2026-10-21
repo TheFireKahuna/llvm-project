@@ -119,6 +119,15 @@ public:
     const MCSymbol *Second;
   };
 
+  /// A function whose body Windows selects as it maps the image: its stub,
+  /// the bodies the stub may jump to instead, and the diagram's nodes, each a
+  /// left edge, a right edge and a value (COFF::LinkRecordFunctionOverrides).
+  struct LinkFunctionOverride {
+    const MCSymbol *Function;
+    SmallVector<const MCSymbol *, 4> Candidates;
+    SmallVector<std::array<uint32_t, 3>, 8> Nodes;
+  };
+
   /// An ABI contract that the code in the section of Owner requires of the
   /// image that provides Symbol, which the object's link-only records carry
   /// (COFF::LinkRecordContracts).
@@ -246,6 +255,8 @@ private:
   SmallVector<LinkBinding, 0> LinkBindings;
   // The object's pairs of symbols, in the order given.
   SmallVector<LinkSymbolPair, 0> LinkSymbolPairs;
+  // The functions whose body Windows selects, in the order given.
+  SmallVector<LinkFunctionOverride, 0> LinkFunctionOverrides;
   // The ABI contracts the object's references require, in the order given.
   SmallVector<LinkContract, 0> LinkContracts;
   // The facts about the object's fused calls and the loads they read.
@@ -280,7 +291,8 @@ public:
     return hasLinkRecords() || !LinkPins.empty() || !LinkFacts.empty() ||
            !KCFIThunks.empty() || !KCFIMemberTags.empty() ||
            !LinkBindings.empty() || !LinkSymbolPairs.empty() ||
-           !LinkContracts.empty() || !LinkVTables.empty();
+           !LinkFunctionOverrides.empty() || !LinkContracts.empty() ||
+           !LinkVTables.empty();
   }
   void addLinkPin(const LinkPin &Pin) { LinkPins.push_back(Pin); }
   void addLinkVTable(LinkVTable VTable) {
@@ -294,6 +306,9 @@ public:
   void addKCFIThunk(const KCFIThunk &Thunk) { KCFIThunks.push_back(Thunk); }
   void addKCFIMemberTag(const MCSymbol *Prefix) {
     KCFIMemberTags.push_back(Prefix);
+  }
+  void addLinkFunctionOverride(LinkFunctionOverride Override) {
+    LinkFunctionOverrides.push_back(std::move(Override));
   }
   void addLinkSymbolPair(const LinkSymbolPair &Pair) {
     LinkSymbolPairs.push_back(Pair);

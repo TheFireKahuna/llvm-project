@@ -1960,6 +1960,32 @@ uint64_t WinCOFFWriter::writeObject() {
       }
     }
 
+    // A function whose stub or candidate the symbol table leaves out keeps
+    // its default body.
+    SmallString<0> Overrides;
+    raw_svector_ostream OverridesOS(Overrides);
+    auto Named = [](const MCSymbol *S) {
+      return !S->isTemporary() && S->isRegistered();
+    };
+    for (const WinCOFFObjectWriter::LinkFunctionOverride &O :
+         OWriter.LinkFunctionOverrides) {
+      if (!Named(O.Function) || !llvm::all_of(O.Candidates, Named))
+        continue;
+      encodeULEB128(O.Function->getIndex(), OverridesOS);
+      encodeULEB128(O.Candidates.size(), OverridesOS);
+      for (const MCSymbol *C : O.Candidates)
+        encodeULEB128(C->getIndex(), OverridesOS);
+      encodeULEB128(O.Nodes.size(), OverridesOS);
+      for (const std::array<uint32_t, 3> &N : O.Nodes)
+        for (uint32_t V : N)
+          encodeULEB128(V, OverridesOS);
+    }
+    if (!Overrides.empty()) {
+      encodeULEB128(COFF::LinkRecordFunctionOverrides, OS);
+      encodeULEB128(Overrides.size(), OS);
+      OS << Overrides;
+    }
+
     SmallString<0> Tags;
     raw_svector_ostream TagsOS(Tags);
     for (const MCSymbol *S : OWriter.KCFIMemberTags)
@@ -2094,6 +2120,7 @@ void WinCOFFObjectWriter::reset() {
   KCFIMemberTags.clear();
   LinkBindings.clear();
   LinkSymbolPairs.clear();
+  LinkFunctionOverrides.clear();
   LinkContracts.clear();
   LinkFusedCalls.clear();
   LinkFusedReads.clear();

@@ -1296,6 +1296,9 @@ void MCStreamer::emitCOFFLinkIFunc(const MCSymbol *Function,
                                    const MCSymbol *Resolver) {}
 void MCStreamer::emitCOFFLinkIFuncFallback(const MCSymbol *Function,
                                            const MCSymbol *Fallback) {}
+void MCStreamer::emitCOFFLinkFunctionOverride(
+    const MCSymbol *Function, ArrayRef<const MCSymbol *> Candidates,
+    ArrayRef<std::array<uint32_t, 3>> Nodes) {}
 void MCStreamer::emitCOFFKCFIMemberTag(const MCSymbol *Prefix) {}
 void MCStreamer::emitCOFFLinkContract(const MCSymbol *Owner,
                                       const MCSymbol *Symbol, bool IsData,

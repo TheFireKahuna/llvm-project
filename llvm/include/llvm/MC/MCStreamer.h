@@ -29,6 +29,7 @@
 #include "llvm/Support/SMLoc.h"
 #include "llvm/Support/VersionTuple.h"
 #include "llvm/TargetParser/ARMTargetParser.h"
+#include <array>
 #include <cassert>
 #include <cstdint>
 #include <memory>
@@ -663,6 +664,15 @@ public:
   /// \p Fallback until the image's start-up writes its import pointer.
   virtual void emitCOFFLinkIFuncFallback(const MCSymbol *Function,
                                          const MCSymbol *Fallback);
+
+  /// Tells the linker that Windows selects the body that the stub
+  /// \p Function jumps to as it maps the image: one of \p Candidates, as the
+  /// diagram \p Nodes (each a left edge, a right edge and a value) chooses,
+  /// or the default body the stub jumps to.
+  virtual void
+  emitCOFFLinkFunctionOverride(const MCSymbol *Function,
+                               ArrayRef<const MCSymbol *> Candidates,
+                               ArrayRef<std::array<uint32_t, 3>> Nodes);
 
   /// Tells the linker that the KCFI prefix that \p Prefix marks holds a
   /// membership tag in the word before its marker, not a second type.

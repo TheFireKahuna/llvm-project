@@ -95,6 +95,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkIFunc>(".linkifunc");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkIFuncFallback>(
         ".linkifuncfallback");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFunctionOverride>(
+        ".linkfunctionoverride");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkContract>(
         ".linkcontract");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFusedCall>(
@@ -186,6 +188,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveLinkForwarder(StringRef, SMLoc);
   bool parseDirectiveLinkIFunc(StringRef, SMLoc);
   bool parseDirectiveLinkIFuncFallback(StringRef, SMLoc);
+  bool parseDirectiveLinkFunctionOverride(StringRef, SMLoc);
   bool parseDirectiveLinkContract(StringRef, SMLoc);
   bool parseDirectiveLinkFusedCall(StringRef, SMLoc);
   bool parseDirectiveLinkFusedRead(StringRef, SMLoc);
@@ -874,6 +877,51 @@ bool COFFAsmParser::parseDirectiveLinkIFuncFallback(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkIFuncFallback(Function, Fallback);
+  return false;
+}
+
+/// parseDirectiveLinkFunctionOverride
+///  ::= .linkfunctionoverride function, (candidate, ...)
+///        (, (left, right, value))*
+bool COFFAsmParser::parseDirectiveLinkFunctionOverride(StringRef, SMLoc) {
+  MCSymbol *Function;
+  if (getParser().parseSymbol(Function))
+    return TokError("expected identifier in directive");
+  SmallVector<const MCSymbol *, 4> Candidates;
+  if (getParser().parseComma() ||
+      getParser().parseToken(AsmToken::LParen, "expected '('"))
+    return true;
+  if (getLexer().isNot(AsmToken::RParen)) {
+    do {
+      MCSymbol *Candidate;
+      if (getParser().parseSymbol(Candidate))
+        return TokError("expected identifier in directive");
+      Candidates.push_back(Candidate);
+    } while (parseOptionalToken(AsmToken::Comma));
+  }
+  if (getParser().parseRParen())
+    return true;
+  SmallVector<std::array<uint32_t, 3>, 8> Nodes;
+  while (parseOptionalToken(AsmToken::Comma)) {
+    std::array<uint32_t, 3> Node;
+    if (getParser().parseToken(AsmToken::LParen, "expected '('"))
+      return true;
+    for (unsigned I = 0; I != 3; ++I) {
+      int64_t V;
+      if ((I && getParser().parseComma()) ||
+          getParser().parseAbsoluteExpression(V))
+        return true;
+      if (!isUInt<32>(V))
+        return TokError("diagram node field out of range");
+      Node[I] = V;
+    }
+    if (getParser().parseRParen())
+      return true;
+    Nodes.push_back(Node);
+  }
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkFunctionOverride(Function, Candidates, Nodes);
   return false;
 }
 

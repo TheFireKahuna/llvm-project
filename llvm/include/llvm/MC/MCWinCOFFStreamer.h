@@ -79,6 +79,9 @@ public:
                          const MCSymbol *Resolver) override;
   void emitCOFFLinkIFuncFallback(const MCSymbol *Function,
                                  const MCSymbol *Fallback) override;
+  void emitCOFFLinkFunctionOverride(
+      const MCSymbol *Function, ArrayRef<const MCSymbol *> Candidates,
+      ArrayRef<std::array<uint32_t, 3>> Nodes) override;
   void emitCOFFKCFIMemberTag(const MCSymbol *Prefix) override;
   void emitCOFFLinkContract(const MCSymbol *Owner, const MCSymbol *Symbol,
                             bool IsData, StringRef Identity,
