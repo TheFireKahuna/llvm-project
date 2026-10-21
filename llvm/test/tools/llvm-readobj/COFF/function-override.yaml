@@ -1,0 +1,113 @@
+## Test reading function-override (symbol 7) dynamic relocations.
+
+# RUN: yaml2obj %s -o %t.dll
+# RUN: llvm-readobj --coff-load-config %t.dll | FileCheck %s
+
+# CHECK:      DynamicRelocations [
+# CHECK-NEXT:   Version: 0x1
+# CHECK-NEXT:   FunctionOverride [
+# CHECK-NEXT:     Entry {
+# CHECK-NEXT:       OriginalRVA: 0x1000
+# CHECK-NEXT:       RVAs [
+# CHECK-NEXT:         RVA: 0x1010
+# CHECK-NEXT:         RVA: 0x1020
+# CHECK-NEXT:       ]
+# CHECK-NEXT:       Fixups [
+# CHECK-NEXT:         Fixup {
+# CHECK-NEXT:           Type: X64_REL32
+# CHECK-NEXT:           RVA: 0x1031
+# CHECK-NEXT:         }
+# CHECK-NEXT:       ]
+# CHECK-NEXT:       BDD [
+# CHECK-NEXT:         Version: 0x1
+# CHECK-NEXT:         Node {
+# CHECK-NEXT:           Left: 2
+# CHECK-NEXT:           Right: 1
+# CHECK-NEXT:           Value: 0x13E
+# CHECK-NEXT:         }
+# CHECK-NEXT:         Node {
+# CHECK-NEXT:           Left: 1
+# CHECK-NEXT:           Right: 1
+# CHECK-NEXT:           Value: 0x0
+# CHECK-NEXT:         }
+# CHECK-NEXT:         Node {
+# CHECK-NEXT:           Left: 4
+# CHECK-NEXT:           Right: 3
+# CHECK-NEXT:           Value: 0x1
+# CHECK-NEXT:         }
+# CHECK-NEXT:         Node {
+# CHECK-NEXT:           Left: 3
+# CHECK-NEXT:           Right: 3
+# CHECK-NEXT:           Value: 0x1
+# CHECK-NEXT:         }
+# CHECK-NEXT:         Node {
+# CHECK-NEXT:           Left: 0
+# CHECK-NEXT:           Right: 0
+# CHECK-NEXT:           Value: 0x0
+# CHECK-NEXT:         }
+# CHECK-NEXT:       ]
+# CHECK-NEXT:     }
+# CHECK-NEXT:   ]
+# CHECK-NEXT: ]
+
+## A diagram that overruns the record is rejected.
+# RUN: yaml2obj %s -DBDDSIZE=48 -o %t-bad.dll
+# RUN: not llvm-readobj --coff-load-config %t-bad.dll 2>&1 \
+# RUN:   | FileCheck --check-prefix=BAD %s
+# BAD: Invalid function override BDD size (48)
+
+--- !COFF
+OptionalHeader:
+  ImageBase:       0x180000000
+  SectionAlignment: 4096
+  FileAlignment:   512
+  DLLCharacteristics: [ ]
+  LoadConfigTable:
+    RelativeVirtualAddress: 0x2000
+    Size:            320
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: [ IMAGE_FILE_EXECUTABLE_IMAGE, IMAGE_FILE_LARGE_ADDRESS_AWARE, IMAGE_FILE_DLL ]
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    VirtualAddress:  0x1000
+    VirtualSize:     0x40
+  - Name:            .rdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    VirtualAddress:  0x2000
+    VirtualSize:     328
+    StructuredData:
+      - LoadConfig:
+          DynamicValueRelocTableOffset: 0
+          DynamicValueRelocTableSection: 3
+  - Name:            .reloc
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_DISCARDABLE ]
+    VirtualAddress:  0x3000
+    VirtualSize:     108
+    StructuredData:
+      - UInt32: 1         # coff_dynamic_reloc_table.Version
+      - UInt32: 100       # coff_dynamic_reloc_table.Size
+      - UInt32: 7         # Symbol(low) = IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE
+      - UInt32: 0         # Symbol(high)
+      - UInt32: 88        # BaseRelocSize
+      - UInt32: 36        # coff_function_override_header.FuncOverrideSize
+      - UInt32: 0x1000    # OriginalRva
+      - UInt32: 0         # BDDOffset
+      - UInt32: 8         # RvaSize
+      - UInt32: 12        # BaseRelocSize
+      - UInt32: 0x1010    # RVAs[0]
+      - UInt32: 0x1020    # RVAs[1]
+      - UInt32: 0x1000    # coff_base_reloc_block_header.PageRVA
+      - UInt32: 12        # coff_base_reloc_block_header.BlockSize
+      - Binary: 3110      # X64_REL32 at offset 0x31
+      - Binary: 0000      # padding
+      - UInt32: 1         # coff_bdd_info.Version
+      - UInt32: [[BDDSIZE=40]]  # coff_bdd_info.BDDSize
+      - Binary: 020001003e010000  # node 0: test 0x13e, false 2, true 1
+      - Binary: 0100010000000000  # node 1: leaf, RVAs[0]
+      - Binary: 0400030001000000  # node 2: test 0x1, false 4, true 3
+      - Binary: 0300030001000000  # node 3: leaf, RVAs[1]
+      - Binary: 0000000000000000  # node 4: keep OriginalRva
+symbols:         []
+...

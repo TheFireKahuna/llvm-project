@@ -2093,6 +2093,17 @@ void DynamicRelocRef::getContents(ArrayRef<uint8_t> &Ref) const {
   }
 }
 
+// The function-override payload: a header giving the size of the overridden
+// functions' entries, the entries, then the region their diagrams lie in.
+static std::pair<ArrayRef<uint8_t>, ArrayRef<uint8_t>>
+getFunctionOverrideRegions(ArrayRef<uint8_t> Contents) {
+  auto *H =
+      reinterpret_cast<const coff_function_override_header *>(Contents.data());
+  ArrayRef<uint8_t> Rest = Contents.drop_front(sizeof(*H));
+  return {Rest.take_front(H->FuncOverrideSize),
+          Rest.drop_front(H->FuncOverrideSize)};
+}
+
 Error DynamicRelocRef::validate() const {
   const coff_dynamic_reloc_table *Table = Obj->getDynamicRelocTable();
   size_t ContentsSize =
@@ -2136,6 +2147,28 @@ Error DynamicRelocRef::validate() const {
         return E;
     }
     break;
+  case COFF::IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE: {
+    if (Contents.size() < sizeof(coff_function_override_header) ||
+        reinterpret_cast<const coff_function_override_header *>(Contents.data())
+                ->FuncOverrideSize >
+            Contents.size() - sizeof(coff_function_override_header))
+      return createStringError(object_error::parse_failed,
+                               "Invalid function override header");
+    auto [Entries, BDDRegion] = getFunctionOverrideRegions(Contents);
+    while (!Entries.empty()) {
+      auto *H =
+          reinterpret_cast<const coff_function_override_dynamic_relocation *>(
+              Entries.data());
+      if (Entries.size() < sizeof(*H) ||
+          uint64_t(H->RvaSize) + H->BaseRelocSize > Entries.size() - sizeof(*H))
+        return createStringError(object_error::parse_failed,
+                                 "Invalid function override entry size");
+      if (Error E = FunctionOverrideRef(H, BDDRegion).validate())
+        return E;
+      Entries = Entries.drop_front(sizeof(*H) + H->RvaSize + H->BaseRelocSize);
+    }
+    break;
+  }
   }
 
   return Error::success();
@@ -2161,6 +2194,105 @@ arm64x_reloc_iterator DynamicRelocRef::arm64x_reloc_end() const {
 
 iterator_range<arm64x_reloc_iterator> DynamicRelocRef::arm64x_relocs() const {
   return make_range(arm64x_reloc_begin(), arm64x_reloc_end());
+}
+
+function_override_iterator DynamicRelocRef::function_override_begin() const {
+  assert(getType() == COFF::IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE);
+  ArrayRef<uint8_t> Content;
+  getContents(Content);
+  auto [Entries, BDDRegion] = getFunctionOverrideRegions(Content);
+  return function_override_iterator(FunctionOverrideRef(
+      reinterpret_cast<const coff_function_override_dynamic_relocation *>(
+          Entries.begin()),
+      BDDRegion));
+}
+
+function_override_iterator DynamicRelocRef::function_override_end() const {
+  assert(getType() == COFF::IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE);
+  ArrayRef<uint8_t> Content;
+  getContents(Content);
+  auto [Entries, BDDRegion] = getFunctionOverrideRegions(Content);
+  return function_override_iterator(FunctionOverrideRef(
+      reinterpret_cast<const coff_function_override_dynamic_relocation *>(
+          Entries.end()),
+      BDDRegion));
+}
+
+iterator_range<function_override_iterator>
+DynamicRelocRef::function_overrides() const {
+  return make_range(function_override_begin(), function_override_end());
+}
+
+bool FunctionOverrideRef::operator==(const FunctionOverrideRef &Other) const {
+  return Header == Other.Header;
+}
+
+// An entry is followed by its candidates' RVAs and its fixups' blocks.
+void FunctionOverrideRef::moveNext() {
+  Header = reinterpret_cast<const coff_function_override_dynamic_relocation *>(
+      reinterpret_cast<const uint8_t *>(Header + 1) + Header->RvaSize +
+      Header->BaseRelocSize);
+}
+
+ArrayRef<support::ulittle32_t> FunctionOverrideRef::getRVAs() const {
+  return ArrayRef(reinterpret_cast<const support::ulittle32_t *>(Header + 1),
+                  Header->RvaSize / sizeof(uint32_t));
+}
+
+iterator_range<base_reloc_iterator> FunctionOverrideRef::fixups() const {
+  const uint8_t *Begin =
+      reinterpret_cast<const uint8_t *>(Header + 1) + Header->RvaSize;
+  auto Block = [](const uint8_t *P) {
+    return BaseRelocRef(
+        reinterpret_cast<const coff_base_reloc_block_header *>(P), nullptr);
+  };
+  return make_range(base_reloc_iterator(Block(Begin)),
+                    base_reloc_iterator(Block(Begin + Header->BaseRelocSize)));
+}
+
+const coff_bdd_info *FunctionOverrideRef::getBDDInfo() const {
+  return reinterpret_cast<const coff_bdd_info *>(BDDRegion.data() +
+                                                 Header->BDDOffset);
+}
+
+ArrayRef<coff_bdd_dynamic_relocation> FunctionOverrideRef::getBDDNodes() const {
+  const coff_bdd_info *Info = getBDDInfo();
+  return ArrayRef(
+      reinterpret_cast<const coff_bdd_dynamic_relocation *>(Info + 1),
+      Info->BDDSize / sizeof(coff_bdd_dynamic_relocation));
+}
+
+Error FunctionOverrideRef::validate() const {
+  // The entries' region is the header's own size, which the caller checked.
+  if (Header->RvaSize % sizeof(uint32_t))
+    return createStringError(object_error::parse_failed,
+                             "Invalid function override RVA size (" +
+                                 Twine(Header->RvaSize) + ")");
+  uint64_t Fixups = Header->BaseRelocSize;
+  const uint8_t *P =
+      reinterpret_cast<const uint8_t *>(Header + 1) + Header->RvaSize;
+  while (Fixups) {
+    auto *Block = reinterpret_cast<const coff_base_reloc_block_header *>(P);
+    if (Fixups < sizeof(*Block) || Block->BlockSize < sizeof(*Block) ||
+        Block->BlockSize % sizeof(uint16_t) || Block->BlockSize > Fixups)
+      return createStringError(object_error::parse_failed,
+                               "Invalid function override fixup block");
+    Fixups -= Block->BlockSize;
+    P += Block->BlockSize;
+  }
+  if (Header->BDDOffset > BDDRegion.size() ||
+      BDDRegion.size() - Header->BDDOffset < sizeof(coff_bdd_info))
+    return createStringError(object_error::parse_failed,
+                             "Invalid function override BDD offset (" +
+                                 Twine(Header->BDDOffset) + ")");
+  const coff_bdd_info *Info = getBDDInfo();
+  if (Info->BDDSize % sizeof(coff_bdd_dynamic_relocation) ||
+      Info->BDDSize >
+          BDDRegion.size() - Header->BDDOffset - sizeof(coff_bdd_info))
+    return createStringError(object_error::parse_failed,
+                             "Invalid function override BDD size (" +
+                                 Twine(Info->BDDSize) + ")");
+  return Error::success();
 }
 
 bool Arm64XRelocRef::operator==(const Arm64XRelocRef &Other) const {

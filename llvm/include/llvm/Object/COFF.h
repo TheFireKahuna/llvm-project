@@ -37,6 +37,7 @@ template <typename T> class ArrayRef;
 namespace object {
 
 class Arm64XRelocRef;
+class FunctionOverrideRef;
 class BaseRelocRef;
 class DelayImportDirectoryEntryRef;
 class DynamicRelocRef;
@@ -53,6 +54,7 @@ using imported_symbol_iterator = content_iterator<ImportedSymbolRef>;
 using base_reloc_iterator = content_iterator<BaseRelocRef>;
 using dynamic_reloc_iterator = content_iterator<DynamicRelocRef>;
 using arm64x_reloc_iterator = content_iterator<Arm64XRelocRef>;
+using function_override_iterator = content_iterator<FunctionOverrideRef>;
 
 /// The DOS compatible header at the front of all PE/COFF executables.
 struct dos_header {
@@ -877,6 +879,28 @@ struct coff_dynamic_relocation64_v2 {
   support::ulittle32_t Flags;
 };
 
+struct coff_function_override_header {
+  support::ulittle32_t FuncOverrideSize;
+};
+
+struct coff_function_override_dynamic_relocation {
+  support::ulittle32_t OriginalRva;
+  support::ulittle32_t BDDOffset;
+  support::ulittle32_t RvaSize;
+  support::ulittle32_t BaseRelocSize;
+};
+
+struct coff_bdd_info {
+  support::ulittle32_t Version;
+  support::ulittle32_t BDDSize;
+};
+
+struct coff_bdd_dynamic_relocation {
+  support::ulittle16_t Left;
+  support::ulittle16_t Right;
+  support::ulittle32_t Value;
+};
+
 static constexpr StringLiteral kArm64ECSectionName = ".obj.arm64ec";
 
 class LLVM_ABI COFFObjectFile : public ObjectFile {
@@ -1373,6 +1397,11 @@ public:
   LLVM_ABI arm64x_reloc_iterator arm64x_reloc_end() const;
   LLVM_ABI iterator_range<arm64x_reloc_iterator> arm64x_relocs() const;
 
+  LLVM_ABI function_override_iterator function_override_begin() const;
+  LLVM_ABI function_override_iterator function_override_end() const;
+  LLVM_ABI iterator_range<function_override_iterator>
+  function_overrides() const;
+
 private:
   Error validate() const;
 
@@ -1410,6 +1439,34 @@ private:
 
   const coff_base_reloc_block_header *Header;
   uint32_t Index;
+
+  friend class DynamicRelocRef;
+};
+
+// One overridden function of a function-override dynamic relocation: the
+// function's default body, its candidate bodies, the sites the loader patches
+// with the chosen one, and the binary decision diagram that chooses it.
+class FunctionOverrideRef {
+public:
+  FunctionOverrideRef() = default;
+  FunctionOverrideRef(const coff_function_override_dynamic_relocation *Header,
+                      ArrayRef<uint8_t> BDDRegion)
+      : Header(Header), BDDRegion(BDDRegion) {}
+
+  LLVM_ABI bool operator==(const FunctionOverrideRef &Other) const;
+  LLVM_ABI void moveNext();
+
+  uint32_t getOriginalRVA() const { return Header->OriginalRva; }
+  LLVM_ABI ArrayRef<support::ulittle32_t> getRVAs() const;
+  LLVM_ABI iterator_range<base_reloc_iterator> fixups() const;
+  LLVM_ABI const coff_bdd_info *getBDDInfo() const;
+  LLVM_ABI ArrayRef<coff_bdd_dynamic_relocation> getBDDNodes() const;
+
+private:
+  Error validate() const;
+
+  const coff_function_override_dynamic_relocation *Header;
+  ArrayRef<uint8_t> BDDRegion;
 
   friend class DynamicRelocRef;
 };

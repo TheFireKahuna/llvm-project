@@ -1054,6 +1054,52 @@ void COFFDumper::printCOFFLoadConfig() {
         }
         break;
       }
+      case COFF::IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE: {
+        ListScope TLS(W, "FunctionOverride");
+        for (auto Override : reloc.function_overrides()) {
+          DictScope ES(W, "Entry");
+          W.printHex("OriginalRVA", Override.getOriginalRVA());
+          {
+            ListScope RS(W, "RVAs");
+            for (uint32_t RVA : Override.getRVAs())
+              W.printHex("RVA", RVA);
+          }
+          {
+            ListScope FS(W, "Fixups");
+            for (const BaseRelocRef &Fixup : Override.fixups()) {
+              uint8_t Type;
+              uint32_t RVA;
+              if (Error E = Fixup.getType(Type))
+                reportError(std::move(E), Obj->getFileName());
+              if (Error E = Fixup.getRVA(RVA))
+                reportError(std::move(E), Obj->getFileName());
+              // Type 0 pads a block to four bytes.
+              if (Type == COFF::IMAGE_FUNCTION_OVERRIDE_INVALID)
+                continue;
+              DictScope FES(W, "Fixup");
+              W.printString(
+                  "Type", Type == COFF::IMAGE_FUNCTION_OVERRIDE_X64_REL32
+                              ? "X64_REL32"
+                          : Type == COFF::IMAGE_FUNCTION_OVERRIDE_ARM64_BRANCH26
+                              ? "ARM64_BRANCH26"
+                          : Type == COFF::IMAGE_FUNCTION_OVERRIDE_ARM64_THUNK
+                              ? "ARM64_THUNK"
+                              : "UNKNOWN");
+              W.printHex("RVA", RVA);
+            }
+          }
+          ListScope BS(W, "BDD");
+          W.printHex("Version", Override.getBDDInfo()->Version);
+          for (const object::coff_bdd_dynamic_relocation &Node :
+               Override.getBDDNodes()) {
+            DictScope NS(W, "Node");
+            W.printNumber("Left", Node.Left);
+            W.printNumber("Right", Node.Right);
+            W.printHex("Value", Node.Value);
+          }
+        }
+        break;
+      }
       default:
         W.printHex("Type", reloc.getType());
         break;
