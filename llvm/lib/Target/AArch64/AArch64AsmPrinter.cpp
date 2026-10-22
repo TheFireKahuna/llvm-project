@@ -443,8 +443,10 @@ private:
                                     MCSymbol *LazyPointer) override;
   void emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
                              MCSymbol *Pointer) override;
-  bool emitCOFFFunctionOverride(Module &M, const GlobalIFunc &GI,
-                                MCSymbol *Stub) override;
+  bool getCOFFFunctionOverride(const GlobalIFunc &GI,
+                               SmallVectorImpl<FunctionOverrideOption> &Options,
+                               const Function *&Fallback) override;
+  void emitCOFFIFuncStubJump(MCSymbol *Target) override;
 
   /// Checks if this instruction is part of a sequence that is eligle for import
   /// call optimization and, if so, records it to be emitted in the import call
@@ -5025,21 +5027,17 @@ void AArch64AsmPrinter::emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
   EmitToStreamer(MCInstBuilder(AArch64::BR).addReg(AArch64::X16));
 }
 
-bool AArch64AsmPrinter::emitCOFFFunctionOverride(Module &M,
-                                                 const GlobalIFunc &GI,
-                                                 MCSymbol *Stub) {
-  SmallVector<FunctionOverrideOption, 4> Options;
-  const Function *Fallback;
-  if (!STI->getFunctionOverride(GI, TM, Options, Fallback))
-    return false;
+bool AArch64AsmPrinter::getCOFFFunctionOverride(
+    const GlobalIFunc &GI, SmallVectorImpl<FunctionOverrideOption> &Options,
+    const Function *&Fallback) {
+  return STI->getFunctionOverride(GI, TM, Options, Fallback);
+}
+
+void AArch64AsmPrinter::emitCOFFIFuncStubJump(MCSymbol *Target) {
   // ifunc:
-  //   b       fallback
-  EmitToStreamer(
-      MCInstBuilder(AArch64::B)
-          .addExpr(MCSymbolRefExpr::create(getSymbol(Fallback), OutContext)));
-  if (!Options.empty())
-    emitCOFFFunctionOverrideRecord(Stub, Options);
-  return true;
+  //   b       target
+  EmitToStreamer(MCInstBuilder(AArch64::B)
+                     .addExpr(MCSymbolRefExpr::create(Target, OutContext)));
 }
 
 void AArch64AsmPrinter::emitMachOIFuncStubHelperBody(Module &M,

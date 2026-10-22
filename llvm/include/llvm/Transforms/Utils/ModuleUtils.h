@@ -173,7 +173,8 @@ collectFunctionVersions(Value *V, SmallVectorImpl<Function *> &Versions,
                         function_ref<TargetTransformInfo &(Function &)> GetTTI);
 
 /// A body Windows may select for an indirect function as it maps the image,
-/// with the capability numbers whose presence selects it.
+/// with the capability numbers whose presence selects it, or, with no body,
+/// those whose presence leaves the choice to the resolver.
 struct FunctionOverrideOption {
   const Function *Body;
   SmallVector<uint32_t, 2> Capabilities;
@@ -184,11 +185,14 @@ struct FunctionOverrideOption {
 /// the body every processor the target supports can run, which a stub jumps
 /// to until then and which runs where no option is selected.
 /// \p GetCapabilities adds the numbers that test a version's features beyond
-/// those every such processor has, and fails where one has no number.
+/// those every such processor has, and fails where one has no number; it adds
+/// to its third argument the numbers that show the processor has a feature
+/// but not that the operating system enabled it.
 LLVM_ABI bool collectFunctionOverride(
     const GlobalIFunc &GI,
     function_ref<TargetTransformInfo &(Function &)> GetTTI,
-    function_ref<bool(const Function &, SmallVectorImpl<uint32_t> &)>
+    function_ref<bool(const Function &, SmallVectorImpl<uint32_t> &,
+                      SmallVectorImpl<uint32_t> &)>
         GetCapabilities,
     SmallVectorImpl<FunctionOverrideOption> &Options,
     const Function *&Fallback);

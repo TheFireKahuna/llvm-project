@@ -224,7 +224,8 @@ bool X86Subtarget::getFunctionOverride(
   StringMap<bool> Baseline;
   X86::getTripleBaseline(TargetTriple, Baseline);
   auto GetCapabilities = [&](const Function &V,
-                             SmallVectorImpl<uint32_t> &Capabilities) {
+                             SmallVectorImpl<uint32_t> &Capabilities,
+                             SmallVectorImpl<uint32_t> &) {
     SmallVector<StringRef, 8> Features;
     V.getFnAttribute("fmv-features")
         .getValueAsString()

@@ -291,10 +291,12 @@ LLVM_ABI APInt getFMVPriority(ArrayRef<StringRef> Features);
 LLVM_ABI APInt getCpuSupportsMask(ArrayRef<StringRef> Features);
 
 // Add to Capabilities the numbers by which a Windows function-override diagram
-// tests the FMV feature Name, and return whether it has any.
+// tests the FMV feature Name, and to Enables those that show the processor has
+// it but not that the operating system enabled it; return whether it has any.
 LLVM_ABI bool
 getFunctionOverrideCapabilities(StringRef Name,
-                                SmallVectorImpl<uint32_t> &Capabilities);
+                                SmallVectorImpl<uint32_t> &Capabilities,
+                                SmallVectorImpl<uint32_t> &Enables);
 
 LLVM_ABI void PrintSupportedExtensions();
 

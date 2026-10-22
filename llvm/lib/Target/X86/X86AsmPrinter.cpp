@@ -1260,21 +1260,19 @@ void X86AsmPrinter::emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
       *Subtarget);
 }
 
-bool X86AsmPrinter::emitCOFFFunctionOverride(Module &M, const GlobalIFunc &GI,
-                                             MCSymbol *Stub) {
-  SmallVector<FunctionOverrideOption, 4> Options;
-  const Function *Fallback;
-  if (!Subtarget->getFunctionOverride(GI, Options, Fallback))
-    return false;
+bool X86AsmPrinter::getCOFFFunctionOverride(
+    const GlobalIFunc &GI, SmallVectorImpl<FunctionOverrideOption> &Options,
+    const Function *&Fallback) {
+  return Subtarget->getFunctionOverride(GI, Options, Fallback);
+}
+
+void X86AsmPrinter::emitCOFFIFuncStubJump(MCSymbol *Target) {
   // ifunc:
-  //   jmp fallback
+  //   jmp target
   OutStreamer->emitInstruction(
       MCInstBuilder(X86::JMP_4)
-          .addExpr(MCSymbolRefExpr::create(getSymbol(Fallback), OutContext)),
+          .addExpr(MCSymbolRefExpr::create(Target, OutContext)),
       *Subtarget);
-  if (!Options.empty())
-    emitCOFFFunctionOverrideRecord(Stub, Options);
-  return true;
 }
 
 void X86AsmPrinter::emitMachOIFuncStubHelperBody(Module &M,

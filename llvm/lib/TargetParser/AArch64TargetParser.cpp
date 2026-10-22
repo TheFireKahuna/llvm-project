@@ -106,23 +106,33 @@ APInt AArch64::getCpuSupportsMask(ArrayRef<StringRef> Features) {
 
 // The capability numbers by which Windows selects, as it maps an image, among
 // a function's bodies (the dynamic value relocation table's function-override
-// diagrams), from the processor's ID registers. SVE's are left out: they are
-// set whether or not the operating system enabled SVE state.
-static constexpr std::pair<StringLiteral, uint32_t> FunctionOverrides[] = {
-    {"sha2", 0x10004},  {"sha3", 0x10005},    {"sha3", 0x10006},
-    {"lse", 0x10007},   {"rdm", 0x10009},     {"sm4", 0x1000a},
-    {"sm4", 0x1000b},   {"dotprod", 0x1000c}, {"fp16fml", 0x1000d},
-    {"flagm", 0x1000e}, {"flagm2", 0x1000f},  {"fcma", 0x10010},
-    {"rcpc", 0x10011},  {"rcpc2", 0x10012},   {"bf16", 0x10013},
-    {"i8mm", 0x10014},  {"fp16", 0x10015},
+// diagrams), from the processor's ID registers. SVE's are set whether or not
+// the operating system enabled SVE state.
+static constexpr struct {
+  StringLiteral Name;
+  uint32_t Number;
+  bool Enabled;
+} FunctionOverrides[] = {
+    {"sha2", 0x10004, true},    {"sha3", 0x10005, true},
+    {"sha3", 0x10006, true},    {"lse", 0x10007, true},
+    {"rdm", 0x10009, true},     {"sm4", 0x1000a, true},
+    {"sm4", 0x1000b, true},     {"dotprod", 0x1000c, true},
+    {"fp16fml", 0x1000d, true}, {"flagm", 0x1000e, true},
+    {"flagm2", 0x1000f, true},  {"fcma", 0x10010, true},
+    {"rcpc", 0x10011, true},    {"rcpc2", 0x10012, true},
+    {"bf16", 0x10013, true},    {"i8mm", 0x10014, true},
+    {"fp16", 0x10015, true},    {"sve", 0x10016, false},
+    {"sve2", 0x10017, false},   {"f32mm", 0x10018, false},
+    {"f64mm", 0x10019, false},
 };
 
 bool AArch64::getFunctionOverrideCapabilities(
-    StringRef Name, SmallVectorImpl<uint32_t> &Capabilities) {
+    StringRef Name, SmallVectorImpl<uint32_t> &Capabilities,
+    SmallVectorImpl<uint32_t> &Enables) {
   bool Found = false;
-  for (auto [FMVName, Number] : FunctionOverrides)
-    if (FMVName == Name) {
-      Capabilities.push_back(Number);
+  for (const auto &E : FunctionOverrides)
+    if (E.Name == Name) {
+      (E.Enabled ? Capabilities : Enables).push_back(E.Number);
       Found = true;
     }
   return Found;

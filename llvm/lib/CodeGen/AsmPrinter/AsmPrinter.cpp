@@ -3002,15 +3002,19 @@ void AsmPrinter::emitGlobalIFunc(Module &M, const GlobalIFunc &GI) {
 // a leaf selecting it; after the last candidate a terminal that keeps the
 // body the stub jumps to. Every edge leads forward, as Windows requires.
 void AsmPrinter::emitCOFFFunctionOverrideRecord(
-    MCSymbol *Stub, ArrayRef<FunctionOverrideOption> Options) {
+    MCSymbol *Stub, ArrayRef<FunctionOverrideOption> Options,
+    const MCSymbol *Cell) {
   SmallVector<const MCSymbol *, 4> Candidates;
   SmallVector<std::array<uint32_t, 3>, 8> Nodes;
-  for (auto [I, Option] : enumerate(Options)) {
-    Candidates.push_back(getSymbol(Option.Body));
+  for (const FunctionOverrideOption &Option : Options) {
+    const MCSymbol *Candidate = Option.Body ? getSymbol(Option.Body) : Cell;
+    uint32_t Index = find(Candidates, Candidate) - Candidates.begin();
+    if (Index == Candidates.size())
+      Candidates.push_back(Candidate);
     uint32_t Leaf = Nodes.size() + Option.Capabilities.size();
     for (uint32_t Capability : Option.Capabilities)
       Nodes.push_back({Leaf + 1, uint32_t(Nodes.size() + 1), Capability});
-    Nodes.push_back({Leaf, Leaf, uint32_t(I)});
+    Nodes.push_back({Leaf, Leaf, Index});
   }
   Nodes.push_back({0, 0, 0});
   OutStreamer->emitCOFFLinkFunctionOverride(Stub, Candidates, Nodes);
@@ -3051,8 +3055,23 @@ void AsmPrinter::emitCOFFIFunc(Module &M, const GlobalIFunc &GI) {
   OutStreamer->emitCodeAlignment(Align(16), *getIFuncMCSubtargetInfo());
   emitKCFITypeId(GI, Align(16), /*MF=*/nullptr);
   OutStreamer->emitLabel(Stub);
-  if (emitCOFFFunctionOverride(M, GI, Stub))
-    return;
+  // Where Windows selects the body, the stub jumps to the version every
+  // processor the target supports runs, which Windows rewrites. An option
+  // left to the resolver selects the jump through the cell that follows.
+  SmallVector<FunctionOverrideOption, 4> Options;
+  const Function *Fallback;
+  if (getCOFFFunctionOverride(GI, Options, Fallback)) {
+    emitCOFFIFuncStubJump(getSymbol(Fallback));
+    MCSymbol *Cell = nullptr;
+    if (any_of(Options,
+               [](const FunctionOverrideOption &O) { return !O.Body; }))
+      Cell = OutContext.getOrCreateSymbol(Stub->getName() + ".cell");
+    if (!Options.empty())
+      emitCOFFFunctionOverrideRecord(Stub, Options, Cell);
+    if (!Cell)
+      return;
+    OutStreamer->emitLabel(Cell);
+  }
   emitCOFFIFuncStubBody(
       M, GI, OutContext.getOrCreateSymbol("__imp_" + Stub->getName()));
   OutStreamer->emitCOFFLinkIFunc(Stub, getSymbol(Resolver));

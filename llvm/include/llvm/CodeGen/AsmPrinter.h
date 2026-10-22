@@ -821,19 +821,27 @@ public:
     llvm_unreachable("COFF IFunc lowering is not yet supported on this target");
   }
 
-  /// Emits the body of the stub that is an indirect function's address on
-  /// COFF where Windows can select the body it jumps to as it maps the image,
-  /// with the records that say how, and returns whether it did.
-  virtual bool emitCOFFFunctionOverride(Module &M, const GlobalIFunc &GI,
-                                        MCSymbol *Stub) {
+  /// Whether Windows can select the body of the indirect function \p GI as
+  /// it maps the image (see collectFunctionOverride).
+  virtual bool
+  getCOFFFunctionOverride(const GlobalIFunc &GI,
+                          SmallVectorImpl<FunctionOverrideOption> &Options,
+                          const Function *&Fallback) {
     return false;
+  }
+
+  /// Emits the direct jump to \p Target with which the stub of a function
+  /// whose body Windows selects begins, and which Windows rewrites.
+  virtual void emitCOFFIFuncStubJump(MCSymbol *Target) {
+    llvm_unreachable("COFF IFunc lowering is not yet supported on this target");
   }
 
   /// Emits the record by which Windows selects the body the stub \p Stub
   /// jumps to: the first of \p Options whose capabilities are all present,
-  /// or else the body the stub jumps to.
+  /// \p Cell for one with no body, or else the body the stub jumps to.
   void emitCOFFFunctionOverrideRecord(MCSymbol *Stub,
-                                      ArrayRef<FunctionOverrideOption> Options);
+                                      ArrayRef<FunctionOverrideOption> Options,
+                                      const MCSymbol *Cell);
 
   /// Emit N NOP instructions.
   void emitNops(unsigned N);

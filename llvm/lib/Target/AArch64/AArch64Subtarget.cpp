@@ -585,7 +585,8 @@ bool AArch64Subtarget::getFunctionOverride(
     return *TTI;
   };
   auto GetCapabilities = [](const Function &V,
-                            SmallVectorImpl<uint32_t> &Capabilities) {
+                            SmallVectorImpl<uint32_t> &Capabilities,
+                            SmallVectorImpl<uint32_t> &Enables) {
     SmallVector<StringRef, 8> Features;
     V.getFnAttribute("fmv-features")
         .getValueAsString()
@@ -594,7 +595,8 @@ bool AArch64Subtarget::getFunctionOverride(
     for (const AArch64::FMVInfo &Info : AArch64::getFMVInfo())
       if (Info.ID && Mask[*Info.FeatureBit] &&
           !AArch64::ARMV8A.DefaultExts.test(*Info.ID) &&
-          !AArch64::getFunctionOverrideCapabilities(Info.Name, Capabilities))
+          !AArch64::getFunctionOverrideCapabilities(Info.Name, Capabilities,
+                                                    Enables))
         return false;
     return true;
   };

@@ -545,7 +545,8 @@ bool llvm::collectFunctionVersions(
 bool llvm::collectFunctionOverride(
     const GlobalIFunc &GI,
     function_ref<TargetTransformInfo &(Function &)> GetTTI,
-    function_ref<bool(const Function &, SmallVectorImpl<uint32_t> &)>
+    function_ref<bool(const Function &, SmallVectorImpl<uint32_t> &,
+                      SmallVectorImpl<uint32_t> &)>
         GetCapabilities,
     SmallVectorImpl<FunctionOverrideOption> &Options,
     const Function *&Fallback) {
@@ -571,15 +572,27 @@ bool llvm::collectFunctionOverride(
 
   for (auto [I, Entry] : enumerate(Ranked)) {
     FunctionOverrideOption Option{Entry.second, {}};
-    if (!GetCapabilities(*Entry.second, Option.Capabilities))
+    SmallVector<uint32_t, 2> Enables;
+    if (!GetCapabilities(*Entry.second, Option.Capabilities, Enables))
       return false;
-    if (Option.Capabilities.empty()) {
+    if (Option.Capabilities.empty() && Enables.empty()) {
       Fallback = Entry.second;
       return true;
     }
     // Of two versions of one priority the resolver's order is unknown.
     if (I + 1 != Ranked.size() && Ranked[I + 1].first == Entry.first)
       return false;
+    // Where the processor has the features, whether the operating system
+    // enabled them is the resolver's to test; where it lacks one, neither
+    // chooses the version.
+    if (!Enables.empty()) {
+      Option.Body = nullptr;
+      append_range(Option.Capabilities, Enables);
+      if (any_of(Options, [&](const FunctionOverrideOption &O) {
+            return !O.Body && O.Capabilities == Option.Capabilities;
+          }))
+        continue;
+    }
     Options.push_back(std::move(Option));
   }
   return false;
