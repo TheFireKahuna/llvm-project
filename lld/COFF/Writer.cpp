@@ -875,6 +875,8 @@ void Writer::writePEChecksum() {
 // Windows writes with the chosen one's displacement, as it writes each direct
 // call or jump to the stub, so that those reach the chosen body at once.
 void Writer::createFunctionOverrides() {
+  bool arm64 = ctx.config.machine == ARM64;
+  uint16_t branch = arm64 ? IMAGE_REL_ARM64_BRANCH26 : IMAGE_REL_AMD64_REL32;
   DenseMap<Symbol *, size_t> entries;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (const SymbolTable::FunctionOverride &o : symtab.functionOverrides) {
@@ -885,7 +887,7 @@ void Writer::createFunctionOverrides() {
         Err(ctx) << o.file << ": the function override of "
                  << o.file->symtab.printSymbol(o.function) << " " << why;
       };
-      if (ctx.config.machine != AMD64) {
+      if (ctx.config.machine != AMD64 && !arm64) {
         fail("is not supported on this machine");
         continue;
       }
@@ -898,12 +900,17 @@ void Writer::createFunctionOverrides() {
       auto *original = jump ? dyn_cast_or_null<Defined>(
                                   o.file->getSymbol(jump->SymbolTableIndex))
                             : nullptr;
-      if (!original || jump->Type != IMAGE_REL_AMD64_REL32) {
+      if (!original || jump->Type != branch) {
         fail("names a stub that does not jump to a body");
         continue;
       }
-      FunctionOverrideEntry e{
-          stub, original, {}, {{sc, jump->VirtualAddress}}, {}};
+      FunctionOverrideEntry e{stub,
+                              original,
+                              {},
+                              {{sc, jump->VirtualAddress}},
+                              {},
+                              arm64 ? IMAGE_FUNCTION_OVERRIDE_ARM64_BRANCH26
+                                    : IMAGE_FUNCTION_OVERRIDE_X64_REL32};
       for (Symbol *c : o.candidates)
         if (auto *d = dyn_cast<Defined>(c))
           e.candidates.push_back(d);
@@ -933,9 +940,9 @@ void Writer::createFunctionOverrides() {
 
   // A REL32 in code that an object describing its sites leaves undescribed
   // is a branch; a call or jump through the stub's import pointer becomes
-  // one where the linker bypasses the pointer.
+  // one where the linker bypasses the pointer. A BRANCH26 is always one.
   for (ObjFile *file : ctx.objFileInstances) {
-    if (!file->describesSites())
+    if (!arm64 && !file->describesSites())
       continue;
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast<SectionChunk>(c);
@@ -943,7 +950,7 @@ void Writer::createFunctionOverrides() {
           !(sc->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
         continue;
       for (const coff_relocation &rel : sc->getRelocs()) {
-        if (rel.Type != IMAGE_REL_AMD64_REL32)
+        if (rel.Type != branch)
           continue;
         Symbol *s = file->getSymbol(rel.SymbolTableIndex);
         bool viaPointer = false;
@@ -959,10 +966,11 @@ void Writer::createFunctionOverrides() {
         if (sc == e.sites.front().first &&
             rel.VirtualAddress == e.sites.front().second)
           continue;
-        if (viaPointer ? fact && fact->hasSite
-                       : (!fact || !fact->hasSite) &&
-                             read32le(sc->getContents().data() +
-                                      rel.VirtualAddress) == 0)
+        uint32_t field =
+            read32le(sc->getContents().data() + rel.VirtualAddress);
+        bool direct = arm64 ? (field & 0x3ffffff) == 0
+                            : (!fact || !fact->hasSite) && field == 0;
+        if (viaPointer ? !arm64 && fact && fact->hasSite : direct)
           e.sites.push_back({sc, rel.VirtualAddress});
       }
     }
@@ -1020,6 +1028,8 @@ void Writer::run() {
     finalizeAddresses();
     defineVTableRuns(ctx);
     kcfi.checkCodeRange();
+    if (ctx.dynamicRelocs)
+      ctx.dynamicRelocs->checkFunctionOverrides(ctx);
     removeEmptySections();
     assignOutputSectionIndices();
     placeLinkerDefinedSymbols();

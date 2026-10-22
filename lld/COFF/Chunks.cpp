@@ -1517,8 +1517,7 @@ void DynamicRelocsChunk::finalize() {
     for (auto [chunk, offset] : e.sites)
       if (std::optional<uint32_t> field =
               getBranchFieldOffset(chunk, offset, e.stub))
-        sites.emplace_back(chunk->getRVA() + *field,
-                           IMAGE_FUNCTION_OVERRIDE_X64_REL32);
+        sites.emplace_back(chunk->getRVA() + *field, e.siteType);
     llvm::sort(sites, [](const Baserel &x, const Baserel &y) {
       return x.rva < y.rva;
     });
@@ -1542,6 +1541,28 @@ void DynamicRelocsChunk::finalize() {
     }
   }
   size += diagramsSize;
+}
+
+// Windows writes an ARM64 branch's displacement without checking its range.
+void DynamicRelocsChunk::checkFunctionOverrides(COFFLinkerContext &ctx) const {
+  for (const FunctionOverrideEntry &e : functionOverrides) {
+    if (e.siteType != IMAGE_FUNCTION_OVERRIDE_ARM64_BRANCH26)
+      continue;
+    for (auto [chunk, offset] : e.sites) {
+      std::optional<uint32_t> field =
+          getBranchFieldOffset(chunk, offset, e.stub);
+      if (!field)
+        continue;
+      uint64_t site = chunk->getRVA() + *field;
+      for (Defined *body : e.candidates)
+        if (!isInt<28>(int64_t(body->getRVA()) - int64_t(site)))
+          Err(ctx) << "the function override of " << e.stub->getName()
+                   << " may select " << body->getName()
+                   << ", which is out of range of a branch to it from "
+                   << chunk->getSectionName() << " at RVA 0x"
+                   << Twine::utohexstr(site);
+    }
+  }
 }
 
 // Set the reloc value. The reloc entry must be allocated beforehand.

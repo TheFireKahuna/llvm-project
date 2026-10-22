@@ -1071,6 +1071,8 @@ struct FunctionOverrideEntry {
   // offsets of their fields in their chunks' contents.
   std::vector<std::pair<const SectionChunk *, uint32_t>> sites;
   std::vector<std::array<uint32_t, 3>> nodes;
+  // The fixup type of every site.
+  uint16_t siteType;
 };
 
 // The dynamic value relocation table: the ARM64X relocations of a hybrid image
@@ -1092,6 +1094,10 @@ public:
   void addFunctionOverride(FunctionOverrideEntry entry) {
     functionOverrides.push_back(std::move(entry));
   }
+
+  // Reports the sites from which a body Windows may select is out of the
+  // range of the branch it writes there.
+  void checkFunctionOverrides(COFFLinkerContext &ctx) const;
 
 private:
   bool arm64x;
