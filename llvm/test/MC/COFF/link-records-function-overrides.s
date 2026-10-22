@@ -14,7 +14,7 @@
 // candidates, symbols 10 and 11; three nodes: (2, 1, 0x13e), (1, 1, 0) and
 // (0, 0, 0).
 // CHECK:      Contents of section .llvm_link_records:
-// CHECK-NEXT: 0000 4c4c5243 01071e03 0000002a 0f08020a
+// CHECK-NEXT: 0000 4c4c5243 010f1e03 0000002a 0f08020a
 // CHECK-NEXT: 0010 0b030201 be020101 00000000
 
 // SYMS: wide
