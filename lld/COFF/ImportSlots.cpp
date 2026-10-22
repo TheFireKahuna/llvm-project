@@ -130,17 +130,46 @@ static bool canBypass(Symbol *s) {
          (!isa<DefinedAbsolute>(li->getTarget()) || isZeroPointer(li));
 }
 
+// Whether every ARM64 load of the pointer s in sc is one whose register only
+// the calls and jumps the object's records describe read, so that the loads,
+// and the adrp instructions giving their page, may keep reading a pointer the
+// linker would otherwise bypass, or read another pointer instead, together.
+static bool callsOnlyThrough(SectionChunk *sc, Symbol *s) {
+  MutableArrayRef<ObjFile::LinkFusion> fusions = sc->file->getLinkFusions(sc);
+  bool any = false;
+  for (const coff_relocation &rel : sc->getRelocs()) {
+    if (rel.Type != IMAGE_REL_ARM64_PAGEOFFSET_12L ||
+        sc->file->getSymbol(rel.SymbolTableIndex) != s)
+      continue;
+    bool read = false, called = false, other = false;
+    for (const ObjFile::LinkFusion &f : fusions) {
+      if (f.isLoad && f.offset == rel.VirtualAddress)
+        read = true;
+      else if (f.use != ObjFile::LinkFusion::None &&
+               f.load == rel.VirtualAddress)
+        (f.use == ObjFile::LinkFusion::Call ? called : other) = true;
+    }
+    if (!read || !called || other)
+      return false;
+    any = true;
+  }
+  return any;
+}
+
 // Whether a reference of sc reads an indirect function's import pointer, its
-// cell, rather than reaching the function's stub: the stub's own jump, and on
-// x86-64 a call or jump through it, which reaches the chosen function without
-// the stub's. Any other reference takes the stub's address.
-static bool readsCell(DefinedLocalImport *li, const SectionChunk *sc,
+// cell, rather than reaching the function's stub: the stub's own jump, and a
+// call or jump through it, which reaches the chosen function without the
+// stub's: on x86-64 one of those forms, on ARM64 the loads that
+// callsOnlyThrough accepts. Any other reference takes the stub's address.
+static bool readsCell(DefinedLocalImport *li, SectionChunk *sc,
                       std::optional<LinkSiteForm> form) {
   if (!li->getChunk()->resolver)
     return false;
   if (auto *stub = dyn_cast<DefinedRegular>(li->getTarget());
       stub && stub->getChunk() == sc)
     return true;
+  if (sc->getArch() == Triple::aarch64)
+    return callsOnlyThrough(sc, li);
   return form && (*form == LinkSiteCall || *form == LinkSiteJump ||
                   *form == LinkSiteJumpOnePrefix);
 }
@@ -979,8 +1008,17 @@ void ImportSlotContents::scanReference(SlotScan &scan, SectionChunk *sc,
     noteUse(data, whole ? ImportFile::ReadWhole : ImportFile::UsedOtherwise);
     // Another image's indirect function's: a call or jump through it reads
     // the copy of its cell instead, as the import's thunk does.
-    if (Defined *copy = ctx.symtab.importedCells.lookup(data);
-        copy && code && !arm64 && form &&
+    Defined *copy = ctx.symtab.importedCells.lookup(data);
+    if (copy && code && arm64 && callsOnlyThrough(sc, data)) {
+      scan.cellCalls.push_back(
+          {sc, RelaxEdit(rel.VirtualAddress, 4, 4,
+                         rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21
+                             ? RelaxEdit::Arm64Page
+                             : RelaxEdit::Arm64Load,
+                         copy)});
+      return;
+    }
+    if (copy && code && !arm64 && form &&
         (*form == LinkSiteCall || *form == LinkSiteJump ||
          *form == LinkSiteJumpOnePrefix)) {
       uint32_t off = rel.VirtualAddress;
@@ -2624,8 +2662,8 @@ void ImportSlotContents::scan(SymbolTable &symtab) {
   // The adrp and ldr of a bypassed pointer become adrp and add of its symbol,
   // or movz of zero.
   // An indirect function's cell is read only by its stub, whose chunk no
-  // other load shares an adrp with, so every other load becomes the stub's
-  // address.
+  // other load shares an adrp with, and by loads only calls read, so every
+  // other load becomes the stub's address.
   for (auto [sc, rel] : arm64Sites) {
     auto *li =
         cast<DefinedLocalImport>(sc->file->getSymbol(rel->SymbolTableIndex));
