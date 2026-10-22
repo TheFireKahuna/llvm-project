@@ -1097,8 +1097,12 @@ private:
   bool arm64x;
   std::vector<Arm64XDynamicRelocEntry> arm64xRelocs;
   std::vector<FunctionOverrideEntry> functionOverrides;
-  // Each function override's fixups, as base relocation blocks.
+  // Each function override's fixups, as base relocation blocks, and the
+  // offset of its diagram, which entries with equal diagrams share.
   std::vector<std::vector<BaserelChunk *>> overrideFixups;
+  std::vector<uint32_t> overrideDiagrams;
+  // The entries whose diagrams are written, each the first with its diagram.
+  std::vector<const FunctionOverrideEntry *> diagramOwners;
   size_t size;
 };
 

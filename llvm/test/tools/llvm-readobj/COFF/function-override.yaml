@@ -19,6 +19,7 @@
 # CHECK-NEXT:         }
 # CHECK-NEXT:       ]
 # CHECK-NEXT:       BDD [
+# CHECK-NEXT:         Offset: 0x0
 # CHECK-NEXT:         Version: 0x1
 # CHECK-NEXT:         Node {
 # CHECK-NEXT:           Left: 2

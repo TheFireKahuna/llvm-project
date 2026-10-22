@@ -2,8 +2,9 @@
 ## A function-override link record makes an entry of the dynamic value
 ## relocation table's function-override record: the body the stub jumps to,
 ## the bodies Windows may select instead, the stub's jump and each direct call
-## or jump to the stub as the fields it writes, and the diagram. The record
-## keeps the bodies, and two stubs stay two sites, however alike.
+## or jump to the stub as the fields it writes, and the diagram, which entries
+## with equal diagrams share. The record keeps the bodies, and two stubs stay
+## two sites, however alike.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium fo.s -o fo.obj
@@ -43,6 +44,7 @@
 # CHECK-NEXT:         }
 # CHECK-NEXT:       ]
 # CHECK-NEXT:       BDD [
+# CHECK-NEXT:         Offset: 0x0
 # CHECK-NEXT:         Version: 0x1
 # CHECK-NEXT:         Node {
 # CHECK-NEXT:           Left: 2
@@ -67,6 +69,9 @@
 # CHECK-NEXT:           RVA: 0x[[#%X,USE-0x180000000+13]]
 # CHECK-NEXT:         }
 # CHECK-NEXT:       ]
+## g's diagram equals f's, so the two share it.
+# CHECK-NEXT:       BDD [
+# CHECK-NEXT:         Offset: 0x0
 
 ## A record whose diagram has an edge leading back, or whose stub does not
 ## jump to a body, is an error.

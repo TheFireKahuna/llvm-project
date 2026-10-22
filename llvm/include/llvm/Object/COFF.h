@@ -1457,6 +1457,7 @@ public:
   LLVM_ABI void moveNext();
 
   uint32_t getOriginalRVA() const { return Header->OriginalRva; }
+  uint32_t getBDDOffset() const { return Header->BDDOffset; }
   LLVM_ABI ArrayRef<support::ulittle32_t> getRVAs() const;
   LLVM_ABI iterator_range<base_reloc_iterator> fixups() const;
   LLVM_ABI const coff_bdd_info *getBDDInfo() const;

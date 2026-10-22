@@ -23,6 +23,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <iterator>
+#include <map>
 
 using namespace llvm;
 using namespace llvm::object;
@@ -1500,10 +1501,15 @@ void DynamicRelocsChunk::finalize() {
   }
 
   // The function-override record: its header, the entries, each with its
-  // candidates and its fixups' blocks, then the diagrams.
+  // candidates and its fixups' blocks, then the diagrams, each written once:
+  // a leaf indexes the candidates of whichever entry walks it.
   overrideFixups.clear();
+  overrideDiagrams.clear();
+  diagramOwners.clear();
   if (functionOverrides.empty())
     return;
+  std::map<std::vector<std::array<uint32_t, 3>>, uint32_t> diagrams;
+  uint32_t diagramsSize = 0;
   size +=
       sizeof(coff_dynamic_relocation64) + sizeof(coff_function_override_header);
   for (const FunctionOverrideEntry &e : functionOverrides) {
@@ -1524,11 +1530,18 @@ void DynamicRelocsChunk::finalize() {
       blocks.push_back(make<BaserelChunk>(page, &sites[i], &sites[0] + j));
     }
     size += sizeof(coff_function_override_dynamic_relocation) +
-            e.candidates.size() * sizeof(uint32_t) + sizeof(coff_bdd_info) +
-            e.nodes.size() * sizeof(coff_bdd_dynamic_relocation);
+            e.candidates.size() * sizeof(uint32_t);
     for (BaserelChunk *block : blocks)
       size += block->getSize();
+    auto [it, inserted] = diagrams.try_emplace(e.nodes, diagramsSize);
+    overrideDiagrams.push_back(it->second);
+    if (inserted) {
+      diagramOwners.push_back(&e);
+      diagramsSize += sizeof(coff_bdd_info) +
+                      e.nodes.size() * sizeof(coff_bdd_dynamic_relocation);
+    }
   }
+  size += diagramsSize;
 }
 
 // Set the reloc value. The reloc entry must be allocated beforehand.
@@ -1590,8 +1603,8 @@ void DynamicRelocsChunk::writeTo(uint8_t *buf) const {
   uint8_t *start = buf += sizeof(*header);
   auto foHeader = reinterpret_cast<coff_function_override_header *>(buf);
   buf += sizeof(*foHeader);
-  uint32_t bddOffset = 0;
-  for (auto [e, blocks] : llvm::zip_equal(functionOverrides, overrideFixups)) {
+  for (auto [e, blocks, bddOffset] :
+       llvm::zip_equal(functionOverrides, overrideFixups, overrideDiagrams)) {
     auto entry =
         reinterpret_cast<coff_function_override_dynamic_relocation *>(buf);
     entry->OriginalRva = e.original->getRVA();
@@ -1608,11 +1621,10 @@ void DynamicRelocsChunk::writeTo(uint8_t *buf) const {
       buf += block->getSize();
       entry->BaseRelocSize += block->getSize();
     }
-    bddOffset += sizeof(coff_bdd_info) +
-                 e.nodes.size() * sizeof(coff_bdd_dynamic_relocation);
   }
   foHeader->FuncOverrideSize = buf - start - sizeof(*foHeader);
-  for (const FunctionOverrideEntry &e : functionOverrides) {
+  for (const FunctionOverrideEntry *owner : diagramOwners) {
+    const FunctionOverrideEntry &e = *owner;
     auto info = reinterpret_cast<coff_bdd_info *>(buf);
     info->Version = 1;
     info->BDDSize = e.nodes.size() * sizeof(coff_bdd_dynamic_relocation);

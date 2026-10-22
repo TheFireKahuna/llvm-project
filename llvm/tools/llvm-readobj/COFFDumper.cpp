@@ -1089,6 +1089,7 @@ void COFFDumper::printCOFFLoadConfig() {
             }
           }
           ListScope BS(W, "BDD");
+          W.printHex("Offset", Override.getBDDOffset());
           W.printHex("Version", Override.getBDDInfo()->Version);
           for (const object::coff_bdd_dynamic_relocation &Node :
                Override.getBDDNodes()) {
