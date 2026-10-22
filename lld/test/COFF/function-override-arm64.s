@@ -1,8 +1,9 @@
 # REQUIRES: aarch64
 ## On ARM64 the stub is a branch to its default body, and its fields are
 ## BRANCH26 fixups: the stub's branch and each direct call or branch to the
-## stub. An address load is not patched. A body Windows may select out of a
-## branch's range from a site is an error, since Windows does not check.
+## stub. An address load is not patched. A candidate may be a label in the
+## stub itself, as the jump through a cell is. A body Windows may select out of
+## a branch's range from a site is an error, since Windows does not check.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium fo.s -o fo.obj
@@ -27,6 +28,7 @@
 # CHECK-NEXT:       OriginalRVA: 0x[[#%X,BASE-0x180000000]]
 # CHECK-NEXT:       RVAs [
 # CHECK-NEXT:         RVA: 0x[[#%X,WIDE-0x180000000]]
+# CHECK-NEXT:         RVA: 0x[[#%X,F-0x180000000+4]]
 # CHECK-NEXT:       ]
 # CHECK-NEXT:       Fixups [
 # CHECK-NEXT:         Fixup {
@@ -73,7 +75,9 @@ f.base:
   .p2align 4
 f:
   b f.base
-  .linkfunctionoverride f, (f.wide), (2, 1, 0x10007), (1, 1, 0), (0, 0, 0)
+  .linkfunctionoverride f, (f.wide, f.cell), (2, 1, 0x10007), (1, 1, 0), (4, 3, 0x10016), (3, 3, 1), (0, 0, 0)
+f.cell:
+  ret
 
   .section .text$use,"xr"
   .globl use
