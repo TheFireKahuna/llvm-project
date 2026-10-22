@@ -536,3 +536,51 @@ bool llvm::collectFunctionVersions(
   }
   return true;
 }
+
+// The kernel tests a capability per feature, so a multiversioned function's
+// resolver, which returns the highest-priority version whose features are
+// present, is a chain of tests over its versions in priority order. The chain
+// ends at the first version within the baseline, and each version before it
+// needs a number for every feature it requires beyond the baseline.
+bool llvm::collectFunctionOverride(
+    const GlobalIFunc &GI,
+    function_ref<TargetTransformInfo &(Function &)> GetTTI,
+    function_ref<bool(const Function &, SmallVectorImpl<uint32_t> &)>
+        GetCapabilities,
+    SmallVectorImpl<FunctionOverrideOption> &Options,
+    const Function *&Fallback) {
+  Fallback = nullptr;
+  Options.clear();
+  const Function *Resolver = GI.getResolverFunction();
+  if (!Resolver || Resolver->isDeclaration() || GI.isInterposable())
+    return false;
+  SmallVector<Function *, 4> Versions;
+  for (const BasicBlock &BB : *Resolver)
+    if (auto *Ret = dyn_cast_or_null<ReturnInst>(BB.getTerminator()))
+      if (!collectFunctionVersions(Ret->getReturnValue(), Versions, GetTTI))
+        return false;
+  if (Versions.empty())
+    return false;
+  SmallVector<std::pair<APInt, Function *>, 4> Ranked;
+  for (Function *V : Versions)
+    if (!is_contained(make_second_range(Ranked), V))
+      Ranked.push_back({GetTTI(*V).getPriorityMask(*V), V});
+  stable_sort(Ranked, [](const auto &A, const auto &B) {
+    return A.first.ugt(B.first);
+  });
+
+  for (auto [I, Entry] : enumerate(Ranked)) {
+    FunctionOverrideOption Option{Entry.second, {}};
+    if (!GetCapabilities(*Entry.second, Option.Capabilities))
+      return false;
+    if (Option.Capabilities.empty()) {
+      Fallback = Entry.second;
+      return true;
+    }
+    // Of two versions of one priority the resolver's order is unknown.
+    if (I + 1 != Ranked.size() && Ranked[I + 1].first == Entry.first)
+      return false;
+    Options.push_back(std::move(Option));
+  }
+  return false;
+}

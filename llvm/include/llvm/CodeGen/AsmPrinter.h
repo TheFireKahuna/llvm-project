@@ -50,6 +50,7 @@ class DIE;
 class DIEAbbrev;
 class DwarfDebug;
 class EHStreamer;
+struct FunctionOverrideOption;
 class GCMetadataPrinter;
 class GCStrategy;
 class GlobalAlias;
@@ -829,11 +830,10 @@ public:
   }
 
   /// Emits the record by which Windows selects the body the stub \p Stub
-  /// jumps to: the first of \p Candidates whose capabilities, the numbers in
-  /// \p Conditions, are all present, or else the body the stub jumps to.
+  /// jumps to: the first of \p Options whose capabilities are all present,
+  /// or else the body the stub jumps to.
   void emitCOFFFunctionOverrideRecord(MCSymbol *Stub,
-                                      ArrayRef<const MCSymbol *> Candidates,
-                                      ArrayRef<ArrayRef<uint32_t>> Conditions);
+                                      ArrayRef<FunctionOverrideOption> Options);
 
   /// Emit N NOP instructions.
   void emitNops(unsigned N);

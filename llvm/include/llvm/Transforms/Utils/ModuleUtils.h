@@ -14,6 +14,7 @@
 #define LLVM_TRANSFORMS_UTILS_MODULEUTILS_H
 
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/GlobalIFunc.h"
 #include "llvm/Support/Alignment.h"
@@ -170,6 +171,27 @@ lowerGlobalIFuncUsersAsGlobalCtor(Module &M,
 LLVM_ABI bool
 collectFunctionVersions(Value *V, SmallVectorImpl<Function *> &Versions,
                         function_ref<TargetTransformInfo &(Function &)> GetTTI);
+
+/// A body Windows may select for an indirect function as it maps the image,
+/// with the capability numbers whose presence selects it.
+struct FunctionOverrideOption {
+  const Function *Body;
+  SmallVector<uint32_t, 2> Capabilities;
+};
+
+/// Whether Windows can select the body of the multiversioned function \p GI
+/// as it maps the image: the options it tests, highest priority first, and
+/// the body every processor the target supports can run, which a stub jumps
+/// to until then and which runs where no option is selected.
+/// \p GetCapabilities adds the numbers that test a version's features beyond
+/// those every such processor has, and fails where one has no number.
+LLVM_ABI bool collectFunctionOverride(
+    const GlobalIFunc &GI,
+    function_ref<TargetTransformInfo &(Function &)> GetTTI,
+    function_ref<bool(const Function &, SmallVectorImpl<uint32_t> &)>
+        GetCapabilities,
+    SmallVectorImpl<FunctionOverrideOption> &Options,
+    const Function *&Fallback);
 
 } // End llvm namespace
 

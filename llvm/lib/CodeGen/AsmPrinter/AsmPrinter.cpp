@@ -128,6 +128,7 @@
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
@@ -3001,12 +3002,13 @@ void AsmPrinter::emitGlobalIFunc(Module &M, const GlobalIFunc &GI) {
 // a leaf selecting it; after the last candidate a terminal that keeps the
 // body the stub jumps to. Every edge leads forward, as Windows requires.
 void AsmPrinter::emitCOFFFunctionOverrideRecord(
-    MCSymbol *Stub, ArrayRef<const MCSymbol *> Candidates,
-    ArrayRef<ArrayRef<uint32_t>> Conditions) {
+    MCSymbol *Stub, ArrayRef<FunctionOverrideOption> Options) {
+  SmallVector<const MCSymbol *, 4> Candidates;
   SmallVector<std::array<uint32_t, 3>, 8> Nodes;
-  for (auto [I, Condition] : enumerate(Conditions)) {
-    uint32_t Leaf = Nodes.size() + Condition.size();
-    for (auto [J, Capability] : enumerate(Condition))
+  for (auto [I, Option] : enumerate(Options)) {
+    Candidates.push_back(getSymbol(Option.Body));
+    uint32_t Leaf = Nodes.size() + Option.Capabilities.size();
+    for (uint32_t Capability : Option.Capabilities)
       Nodes.push_back({Leaf + 1, uint32_t(Nodes.size() + 1), Capability});
     Nodes.push_back({Leaf, Leaf, uint32_t(I)});
   }

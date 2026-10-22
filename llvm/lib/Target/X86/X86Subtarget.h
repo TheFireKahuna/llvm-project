@@ -36,6 +36,7 @@ class LegalizerInfo;
 class RegisterBankInfo;
 class StringRef;
 class TargetMachine;
+struct FunctionOverrideOption;
 
 /// The X86 backend supports a number of different styles of PIC.
 ///
@@ -401,17 +402,8 @@ public:
   unsigned char classifyGlobalFunctionReference(const GlobalValue *GV,
                                                 const Module &M) const;
 
-  /// A body Windows may select for an indirect function as it maps the image,
-  /// with the capability numbers whose presence selects it.
-  struct FunctionOverrideOption {
-    const Function *Body;
-    SmallVector<uint32_t, 2> Capabilities;
-  };
-
   /// Whether Windows can select the body of the indirect function \p GI as
-  /// it maps the image: the options it tests, highest priority first, and the
-  /// body every processor the target supports can run, which a stub jumps to
-  /// until then and which runs where no option is selected.
+  /// it maps the image (see collectFunctionOverride).
   bool getFunctionOverride(const GlobalIFunc &GI,
                            SmallVectorImpl<FunctionOverrideOption> &Options,
                            const Function *&Fallback) const;

@@ -53,6 +53,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Transforms/Utils/KCFIHash.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 using namespace llvm;
 
@@ -1261,7 +1262,7 @@ void X86AsmPrinter::emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
 
 bool X86AsmPrinter::emitCOFFFunctionOverride(Module &M, const GlobalIFunc &GI,
                                              MCSymbol *Stub) {
-  SmallVector<X86Subtarget::FunctionOverrideOption, 4> Options;
+  SmallVector<FunctionOverrideOption, 4> Options;
   const Function *Fallback;
   if (!Subtarget->getFunctionOverride(GI, Options, Fallback))
     return false;
@@ -1271,15 +1272,8 @@ bool X86AsmPrinter::emitCOFFFunctionOverride(Module &M, const GlobalIFunc &GI,
       MCInstBuilder(X86::JMP_4)
           .addExpr(MCSymbolRefExpr::create(getSymbol(Fallback), OutContext)),
       *Subtarget);
-  if (Options.empty())
-    return true;
-  SmallVector<const MCSymbol *, 4> Candidates;
-  SmallVector<ArrayRef<uint32_t>, 4> Conditions;
-  for (const X86Subtarget::FunctionOverrideOption &O : Options) {
-    Candidates.push_back(getSymbol(O.Body));
-    Conditions.push_back(O.Capabilities);
-  }
-  emitCOFFFunctionOverrideRecord(Stub, Candidates, Conditions);
+  if (!Options.empty())
+    emitCOFFFunctionOverrideRecord(Stub, Options);
   return true;
 }
 
