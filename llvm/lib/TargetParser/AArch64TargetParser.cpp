@@ -104,6 +104,30 @@ APInt AArch64::getCpuSupportsMask(ArrayRef<StringRef> Features) {
   return FeaturesMask;
 }
 
+// The capability numbers by which Windows selects, as it maps an image, among
+// a function's bodies (the dynamic value relocation table's function-override
+// diagrams), from the processor's ID registers. SVE's are left out: they are
+// set whether or not the operating system enabled SVE state.
+static constexpr std::pair<StringLiteral, uint32_t> FunctionOverrides[] = {
+    {"sha2", 0x10004},  {"sha3", 0x10005},    {"sha3", 0x10006},
+    {"lse", 0x10007},   {"rdm", 0x10009},     {"sm4", 0x1000a},
+    {"sm4", 0x1000b},   {"dotprod", 0x1000c}, {"fp16fml", 0x1000d},
+    {"flagm", 0x1000e}, {"flagm2", 0x1000f},  {"fcma", 0x10010},
+    {"rcpc", 0x10011},  {"rcpc2", 0x10012},   {"bf16", 0x10013},
+    {"i8mm", 0x10014},  {"fp16", 0x10015},
+};
+
+bool AArch64::getFunctionOverrideCapabilities(
+    StringRef Name, SmallVectorImpl<uint32_t> &Capabilities) {
+  bool Found = false;
+  for (auto [FMVName, Number] : FunctionOverrides)
+    if (FMVName == Name) {
+      Capabilities.push_back(Number);
+      Found = true;
+    }
+  return Found;
+}
+
 bool AArch64::getExtensionFeatures(
     const AArch64::ExtensionBitset &InputExts,
     std::vector<StringRef> &Features) {

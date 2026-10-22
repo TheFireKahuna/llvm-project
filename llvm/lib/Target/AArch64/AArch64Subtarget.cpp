@@ -20,12 +20,15 @@
 #include "GISel/AArch64LegalizerInfo.h"
 #include "GISel/AArch64RegisterBankInfo.h"
 #include "MCTargetDesc/AArch64AddressingModes.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineScheduler.h"
+#include "llvm/IR/GlobalIFunc.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/Support/SipHash.h"
 #include "llvm/TargetParser/AArch64TargetParser.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 using namespace llvm;
 
@@ -541,12 +544,18 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
         !F->hasExternalWeakLinkage())
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
 
-    // There an ifunc is a stub that jumps through the ifunc's import pointer,
-    // which holds the function its resolver chose, so a call reads the
-    // pointer, which the linker keeps where only calls read the register.
-    if (isa<GlobalIFunc>(GV) &&
-        getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
-      return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
+    // There an ifunc is a stub that jumps to the body Windows selected, or
+    // else through the ifunc's import pointer, which holds the function its
+    // resolver chose, so a call reads the pointer, which the linker keeps
+    // where only calls read the register.
+    if (auto *GI = dyn_cast<GlobalIFunc>(GV);
+        GI && getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+      SmallVector<FunctionOverrideOption, 4> Options;
+      const Function *Fallback;
+      return getFunctionOverride(*GI, TM, Options, Fallback)
+                 ? AArch64II::MO_NO_FLAG
+                 : AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
+    }
 
     // On Windows Itanium and NT-POSIX a call to a DSO-local function is
     // direct, though its address may be loaded from its import pointer.
@@ -559,6 +568,38 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
   }
 
   return AArch64II::MO_NO_FLAG;
+}
+
+// Every processor the target supports has the architecture's default
+// extensions; the resolver tests the features a version names with those they
+// imply, and the diagram tests the others.
+bool AArch64Subtarget::getFunctionOverride(
+    const GlobalIFunc &GI, const TargetMachine &TM,
+    SmallVectorImpl<FunctionOverrideOption> &Options,
+    const Function *&Fallback) const {
+  if (!getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return false;
+  std::optional<TargetTransformInfo> TTI;
+  auto GetTTI = [&](Function &F) -> TargetTransformInfo & {
+    TTI.emplace(TM.getTargetTransformInfo(F));
+    return *TTI;
+  };
+  auto GetCapabilities = [](const Function &V,
+                            SmallVectorImpl<uint32_t> &Capabilities) {
+    SmallVector<StringRef, 8> Features;
+    V.getFnAttribute("fmv-features")
+        .getValueAsString()
+        .split(Features, ',', -1, false);
+    APInt Mask = AArch64::getCpuSupportsMask(Features);
+    for (const AArch64::FMVInfo &Info : AArch64::getFMVInfo())
+      if (Info.ID && Mask[*Info.FeatureBit] &&
+          !AArch64::ARMV8A.DefaultExts.test(*Info.ID) &&
+          !AArch64::getFunctionOverrideCapabilities(Info.Name, Capabilities))
+        return false;
+    return true;
+  };
+  return collectFunctionOverride(GI, GetTTI, GetCapabilities, Options,
+                                 Fallback);
 }
 
 void AArch64Subtarget::overrideSchedPolicy(MachineSchedPolicy &Policy,

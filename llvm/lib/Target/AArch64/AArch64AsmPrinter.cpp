@@ -72,6 +72,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/Instrumentation/HWAddressSanitizer.h"
 #include "llvm/Transforms/Utils/KCFIHash.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -442,6 +443,8 @@ private:
                                     MCSymbol *LazyPointer) override;
   void emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
                              MCSymbol *Pointer) override;
+  bool emitCOFFFunctionOverride(Module &M, const GlobalIFunc &GI,
+                                MCSymbol *Stub) override;
 
   /// Checks if this instruction is part of a sequence that is eligle for import
   /// call optimization and, if so, records it to be emitted in the import call
@@ -5020,6 +5023,23 @@ void AArch64AsmPrinter::emitCOFFIFuncStubBody(Module &M, const GlobalIFunc &GI,
                      .addReg(AArch64::X16)
                      .addOperand(PageOff));
   EmitToStreamer(MCInstBuilder(AArch64::BR).addReg(AArch64::X16));
+}
+
+bool AArch64AsmPrinter::emitCOFFFunctionOverride(Module &M,
+                                                 const GlobalIFunc &GI,
+                                                 MCSymbol *Stub) {
+  SmallVector<FunctionOverrideOption, 4> Options;
+  const Function *Fallback;
+  if (!STI->getFunctionOverride(GI, TM, Options, Fallback))
+    return false;
+  // ifunc:
+  //   b       fallback
+  EmitToStreamer(
+      MCInstBuilder(AArch64::B)
+          .addExpr(MCSymbolRefExpr::create(getSymbol(Fallback), OutContext)));
+  if (!Options.empty())
+    emitCOFFFunctionOverrideRecord(Stub, Options);
+  return true;
 }
 
 void AArch64AsmPrinter::emitMachOIFuncStubHelperBody(Module &M,

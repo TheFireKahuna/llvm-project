@@ -32,6 +32,8 @@
 #include "AArch64GenSubtargetInfo.inc"
 
 namespace llvm {
+struct FunctionOverrideOption;
+class GlobalIFunc;
 class GlobalValue;
 class StringRef;
 
@@ -380,6 +382,12 @@ public:
 
   unsigned classifyGlobalFunctionReference(const GlobalValue *GV,
                                            const TargetMachine &TM) const;
+
+  /// Whether Windows can select the body of the indirect function \p GI as
+  /// it maps the image (see collectFunctionOverride).
+  bool getFunctionOverride(const GlobalIFunc &GI, const TargetMachine &TM,
+                           SmallVectorImpl<FunctionOverrideOption> &Options,
+                           const Function *&Fallback) const;
 
   /// This function is design to compatible with the function def in other
   /// targets and escape build error about the virtual function def in base
