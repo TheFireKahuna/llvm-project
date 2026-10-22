@@ -541,6 +541,13 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
         !F->hasExternalWeakLinkage())
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
 
+    // There an ifunc is a stub that jumps through the ifunc's import pointer,
+    // which holds the function its resolver chose, so a call reads the
+    // pointer, which the linker keeps where only calls read the register.
+    if (isa<GlobalIFunc>(GV) &&
+        getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
+
     // On Windows Itanium and NT-POSIX a call to a DSO-local function is
     // direct, though its address may be loaded from its import pointer.
     if (getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&

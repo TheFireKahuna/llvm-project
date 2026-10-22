@@ -10,7 +10,9 @@
 
 ; With RtLibUseGOT (-fno-plt) a runtime library call on COFF, which has no
 ; GOT, goes through the import table, as it goes through the GOT on ELF. Calls
-; to functions the IR declares follow their storage class as before.
+; to functions the IR declares follow their storage class as before. On
+; Windows Itanium a load of an import pointer whose register only the call
+; reads is described as such, with the call.
 
 define void @copy(ptr %d, ptr %s, i64 %n) {
 ; CHECK-LABEL: copy:
@@ -25,7 +27,10 @@ define void @calls() {
 ; CHECK-LABEL: calls:
 ; CHECK:       bl local
 ; CHECK:       adrp [[REG:x[0-9]+]], __imp_imported
+; ITANIUM-NEXT: [[LOAD:.Lfused[0-9]+]]:
+; ITANIUM-NEXT: .linkfusedread
 ; CHECK-NEXT:  ldr [[REG]], [[[REG]], :lo12:__imp_imported]
+; ITANIUM-NEXT: .linkfusedcall [[LOAD]], [[REG]]
 ; CHECK-NEXT:  blr [[REG]]
   call void @local()
   call void @imported()
@@ -41,13 +46,13 @@ define void @calls() {
 define void @unmarked_calls() {
 ; CHECK-LABEL: unmarked_calls:
 ; ITANIUM:      adrp [[REG:x[0-9]+]], __imp_unmarked
-; ITANIUM-NEXT: ldr [[REG]], [[[REG]], :lo12:__imp_unmarked]
-; ITANIUM-NEXT: blr [[REG]]
+; ITANIUM:      ldr [[REG]], [[[REG]], :lo12:__imp_unmarked]
+; ITANIUM:      blr [[REG]]
 ; MSVC:        bl unmarked
 ; MSVC:        .refptr.weakly
 ; ITANIUM:     adrp [[REG:x[0-9]+]], __imp_weakly
-; ITANIUM-NEXT: ldr [[REG]], [[[REG]], :lo12:__imp_weakly]
-; ITANIUM-NEXT: blr [[REG]]
+; ITANIUM:      ldr [[REG]], [[[REG]], :lo12:__imp_weakly]
+; ITANIUM:      blr [[REG]]
   call void @unmarked()
   call void @weakly()
   ret void
@@ -59,7 +64,7 @@ define void @unmarked_calls() {
 define void @hidden_weak_call() {
 ; CHECK-LABEL: hidden_weak_call:
 ; CHECK:       adrp [[REG:x[0-9]+]], .refptr.hidden_weakly
-; CHECK-NEXT:  ldr [[REG]], [[[REG]], :lo12:.refptr.hidden_weakly]
+; CHECK:       ldr [[REG]], [[[REG]], :lo12:.refptr.hidden_weakly]
 ; CHECK-NOT:   __imp_hidden_weakly
   call void @hidden_weakly()
   ret void

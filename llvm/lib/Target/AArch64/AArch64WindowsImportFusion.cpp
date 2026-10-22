@@ -63,6 +63,7 @@ using namespace llvm;
 
 STATISTIC(NumAccesses, "Number of accesses described as fused with a load");
 STATISTIC(NumAdds, "Number of adds described as fused with a load");
+STATISTIC(NumCalls, "Number of calls described as fused with a load");
 STATISTIC(NumValueOnly, "Number of loads described as read only for values");
 STATISTIC(NumAnchored, "Number of loads described with loads that may give "
                        "their pointers");
@@ -121,11 +122,11 @@ static bool isThreadLocalRecordPointer(const MachineOperand &MO,
          StringRef(MO.getSymbolName()).ends_with("$tls");
 }
 
-// Whether GV is data rather than a function.
+// Whether GV is data rather than a function or an indirect function.
 static bool isData(const GlobalValue *GV) {
   if (const auto *GA = dyn_cast<GlobalAlias>(GV))
     GV = GA->getAliaseeObject();
-  return GV && !isa<Function>(GV);
+  return GV && !isa<Function, GlobalIFunc>(GV);
 }
 
 // Whether GV is data that never changes and whose every definition holds the
@@ -411,8 +412,9 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
 
   // The loads of import pointers of data, into the register that holds the
-  // pointer's page or another, and of thread-local variables' records.
-  SmallVector<MachineInstr *, 8> Loads, RecordLoads;
+  // pointer's page or another, of functions, and of thread-local variables'
+  // records.
+  SmallVector<MachineInstr *, 8> Loads, CallLoads, RecordLoads;
   // The data whose import pointers an instruction other than such a load, or
   // an adrp of a pointer's page, names.
   SmallPtrSet<const GlobalValue *, 4> OtherUses;
@@ -420,11 +422,10 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
     for (MachineInstr &MI : MBB) {
       if (MI.getOpcode() == AArch64::LDRXui && !MI.isBundled()) {
         if (const GlobalValue *GV =
-                getImportPointer(MI.getOperand(2), AArch64II::MO_PAGEOFF))
-          if (isData(GV)) {
-            Loads.push_back(&MI);
-            continue;
-          }
+                getImportPointer(MI.getOperand(2), AArch64II::MO_PAGEOFF)) {
+          (isData(GV) ? Loads : CallLoads).push_back(&MI);
+          continue;
+        }
         if (isThreadLocalRecordPointer(MI.getOperand(2),
                                        AArch64II::MO_PAGEOFF)) {
           RecordLoads.push_back(&MI);
@@ -439,7 +440,7 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
           OtherUses.insert(MO.getGlobal());
     }
   }
-  if (Loads.empty() && RecordLoads.empty())
+  if (Loads.empty() && CallLoads.empty() && RecordLoads.empty())
     return false;
 
   ReachingDefInfo RDI;
@@ -500,6 +501,35 @@ bool AArch64WindowsImportFusion::runOnMachineFunction(MachineFunction &MF) {
       undefDebugValues(*Copy, Copy->getOperand(0).getReg(), TRI);
     return true;
   };
+  // A load of a function's import pointer whose register only calls and jumps
+  // through it read, each in the load's section and reached by the load
+  // alone: where the linker knows the function's address without the
+  // pointer, or knows a better pointer, it may change the load, the calls
+  // still reading its register.
+  for (MachineInstr *Load : CallLoads) {
+    Register Reg = Load->getOperand(0).getReg();
+    SmallPtrSet<MachineInstr *, 4> Uses;
+    RDI.getGlobalUses(Load, Reg, Uses);
+    if (Uses.empty() || !all_of(Uses, [&](MachineInstr *Use) {
+          return Use->isCall() && Use->getOperand(0).isReg() &&
+                 Use->getOperand(0).getReg() == Reg &&
+                 none_of(drop_begin(Use->operands()),
+                         [&](const MachineOperand &MO) {
+                           return MO.isReg() && MO.readsReg() &&
+                                  TRI->regsOverlap(MO.getReg(), Reg);
+                         }) &&
+                 Use->getParent()->getSectionID() ==
+                     Load->getParent()->getSectionID() &&
+                 RDI.getUniqueReachingMIDef(Use, Reg) == Load;
+        }))
+      continue;
+    for (MachineInstr *Use : Uses)
+      FI->addImportFusedUse(Use, Load, Reg, UseKind::Call);
+    FI->addImportFusedLoad(Load, true);
+    NumCalls += Uses.size();
+    Changed = true;
+  }
+
   // A record's loads are described as data's are, where the load's register
   // is its adrp's alone. Of them, the load of the record's first word, the
   // address of the TLS index, is a load of each access through its register,

@@ -608,7 +608,7 @@ public:
   /// memory operand, or by adding a constant to it; or, for an offset that an
   /// access of a thread-local variable's record loaded, by adding it to
   /// another register, in an address or an add.
-  enum class ImportFusedUseKind : uint8_t { Access, Add, Index };
+  enum class ImportFusedUseKind : uint8_t { Access, Add, Index, Call };
   struct ImportFusedUse {
     const MachineInstr *Load;
     MCRegister Reg;

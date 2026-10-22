@@ -1660,8 +1660,12 @@ uint64_t WinCOFFWriter::writeObject() {
         LoadsReadElsewhere.insert(LoadKey(Call.Load));
         continue;
       }
-      uint32_t Start =
-          Asm->getSymbolOffset(*Call.End) - (Call.IsJump ? 3 : 6);
+      // A call or jump is four bytes on ARM64; on x86-64 a call through a
+      // pointer is six and a jump through a register, with REX.W, three.
+      uint32_t Start = Asm->getSymbolOffset(*Call.End) -
+                       (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARM64 ? 4
+                        : Call.IsJump                                    ? 3
+                                                                         : 6);
       CallSites.push_back({&Call, {LoadSec, Start}});
     }
     // An access whose load is itself an access of a thread-local variable's

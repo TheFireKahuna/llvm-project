@@ -35,7 +35,8 @@ class AArch64WinCOFFStreamer : public MCWinCOFFStreamer {
     NoFusedUse,
     AwaitingAccess,
     AwaitingAdd,
-    AwaitingIndex
+    AwaitingIndex,
+    AwaitingCall
   } FusedUse = NoFusedUse;
   MCRegister FusedUseReg;
 
@@ -99,6 +100,11 @@ public:
     FusedUse = AwaitingIndex;
     FusedUseReg = Reg;
   }
+  void emitCOFFLinkFusedCall(const MCSymbol *Load, MCRegister Reg) override {
+    MCWinCOFFStreamer::emitCOFFLinkFusedCall(Load, Reg);
+    FusedUse = AwaitingCall;
+    FusedUseReg = Reg;
+  }
 
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables() override;
@@ -114,6 +120,21 @@ public:
 bool AArch64WinCOFFStreamer::describeFusedUse(const MCInst &Inst,
                                               MCSymbol *Start) {
   const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  // A call or jump is blr or br of the register, which the records name by
+  // where it ends.
+  if (FusedUse == AwaitingCall) {
+    unsigned Opcode = Inst.getOpcode();
+    if ((Opcode != AArch64::BLR && Opcode != AArch64::BR) ||
+        Inst.getOperand(0).getReg() != FusedUseReg)
+      return false;
+    MCSymbol *End = getContext().createTempSymbol();
+    emitLabel(End);
+    WinCOFFObjectWriter::LinkFusedCall &Call =
+        getWriter().getLastLinkFusedCall();
+    Call.End = End;
+    Call.IsJump = Opcode == AArch64::BR;
+    return true;
+  }
   // An index, a load, store or prefetch at the sum of two registers or an
   // add of them, names the register as its first (base) or second; the
   // linker decodes the rest.

@@ -5,10 +5,18 @@
 ;; says. The stub carries the function's KCFI type, as data with a marker, and
 ;; is the function's one guard-table entry where its address is taken.
 
-;; A call reaches the stub.
+;; A call reads the import pointer, the cell, in a load that only the call
+;; reads, as the records describe, so the linker keeps it reading the cell.
 ; CHECK-LABEL: use:
-; CHECK:         bl weak
-; CHECK:         bl strong
+; CHECK:         adrp [[REG:x[0-9]+]], __imp_weak
+; CHECK-NEXT:    [[LOAD:.Lfused[0-9]+]]:
+; CHECK-NEXT:    .linkfusedread
+; CHECK-NEXT:    ldr [[REG]], [[[REG]], :lo12:__imp_weak]
+; CHECK-NEXT:    .linkfusedcall [[LOAD]], [[REG]]
+; CHECK-NEXT:    blr [[REG]]
+; CHECK:         ldr {{x[0-9]+}}, [{{x[0-9]+}}, :lo12:__imp_strong]
+; CHECK-NEXT:    .linkfusedcall
+; CHECK-NEXT:    blr
 
 ; CHECK:      .section .text,"xr",discard,weak
 ; CHECK-NEXT: .globl weak
