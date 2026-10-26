@@ -7,8 +7,9 @@ target triple = "aarch64-unknown-linux-gnu"
 @trivial.ifunc = internal ifunc void (), ptr @trivial.resolver
 ;.
 ; CHECK: @unknown_condition = external local_unnamed_addr global i1
+; CHECK: @address_taken.pointer = local_unnamed_addr global ptr @address_taken.ifunc
 ; CHECK: @alias_decl = weak_odr alias void (), ptr @aliased_decl.ifunc
-; CHECK: @alias_def = weak_odr alias void (), ptr @aliased_def._Msimd
+; CHECK: @alias_def = weak_odr alias void (), ptr @aliased_def.ifunc
 ; CHECK: @external_ifunc.ifunc = dso_local ifunc void (), ptr @external_ifunc.resolver
 ; CHECK: @complex.ifunc = internal ifunc void (), ptr @complex.resolver
 ; CHECK: @sideeffects.ifunc = internal ifunc void (), ptr @sideeffects.resolver
@@ -16,6 +17,7 @@ target triple = "aarch64-unknown-linux-gnu"
 ; CHECK: @interposable_resolver.ifunc = weak ifunc void (), ptr @interposable_resolver.resolver
 ; CHECK: @aliased_decl.ifunc = weak_odr ifunc void (), ptr @aliased_decl.resolver
 ; CHECK: @aliased_def.ifunc = weak_odr ifunc void (), ptr @aliased_def.resolver
+; CHECK: @address_taken.ifunc = internal ifunc void (), ptr @address_taken.resolver
 ;.
 define ptr @trivial.resolver() {
   ret ptr @trivial._Msimd
@@ -107,6 +109,17 @@ define ptr @aliased_def.resolver() {
   ret ptr @aliased_def._Msimd
 }
 
+; A use other than a call keeps the ifunc, whose address another module may
+; take as the ifunc's own symbol.
+@address_taken.ifunc = internal ifunc void (), ptr @address_taken.resolver
+@address_taken.pointer = global ptr @address_taken.ifunc
+define ptr @address_taken.resolver() {
+  ret ptr @address_taken._Msimd
+}
+define void @address_taken._Msimd() {
+  ret void
+}
+
 define void @caller() {
 ; CHECK-LABEL: define void @caller() local_unnamed_addr {
 ; CHECK-NEXT:    call void @trivial._Msimd()
@@ -115,8 +128,9 @@ define void @caller() {
 ; CHECK-NEXT:    call void @sideeffects.ifunc()
 ; CHECK-NEXT:    call void @interposable_ifunc.ifunc()
 ; CHECK-NEXT:    call void @interposable_resolver.ifunc()
-; CHECK-NEXT:    call void @aliased_decl.ifunc()
+; CHECK-NEXT:    call void @aliased_decl._Msimd()
 ; CHECK-NEXT:    call void @aliased_def._Msimd()
+; CHECK-NEXT:    call void @address_taken._Msimd()
 ; CHECK-NEXT:    ret void
 ;
   call void @trivial.ifunc()
@@ -127,5 +141,6 @@ define void @caller() {
   call void @interposable_resolver.ifunc()
   call void @aliased_decl.ifunc()
   call void @aliased_def.ifunc()
+  call void @address_taken.ifunc()
   ret void
 }

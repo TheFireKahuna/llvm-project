@@ -243,6 +243,9 @@ enum ProcessorFeatures {
   FEATURE_AMX_MOVRS,
   FEATURE_AVX512BMM,
   FEATURE_AVX10_V2_AUX,
+  FEATURE_ERMSB,
+  FEATURE_FSRM,
+  FEATURE_FSRS,
   CPU_FEATURE_MAX
 };
 
@@ -1012,6 +1015,8 @@ static void getAvailableFeatures(unsigned ECX, unsigned EDX, unsigned MaxLeaf,
     setFeature(FEATURE_AVX2);
   if (HasLeaf7 && ((EBX >> 8) & 1))
     setFeature(FEATURE_BMI2);
+  if (HasLeaf7 && ((EBX >> 9) & 1))
+    setFeature(FEATURE_ERMSB);
   if (HasLeaf7 && ((EBX >> 11) & 1))
     setFeature(FEATURE_RTM);
   if (HasLeaf7 && ((EBX >> 16) & 1) && HasAVX512Save)
@@ -1072,6 +1077,8 @@ static void getAvailableFeatures(unsigned ECX, unsigned EDX, unsigned MaxLeaf,
   if (HasLeaf7 && ((ECX >> 29) & 1))
     setFeature(FEATURE_ENQCMD);
 
+  if (HasLeaf7 && ((EDX >> 4) & 1))
+    setFeature(FEATURE_FSRM);
   if (HasLeaf7 && ((EDX >> 5) & 1))
     setFeature(FEATURE_UINTR);
   if (HasLeaf7 && ((EDX >> 8) & 1) && HasAVX512Save)
@@ -1110,6 +1117,8 @@ static void getAvailableFeatures(unsigned ECX, unsigned EDX, unsigned MaxLeaf,
     setFeature(FEATURE_AVX512BF16);
   if (HasLeaf7Subleaf1 && ((EAX >> 7) & 1))
     setFeature(FEATURE_CMPCCXADD);
+  if (HasLeaf7Subleaf1 && ((EAX >> 11) & 1))
+    setFeature(FEATURE_FSRS);
   if (HasLeaf7Subleaf1 && ((EAX >> 21) & 1) && HasAMXSave)
     setFeature(FEATURE_AMX_FP16);
   if (HasLeaf7Subleaf1 && ((EAX >> 22) & 1))

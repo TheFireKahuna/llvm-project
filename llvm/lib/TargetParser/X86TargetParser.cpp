@@ -666,6 +666,11 @@ constexpr FeatureBitset ImpliedFeaturesAVX10_1 =
 constexpr FeatureBitset ImpliedFeaturesAVX10_2 = FeatureAVX10_1;
 constexpr FeatureBitset ImpliedFeaturesAVX10_V2_AUX = FeatureAVX10_1;
 
+// Fast string operations.
+constexpr FeatureBitset ImpliedFeaturesERMSB = {};
+constexpr FeatureBitset ImpliedFeaturesFSRM = {};
+constexpr FeatureBitset ImpliedFeaturesFSRS = {};
+
 // APX Features
 constexpr FeatureBitset ImpliedFeaturesEGPR = {};
 constexpr FeatureBitset ImpliedFeaturesPush2Pop2 = {};
@@ -767,6 +772,40 @@ void llvm::X86::updateImpliedFeatures(
     if (ImpliedBits[i] && !Name.empty())
       Features[Name] = Enabled;
   }
+}
+
+bool llvm::X86::isCpuSupportsFeature(StringRef Name) {
+  return StringSwitch<bool>(Name)
+#define X86_FEATURE_COMPAT(ENUM, STR, PRIORITY, ABI_VALUE) .Case(STR, true)
+#define X86_MICROARCH_LEVEL(ENUM, STR, PRIORITY, ABI_VALUE) .Case(STR, true)
+#include "llvm/TargetParser/X86TargetParser.def"
+      .Default(false);
+}
+
+APInt llvm::X86::getFMVPriority(ArrayRef<StringRef> Features) {
+  auto getPriority = [](StringRef Feature) -> unsigned {
+    // Valid CPUs have a 'key feature' that compares just better than its key
+    // feature.
+    CPUKind Kind = parseArchX86(Feature);
+    if (Kind != CK_None) {
+      ProcessorFeatures KeyFeature = getKeyFeature(Kind);
+      return (getFeaturePriority(KeyFeature) << 1) + 1;
+    }
+    // Now we know we have a feature, so get its priority and shift it a few so
+    // that we have sufficient room for the CPUs (above).
+    ProcessorFeatures Feat = StringSwitch<ProcessorFeatures>(Feature)
+#define X86_FEATURE_COMPAT(ENUM, STR, PRIORITY, ABI_VALUE)                     \
+  .Case(STR, FEATURE_##ENUM)
+#include "llvm/TargetParser/X86TargetParser.def"
+        ;
+    return getFeaturePriority(Feat) << 1;
+  };
+
+  unsigned Priority = 0;
+  for (StringRef Feature : Features)
+    if (!Feature.empty())
+      Priority = std::max(Priority, getPriority(Feature));
+  return APInt(32, Priority);
 }
 
 char llvm::X86::getCPUDispatchMangling(StringRef CPU) {

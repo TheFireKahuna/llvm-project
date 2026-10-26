@@ -388,6 +388,12 @@ bool X86TargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasPCONFIG = true;
     } else if (Feature == "+ptwrite") {
       HasPTWRITE = true;
+    } else if (Feature == "+ermsb") {
+      HasERMSB = true;
+    } else if (Feature == "+fsrm") {
+      HasFSRM = true;
+    } else if (Feature == "+fsrs") {
+      HasFSRS = true;
     } else if (Feature == "+invpcid") {
       HasINVPCID = true;
     } else if (Feature == "+enqcmd") {
@@ -1134,10 +1140,13 @@ bool X86TargetInfo::isValidFeatureName(StringRef Name) const {
       .Case("crc32", true)
       .Case("cx16", true)
       .Case("enqcmd", true)
+      .Case("ermsb", true)
       .Case("f16c", true)
       .Case("fma", true)
       .Case("fma4", true)
       .Case("fsgsbase", true)
+      .Case("fsrm", true)
+      .Case("fsrs", true)
       .Case("fxsr", true)
       .Case("general-regs-only", true)
       .Case("gfni", true)
@@ -1258,10 +1267,13 @@ bool X86TargetInfo::hasFeature(StringRef Feature) const {
       .Case("cx8", HasCX8)
       .Case("cx16", HasCX16)
       .Case("enqcmd", HasENQCMD)
+      .Case("ermsb", HasERMSB)
       .Case("f16c", HasF16C)
       .Case("fma", HasFMA)
       .Case("fma4", XOPLevel >= FMA4)
       .Case("fsgsbase", HasFSGSBASE)
+      .Case("fsrm", HasFSRM)
+      .Case("fsrs", HasFSRS)
       .Case("fxsr", HasFXSR)
       .Case("gfni", HasGFNI)
       .Case("hreset", HasHRESET)
@@ -1342,44 +1354,11 @@ bool X86TargetInfo::hasFeature(StringRef Feature) const {
 // below currently rather than the full range of subtarget features. (See
 // X86TargetInfo::hasFeature for a somewhat comprehensive list).
 bool X86TargetInfo::validateCpuSupports(StringRef FeatureStr) const {
-  return llvm::StringSwitch<bool>(FeatureStr)
-#define X86_FEATURE_COMPAT(ENUM, STR, PRIORITY, ABI_VALUE) .Case(STR, true)
-#define X86_MICROARCH_LEVEL(ENUM, STR, PRIORITY, ABI_VALUE) .Case(STR, true)
-#include "llvm/TargetParser/X86TargetParser.def"
-      .Default(false);
-}
-
-static llvm::X86::ProcessorFeatures getFeature(StringRef Name) {
-  return llvm::StringSwitch<llvm::X86::ProcessorFeatures>(Name)
-#define X86_FEATURE_COMPAT(ENUM, STR, PRIORITY, ABI_VALUE)                     \
-  .Case(STR, llvm::X86::FEATURE_##ENUM)
-
-#include "llvm/TargetParser/X86TargetParser.def"
-      ;
-  // Note, this function should only be used after ensuring the value is
-  // correct, so it asserts if the value is out of range.
+  return llvm::X86::isCpuSupportsFeature(FeatureStr);
 }
 
 llvm::APInt X86TargetInfo::getFMVPriority(ArrayRef<StringRef> Features) const {
-  auto getPriority = [](StringRef Feature) -> unsigned {
-    // Valid CPUs have a 'key feature' that compares just better than its key
-    // feature.
-    using namespace llvm::X86;
-    CPUKind Kind = parseArchX86(Feature);
-    if (Kind != CK_None) {
-      ProcessorFeatures KeyFeature = getKeyFeature(Kind);
-      return (getFeaturePriority(KeyFeature) << 1) + 1;
-    }
-    // Now we know we have a feature, so get its priority and shift it a few so
-    // that we have sufficient room for the CPUs (above).
-    return getFeaturePriority(getFeature(Feature)) << 1;
-  };
-
-  unsigned Priority = 0;
-  for (StringRef Feature : Features)
-    if (!Feature.empty())
-      Priority = std::max(Priority, getPriority(Feature));
-  return llvm::APInt(32, Priority);
+  return llvm::X86::getFMVPriority(Features);
 }
 
 bool X86TargetInfo::validateCPUSpecificCPUDispatch(StringRef Name) const {

@@ -68,7 +68,11 @@
 #endif
 
 void __init_cpu_features_resolver(unsigned long hwcap,
-                                  const __ifunc_arg_t *arg) {}
+                                  const __ifunc_arg_t *arg) {
+  // A resolver can run before the constructor below, from a constructor of a
+  // lower priority or a TLS callback, so it fills the features itself.
+  __init_cpu_features();
+}
 
 void CONSTRUCTOR_ATTRIBUTE __init_cpu_features(void) {
   if (__atomic_load_n(&__aarch64_cpu_features.features, __ATOMIC_RELAXED))
