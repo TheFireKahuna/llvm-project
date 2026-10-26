@@ -68,7 +68,11 @@ if(CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
     if (CMAKE_CXX_SIMULATE_VERSION VERSION_LESS MSVC_MIN)
       message(FATAL_ERROR "Host Clang must have at least -fms-compatibility-version=${MSVC_MIN}, your version is ${CMAKE_CXX_SIMULATE_VERSION}.")
     endif()
-    set(CLANG_CL 1)
+    # A GNU-driver clang targeting the MSVC environment also simulates MSVC,
+    # but does not take clang-cl's options.
+    if (CMAKE_CXX_COMPILER_FRONTEND_VARIANT STREQUAL "MSVC")
+      set(CLANG_CL 1)
+    endif()
   elseif(NOT LLVM_ENABLE_LIBCXX)
     # Test that we aren't using too old of a version of libstdc++.
     set(OLD_CMAKE_REQUIRED_FLAGS ${CMAKE_REQUIRED_FLAGS})

@@ -18,11 +18,8 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
-#include <unistd.h>
-#else
+#ifdef _WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
-#include <io.h>
 #endif
 
 using namespace llvm;

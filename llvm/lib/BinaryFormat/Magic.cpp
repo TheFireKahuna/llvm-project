@@ -14,12 +14,6 @@
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MemoryBuffer.h"
 
-#if !defined(_MSC_VER) && !defined(__MINGW32__)
-#include <unistd.h>
-#else
-#include <io.h>
-#endif
-
 using namespace llvm;
 using namespace llvm::support::endian;
 using namespace llvm::sys::fs;

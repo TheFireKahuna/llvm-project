@@ -2045,8 +2045,7 @@ function(set_unittest_link_flags target_name)
                       LINK_FLAGS " -Wl,--lto-O0")
       endif()
     elseif(LINKER_IS_LLD_LINK)
-      set_property(TARGET ${target_name} APPEND_STRING PROPERTY
-                    LINK_FLAGS " /opt:lldlto=0")
+      target_link_options(${target_name} PRIVATE "LINKER:/opt:lldlto=0")
     elseif(APPLE AND NOT uppercase_LLVM_ENABLE_LTO STREQUAL "THIN")
       set_property(TARGET ${target_name} APPEND_STRING PROPERTY
                     LINK_FLAGS " -Wl,-mllvm,-O0")

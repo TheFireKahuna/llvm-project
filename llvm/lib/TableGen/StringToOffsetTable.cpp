@@ -33,7 +33,7 @@ void StringToOffsetTable::EmitStringTableStorageDef(raw_ostream &OS,
     PrintFatalError("llvm::StringTable requires null terminated strings");
 
   OS << formatv(R"(
-#ifdef __GNUC__
+#if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Woverlength-strings"
 #endif
@@ -82,7 +82,7 @@ void StringToOffsetTable::EmitStringTableStorageDef(raw_ostream &OS,
   OS << LineSep << (UseChars ? "};" : "  ;");
 
   OS << R"(
-#ifdef __GNUC__
+#if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
 )";

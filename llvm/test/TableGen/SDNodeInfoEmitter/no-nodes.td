@@ -21,14 +21,14 @@ def MyTarget : Target;
 // CHECK-NEXT:  namespace llvm {
 // CHECK-EMPTY:
 // CHECK-EMPTY:
-// CHECK-NEXT:  #ifdef __GNUC__
+// CHECK-NEXT:  #if defined(__GNUC__) || defined(__clang__)
 // CHECK-NEXT:  #pragma GCC diagnostic push
 // CHECK-NEXT:  #pragma GCC diagnostic ignored "-Woverlength-strings"
 // CHECK-NEXT:  #endif
 // CHECK-NEXT:  static constexpr char MyTargetSDNodeNamesStorage[] =
 // CHECK-NEXT:    "\0"
 // CHECK-NEXT:    ;
-// CHECK-NEXT:  #ifdef __GNUC__
+// CHECK-NEXT:  #if defined(__GNUC__) || defined(__clang__)
 // CHECK-NEXT:  #pragma GCC diagnostic pop
 // CHECK-NEXT:  #endif
 // CHECK-EMPTY:

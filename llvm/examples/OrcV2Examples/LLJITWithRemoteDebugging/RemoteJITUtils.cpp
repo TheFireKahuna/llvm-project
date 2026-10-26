@@ -135,7 +135,8 @@ static Expected<int> connectTCPSocketImpl(std::string Host,
   for (Server = AI; Server != nullptr; Server = Server->ai_next) {
     // If socket fails, maybe it's because the address family is not supported.
     // Skip to the next addrinfo structure.
-    if ((SockFD = socket(AI->ai_family, AI->ai_socktype, AI->ai_protocol)) < 0)
+    if ((SockFD = socket(Server->ai_family, Server->ai_socktype,
+                         Server->ai_protocol)) < 0)
       continue;
 
     // If connect works, we exit the loop with a working socket.
