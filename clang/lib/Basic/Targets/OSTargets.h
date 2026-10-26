@@ -900,6 +900,30 @@ public:
 void addWindowsDefines(const llvm::Triple &Triple, const LangOptions &Opts,
                        MacroBuilder &Builder);
 
+// NT-POSIX target: a POSIX C library on the NT system calls, with Linux's
+// data model. Its default face defines none of Windows' macros.
+template <typename Target>
+class LLVM_LIBRARY_VISIBILITY NTPOSIXTargetInfo : public OSTargetInfo<Target> {
+protected:
+  void getOSDefines(const LangOptions &Opts, const llvm::Triple &Triple,
+                    MacroBuilder &Builder) const override {
+    Builder.defineMacro("__NTPOSIX__");
+    if (Opts.POSIXThreads)
+      Builder.defineMacro("_REENTRANT");
+    // Required by the libc++ locale support.
+    if (Opts.CPlusPlus)
+      Builder.defineMacro("_GNU_SOURCE");
+  }
+
+public:
+  NTPOSIXTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts)
+      : OSTargetInfo<Target>(Triple, Opts) {
+    this->WIntType = TargetInfo::UnsignedInt;
+    if (Triple.isX86_64())
+      this->HasFloat128 = true;
+  }
+};
+
 // Windows target
 template <typename Target>
 class LLVM_LIBRARY_VISIBILITY WindowsTargetInfo : public OSTargetInfo<Target> {

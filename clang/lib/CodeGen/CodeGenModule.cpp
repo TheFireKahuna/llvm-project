@@ -281,7 +281,9 @@ createTargetCodeGenInfo(CodeGenModule &CGM) {
     switch (Triple.getOS()) {
     case llvm::Triple::UEFI:
     case llvm::Triple::Win32:
-      return createWinX86_64TargetCodeGenInfo(CGM, AVXLevel);
+      if (Triple.hasDefaultMSABI())
+        return createWinX86_64TargetCodeGenInfo(CGM, AVXLevel);
+      [[fallthrough]];
     default:
       return createX86_64TargetCodeGenInfo(CGM, AVXLevel);
     }

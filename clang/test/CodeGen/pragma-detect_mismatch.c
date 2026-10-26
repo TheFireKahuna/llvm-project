@@ -4,6 +4,8 @@
 // RUN:   | FileCheck %s
 // RUN: %clang_cc1 %s -triple i686-unknown-uefi -fms-extensions -emit-llvm -o - \
 // RUN:   | FileCheck %s
+// RUN: %clang_cc1 %s -triple x86_64-pc-windows-ntposix -fms-extensions \
+// RUN:   -emit-llvm -o - | FileCheck %s
 // RUN: %clang_cc1 %s -triple amdgpu-amd-amdhsa -fms-extensions -emit-llvm -o \
 // RUN:   - | FileCheck -check-prefix=AMD %s
 

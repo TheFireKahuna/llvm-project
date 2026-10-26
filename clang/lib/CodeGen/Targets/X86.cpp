@@ -1610,6 +1610,8 @@ public:
 
       addX86InterruptAttrs(FD, GV, CGM);
     }
+    if (CGM.getTriple().isOSWindows())
+      addStackProbeTargetAttributes(D, GV, CGM);
   }
 
   void checkFunctionCallABI(CodeGenModule &CGM, SourceLocation CallLoc,

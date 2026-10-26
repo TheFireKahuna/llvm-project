@@ -1534,6 +1534,10 @@ AArch64TargetInfo::checkCallingConvention(CallingConv CC) const {
 bool AArch64TargetInfo::isCLZForZeroUndef() const { return false; }
 
 TargetInfo::BuiltinVaListKind AArch64TargetInfo::getBuiltinVaListKind() const {
+  // Variadic arguments follow Windows ARM64 wherever its convention is the
+  // default.
+  if (getTriple().hasDefaultMSABI())
+    return TargetInfo::CharPtrBuiltinVaList;
   return TargetInfo::AArch64ABIBuiltinVaList;
 }
 
@@ -1833,11 +1837,6 @@ WindowsARM64TargetInfo::WindowsARM64TargetInfo(const llvm::Triple &Triple,
   IntPtrType = SignedLongLong;
 }
 
-TargetInfo::BuiltinVaListKind
-WindowsARM64TargetInfo::getBuiltinVaListKind() const {
-  return TargetInfo::CharPtrBuiltinVaList;
-}
-
 TargetInfo::CallingConvCheckResult
 WindowsARM64TargetInfo::checkCallingConvention(CallingConv CC) const {
   switch (CC) {
@@ -1927,11 +1926,6 @@ UEFIAArch64TargetInfo::UEFIAArch64TargetInfo(const llvm::Triple &Triple,
   SizeType = UnsignedLongLong;
   PtrDiffType = SignedLongLong;
   IntPtrType = SignedLongLong;
-}
-
-TargetInfo::BuiltinVaListKind
-UEFIAArch64TargetInfo::getBuiltinVaListKind() const {
-  return TargetInfo::CharPtrBuiltinVaList;
 }
 
 TargetInfo::CallingConvCheckResult

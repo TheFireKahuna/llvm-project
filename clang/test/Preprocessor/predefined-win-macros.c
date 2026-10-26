@@ -205,6 +205,27 @@
 // CHECK-MIPSEL-MINGW: #define __mips 32
 // CHECK-MIPSEL-MINGW: #define __mips__ 1
 
+// NT-POSIX's default face is POSIX, with Linux's data model and none of the
+// Windows, MSVC, MinGW or Unix macros.
+// DEFINE: %{ntposix-not} = --implicit-check-not="#define WIN" --implicit-check-not="#define _WIN" \
+// DEFINE:   --implicit-check-not="#define _M_" --implicit-check-not="#define _MSC_" \
+// DEFINE:   --implicit-check-not="#define __MINGW" --implicit-check-not="#define __unix"
+// RUN: %clang_cc1 %s -x c++ -E -dM -triple x86_64-pc-windows-ntposix -pthread \
+// RUN:     -o - | FileCheck -match-full-lines %s --check-prefixes=CHECK-NTPOSIX,CHECK-NTPOSIX-X64 %{ntposix-not}
+// RUN: %clang_cc1 %s -x c++ -E -dM -triple aarch64-pc-windows-ntposix -pthread \
+// RUN:     -o - | FileCheck -match-full-lines %s --check-prefixes=CHECK-NTPOSIX,CHECK-NTPOSIX-A64 %{ntposix-not}
+
+// CHECK-NTPOSIX: #define _GNU_SOURCE 1
+// CHECK-NTPOSIX: #define _REENTRANT 1
+// CHECK-NTPOSIX-X64: #define __LDBL_MANT_DIG__ 64
+// CHECK-NTPOSIX-A64: #define __LDBL_MANT_DIG__ 113
+// CHECK-NTPOSIX: #define __NTPOSIX__ 1
+// CHECK-NTPOSIX-X64: #define __SIZEOF_FLOAT128__ 16
+// CHECK-NTPOSIX: #define __SIZEOF_LONG_DOUBLE__ 16
+// CHECK-NTPOSIX: #define __SIZEOF_LONG__ 8
+// CHECK-NTPOSIX: #define __SIZEOF_WCHAR_T__ 4
+// CHECK-NTPOSIX: #define __WINT_TYPE__ unsigned int
+
 // Windows Itanium takes the MSVC environment's defines and those the Windows
 // SDK expects, but none that identify the compiler as MSVC, with or without
 // -fms-compatibility. As cl.exe, it leaves WIN32, WINNT and WIN64 to the SDK.

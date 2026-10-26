@@ -292,8 +292,6 @@ public:
   WindowsARM64TargetInfo(const llvm::Triple &Triple,
                          const TargetOptions &Opts);
 
-  BuiltinVaListKind getBuiltinVaListKind() const override;
-
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
 };
 
@@ -325,8 +323,6 @@ class LLVM_LIBRARY_VISIBILITY UEFIAArch64TargetInfo
     : public UEFITargetInfo<AArch64leTargetInfo> {
 public:
   UEFIAArch64TargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts);
-
-  BuiltinVaListKind getBuiltinVaListKind() const override;
 
   CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
 
