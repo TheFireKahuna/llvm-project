@@ -371,6 +371,11 @@ bool elf::computeIsPreemptible(Ctx &ctx, const Symbol &sym) {
   if (!ctx.arg.shared)
     return false;
 
+  // A STB_GNU_UNIQUE symbol has one definition in the process, so it stays
+  // preemptible whatever -Bsymbolic or --dynamic-list says, as in GNU ld.
+  if (sym.computeBinding(ctx) == STB_GNU_UNIQUE)
+    return true;
+
   // If -Bsymbolic or --dynamic-list is specified, or -Bsymbolic-functions is
   // specified and the symbol is STT_FUNC, the symbol is preemptible iff it is
   // in the dynamic list. -Bsymbolic-non-weak-functions is a non-weak subset of

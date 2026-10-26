@@ -1164,8 +1164,10 @@ static void ltoValidateAllVtablesHaveTypeInfos(Ctx &ctx,
              "but got "
           << knownSafeName;
     Expected<GlobPattern> pat = GlobPattern::create(knownSafeName);
-    if (!pat)
+    if (!pat) {
       ErrAlways(ctx) << "--lto-known-safe-vtables=: " << pat.takeError();
+      continue;
+    }
     vtableSymbolsWithNoRTTI.remove_if(
         [&](StringRef s) { return pat->match(s); });
   }

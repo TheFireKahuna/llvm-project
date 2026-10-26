@@ -138,6 +138,13 @@
 ; RUN:   --lto-known-safe-vtables='_ZTV6N*' -mllvm -pass-remarks=. 2>&1 | FileCheck %s --check-prefix=REMARK
 ; RUN: llvm-dis %t8_regular.0.4.opt.bc -o - | FileCheck %s --check-prefixes=CHECK-COMMON-IR-LABEL,CHECK-IR
 
+;; An invalid --lto-known-safe-vtables pattern is an error and matches nothing
+; RUN: not ld.lld %t1.o %t2_nortti.o -o %t8_bad --lto-whole-program-visibility --lto-validate-all-vtables-have-type-infos \
+; RUN:   --lto-known-safe-vtables='_ZTV6N[' 2>&1 | FileCheck %s --check-prefix=BAD-GLOB
+
+; BAD-GLOB-DAG: error: --lto-known-safe-vtables=: invalid glob pattern, unmatched '['
+; BAD-GLOB-DAG: --lto-validate-all-vtables-have-type-infos: RTTI missing for vtable _ZTV6Native
+
 ;; Only check for definitions of vtables symbols, just having a reference does not allow a type to
 ;; be derived from
 
