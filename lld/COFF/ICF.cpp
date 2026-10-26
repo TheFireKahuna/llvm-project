@@ -56,6 +56,8 @@ private:
   void forEachClass(std::function<void(size_t, size_t)> fn);
 
   std::vector<SectionChunk *> chunks;
+  // Functions /guardsym suppresses, which fold only with each other.
+  llvm::DenseSet<const Chunk *> suppressed;
   int cnt = 0;
   std::atomic<bool> repeat = {false};
 
@@ -173,7 +175,9 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
            a->getSectionName() == b->getSectionName() &&
            a->header->SizeOfRawData == b->header->SizeOfRawData &&
            a->checksum == b->checksum && a->getContents() == b->getContents() &&
-           a->getMachine() == b->getMachine() && assocEquals(a, b);
+           a->getMachine() == b->getMachine() &&
+           suppressed.contains(a) == suppressed.contains(b) &&
+           assocEquals(a, b);
   } else {
     Symbol *e1 = a->getEntryThunk();
     Symbol *e2 = b->getEntryThunk();
@@ -239,6 +243,10 @@ void ICF::forEachClass(std::function<void(size_t, size_t)> fn) {
 void ICF::run() {
   llvm::TimeTraceScope timeScope("ICF");
   ScopedTimer t(ctx.icfTimer);
+
+  for (Symbol *s : ctx.config.guardSuppressed)
+    if (auto *d = dyn_cast<Defined>(s))
+      suppressed.insert(d->getChunk());
 
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;

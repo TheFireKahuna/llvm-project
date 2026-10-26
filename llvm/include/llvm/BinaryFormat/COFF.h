@@ -824,6 +824,16 @@ enum class GuardFlags : uint32_t {
   CF_FUNCTION_TABLE_SIZE_19BYTES = 0xF0000000,
 };
 
+/// The flags byte of a Control Flow Guard function table entry, present when
+/// GuardFlags gives the table a stride.
+enum class GuardFidFlags : uint8_t {
+  /// The function's address is taken, but it is not a valid call target.
+  FID_SUPPRESSED = 0x1,
+  /// The function is an export that becomes a valid call target only when the
+  /// loader resolves it dynamically, under export suppression.
+  EXPORT_SUPPRESSED = 0x2,
+};
+
 struct ImportHeader {
   uint16_t Sig1; ///< Must be IMAGE_FILE_MACHINE_UNKNOWN (0).
   uint16_t Sig2; ///< Must be 0xFFFF.

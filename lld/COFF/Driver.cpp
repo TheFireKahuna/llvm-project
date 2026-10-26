@@ -590,6 +590,12 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       excludedSymbols.insert(file->symtab.mangle(sym));
   }
 
+  // A bitcode file's /guardsym may name a symbol local to it, which only LTO's
+  // output defines; it is read from there.
+  if (!isa<BitcodeFile>(file))
+    for (StringRef arg : directives.guardSyms)
+      parseGuardSym(arg, file);
+
   // https://docs.microsoft.com/en-us/cpp/preprocessor/comment-c-cpp?view=msvc-160
   for (auto *arg : directives.args) {
     switch (arg->getOption().getID()) {
@@ -657,7 +663,6 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     // Only add flags here that link.exe accepts in
     // `#pragma comment(linker, "/flag")`-generated sections.
     case OPT_editandcontinue:
-    case OPT_guardsym:
     case OPT_throwingnew:
     case OPT_inferasanlibs:
     case OPT_inferasanlibs_no:
@@ -1973,6 +1978,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Handle /guard:cf
   if (auto *arg = args.getLastArg(OPT_guard))
     parseGuard(arg->getValue());
+  for (auto *arg : args.filtered(OPT_guardsym))
+    parseGuardSym(arg->getValue(), nullptr);
 
   // Handle /heap
   if (auto *arg = args.getLastArg(OPT_heap))
@@ -2814,7 +2821,17 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // link those files (unless -thinlto-index-only was given, in which case we
   // resolve symbols and write indices, but don't generate native code or link).
   ltoCompilationDone = true;
+  size_t numObjFiles = ctx.objFileInstances.size();
   ctx.forEachSymtab([](SymbolTable &symtab) { symtab.compileBitcodeFiles(); });
+  // LTO's output repeats in its directives the bitcode's llvm.linker.options,
+  // which were applied with it, except /guardsym. Of those directives and of
+  // those that module assembly and code generation add, only /guardsym is read.
+  for (ObjFile *file : ArrayRef(ctx.objFileInstances).drop_front(numObjFiles)) {
+    ParsedDirectives directives = ArgParser(ctx).parseDirectives(
+        file->getDirectives(), /*symbolsOnly=*/true);
+    for (StringRef arg : directives.guardSyms)
+      parseGuardSym(arg, file);
+  }
 
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     if (Defined *d =
@@ -3012,6 +3029,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Needs to happen after the last call to addFile().
   convertResources();
+
+  resolveGuardSyms();
 
   // Identify identical COMDAT sections to merge them.
   if (config->doICF != ICFLevel::None) {

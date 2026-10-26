@@ -20,7 +20,8 @@
 
 // LOADCFG:      LoadConfig [
 // LOADCFG:        GuardCFFunctionCount: 3
-// LOADCFG-NEXT:   GuardFlags [ (0x10500)
+// LOADCFG-NEXT:   GuardFlags [ (0x14500)
+// LOADCFG-NEXT:     CF_EXPORT_SUPPRESSION_INFO_PRESENT (0x4000)
 // LOADCFG-NEXT:     CF_FUNCTION_TABLE_PRESENT (0x400)
 // LOADCFG-NEXT:     CF_INSTRUMENTED (0x100)
 // LOADCFG-NEXT:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
@@ -34,7 +35,8 @@
 // LOADCFGX:     HybridObject {
 // LOADCFGX:       LoadConfig [
 // LOADCFGX:         GuardCFFunctionCount: 3
-// LOADCFG-NEXTX:    GuardFlags [ (0x10500)
+// LOADCFG-NEXTX:    GuardFlags [ (0x14500)
+// LOADCFG-NEXTX:      CF_EXPORT_SUPPRESSION_INFO_PRESENT (0x4000)
 // LOADCFG-NEXTX:      CF_FUNCTION_TABLE_PRESENT (0x400)
 // LOADCFG-NEXTX:      CF_INSTRUMENTED (0x100)
 // LOADCFG-NEXTX:      CF_LONGJUMP_TABLE_PRESENT (0x10000)
@@ -56,11 +58,19 @@
 
 // RUN: lld-link -dll -noentry -machine:arm64x func-exp-arm64.obj func-exp-arm64ec.obj -guard:cf -out:out-exp.dll \
 // RUN:          loadconfig-arm64ec.obj loadconfig-arm64.obj
-// RUN: llvm-readobj --coff-load-config out-exp.dll | FileCheck --check-prefixes=LOADCFG,LOADCFGX %s
+// RUN: llvm-readobj --coff-load-config out-exp.dll | FileCheck --check-prefix=EXP %s
 
 // RUN: lld-link -dll -noentry -machine:arm64ec func-exp-arm64.obj func-exp-arm64ec.obj -guard:cf -out:out-exp-ec.dll \
 // RUN:          loadconfig-arm64ec.obj loadconfig-arm64.obj
-// RUN: llvm-readobj --coff-load-config out-exp-ec.dll | FileCheck --check-prefixes=LOADCFG %s
+// RUN: llvm-readobj --coff-load-config out-exp-ec.dll | FileCheck --check-prefix=EXP %s
+
+// Listed only because they are exported, the functions are export-suppressed.
+// EXP:      GuardFlags [ (0x10014500)
+// EXP:      GuardFidTable [
+// EXP-NEXT:   0x180001000 flags 2
+// EXP-NEXT:   0x180002000 flags 2
+// EXP-NEXT:   0x180003000 flags 2
+// EXP-NEXT: ]
 
 
 // Check that entry points from both views are present in CF guard tables.

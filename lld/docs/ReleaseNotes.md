@@ -33,6 +33,18 @@ from the [LLVM releases web site](https://llvm.org/releases/).
 
 ### COFF Improvements
 
+* Added `/guardsym:<symbol>,S`, which marks a function the guard function
+  table lists as suppressed, as link.exe does; it is honoured in `.drectve`
+  too.
+
+* `/guard:nocf` drops Control Flow Guard while keeping the EH continuation
+  table `/guard:ehcont` asks for.
+
+* `/guard:exportsuppress` enables export suppression in an executable, and
+  `/guard:noexportsuppress` disables it. A DLL's functions in the guard
+  function table only because they are exported are now marked
+  export-suppressed.
+
 ### MinGW Improvements
 
 ### MachO Improvements

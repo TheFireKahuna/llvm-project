@@ -174,6 +174,9 @@ struct Configuration {
 
   // /guard:cf
   int guardCF = GuardCFLevel::Off;
+  bool guardExportSuppress = false;
+  // Functions /guardsym lists, which the guard table lists as suppressed.
+  std::vector<Symbol *> guardSuppressed;
 
   // Used for SafeSEH.
   bool safeSEH = false;

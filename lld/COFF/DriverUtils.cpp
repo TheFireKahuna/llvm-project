@@ -106,12 +106,53 @@ void LinkerDriver::parseGuard(StringRef fullArg) {
       ctx.config.guardCF &= ~GuardCFLevel::LongJmp;
     else if (arg.equals_insensitive("noehcont"))
       ctx.config.guardCF &= ~GuardCFLevel::EHCont;
+    else if (arg.equals_insensitive("nocf"))
+      ctx.config.guardCF &= ~(GuardCFLevel::CF | GuardCFLevel::LongJmp);
     else if (arg.equals_insensitive("cf") || arg.equals_insensitive("longjmp"))
       ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::LongJmp;
     else if (arg.equals_insensitive("ehcont"))
       ctx.config.guardCF |= GuardCFLevel::CF | GuardCFLevel::EHCont;
+    else if (arg.equals_insensitive("exportsuppress"))
+      ctx.config.guardExportSuppress = true;
+    else if (arg.equals_insensitive("noexportsuppress"))
+      ctx.config.guardExportSuppress = false;
     else
       Fatal(ctx) << "invalid argument to /guard: " << arg;
+  }
+}
+
+// Parses /guardsym:<symbol>,S, where S, suppressed, is the only flag.
+void LinkerDriver::parseGuardSym(StringRef arg, InputFile *file) {
+  auto [name, flag] = arg.split(',');
+  if (flag.equals_insensitive("s"))
+    guardSyms.emplace_back(name, file);
+  else
+    Warn(ctx) << "ignoring /guardsym:" << arg << ": its only flag is S";
+}
+
+// A /guardsym names a global symbol of each symbol table, and a directive's
+// one of its object's, which may be local to the object.
+void LinkerDriver::resolveGuardSyms() {
+  // The symbols of each object that a directive names a local of, by name.
+  DenseMap<ObjFile *, DenseMap<StringRef, Symbol *>> objSymbols;
+  for (const std::pair<StringRef, InputFile *> &guardSym : guardSyms) {
+    StringRef name = guardSym.first;
+    InputFile *file = guardSym.second;
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      if (file && &symtab != &file->symtab)
+        return;
+      Symbol *sym = symtab.find(name);
+      if (auto *obj = dyn_cast_or_null<ObjFile>(file); obj && !sym) {
+        auto [it, inserted] = objSymbols.try_emplace(obj);
+        if (inserted)
+          for (Symbol *s : obj->getSymbols())
+            if (s)
+              it->second[s->getName()] = s;
+        sym = it->second.lookup(name);
+      }
+      if (sym)
+        ctx.config.guardSuppressed.push_back(sym);
+    });
   }
 }
 
@@ -860,12 +901,13 @@ opt::InputArgList ArgParser::parse(ArrayRef<const char *> argv) {
 }
 
 // Tokenizes and parses a given string as command line in .drective section.
-ParsedDirectives ArgParser::parseDirectives(StringRef s) {
+ParsedDirectives ArgParser::parseDirectives(StringRef s, bool symbolsOnly) {
   ParsedDirectives result;
   SmallVector<const char *, 16> rest;
 
-  // Handle /EXPORT and /INCLUDE in a fast path. These directives can appear for
-  // potentially every symbol in the object, so they must be handled quickly.
+  // Handle /EXPORT, /INCLUDE and /GUARDSYM in a fast path. These directives
+  // can appear for potentially every symbol in the object, so they must be
+  // handled quickly.
   SmallVector<StringRef, 16> tokens;
   cl::TokenizeWindowsCommandLineNoCopy(s, saver(), tokens);
   for (StringRef tok : tokens) {
@@ -878,7 +920,10 @@ ParsedDirectives ArgParser::parseDirectives(StringRef s) {
     else if (tok.starts_with_insensitive("/exclude-symbols:") ||
              tok.starts_with_insensitive("-exclude-symbols:"))
       result.excludes.push_back(tok.substr(strlen("/exclude-symbols:")));
-    else {
+    else if (tok.starts_with_insensitive("/guardsym:") ||
+             tok.starts_with_insensitive("-guardsym:"))
+      result.guardSyms.push_back(tok.substr(strlen("/guardsym:")));
+    else if (!symbolsOnly) {
       // Copy substrings that are not valid C strings. The tokenizer may have
       // already copied quoted arguments for us, so those do not need to be
       // copied again.

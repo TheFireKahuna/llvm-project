@@ -25,6 +25,7 @@
 #include "llvm/ADT/StringSet.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/StringTableBuilder.h"
+#include "llvm/Support/ARMWinEH.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/FileOutputBuffer.h"
 #include "llvm/Support/FormatAdapters.h"
@@ -32,6 +33,7 @@
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/RandomNumberGenerator.h"
 #include "llvm/Support/TimeProfiler.h"
+#include "llvm/Support/Win64EH.h"
 #include "llvm/Support/xxhash.h"
 #include <algorithm>
 #include <cstdio>
@@ -244,7 +246,10 @@ private:
   void createECChunks();
   void insertCtorDtorSymbols();
   void insertBssDataStartEndSymbols();
-  void markSymbolsWithRelocations(ObjFile *file, SymbolRVASet &usedSymbols);
+  void markSymbolsWithRelocations(ObjFile *file, const SymbolRVASet &guardSlots,
+                                  SymbolRVASet &usedSymbols,
+                                  std::vector<Symbol *> &giatsSymbols);
+  void addEHContTargets(ObjFile *file, SymbolRVASet &targets);
   void createGuardCFTables();
   void markSymbolsForRVATable(ObjFile *file,
                               ArrayRef<SectionChunk *> symIdxChunks,
@@ -253,7 +258,8 @@ private:
                               ArrayRef<SectionChunk *> symIdxChunks,
                               std::vector<Symbol *> &symbols);
   void maybeAddRVATable(SymbolRVASet tableSymbols, StringRef tableSym,
-                        StringRef countSym, bool hasFlag=false);
+                        StringRef countSym, bool hasFlag = false,
+                        DenseMap<ChunkAndOffset, uint8_t> flags = {});
   void setSectionPermissions();
   void setECSymbols();
   void writeSections();
@@ -1952,7 +1958,7 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_NX_COMPAT;
   if (!config->allowIsolation)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_NO_ISOLATION;
-  if (config->guardCF != GuardCFLevel::Off)
+  if (config->guardCF & GuardCFLevel::CF)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_GUARD_CF;
   if (config->integrityCheck)
     pe->DLLCharacteristics |= IMAGE_DLL_CHARACTERISTICS_FORCE_INTEGRITY;
@@ -2079,17 +2085,27 @@ void Writer::createSEHTable() {
                    "__safe_se_handler_count");
 }
 
-// Add a symbol to an RVA set. Two symbols may have the same RVA, but an RVA set
-// cannot contain duplicates. Therefore, the set is uniqued by Chunk and the
-// symbol's offset into that Chunk.
-static void addSymbolToRVASet(SymbolRVASet &rvaSet, Defined *s) {
+// Two symbols may have the same RVA, but an RVA set cannot contain
+// duplicates. Therefore, the set is uniqued by Chunk and the symbol's offset
+// into that Chunk.
+static std::optional<ChunkAndOffset> getChunkAndOffset(Defined *s) {
   Chunk *c = s->getChunk();
   if (!c)
-    return;
+    return std::nullopt;
   if (auto *sc = dyn_cast<SectionChunk>(c))
     c = sc->repl; // Look through ICF replacement.
-  uint32_t off = s->getRVA() - (c ? c->getRVA() : 0);
-  rvaSet.insert({c, off});
+  return ChunkAndOffset{c, uint32_t(s->getRVA() - c->getRVA())};
+}
+
+// Add a symbol to an RVA set.
+static void addSymbolToRVASet(SymbolRVASet &rvaSet, Defined *s) {
+  if (std::optional<ChunkAndOffset> c = getChunkAndOffset(s))
+    rvaSet.insert(*c);
+}
+
+// Unwind data only describes the functions it names.
+static bool isPData(SectionChunk *sc) {
+  return sc->getSectionName().split('$').first == ".pdata";
 }
 
 // Given a symbol, add it to the GFIDs table if it is a live, defined, function
@@ -2101,6 +2117,10 @@ static void maybeAddAddressTakenFunction(SymbolRVASet &addressTakenSyms,
 
   switch (s->kind()) {
   case Symbol::DefinedLocalImportKind:
+    // A local import's pointer takes its target's address.
+    maybeAddAddressTakenFunction(addressTakenSyms,
+                                 cast<DefinedLocalImport>(s)->getTarget());
+    break;
   case Symbol::DefinedImportDataKind:
     // Defines an __imp_ pointer, so it is data, so it is ignored.
     break;
@@ -2151,24 +2171,143 @@ static void maybeAddAddressTakenFunction(SymbolRVASet &addressTakenSyms,
 // Visit all relocations from all section contributions of this object file and
 // mark the relocation target as address-taken.
 void Writer::markSymbolsWithRelocations(ObjFile *file,
-                                        SymbolRVASet &usedSymbols) {
+                                        const SymbolRVASet &guardSlots,
+                                        SymbolRVASet &usedSymbols,
+                                        std::vector<Symbol *> &giatsSymbols) {
   for (Chunk *c : file->getChunks()) {
     // We only care about live section chunks. Common chunks and other chunks
     // don't generally contain relocations.
     SectionChunk *sc = dyn_cast<SectionChunk>(c);
-    if (!sc || !sc->live)
+    if (!sc || !sc->live ||
+        !COFFObjectFile::isGuardCFAddressTakingSection(sc->getSectionName()))
       continue;
 
     for (const coff_relocation &reloc : sc->getRelocs()) {
-      if (ctx.config.machine == I386 &&
-          reloc.Type == COFF::IMAGE_REL_I386_REL32)
-        // Ignore relative relocations on x86. On x86_64 they can't be ignored
-        // since they're also used to compute absolute addresses.
+      if (!file->getCOFFObj()->isGuardCFAddressTakingRelocation(reloc.Type) ||
+          guardSlots.contains({sc, reloc.VirtualAddress}))
         continue;
 
-      maybeAddAddressTakenFunction(usedSymbols, sc->getRelocTarget(reloc));
+      Symbol *ref = sc->getRelocTarget(reloc);
+      if (auto *di = dyn_cast_or_null<DefinedImportData>(ref)) {
+        if (di->file->hdr->getType() == IMPORT_CODE)
+          giatsSymbols.push_back(di);
+      } else {
+        maybeAddAddressTakenFunction(usedSymbols, ref);
+      }
     }
   }
+}
+
+// Returns the symbol the relocation at offset off in sc names and the addend
+// its 32-bit field holds.
+static std::pair<Symbol *, uint32_t> getTargetAt(SectionChunk *sc,
+                                                 uint32_t off) {
+  ArrayRef<coff_relocation> rels = sc->getRelocs();
+  const coff_relocation *rel = llvm::find_if(
+      rels, [=](const coff_relocation &r) { return r.VirtualAddress == off; });
+  ArrayRef<uint8_t> data = sc->getContents();
+  if (rel == rels.end() || off + 4 > data.size())
+    return {nullptr, 0};
+  return {sc->getRelocTarget(*rel), read32le(&data[off])};
+}
+
+// Adds the slots the load configuration's guard pointers name. The loader
+// overwrites them, so what they hold takes no address.
+template <typename T>
+static void addGuardSlots(SymbolTable &symtab, SymbolRVASet &slots) {
+  DefinedRegular *config = symtab.loadConfigSym;
+  for (size_t field :
+       {offsetof(T, GuardCFCheckFunction), offsetof(T, GuardCFCheckDispatch),
+        offsetof(T, GuardXFGCheckFunctionPointer),
+        offsetof(T, GuardXFGDispatchFunctionPointer),
+        offsetof(T, GuardXFGTableDispatchFunctionPointer),
+        offsetof(T, CastGuardOsDeterminedFailureMode)}) {
+    if (!config ||
+        symtab.loadConfigSize < field + sizeof(T::GuardCFCheckFunction))
+      continue;
+    auto [sym, addend] =
+        getTargetAt(config->getChunk(), config->getValue() + field);
+    if (auto *slot = dyn_cast_or_null<DefinedRegular>(sym))
+      slots.insert({slot->getChunk(), slot->getValue() + addend});
+  }
+}
+
+// Adds an object's EH continuation targets, which its .gehcont$y lists. In an
+// object without that metadata, code whose language handler can continue at
+// an unlisted target is an error, except SEH in a COMDAT, whose __except
+// targets are read from its C scope tables, with link.exe's warning.
+void Writer::addEHContTargets(ObjFile *file, SymbolRVASet &targets) {
+  if (file->hasGuardEHCont()) {
+    markSymbolsForRVATable(file, file->getGuardEHContChunks(), targets);
+    return;
+  }
+  StringRef handler;
+  Symbol *localUnwind = file->symtab.find("_local_unwind");
+  if (localUnwind && llvm::is_contained(file->getSymbols(), localUnwind))
+    handler = "_local_unwind";
+  bool sehInComdat = false;
+  for (Chunk *c : file->getChunks()) {
+    auto *pdata = dyn_cast<SectionChunk>(c);
+    if (!handler.empty() || !pdata || !pdata->live || !isPData(pdata))
+      continue;
+    // A record ends with its unwind information's address, which a packed
+    // ARM64 record has no relocation for.
+    bool arm64 = pdata->getArch() == Triple::aarch64;
+    for (const coff_relocation &rel : pdata->getRelocs()) {
+      if (rel.VirtualAddress % (arm64 ? 8 : 12) != (arm64 ? 4 : 8) ||
+          rel.VirtualAddress + 4 > pdata->getSize())
+        continue;
+      auto *unwind =
+          dyn_cast_or_null<DefinedRegular>(pdata->getRelocTarget(rel));
+      if (!unwind)
+        continue;
+      SectionChunk *xdata = unwind->getChunk();
+      ArrayRef<uint8_t> x = xdata->getContents();
+      uint32_t info = unwind->getValue() +
+                      read32le(&pdata->getContents()[rel.VirtualAddress]);
+      uint32_t handlerOff;
+      if (info + 8 > x.size())
+        continue;
+      if (arm64) {
+        ARM::WinEH::ExceptionDataRecord r(
+            reinterpret_cast<const ulittle32_t *>(&x[info]), true);
+        if (!r.X())
+          continue;
+        handlerOff = info + 4 * (ARM::WinEH::HeaderWords(r) + r.CodeWords() +
+                                 (r.E() ? 0 : r.EpilogueCount()));
+      } else {
+        auto *u = reinterpret_cast<const Win64EH::UnwindInfo *>(&x[info]);
+        if (!(u->getFlags() &
+              (Win64EH::UNW_ExceptionHandler | Win64EH::UNW_TerminateHandler)))
+          continue;
+        handlerOff =
+            static_cast<const uint8_t *>(u->getLanguageSpecificData()) -
+            x.data();
+      }
+      Symbol *h = getTargetAt(xdata, handlerOff).first;
+      if (!h || h->getName() == "__GSHandlerCheck")
+        continue;
+      if (h->getName() != "__C_specific_handler" || !pdata->isCOMDAT()) {
+        handler = h->getName();
+        break;
+      }
+      // A C scope table: a count, then {begin, end, filter, target} records.
+      sehInComdat = true;
+      uint32_t count =
+          handlerOff + 8 <= x.size() ? read32le(&x[handlerOff + 4]) : 0;
+      for (uint32_t i = 0; i < count; ++i) {
+        auto [t, tOff] = getTargetAt(xdata, handlerOff + 20 + 16 * i);
+        if (auto *target = dyn_cast_or_null<DefinedRegular>(t))
+          targets.insert({target->getChunk(), target->getValue() + tOff});
+      }
+    }
+  }
+  if (!handler.empty())
+    Err(ctx) << file << ": object has no EH continuation metadata but needs "
+             << "it for " << handler << " under /guard:ehcont";
+  else if (sehInComdat)
+    Warn(ctx) << file << ": object has no EH continuation metadata; adding "
+              << "the __except targets of its SEH in COMDAT sections";
 }
 
 // Create the guard function id table. This is a table of RVAs of all
@@ -2176,22 +2315,47 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
 // table.
 void Writer::createGuardCFTables() {
   Configuration *config = &ctx.config;
+  bool cf = config->guardCF & GuardCFLevel::CF;
+  // The suppression information is the address-taken IAT table.
+  size_t iatEnd =
+      config->is64()
+          ? offsetof(coff_load_configuration64, GuardLongJumpTargetTable)
+          : offsetof(coff_load_configuration32, GuardLongJumpTargetTable);
+  auto setGuardFlags = [&](uint32_t flags) {
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      uint32_t f = flags;
+      if (cf && symtab.loadConfigSize >= iatEnd)
+        f |= uint32_t(GuardFlags::CF_EXPORT_SUPPRESSION_INFO_PRESENT);
+      cast<DefinedAbsolute>(symtab.findUnderscore("__guard_flags"))->setVA(f);
+    });
+  };
 
-  if (config->guardCF == GuardCFLevel::Off) {
-    // MSVC marks the entire image as instrumented if any input object was built
-    // with /guard:cf.
-    for (ObjFile *file : ctx.objFileInstances) {
-      if (file->hasGuardCF()) {
-        ctx.forEachSymtab([&](SymbolTable &symtab) {
-          Symbol *flagSym = symtab.findUnderscore("__guard_flags");
-          cast<DefinedAbsolute>(flagSym)->setVA(
-              uint32_t(GuardFlags::CF_INSTRUMENTED));
-        });
-        break;
-      }
+  if (!cf) {
+    // MSVC marks the entire image as instrumented if any input object was
+    // built with /guard:cf. /guard:nocf keeps the EH continuation table.
+    uint32_t flags = 0;
+    if (llvm::any_of(ctx.objFileInstances,
+                     [](ObjFile *f) { return f->hasGuardCF(); }))
+      flags = uint32_t(GuardFlags::CF_INSTRUMENTED);
+    if (config->guardCF & GuardCFLevel::EHCont) {
+      SymbolRVASet ehContTargets;
+      for (ObjFile *file : ctx.objFileInstances)
+        addEHContTargets(file, ehContTargets);
+      maybeAddRVATable(std::move(ehContTargets), "__guard_eh_cont_table",
+                       "__guard_eh_cont_count");
+      flags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
     }
+    setGuardFlags(flags);
     return;
   }
+
+  SymbolRVASet guardSlots;
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    if (config->is64())
+      addGuardSlots<coff_load_configuration64>(symtab, guardSlots);
+    else
+      addGuardSlots<coff_load_configuration32>(symtab, guardSlots);
+  });
 
   SymbolRVASet addressTakenSyms;
   SymbolRVASet giatsRVASet;
@@ -2200,43 +2364,59 @@ void Writer::createGuardCFTables() {
   SymbolRVASet ehContTargets;
   for (ObjFile *file : ctx.objFileInstances) {
     // If the object was compiled with /guard:cf, the address taken symbols
-    // are in .gfids$y sections, and the longjmp targets are in .gljmp$y
-    // sections. If the object was not compiled with /guard:cf, we assume there
-    // were no setjmp targets, and that all code symbols with relocations are
-    // possibly address-taken.
+    // are in .gfids$y sections, the address-taken imports in .giats$y, and
+    // the longjmp targets are in .gljmp$y sections. If the object was not
+    // compiled with /guard:cf, we assume there were no setjmp targets, and
+    // that all code symbols and code imports with relocations are possibly
+    // address-taken.
     if (file->hasGuardCF()) {
       markSymbolsForRVATable(file, file->getGuardFidChunks(), addressTakenSyms);
-      markSymbolsForRVATable(file, file->getGuardIATChunks(), giatsRVASet);
       getSymbolsFromSections(file, file->getGuardIATChunks(), giatsSymbols);
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
     } else {
-      markSymbolsWithRelocations(file, addressTakenSyms);
+      markSymbolsWithRelocations(file, guardSlots, addressTakenSyms,
+                                 giatsSymbols);
     }
-    // If the object was compiled with /guard:ehcont, the ehcont targets are in
-    // .gehcont$y sections.
-    if (file->hasGuardEHCont())
-      markSymbolsForRVATable(file, file->getGuardEHContChunks(), ehContTargets);
+    if (config->guardCF & GuardCFLevel::EHCont)
+      addEHContTargets(file, ehContTargets);
   }
 
   // Mark the image entry as address-taken.
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     if (symtab.entry)
       maybeAddAddressTakenFunction(addressTakenSyms, symtab.entry);
-
-    // Mark exported symbols in executable sections as address-taken.
-    for (Export &e : symtab.exports)
-      maybeAddAddressTakenFunction(addressTakenSyms, e.sym);
   });
 
-  // For each entry in the .giats table, check if it has a corresponding load
-  // thunk (e.g. because the DLL that defines it will be delay-loaded) and, if
-  // so, add the load thunk to the address taken (.gfids) table.
+  // An import's address is taken through its IAT entry, and through the load
+  // thunk if it is delay-loaded; a local import's is its target's.
   for (Symbol *s : giatsSymbols) {
-    if (auto *di = dyn_cast<DefinedImportData>(s)) {
-      if (di->loadThunkSym)
-        addSymbolToRVASet(addressTakenSyms, di->loadThunkSym);
+    auto *di = dyn_cast<DefinedImportData>(s);
+    if (!di) {
+      maybeAddAddressTakenFunction(addressTakenSyms, s);
+      continue;
     }
+    addSymbolToRVASet(giatsRVASet, di);
+    if (di->loadThunkSym)
+      addSymbolToRVASet(addressTakenSyms, di->loadThunkSym);
   }
+
+  // A DLL's function listed only because it is exported is export-suppressed
+  // when 16-byte aligned, and a listed one /guardsym names is suppressed.
+  DenseMap<ChunkAndOffset, uint8_t> flags;
+  SymbolRVASet exported;
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (Export &e : symtab.exports)
+      maybeAddAddressTakenFunction(exported, e.sym);
+  });
+  for (ChunkAndOffset c : exported)
+    if (addressTakenSyms.insert(c).second && config->dll && c.offset % 16 == 0)
+      flags[c] = uint8_t(GuardFidFlags::EXPORT_SUPPRESSED);
+  for (Symbol *s : config->guardSuppressed)
+    if (auto *d = dyn_cast<Defined>(s))
+      if (std::optional<ChunkAndOffset> c = getChunkAndOffset(d);
+          c && addressTakenSyms.contains(*c))
+        flags[*c] = uint8_t(GuardFidFlags::FID_SUPPRESSED);
+  bool hasFlag = !flags.empty();
 
   // Ensure sections referenced in the gfid table are 16-byte aligned.
   for (const ChunkAndOffset &c : addressTakenSyms)
@@ -2244,21 +2424,21 @@ void Writer::createGuardCFTables() {
       c.inputChunk->setAlignment(16);
 
   maybeAddRVATable(std::move(addressTakenSyms), "__guard_fids_table",
-                   "__guard_fids_count");
+                   "__guard_fids_count", hasFlag, std::move(flags));
 
   // Add the Guard Address Taken IAT Entry Table (.giats).
   maybeAddRVATable(std::move(giatsRVASet), "__guard_iat_table",
-                   "__guard_iat_count");
+                   "__guard_iat_count", hasFlag);
 
   // Add the longjmp target table unless the user told us not to.
   if (config->guardCF & GuardCFLevel::LongJmp)
     maybeAddRVATable(std::move(longJmpTargets), "__guard_longjmp_table",
-                     "__guard_longjmp_count");
+                     "__guard_longjmp_count", hasFlag);
 
   // Add the ehcont target table unless the user told us not to.
   if (config->guardCF & GuardCFLevel::EHCont)
     maybeAddRVATable(std::move(ehContTargets), "__guard_eh_cont_table",
-                     "__guard_eh_cont_count");
+                     "__guard_eh_cont_count", hasFlag);
 
   // Set __guard_flags, which will be used in the load config to indicate that
   // /guard:cf was enabled.
@@ -2268,10 +2448,11 @@ void Writer::createGuardCFTables() {
     guardFlags |= uint32_t(GuardFlags::CF_LONGJUMP_TABLE_PRESENT);
   if (config->guardCF & GuardCFLevel::EHCont)
     guardFlags |= uint32_t(GuardFlags::EH_CONTINUATION_TABLE_PRESENT);
-  ctx.forEachSymtab([guardFlags](SymbolTable &symtab) {
-    Symbol *flagSym = symtab.findUnderscore("__guard_flags");
-    cast<DefinedAbsolute>(flagSym)->setVA(guardFlags);
-  });
+  if (config->guardExportSuppress && !config->dll)
+    guardFlags |= uint32_t(GuardFlags::CF_ENABLE_EXPORT_SUPPRESSION);
+  if (hasFlag)
+    guardFlags |= uint32_t(GuardFlags::CF_FUNCTION_TABLE_SIZE_5BYTES);
+  setGuardFlags(guardFlags);
 }
 
 // Take a list of input sections containing symbol table indices and add those
@@ -2331,13 +2512,15 @@ void Writer::markSymbolsForRVATable(ObjFile *file,
 // tableChunk so that we can emit base relocations for it and resolve section
 // relative relocations.
 void Writer::maybeAddRVATable(SymbolRVASet tableSymbols, StringRef tableSym,
-                              StringRef countSym, bool hasFlag) {
+                              StringRef countSym, bool hasFlag,
+                              DenseMap<ChunkAndOffset, uint8_t> flags) {
   if (tableSymbols.empty())
     return;
 
   NonSectionChunk *tableChunk;
   if (hasFlag)
-    tableChunk = make<RVAFlagTableChunk>(std::move(tableSymbols));
+    tableChunk =
+        make<RVAFlagTableChunk>(std::move(tableSymbols), std::move(flags));
   else
     tableChunk = make<RVATableChunk>(std::move(tableSymbols));
   rdataSec->addChunk(tableChunk);

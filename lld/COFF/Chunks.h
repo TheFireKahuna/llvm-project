@@ -717,6 +717,7 @@ public:
   size_t getSize() const override;
   void getBaserels(std::vector<Baserel> *res) override;
   void writeTo(uint8_t *buf) const override;
+  Defined *getTarget() const { return sym; }
 
 private:
   Defined *sym;
@@ -754,15 +755,17 @@ private:
   SymbolRVASet syms;
 };
 
-// Table which contains symbol RVAs with flags. Used for /guard:ehcont.
+// Table which contains symbol RVAs with flags. Used for /guard:cf.
 class RVAFlagTableChunk : public NonSectionChunk {
 public:
-  explicit RVAFlagTableChunk(SymbolRVASet s) : syms(std::move(s)) {}
+  RVAFlagTableChunk(SymbolRVASet s, llvm::DenseMap<ChunkAndOffset, uint8_t> f)
+      : syms(std::move(s)), flags(std::move(f)) {}
   size_t getSize() const override { return syms.size() * 5; }
   void writeTo(uint8_t *buf) const override;
 
 private:
   SymbolRVASet syms;
+  llvm::DenseMap<ChunkAndOffset, uint8_t> flags;
 };
 
 // Windows-specific.

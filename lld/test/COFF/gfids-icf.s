@@ -24,7 +24,7 @@
 # CHECK:   GuardCFCheckDispatch: 0x0
 # CHECK:   GuardCFFunctionTable: 0x14000{{.*}}
 # CHECK:   GuardCFFunctionCount: 2
-# CHECK:   GuardFlags [ (0x500)
+# CHECK:   GuardFlags [ (0x4500)
 # CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK:     CF_INSTRUMENTED (0x100)
 # CHECK:   ]
@@ -37,6 +37,25 @@
 # CHECK-NEXT:   0x14000{{.*}}
 # CHECK-NEXT:   0x14000{{.*}}
 # CHECK-NEXT: ]
+
+# A function /guardsym suppresses does not fold with a valid one.
+# RUN: lld-link %t.obj -guard:cf,nolongjmp -out:%t-sym.exe -opt:icf -entry:main -guardsym:icf2,S
+# RUN: llvm-readobj --coff-load-config %t-sym.exe | FileCheck %s --check-prefix=SYM
+
+# SYM:      GuardFidTable [
+# SYM-NEXT:   0x14000{{.*}}
+# SYM-NEXT:   0x14000{{.*}} flags 1
+# SYM-NEXT:   0x14000{{.*}}
+# SYM-NEXT: ]
+
+# Two suppressed functions fold.
+# RUN: lld-link %t.obj -guard:cf,nolongjmp -out:%t-sym2.exe -opt:icf -entry:main -guardsym:icf1,S -guardsym:icf2,S
+# RUN: llvm-readobj --coff-load-config %t-sym2.exe | FileCheck %s --check-prefix=SYM2
+
+# SYM2:      GuardFidTable [
+# SYM2-NEXT:   0x14000{{.*}} flags 1
+# SYM2-NEXT:   0x14000{{.*}}{{$}}
+# SYM2-NEXT: ]
 
 # There should be no .gfids section in the output executable when we link with
 # -guard:cf or with no -guard:cf/nolongjmp flag.

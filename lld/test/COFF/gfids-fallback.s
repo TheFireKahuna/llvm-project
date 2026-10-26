@@ -1,18 +1,18 @@
 # REQUIRES: x86
 # RUN: grep -B99999 [S]PLITMARKER %s | llvm-mc -triple x86_64-windows-msvc -filetype=obj -o %t1.obj
 # RUN: grep -A99999 [S]PLITMARKER %s | llvm-mc -triple x86_64-windows-msvc -filetype=obj -o %t2.obj
-# RUN: lld-link %t1.obj %t2.obj -guard:cf,nolongjmp -out:%t.exe -entry:main -opt:noref
+# RUN: lld-link %t1.obj %t2.obj -guard:cf,nolongjmp -debug:dwarf -out:%t.exe -entry:main -opt:noref
 # RUN: llvm-readobj --file-headers --coff-load-config %t.exe | FileCheck %s
 
 # CHECK: ImageBase: 0x140000000
 # CHECK: LoadConfig [
 # CHECK:   SEHandlerTable: 0x0
 # CHECK:   SEHandlerCount: 0
-# CHECK:   GuardCFCheckFunction: 0x0
+# CHECK:   GuardCFCheckFunction: 0x14000{{.*}}
 # CHECK:   GuardCFCheckDispatch: 0x0
 # CHECK:   GuardCFFunctionTable: 0x14000{{.*}}
 # CHECK:   GuardCFFunctionCount: 3
-# CHECK:   GuardFlags [ (0x500)
+# CHECK:   GuardFlags [ (0x4500)
 # CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK:     CF_INSTRUMENTED (0x100)
 # CHECK:   ]
@@ -45,13 +45,27 @@ main:
         addq $8, %rsp
         retq
 
-# Should not appear in gfids table.
+# Should not appear in gfids table: .pdata and debug info take no address.
         .def     baz; .scl    2; .type   32; .endef
         .section        .text,"xr",one_only,baz
         .globl  baz
 baz:
         mov $1, %eax
         retq
+        .section .pdata,"dr"
+        .rva baz, baz, baz
+        .section .debug_info,"dr"
+        .quad baz
+
+# Nor should the guard check stub: the loader overwrites its slot.
+        .def     check_nop; .scl    2; .type   32; .endef
+        .section        .text,"xr",one_only,check_nop
+        .globl  check_nop
+check_nop:
+        retq
+        .data
+__guard_check_icall_fptr:
+        .quad check_nop
 
         .def     qux; .scl    2; .type   32; .endef
         .section        .text,"xr",one_only,qux
@@ -72,7 +86,9 @@ quxx:
 .globl _load_config_used
 _load_config_used:
         .long 256
-        .fill 124, 1, 0
+        .fill 108, 1, 0
+        .quad __guard_check_icall_fptr
+        .fill 8, 1, 0
         .quad __guard_fids_table
         .quad __guard_fids_count
         .long __guard_flags

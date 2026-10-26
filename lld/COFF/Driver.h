@@ -38,15 +38,16 @@ public:
   COFFOptTable();
 };
 
-// The result of parsing the .drective section. The /export: and /include:
-// options are handled separately because they reference symbols, and the number
-// of symbols can be quite large. The LLVM Option library will perform at least
-// one memory allocation per argument, and that is prohibitively slow for
-// parsing directives.
+// The result of parsing the .drective section. The /export:, /include:,
+// /exclude-symbols: and /guardsym: options are handled separately because they
+// reference symbols, and the number of symbols can be quite large. The LLVM
+// Option library will perform at least one memory allocation per argument, and
+// that is prohibitively slow for parsing directives.
 struct ParsedDirectives {
   std::vector<StringRef> exports;
   std::vector<StringRef> includes;
   std::vector<StringRef> excludes;
+  std::vector<StringRef> guardSyms;
   llvm::opt::InputArgList args;
 };
 
@@ -61,9 +62,9 @@ public:
   llvm::opt::InputArgList parse(StringRef s) { return parse(tokenize(s)); }
 
   // Tokenizes a given string and then parses as command line options in
-  // .drectve section. /EXPORT options are returned in second element
-  // to be processed in fastpath.
-  ParsedDirectives parseDirectives(StringRef s);
+  // .drectve section. The options that reference symbols are returned apart
+  // to be processed in fastpath; with symbolsOnly, the others are dropped.
+  ParsedDirectives parseDirectives(StringRef s, bool symbolsOnly = false);
 
 private:
   // Concatenate LINK environment variable.
@@ -216,6 +217,11 @@ private:
   void parseNumbers(StringRef arg, uint64_t *addr, uint64_t *size = nullptr);
 
   void parseGuard(StringRef arg);
+  // Records a /guardsym, from the command line if file is null, and binds the
+  // ones recorded to their symbols in Configuration::guardSuppressed.
+  void parseGuardSym(StringRef arg, InputFile *file);
+  void resolveGuardSyms();
+  std::vector<std::pair<StringRef, InputFile *>> guardSyms;
 
   // Parses a string in the form of "<integer>[.<integer>]".
   // Minor's default value is 0.

@@ -64,6 +64,7 @@ def dependentloadflag : F<"dependentloadflag">;
 def dependentloadflag_opt : P<"dependentloadflag",
     "Sets the default load flags used to resolve the statically linked imports of a module">;
 def guard   : P<"guard", "Control flow guard">;
+def guardsym : P<"guardsym", "Suppress a function in the guard function table">;
 def heap    : P<"heap", "Size of the heap">;
 def ignore : P<"ignore", "Specify warning codes to ignore">;
 def implib  : P<"implib", "Import library name">;
@@ -414,4 +415,3 @@ def maxilksize : P_priv<"maxilksize">;
 def tlbid : P_priv<"tlbid">;
 def tlbout : P_priv<"tlbout">;
 def verbose_all : P_priv<"verbose">;
-def guardsym : P_priv<"guardsym">;

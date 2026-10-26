@@ -2,7 +2,7 @@
 
 # Make a DLL that exports exportfn1.
 # RUN: yaml2obj %p/Inputs/export.yaml -o %basename_t-exp.obj
-# RUN: lld-link /out:%basename_t-exp.dll /dll %basename_t-exp.obj /export:exportfn1 /implib:%basename_t-exp.lib
+# RUN: lld-link /out:%basename_t-exp.dll /dll %basename_t-exp.obj /export:exportfn1 /export:dataexp=exportfn1,DATA /implib:%basename_t-exp.lib
 
 # Make an object file that imports exportfn1.
 # RUN: llvm-mc -triple x86_64-windows-msvc %s -filetype=obj -o %basename_t.obj
@@ -15,7 +15,7 @@
 # CHECK: LoadConfig [
 # CHECK:   GuardCFFunctionTable: 0x140002114
 # CHECK:   GuardCFFunctionCount: 1
-# CHECK:   GuardFlags [ (0x10500)
+# CHECK:   GuardFlags [ (0x14500)
 # CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # CHECK:     CF_INSTRUMENTED (0x100)
 # CHECK:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
@@ -39,7 +39,7 @@
 # DELAY-CHECK: LoadConfig [
 # DELAY-CHECK:   GuardCFFunctionTable: 0x14000211C
 # DELAY-CHECK:   GuardCFFunctionCount: 2
-# DELAY-CHECK:   GuardFlags [ (0x10500)
+# DELAY-CHECK:   GuardFlags [ (0x14500)
 # DELAY-CHECK:     CF_FUNCTION_TABLE_PRESENT (0x400)
 # DELAY-CHECK:     CF_INSTRUMENTED (0x100)
 # DELAY-CHECK:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
@@ -54,6 +54,23 @@
 # DELAY-CHECK:      GuardIatTable [
 # DELAY-CHECK-NEXT:   0x14000{{.*}}
 # DELAY-CHECK-NEXT: ]
+
+
+# Without guard metadata, references to imports are address-taken IAT entries,
+# and a local import's pointer takes its target's address.
+# RUN: llvm-mc -triple x86_64-windows-msvc %s -filetype=obj -o %basename_t-noguard.obj --defsym NOGUARD=1
+# RUN: lld-link %basename_t-noguard.obj -guard:cf -guard:longjmp -entry:main -out:%basename_t-noguard.exe %basename_t-exp.lib
+# RUN: llvm-readobj --coff-load-config %basename_t-noguard.exe | FileCheck %s --check-prefix NOGUARD
+
+# NOGUARD: GuardCFFunctionCount: 3
+# NOGUARD: GuardAddressTakenIatEntryCount: 1
+
+# Every .giats$y entry is listed, a data import's included.
+# RUN: llvm-mc -triple x86_64-windows-msvc %s -filetype=obj -o %basename_t-data.obj --defsym DATAIMP=1
+# RUN: lld-link %basename_t-data.obj -guard:cf -guard:longjmp -entry:main -out:%basename_t-data.exe %basename_t-exp.lib
+# RUN: llvm-readobj --coff-load-config %basename_t-data.exe | FileCheck %s --check-prefix DATA
+
+# DATA: GuardAddressTakenIatEntryCount: 2
 
 
 # This assembly is reduced from C code like:
@@ -71,7 +88,18 @@
 	.type	0;
 	.endef
 	.globl	@feat.00
+.ifdef NOGUARD
+.set @feat.00, 0
+	.def	 localfn;	.scl	2;	.type	32;	.endef
+	.globl	localfn
+localfn:
+	retq
+	.data
+	.quad	__imp_localfn
+	.text
+.else
 .set @feat.00, 2048
+.endif
 	.def	 IndirectCall;	.scl	2;	.type	32;	.endef
 	.globl	IndirectCall                    # -- Begin function IndirectCall
 	.p2align	4, 0x90
@@ -105,6 +133,11 @@ main:                                   # @main
 	.section	.gfids$y,"dr"
 	.section	.giats$y,"dr"
 	.symidx	__imp_exportfn1
+.ifdef DATAIMP
+	.symidx	__imp_dataexp
+	.data
+	.quad	__imp_dataexp
+.endif
 	.section	.gljmp$y,"dr"
 
 # Load configuration directory entry (winnt.h _IMAGE_LOAD_CONFIG_DIRECTORY64).

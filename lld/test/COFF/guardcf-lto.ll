@@ -8,27 +8,41 @@
 ; RUN: llvm-mc -triple x86_64-windows-msvc -filetype=obj %S/Inputs/loadconfig-cfg-x64.s -o %t.ldcfg.obj
 
 ; RUN: llvm-as %s -o %t.bc
-; RUN: lld-link -entry:main -guard:cf -dll %t.bc %t.lib %t.ldcfg.obj -out:%t2.dll
+; RUN: lld-link -entry:main -guard:cf -dll %t.bc %t.lib %t.ldcfg.obj -out:%t2.dll \
+; RUN:   2>&1 | FileCheck --check-prefix=WARN %s
 ; RUN: llvm-readobj --coff-load-config %t2.dll | FileCheck %s
 
-; There must be *two* entries in the table: DLL entry point, and my_handler.
+; Only /guardsym is read from the directives of LTO's output, and once from
+; the llvm.linker.options that they repeat.
+; WARN-NOT: unknown argument
+; WARN:     warning: ignoring /guardsym:main,X: its only flag is S
+; WARN-NOT: /guardsym
+
+; There must be *two* entries in the table: DLL entry point, and my_handler,
+; which code generation names as suppressed in the directives of LTO's output,
+; as for guard(suppress).
 
 ; CHECK:      LoadConfig [
 ; CHECK:        GuardCFFunctionTable: 0x{{[^0].*}}
 ; CHECK-NEXT:   GuardCFFunctionCount: 2
-; CHECK-NEXT:   GuardFlags [ (0x10500)
+; CHECK-NEXT:   GuardFlags [ (0x10014500)
+; CHECK-NEXT:     CF_EXPORT_SUPPRESSION_INFO_PRESENT (0x4000)
 ; CHECK-NEXT:     CF_FUNCTION_TABLE_PRESENT (0x400)
+; CHECK-NEXT:     CF_FUNCTION_TABLE_SIZE_5BYTES (0x10000000)
 ; CHECK-NEXT:     CF_INSTRUMENTED (0x100)
 ; CHECK-NEXT:     CF_LONGJUMP_TABLE_PRESENT (0x10000)
 ; CHECK-NEXT:   ]
 ; CHECK:      ]
 ; CHECK:      GuardFidTable [
 ; CHECK-NEXT:   0x180{{.*}}
-; CHECK-NEXT:   0x180{{.*}}
+; CHECK-NEXT:   0x180{{.*}} flags 1
 ; CHECK-NEXT: ]
 
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-windows-msvc19.12.25835"
+
+module asm ".section .drectve,\22yni\22"
+module asm ".ascii \22 /GUARDSYM:my_handler,S -unknowndirective\22"
 
 declare dllimport void @do_indirect_call(ptr)
 
@@ -38,7 +52,10 @@ entry:
   ret i32 0
 }
 
-define dso_local void @my_handler() {
+define internal void @my_handler() {
 entry:
   ret void
 }
+
+!llvm.linker.options = !{!0}
+!0 = !{!"/guardsym:main,X"}
