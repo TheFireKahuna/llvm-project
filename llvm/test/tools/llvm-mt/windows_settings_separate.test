@@ -1,0 +1,19 @@
+REQUIRES: libxml2
+UNSUPPORTED: system-windows
+
+Elements of the same name merge only when their namespaces are equivalent: a
+windowsSettings element in the assembly namespace and one in a settings
+namespace stay separate.
+
+RUN: llvm-mt /manifest %p/Inputs/long_path_aware.manifest \
+RUN:   /manifest %p/Inputs/windows_settings_smi.manifest /out:%t
+RUN: FileCheck %s -input-file=%t
+
+CHECK:      <application xmlns="urn:schemas-microsoft-com:asm.v3">
+CHECK-NEXT:   <windowsSettings>
+CHECK-NEXT:     <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+CHECK-NEXT:   </windowsSettings>
+CHECK-NEXT:   <windowsSettings xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">
+CHECK-NEXT:     <dpiAware>true</dpiAware>
+CHECK-NEXT:   </windowsSettings>
+CHECK-NEXT: </application>

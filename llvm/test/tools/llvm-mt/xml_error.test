@@ -11,6 +11,11 @@ RUN:   FileCheck %s -check-prefix=EMPTY
 
 EMPTY: llvm-mt: error: attempted to merge empty manifest
 
+RUN: not llvm-mt /manifest %p/Inputs/no_root.manifest 2>&1 >/dev/null | \
+RUN:   FileCheck %s -check-prefix=NOROOT
+
+NOROOT: llvm-mt: error: invalid xml document
+
 RUN: llvm-mt /inputresource:foo.res \
 RUN:   /manifest %p/Inputs/test_manifest.manifest \
 RUN:   /out:%t | FileCheck %s -check-prefix=NOT_SUPPORTED

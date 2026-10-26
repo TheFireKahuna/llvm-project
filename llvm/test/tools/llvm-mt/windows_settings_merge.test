@@ -1,0 +1,17 @@
+REQUIRES: libxml2
+UNSUPPORTED: system-windows
+
+Two windowsSettings elements in the assembly namespace merge into one, and
+each setting keeps its own namespace.
+
+RUN: llvm-mt /manifest %p/Inputs/long_path_aware.manifest \
+RUN:   /manifest %p/Inputs/heap_type.manifest /out:%t
+RUN: FileCheck %s -input-file=%t
+
+CHECK:      <application xmlns="urn:schemas-microsoft-com:asm.v3">
+CHECK-NEXT:   <windowsSettings>
+CHECK-NEXT:     <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+CHECK-NEXT:     <heapType xmlns="http://schemas.microsoft.com/SMI/2020/WindowsSettings">SegmentHeap</heapType>
+CHECK-NEXT:   </windowsSettings>
+CHECK-NEXT: </application>
+CHECK-NOT:  windowsSettings

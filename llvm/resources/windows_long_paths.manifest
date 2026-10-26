@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  Opt LLVM executables in to paths longer than MAX_PATH (Windows 10 1607 and
+  later). Together with the LongPathsEnabled policy this lifts the limit for
+  the Win32 APIs that cannot take a "\\?\" prefixed path, such as
+  SetCurrentDirectoryW; llvm::sys::windows::widenPath's "\\?\" prefixing
+  remains the fallback when the policy is off.
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings xmlns:ws2="http://schemas.microsoft.com/SMI/2016/WindowsSettings">
+      <ws2:longPathAware>true</ws2:longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

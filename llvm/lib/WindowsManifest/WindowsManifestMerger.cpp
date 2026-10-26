@@ -71,9 +71,10 @@ static bool xmlStringsEqual(const unsigned char *A, const unsigned char *B) {
 }
 
 static bool isMergeableElement(const unsigned char *ElementName) {
-  for (StringRef S : {"application", "assembly", "assemblyIdentity",
-                      "compatibility", "noInherit", "requestedExecutionLevel",
-                      "requestedPrivileges", "security", "trustInfo"}) {
+  for (StringRef S :
+       {"application", "assembly", "assemblyIdentity", "compatibility",
+        "noInherit", "requestedExecutionLevel", "requestedPrivileges",
+        "security", "trustInfo", "windowsSettings"}) {
     if (S == FROM_XML_CHAR(ElementName)) {
       return true;
     }
@@ -81,10 +82,30 @@ static bool isMergeableElement(const unsigned char *ElementName) {
   return false;
 }
 
+// Whether HRef names a version of the assembly schema, the first three
+// namespaces of MtNsHrefsPrefixes.
+static bool isAssemblyNamespace(const unsigned char *HRef) {
+  return HRef && is_contained(make_first_range(
+                                  ArrayRef(MtNsHrefsPrefixes).take_front(3)),
+                              StringRef(FROM_XML_CHAR(HRef)));
+}
+
+// Whether two element namespaces are the same for merging: the same URI, or
+// two versions of the assembly schema, which the merger treats as one
+// namespace and ranks by priority.
+static bool namespacesEquivalent(xmlNsPtr A, xmlNsPtr B) {
+  const unsigned char *HRefA = A ? A->href : nullptr;
+  const unsigned char *HRefB = B ? B->href : nullptr;
+  return xmlStringsEqual(HRefA, HRefB) ||
+         (isAssemblyNamespace(HRefA) && isAssemblyNamespace(HRefB));
+}
+
 static xmlNodePtr getChildWithName(xmlNodePtr Parent,
-                                   const unsigned char *ElementName) {
+                                   const unsigned char *ElementName,
+                                   xmlNsPtr Namespace) {
   for (xmlNodePtr Child = Parent->children; Child; Child = Child->next) {
-    if (xmlStringsEqual(Child->name, ElementName)) {
+    if (xmlStringsEqual(Child->name, ElementName) &&
+        namespacesEquivalent(Child->ns, Namespace)) {
       return Child;
     }
   }
@@ -512,10 +533,28 @@ static Error treeMerge(xmlNodePtr OriginalRoot, xmlNodePtr AdditionalRoot) {
   xmlNodePtr AdditionalFirstChild = AdditionalRoot->children;
   xmlNode StoreNext;
   for (xmlNodePtr Child = AdditionalFirstChild; Child; Child = Child->next) {
+    // Each setting in windowsSettings has one value, and the loader reads one
+    // element of a name. A setting that both manifests give is kept once when
+    // they agree, and is an error when they do not.
+    if (Child->type == XML_ELEMENT_NODE &&
+        xmlStringsEqual(OriginalRoot->name, TO_XML_CHAR("windowsSettings"))) {
+      if (xmlNodePtr Setting =
+              getChildWithName(OriginalRoot, Child->name, Child->ns)) {
+        xmlChar *OriginalValue = xmlNodeGetContent(Setting);
+        xmlChar *AdditionalValue = xmlNodeGetContent(Child);
+        bool Same = xmlStringsEqual(OriginalValue, AdditionalValue);
+        xmlFree(OriginalValue);
+        xmlFree(AdditionalValue);
+        if (!Same)
+          return make_error<WindowsManifestError>(
+              Twine("conflicting values for ") + FROM_XML_CHAR(Child->name));
+        continue;
+      }
+    }
     xmlNodePtr OriginalChildWithName;
     if (!isMergeableElement(Child->name) ||
         !(OriginalChildWithName =
-              getChildWithName(OriginalRoot, Child->name)) ||
+              getChildWithName(OriginalRoot, Child->name, Child->ns)) ||
         !hasRecognizedNamespace(Child)) {
       StoreNext.next = Child->next;
       xmlUnlinkNode(Child);
@@ -626,7 +665,11 @@ Error WindowsManifestMerger::WindowsManifestMergerImpl::merge(
   xmlSetGenericErrorFunc(nullptr, nullptr);
   if (auto E = getParseError())
     return E;
+  if (!ManifestXML)
+    return make_error<WindowsManifestError>("invalid xml document");
   xmlNodePtr AdditionalRoot = xmlDocGetRootElement(ManifestXML.get());
+  if (!AdditionalRoot)
+    return make_error<WindowsManifestError>("manifest has no root element");
   stripComments(AdditionalRoot);
   setAttributeNamespaces(AdditionalRoot);
   if (CombinedDoc == nullptr) {
