@@ -12,6 +12,12 @@ RUN:   %p/Inputs/ret42.obj /failifmismatch:k1=v1 /failifmismatch:k1=v1
 RUN: env LLD_IN_TEST=1 not lld-link /entry:main /subsystem:console /out:%t.exe \
 RUN:   %p/Inputs/ret42.obj /failifmismatch:k1=v1 /failifmismatch:k1=v2 2>&1 | FileCheck %s 
 
+The first value wins, and every mismatch is reported. A list of pairs is
+checked pair by pair.
+RUN: env LLD_IN_TEST=1 not lld-link /entry:main /subsystem:console /out:%t.exe \
+RUN:   %p/Inputs/ret42.obj /failifmismatch:k1=v1 /failifmismatch:k2=v2,k1=v2 \
+RUN:   /failifmismatch:k1=v3 2>&1 | FileCheck %s --check-prefix=ALL
+
 RUN: llc < %p/Inputs/failmismatch1.ll -mtriple x86_64-windows-msvc -filetype obj -o %t1.obj
 RUN: llc < %p/Inputs/failmismatch2.ll -mtriple x86_64-windows-msvc -filetype obj -o %t2.obj
 RUN: env LLD_IN_TEST=1 not lld-link %t1.obj %t2.obj 2>&1 | FileCheck %s -check-prefix OBJ
@@ -22,6 +28,13 @@ RUN: env LLD_IN_TEST=1 not lld-link %t.lib %t2.obj 2>&1 | FileCheck %s -check-pr
 CHECK: lld-link: error: /failifmismatch: mismatch detected for 'k1':
 CHECK-NEXT: >>> cmd-line has value v1
 CHECK-NEXT: >>> cmd-line has value v2
+
+ALL:      error: /failifmismatch: mismatch detected for 'k1':
+ALL-NEXT: >>> cmd-line has value v1
+ALL-NEXT: >>> cmd-line has value v2
+ALL:      error: /failifmismatch: mismatch detected for 'k1':
+ALL-NEXT: >>> cmd-line has value v1
+ALL-NEXT: >>> cmd-line has value v3
 
 OBJ: lld-link: error: /failifmismatch: mismatch detected for 'TEST':
 OBJ-NEXT: >>> {{.*}}failifmismatch.test.tmp1.obj has value 1

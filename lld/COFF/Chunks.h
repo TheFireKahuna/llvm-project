@@ -795,12 +795,15 @@ public:
 // This is a placeholder Chunk, to allow attaching a DefinedSynthetic to a
 // specific place in a section, without any data. This is used for the MinGW
 // specific symbol __RUNTIME_PSEUDO_RELOC_LIST_END__, even though the concept
-// of an empty chunk isn't MinGW specific.
+// of an empty chunk isn't MinGW specific. With a size, it is a gap of zeros.
 class EmptyChunk : public NonSectionChunk {
 public:
-  EmptyChunk() {}
-  size_t getSize() const override { return 0; }
-  void writeTo(uint8_t *buf) const override {}
+  explicit EmptyChunk(size_t size = 0) : size(size) {}
+  size_t getSize() const override { return size; }
+  void writeTo(uint8_t *buf) const override { memset(buf, 0, size); }
+
+private:
+  size_t size;
 };
 
 class ECCodeMapEntry {

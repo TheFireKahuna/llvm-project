@@ -150,6 +150,8 @@ struct Configuration {
   llvm::cl::LibraryOptionsContext libraryOptions;
   std::vector<std::string> natvisFiles;
   llvm::StringMap<std::string> namedStreams;
+  // The input sections /coffsecttopdbstrm moves into PDB streams.
+  llvm::StringMap<StringRef> sectionStreams;
   llvm::SmallString<128> pdbAltPath;
   int pdbPageSize = 4096;
   llvm::SmallString<128> pdbPath;
@@ -169,6 +171,12 @@ struct Configuration {
   llvm::StringSet<> delayLoads;
   bool delayUnload = false;
   bool didatOwnSection = false;
+  // A bare /wholearchive in a directive.
+  bool wholeArchive = false;
+  // The input sections /icfsection lets ICF fold and /includecoffsection
+  // keeps, and the output sections whose functions /nofunctionpadsection
+  // leaves unpadded.
+  llvm::StringSet<> icfSections, includeCoffSections, noFunctionPadSections;
   bool noOptDidat = false;
   std::map<std::string, int> dllOrder;
   Symbol *arm64ECIcallHelper = nullptr;

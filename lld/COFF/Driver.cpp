@@ -451,8 +451,10 @@ void LinkerDriver::enqueuePath(StringRef path, bool lazy, InputOpt inputOpt) {
         Err(ctx) << msg << "; did you mean '" << nearest << "'";
     } else {
       handleReproFile(pathStr, inputOpt);
-      ctx.driver.addBuffer(std::move(mb), inputOpt == InputOpt::WholeArchive,
-                           lazy);
+      bool wholeArchive =
+          inputOpt == InputOpt::WholeArchive ||
+          (inputOpt == InputOpt::None && ctx.config.wholeArchive);
+      ctx.driver.addBuffer(std::move(mb), wholeArchive, lazy);
     }
   });
 }
@@ -617,6 +619,9 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       if (std::optional<StringRef> path = findLibIfNew(arg->getValue()))
         enqueuePath(*path, false, InputOpt::DefaultLib);
       break;
+    case OPT_didatownsection:
+      ctx.config.didatOwnSection = true;
+      break;
     case OPT_entry:
       if (!arg->getValue()[0])
         Fatal(ctx) << "missing entry point symbol name";
@@ -660,8 +665,36 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       }
       break;
     }
+    case OPT_wrap:
+      // The renaming runs once the link has resolved, so a later object's
+      // wrap still reaches every reference.
+      if (file->symtab.wrapsAdded)
+        addWrappedSymbol(file->symtab, arg->getValue());
+      else
+        file->symtab.directiveWraps.push_back(arg->getValue());
+      break;
     // Only add flags here that link.exe accepts in
     // `#pragma comment(linker, "/flag")`-generated sections.
+    case OPT_coffsecttopdbstrm:
+      parseSectionStream(arg->getValue());
+      break;
+    case OPT_icfsection:
+      ctx.config.icfSections.insert(arg->getValue());
+      break;
+    case OPT_includecoffsection:
+      ctx.config.includeCoffSections.insert(arg->getValue());
+      break;
+    case OPT_nofunctionpadsection:
+      ctx.config.noFunctionPadSections.insert(arg->getValue());
+      break;
+    case OPT_wholearchive_file:
+      if (std::optional<StringRef> path = findLibIfNew(arg->getValue()))
+        enqueuePath(*path, false, InputOpt::WholeArchive);
+      break;
+    case OPT_wholearchive_flag:
+      // As in link.exe, it applies to the libraries the command line names.
+      ctx.config.wholeArchive = true;
+      break;
     case OPT_editandcontinue:
     case OPT_throwingnew:
     case OPT_inferasanlibs:
@@ -1087,20 +1120,36 @@ void LinkerDriver::createImportLibrary(bool asLib) {
 
   auto getExports = [](SymbolTable &symtab,
                        std::vector<COFFShortExport> &exports) {
-    for (Export &e1 : symtab.exports) {
+    // A member that imports by name carries a hint rather than an ordinal: the
+    // export's index in the export name table, whose order fixupExports has
+    // already set. An EXPORTAS alias imports the name, and so the hint, of the
+    // export it repeats.
+    uint16_t hint = 0;
+    StringMap<uint16_t> hints;
+    auto add = [&](const Export &e1, uint16_t ordinal) {
       COFFShortExport e2;
       e2.Name = std::string(e1.name);
       e2.SymbolName = std::string(e1.symbolName);
       e2.ExtName = std::string(e1.extName);
       e2.ExportAs = std::string(e1.exportAs);
       e2.ImportName = std::string(e1.importName);
-      e2.Ordinal = e1.ordinal;
+      e2.Ordinal = ordinal;
       e2.Noname = e1.noname;
       e2.Data = e1.data;
       e2.Private = e1.isPrivate;
       e2.Constant = e1.constant;
       exports.push_back(e2);
+    };
+    for (Export &e1 : symtab.exports) {
+      if (e1.noname) {
+        add(e1, e1.ordinal);
+        continue;
+      }
+      hints[e1.exportName] = hint;
+      add(e1, hint++);
     }
+    for (Export &e1 : symtab.exportAsAliases)
+      add(e1, hints.lookup(e1.exportAs));
   };
 
   getExports(ctx.symtab, exports);
@@ -2455,6 +2504,22 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   for (auto *arg : args.filtered(OPT_functionpadmin, OPT_functionpadmin_opt))
     parseFunctionPadMin(arg);
 
+  // Handle /coffsecttopdbstrm
+  for (auto *arg : args.filtered(OPT_coffsecttopdbstrm))
+    parseSectionStream(arg->getValue());
+
+  // Handle /icfsection
+  for (auto *arg : args.filtered(OPT_icfsection))
+    config->icfSections.insert(arg->getValue());
+
+  // Handle /includecoffsection
+  for (auto *arg : args.filtered(OPT_includecoffsection))
+    config->includeCoffSections.insert(arg->getValue());
+
+  // Handle /nofunctionpadsection
+  for (auto *arg : args.filtered(OPT_nofunctionpadsection))
+    config->noFunctionPadSections.insert(arg->getValue());
+
   // MS link.exe compatibility, at least 6 bytes of function padding is
   // required if hotpatchable
   if (config->hotpatchCompat && config->functionPadMin < 6)
@@ -2589,7 +2654,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       else if (!s.equals_insensitive("nobind"))
         Err(ctx) << "/delay: invalid argument: " << s;
     }
-    config->didatOwnSection = args.hasArg(OPT_didatownsection);
+    if (args.hasArg(OPT_didatownsection))
+      config->didatOwnSection = true;
     config->noOptDidat = args.hasArg(OPT_nooptdidat);
   }
 

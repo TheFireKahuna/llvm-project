@@ -8,6 +8,17 @@ RUN: llvm-objdump -s %t.exe | FileCheck %s --check-prefix PADDED
 RUN: lld-link %S/Inputs/precomp-a.obj /out:%t.exe /nodefaultlib /force /functionpadmin:17
 RUN: llvm-objdump -s %t.exe | FileCheck %s --check-prefix PADDED-MORE
 
+// ---- /nofunctionpadsection leaves the functions of an output section unpadded,
+// ---- but as in link.exe, only beside a /section switch
+RUN: lld-link %S/Inputs/precomp-a.obj /out:%t.exe /nodefaultlib /force /functionpadmin /nofunctionpadsection:.text
+RUN: llvm-objdump -s %t.exe | FileCheck %s --check-prefix PADDED
+RUN: lld-link %S/Inputs/precomp-a.obj /out:%t.exe /nodefaultlib /force /functionpadmin /nofunctionpadsection:.text /section:.text,ER
+RUN: llvm-objdump -s %t.exe | FileCheck %s --check-prefix BASE
+RUN: echo '.section .drectve,"yn"; .ascii " /nofunctionpadsection:.text"' \
+RUN:   | llvm-mc -filetype=obj -triple=x86_64-windows-msvc -o %t.drectve.obj
+RUN: lld-link %S/Inputs/precomp-a.obj %t.drectve.obj /out:%t.exe /nodefaultlib /force /functionpadmin /section:.text,ER
+RUN: llvm-objdump -s %t.exe | FileCheck %s --check-prefix BASE
+
 // ---- Many arguments
 RUN: lld-link %S/Inputs/precomp-a.obj /out:%t.exe /nodefaultlib /force /functionpadmin:17 /functionpadmin
 RUN: llvm-objdump -s %t.exe | FileCheck %s --check-prefix PADDED

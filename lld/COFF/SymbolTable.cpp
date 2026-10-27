@@ -1298,8 +1298,26 @@ void SymbolTable::fixupExports() {
       continue;
     }
     Export *existing = pair.first->second.first;
-    if (e == *existing || e.name != existing->name)
+    if (e == *existing)
       continue;
+    if (e.name != existing->name) {
+      // As in link.exe, the import library offers the symbol of an export
+      // that takes another's name through EXPORTAS, importing that name, which
+      // the export table holds once. A NONAME export names nothing, so beside
+      // one, such an export is an export of its own.
+      if (e.exportAs.empty() && existing->exportAs.empty())
+        continue;
+      if (e.noname || existing->noname) {
+        v.push_back(e);
+      } else if (!e.exportAs.empty()) {
+        exportAsAliases.push_back(e);
+      } else {
+        exportAsAliases.push_back(*existing);
+        *existing = e;
+        v[pair.first->second.second] = e;
+      }
+      continue;
+    }
     // If the existing export comes from .OBJ directives, we are allowed to
     // overwrite it with /DEF: or /EXPORT without any warning, as MSVC link.exe
     // does.
@@ -1345,9 +1363,27 @@ void SymbolTable::assignExportOrdinals() {
   for (Export &e : exports)
     if (e.ordinal == 0)
       e.ordinal = ++max;
-  if (max > std::numeric_limits<uint16_t>::max())
-    Fatal(ctx) << "too many exported symbols (got " << max << ", max "
-               << Twine(std::numeric_limits<uint16_t>::max()) << ")";
+  if (max <= std::numeric_limits<uint16_t>::max())
+    return;
+
+  // Name the files that define the most exported symbols, which are where the
+  // export set has to be narrowed.
+  MapVector<InputFile *, uint32_t> counts;
+  for (Export &e : exports)
+    if (e.sym)
+      ++counts[e.sym->getFile()];
+  auto byCount = counts.takeVector();
+  llvm::stable_sort(byCount, [](const auto &a, const auto &b) {
+    return a.second > b.second;
+  });
+  auto diag = Fatal(ctx);
+  diag << "too many exported symbols (got " << max << ", max "
+       << Twine(std::numeric_limits<uint16_t>::max()) << ")";
+  constexpr size_t maxFiles = 10;
+  for (const auto &[file, count] : ArrayRef(byCount).take_front(maxFiles))
+    diag << "\n>>> " << count << " defined in " << file;
+  if (byCount.size() > maxFiles)
+    diag << "\n>>> and " << byCount.size() - maxFiles << " more files";
 }
 
 void SymbolTable::parseModuleDefs(StringRef path) {

@@ -23,7 +23,7 @@
 # CHECK-NEXT:     Address: 0x14000104D
 # CHECK-NEXT:   }
 # CHECK-NEXT:   Import {
-# CHECK-NEXT:     Symbol: two (0)
+# CHECK-NEXT:     Symbol: two (1)
 # CHECK-NEXT:     Address: 0x140001059
 # CHECK-NEXT:   }
 # CHECK-NEXT: }
@@ -40,7 +40,7 @@
 # CHECK-NEXT:     Address: 0x1400010DC
 # CHECK-NEXT:   }
 # CHECK-NEXT:   Import {
-# CHECK-NEXT:     Symbol: right (0)
+# CHECK-NEXT:     Symbol: right (1)
 # CHECK-NEXT:     Address: 0x1400010E8
 # CHECK-NEXT:   }
 # CHECK-NEXT: }

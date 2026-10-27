@@ -53,9 +53,9 @@ void writeDefFile(COFFLinkerContext &, StringRef name,
 // occurrences of symbol `foo` are resolved to `__wrap_foo` (so, you are
 // expected to write `__wrap_foo` function as a wrapper). The original
 // symbol becomes accessible as `__real_foo`, so you can call that from your
-// wrapper.
-//
+// wrapper. An object can ask for the same with /wrap in its .drectve section.
 void addWrappedSymbols(SymbolTable &symtab, llvm::opt::InputArgList &args);
+void addWrappedSymbol(SymbolTable &symtab, StringRef name);
 
 void wrapSymbols(SymbolTable &symtab);
 

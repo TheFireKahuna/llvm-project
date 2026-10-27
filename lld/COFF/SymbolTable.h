@@ -169,6 +169,9 @@ public:
 
   // A list of DLL exports.
   std::vector<Export> exports;
+  // Exports that repeat one of those names through EXPORTAS: the export table
+  // has the name once, and the import library has their symbols too.
+  std::vector<Export> exportAsAliases;
   llvm::DenseSet<StringRef> directivesExports;
   bool hadExplicitExports;
 
@@ -180,6 +183,10 @@ public:
 
   // A list of wrapped symbols.
   std::vector<WrappedSymbol> wrapped;
+  // The names /wrap in .drectve sections asks for before the wrapped symbols
+  // are created, after which a directive wraps at once.
+  std::vector<StringRef> directiveWraps;
+  bool wrapsAdded = false;
 
   // Used for /alternatename.
   std::map<StringRef, StringRef> alternateNames;

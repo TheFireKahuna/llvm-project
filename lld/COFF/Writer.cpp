@@ -670,6 +670,27 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 // Assign addresses and add thunks if necessary.
 void Writer::finalizeAddresses() {
   assignAddresses();
+  // The loader reads an exported address inside the export directory as a
+  // forwarder string. Nothing is defined inside LLD's directory, but an export
+  // can end where it starts: a gap goes between them.
+  bool gap = false;
+  ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
+    Chunk *dir = symtab.edataStart;
+    if (!dir || isa<SectionChunk>(dir) ||
+        llvm::none_of(symtab.exports, [&](const Export &e) {
+          return !e.forwardChunk &&
+                 cast<Defined>(e.sym)->getRVA() == dir->getRVA();
+        }))
+      return;
+    for (OutputSection *sec : ctx.outputSections) {
+      auto it = llvm::find(sec->chunks, dir);
+      if (it != sec->chunks.end())
+        sec->chunks.insert(it, make<EmptyChunk>(dir->getAlignment()));
+    }
+    gap = true;
+  });
+  if (gap)
+    assignAddresses();
   if (ctx.config.machine != ARMNT && !isAnyArm64(ctx.config.machine))
     return;
 
@@ -1133,6 +1154,9 @@ void Writer::createSections() {
         continue;
     }
     StringRef name = c->getSectionName();
+    // /coffsecttopdbstrm moves the section into the PDB, if there is one.
+    if (sc && ctx.config.sectionStreams.contains(name))
+      continue;
     if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
       name = name.split('$').first;
 
@@ -1820,7 +1844,13 @@ void Writer::assignAddresses() {
 
     // If /FUNCTIONPADMIN is used, functions are padded in order to create a
     // hotpatchable image.
-    uint32_t padding = sec->isCodeSection() ? config->functionPadMin : 0;
+    // As in link.exe, /nofunctionpadsection acts only beside a /section.
+    uint32_t padding =
+        sec->isCodeSection() &&
+                (config->section.empty() ||
+                 !config->noFunctionPadSections.contains(sec->name))
+            ? config->functionPadMin
+            : 0;
     std::optional<chpe_range_type> prevECRange;
 
     for (Chunk *c : sec->chunks) {

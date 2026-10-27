@@ -8,13 +8,15 @@
 # RUN: echo '.globl __delayLoadHelper2; __delayLoadHelper2: ret; .data; .globl __MSSafeDelayLoadIAT; __MSSafeDelayLoadIAT: .long 0' | \
 # RUN:   %{mc} -o safe.obj
 # RUN: echo '.section .didat$b,"dr"; .quad 2; .section .didat,"dw"; .globl didat; didat: .quad 1' | %{mc} -o didat.obj
+# RUN: echo '.section .drectve,"yn"; .ascii " /didatownsection"' | %{mc} -o own.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows %S/Inputs/loadconfig-cfg-x64.s -o loadconfig.obj
 # RUN: llvm-lib -machine:x64 -def:foo.def -out:foo.lib
 
 ## The delay-load IAT's placement follows link.exe: unprotected in .data, unless
 ## the helper's own object defines __MSSafeDelayLoadIAT and the subsystem is
 ## above 6.3, when it is protected beside the IAT; /guard:cf protects it in its
-## own .didat otherwise. /didatownsection moves any protected table to .didat.
+## own .didat otherwise. /didatownsection, on the command line or in a
+## directive, moves any protected table to .didat.
 
 # RUN: lld-link @common.rsp helper.obj -subsystem:console,10.0 -didatownsection && %{ro} | FileCheck --check-prefix=DATA %s
 # RUN: lld-link @common.rsp safe.obj -subsystem:console,6.3 && %{ro} | FileCheck --check-prefix=DATA %s
@@ -44,7 +46,8 @@
 # RUN:   %{ro} --hex-dump=.didat | FileCheck --check-prefixes=DIDAT,USER %s
 # RUN: lld-link @common.rsp safe.obj -subsystem:console,6.3 -guard:cf && %{ro} | FileCheck --check-prefix=DIDAT %s
 # RUN: lld-link @common.rsp safe.obj -subsystem:console,10.0 -didatownsection && %{ro} | FileCheck --check-prefix=DIDAT %s
-# RUN: lld-link @common.rsp helper.obj -guard:cf -didatownsection && %{ro} | FileCheck --check-prefix=DIDAT %s
+# RUN: lld-link @common.rsp helper.obj own.obj -guard:cf && %{ro} | FileCheck --check-prefix=DIDAT %s
+# RUN: lld-link @common.rsp safe.obj own.obj -subsystem:console,10.0 && %{ro} | FileCheck --check-prefix=DIDAT %s
 # RUN: lld-link @common.rsp safe.obj -subsystem:console,6.3 -guard:cf -didatownsection && %{ro} | FileCheck --check-prefix=DIDAT %s
 # RUN: lld-link @common.rsp safe.obj -subsystem:console,10.0 -guard:cf -didatownsection && %{ro} | FileCheck --check-prefix=DIDAT %s
 

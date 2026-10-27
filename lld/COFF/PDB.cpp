@@ -1207,6 +1207,10 @@ void PDBLinker::addPublicsToPDB() {
     // non-external symbols do not appear in the symbol table.
     auto *def = dyn_cast<Defined>(s);
     if (def && def->isLive() && def->getChunk()) {
+      // A section /coffsecttopdbstrm moves out of the image has no publics.
+      if (auto *sc = dyn_cast<SectionChunk>(def->getChunk()))
+        if (ctx.config.sectionStreams.contains(sc->getSectionName()))
+          return;
       // Don't emit a public symbol for coverage data symbols. LLVM code
       // coverage (and PGO) create a __profd_ and __profc_ symbol for every
       // function. C++ mangled names are long, and tend to dominate symbol size.
@@ -1335,6 +1339,18 @@ void PDBLinker::addNamedStreams() {
     exitOnErr(builder.addNamedStream(stream, data->getBuffer()));
     ctx.driver.takeBuffer(std::move(data));
   }
+
+  // The sections /coffsecttopdbstrm moves out of the image, file by file in
+  // reverse, each file's in order, as link.exe writes them.
+  MapVector<StringRef, std::string> sectionStreams;
+  for (ObjFile *file : llvm::reverse(ctx.objFileInstances))
+    for (Chunk *c : file->getChunks())
+      if (auto *sc = dyn_cast<SectionChunk>(c))
+        if (auto it = ctx.config.sectionStreams.find(sc->getSectionName());
+            it != ctx.config.sectionStreams.end())
+          sectionStreams[it->second] += toStringRef(sc->getContents());
+  for (auto &[stream, data] : sectionStreams)
+    exitOnErr(builder.addNamedStream(stream, data));
 }
 
 static codeview::CPUType toCodeViewMachine(COFF::MachineTypes machine) {

@@ -256,6 +256,15 @@ void LinkerDriver::parseSection(StringRef s) {
   ctx.config.section[name] = parseSectionAttributes(ctx, attrs);
 }
 
+// Parses /coffsecttopdbstrm option argument, "<section>=<stream>".
+void LinkerDriver::parseSectionStream(StringRef s) {
+  auto [section, stream] = s.split('=');
+  if (section.empty() || stream.empty())
+    Err(ctx) << "/coffsecttopdbstrm: invalid argument: " << s;
+  else
+    ctx.config.sectionStreams.try_emplace(section, stream);
+}
+
 // Parses /sectionlayout: option argument.
 void LinkerDriver::parseSectionLayout(StringRef path) {
   if (path.starts_with("@"))
@@ -719,22 +728,25 @@ err:
   llvm_unreachable("");
 }
 
-// Parses a string in the form of "key=value" and check
-// if value matches previous values for the same key.
+// Parses a string in the form of "key=value[,key=value...]" and checks that
+// each value matches previous values for the same key. As in link.exe, the
+// first value wins and every mismatch is reported.
 void LinkerDriver::checkFailIfMismatch(StringRef arg, InputFile *source) {
-  auto [k, v] = arg.split('=');
-  if (k.empty() || v.empty())
-    Fatal(ctx) << "/failifmismatch: invalid argument: " << arg;
-  std::pair<StringRef, InputFile *> existing = ctx.config.mustMatch[k];
-  if (!existing.first.empty() && v != existing.first) {
-    std::string sourceStr = source ? toString(source) : "cmd-line";
-    std::string existingStr =
-        existing.second ? toString(existing.second) : "cmd-line";
-    Fatal(ctx) << "/failifmismatch: mismatch detected for '" << k << "':\n>>> "
-               << existingStr << " has value " << existing.first << "\n>>> "
+  for (StringRef pair : llvm::split(arg, ',')) {
+    auto [k, v] = pair.split('=');
+    if (k.empty() || v.empty())
+      Fatal(ctx) << "/failifmismatch: invalid argument: " << arg;
+    auto [it, inserted] = ctx.config.mustMatch.try_emplace(k, v, source);
+    auto [existing, existingSource] = it->second;
+    if (!inserted && v != existing) {
+      std::string sourceStr = source ? toString(source) : "cmd-line";
+      std::string existingStr =
+          existingSource ? toString(existingSource) : "cmd-line";
+      Err(ctx) << "/failifmismatch: mismatch detected for '" << k << "':\n>>> "
+               << existingStr << " has value " << existing << "\n>>> "
                << sourceStr << " has value " << v;
+    }
   }
-  ctx.config.mustMatch[k] = {v, source};
 }
 
 // Convert Windows resource files (.res files) to a .obj file.

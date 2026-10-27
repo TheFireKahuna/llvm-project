@@ -80,6 +80,49 @@ RUN: not lld-link -out:err2.dll -dll -noentry func.obj -export:func,EXPORTAS,exp
 RUN:     FileCheck --check-prefix=ERR2 %s
 ERR2: error: invalid EXPORTAS value: expfunc,DATA
 
+An EXPORTAS export that takes the name of another export: the export table
+has the name once, and the import library offers both symbols, each importing
+the name with its hint, whichever export comes first.
+
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows alias.s -o alias.obj
+RUN: lld-link -out:out8.dll -dll -noentry alias.obj -export:first -export:func \
+RUN:     -export:wrapped,EXPORTAS,func
+RUN: llvm-readobj --coff-exports out8.dll | FileCheck --check-prefix=ALIAS %s
+ALIAS:     Name: first
+ALIAS:     Name: func
+ALIAS-NOT: Name:
+
+RUN: lld-link -out:out9.dll -dll -noentry alias.obj -export:first \
+RUN:     -export:wrapped,EXPORTAS,func -export:func
+RUN: llvm-readobj --coff-exports out9.dll | FileCheck --check-prefix=ALIAS %s
+
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows alias-use.s -o alias-use.obj
+RUN: lld-link -out:out8.exe -entry:main alias-use.obj out8.lib
+RUN: llvm-readobj --coff-imports out8.exe | FileCheck --check-prefix=ALIAS-IMPORT %s
+RUN: lld-link -out:out9.exe -entry:main alias-use.obj out9.lib
+RUN: llvm-readobj --coff-imports out9.exe | FileCheck --check-prefix=ALIAS-IMPORT %s
+ALIAS-IMPORT:      Symbol: func (1)
+ALIAS-IMPORT-NEXT: Symbol: func (1)
+
+A NONAME export names nothing, so an EXPORTAS export that takes its name is an
+export of its own, whichever of the two is NONAME.
+
+RUN: lld-link -out:out10.dll -dll -noentry alias.obj -export:first \
+RUN:     -export:func,@3,NONAME -export:wrapped,EXPORTAS,func
+RUN: llvm-readobj --coff-exports out10.dll | FileCheck --check-prefix=NONAME %s
+NONAME:      Ordinal: 3
+NONAME-NEXT: Name: {{$}}
+NONAME:      Name: first
+NONAME:      Name: func
+RUN: lld-link -out:out10.exe -entry:main alias-use.obj out10.lib
+RUN: llvm-readobj --coff-imports out10.exe | FileCheck --check-prefix=NONAME-IMPORT %s
+NONAME-IMPORT:      Symbol:  (3)
+NONAME-IMPORT-NEXT: Symbol: func (1)
+
+RUN: lld-link -out:out11.dll -dll -noentry alias.obj -export:first \
+RUN:     -export:func -export:wrapped,@3,NONAME,EXPORTAS,func
+RUN: llvm-readobj --coff-exports out11.dll | FileCheck --check-prefix=NONAME %s
+
 #--- test.s
     .section ".test", "rd"
     .rva __imp_func
@@ -105,3 +148,19 @@ func:
 #--- drectve.s
     .section .drectve, "yn"
     .ascii " -export:func,EXPORTAS,expfunc"
+
+#--- alias.s
+    .text
+    .globl first, func, wrapped
+first:
+func:
+wrapped:
+    retq
+
+#--- alias-use.s
+    .text
+    .globl main
+main:
+    callq *__imp_func(%rip)
+    callq *__imp_wrapped(%rip)
+    retq

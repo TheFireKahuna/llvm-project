@@ -87,6 +87,10 @@ bool ICF::isEligible(SectionChunk *c) {
       c->getOutputCharacteristics() & llvm::COFF::IMAGE_SCN_MEM_EXECUTE)
     return true;
 
+  // So is a read-only section an /icfsection names, as in link.exe.
+  if (ctx.config.icfSections.contains(c->getSectionName()))
+    return true;
+
   // .pdata and .xdata unwind info sections are eligible.
   StringRef outSecName = c->getSectionName().split('$').first;
   if (outSecName == ".pdata" || outSecName == ".xdata")

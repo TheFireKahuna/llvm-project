@@ -234,6 +234,7 @@ private:
   void parseMerge(StringRef);
   void parsePDBPageSize(StringRef);
   void parseSection(StringRef);
+  void parseSectionStream(StringRef);
   void parseSectionLayout(StringRef);
 
   void parseSameAddress(StringRef);

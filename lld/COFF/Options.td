@@ -59,17 +59,26 @@ def export  : P<"export", "Export a function">;
 // No help text because /failifmismatch is not intended to be used by the user.
 def failifmismatch : P<"failifmismatch", "">;
 def filealign : P<"filealign", "Section alignment in the output file">;
+def coffsecttopdbstrm : P<"coffsecttopdbstrm",
+    "Move the named section into a named PDB stream">,
+    MetaVarName<"<section>=<stream>">;
 def functionpadmin : F<"functionpadmin">;
 def functionpadmin_opt : P<"functionpadmin",
     "Prepares an image for hotpatching">;
+def nofunctionpadsection : P<"nofunctionpadsection",
+    "Do not pad the functions of the named output section">;
 def dependentloadflag : F<"dependentloadflag">;
 def dependentloadflag_opt : P<"dependentloadflag",
     "Sets the default load flags used to resolve the statically linked imports of a module">;
 def guard   : P<"guard", "Control flow guard">;
 def guardsym : P<"guardsym", "Suppress a function in the guard function table">;
 def heap    : P<"heap", "Size of the heap">;
+def icfsection : P<"icfsection",
+    "Let /opt:icf fold the read-only data of the named section">;
 def ignore : P<"ignore", "Specify warning codes to ignore">;
 def implib  : P<"implib", "Import library name">;
+def includecoffsection : P<"includecoffsection",
+    "Keep the named section under /opt:ref">;
 def noimplib : F<"noimplib">,
     HelpText<"Don't output an import lib">;
 def lib : F<"lib">,

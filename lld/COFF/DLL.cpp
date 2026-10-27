@@ -614,6 +614,8 @@ public:
 
   void writeTo(uint8_t *buf) const override {
     memset(buf, 0, getSize());
+    uint64_t dirStart = symtab.edataStart->getRVA();
+    uint64_t dirEnd = symtab.edataEnd->getRVA() + symtab.edataEnd->getSize();
 
     for (const Export &e : symtab.exports) {
       assert(e.ordinal >= baseOrdinal && "Export symbol has invalid ordinal");
@@ -625,11 +627,16 @@ public:
         bit = 1;
       if (e.forwardChunk) {
         write32le(p, e.forwardChunk->getRVA() | bit);
-      } else {
-        assert(cast<Defined>(e.sym)->getRVA() != 0 &&
-               "Exported symbol unmapped");
-        write32le(p, cast<Defined>(e.sym)->getRVA() | bit);
+        continue;
       }
+      uint64_t rva = cast<Defined>(e.sym)->getRVA();
+      assert(rva != 0 && "Exported symbol unmapped");
+      // The loader reads an address inside the export directory as a
+      // forwarder string.
+      if (rva - dirStart < dirEnd - dirStart)
+        Err(symtab.ctx) << "exported symbol " << e.exportName
+                        << " is inside the export directory";
+      write32le(p, rva | bit);
     }
   }
 

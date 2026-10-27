@@ -29,10 +29,14 @@ void markLive(COFFLinkerContext &ctx) {
   // COMDAT section chunks are dead by default. Add non-COMDAT chunks. Do not
   // traverse DWARF sections. They are live, but they should not keep other
   // sections alive.
+  // /includecoffsection keeps a section as if it were not a COMDAT.
   for (Chunk *c : ctx.driver.getChunks())
-    if (auto *sc = dyn_cast<SectionChunk>(c))
+    if (auto *sc = dyn_cast<SectionChunk>(c)) {
+      if (ctx.config.includeCoffSections.contains(sc->getSectionName()))
+        sc->live = true;
       if (sc->live && !sc->isDWARF())
         worklist.push_back(sc);
+    }
 
   auto enqueue = [&](SectionChunk *c) {
     if (c->live)
