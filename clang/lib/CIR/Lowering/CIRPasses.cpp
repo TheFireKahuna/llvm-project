@@ -23,8 +23,8 @@ namespace cir {
 /// Map a target triple to the ABI target that drives CallConvLowering.
 /// Returns None for targets whose calling convention is not yet implemented.
 static CallConvTarget getCallConvTarget(const llvm::Triple &triple) {
-  // Windows is not supported.  UEFI shares its convention.
-  if (triple.getArch() == llvm::Triple::x86_64 && !triple.isOSWindowsOrUEFI())
+  // Microsoft's convention is not supported.
+  if (triple.getArch() == llvm::Triple::x86_64 && !triple.hasDefaultMSABI())
     return CallConvTarget::X86_64;
   return CallConvTarget::None;
 }

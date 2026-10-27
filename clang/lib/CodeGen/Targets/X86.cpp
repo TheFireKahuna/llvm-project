@@ -3663,7 +3663,7 @@ ABIArgInfo WinX86_64ABIInfo::classify(QualType Ty, unsigned &FreeSSERegs,
           case llvm::CallingConv::Win64:
             return true;
           case llvm::CallingConv::C:
-            return getTarget().getTriple().isOSWindowsOrUEFI();
+            return getTarget().getTriple().hasDefaultMSABI();
           default:
             return false;
           }

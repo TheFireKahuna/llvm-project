@@ -1325,6 +1325,10 @@ public:
   /// Tests if the environment supports dllimport/export annotations.
   bool hasDLLImportExport() const { return isOSWindows() || isPS(); }
 
+  /// Tests whether Microsoft's x64 or ARM64 convention, which the ms_abi
+  /// attribute names, is the default calling convention.
+  bool hasDefaultMSABI() const { return isOSWindowsOrUEFI(); }
+
   /// @}
   /// @name Mutators
   /// @{

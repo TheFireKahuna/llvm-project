@@ -3535,6 +3535,14 @@ TEST(TripleTest, NormalizeWindows) {
   EXPECT_TRUE(Triple(Triple::normalize("mipsel-windows-gnu")).isOSBinFormatCOFF());
 }
 
+TEST(TripleTest, DefaultMSABI) {
+  EXPECT_TRUE(Triple("x86_64-pc-windows-gnu").hasDefaultMSABI());
+  EXPECT_TRUE(Triple("x86_64-unknown-uefi").hasDefaultMSABI());
+  EXPECT_TRUE(Triple("aarch64-pc-windows-msvc").hasDefaultMSABI());
+  EXPECT_FALSE(Triple("x86_64-pc-linux-gnu").hasDefaultMSABI());
+  EXPECT_FALSE(Triple("aarch64-unknown-linux-gnu").hasDefaultMSABI());
+}
+
 TEST(TripleTest, NormalizeAndroid) {
   EXPECT_EQ("arm-unknown-linux-android16",
             Triple::normalize("arm-linux-androideabi16"));
