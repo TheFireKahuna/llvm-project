@@ -1305,6 +1305,14 @@ uint64_t RuntimeDyld::LoadedObjectInfo::getSectionLoadAddress(
   return 0;
 }
 
+uint64_t RuntimeDyld::LoadedObjectInfo::getSectionAllocationSize(
+    const object::SectionRef &Sec) const {
+  auto I = ObjSecToIDMap.find(Sec);
+  if (I != ObjSecToIDMap.end())
+    return RTDyld.Sections[I->second].getAllocationSize();
+  return 0;
+}
+
 RuntimeDyld::MemoryManager::TLSSection
 RuntimeDyld::MemoryManager::allocateTLSSection(uintptr_t Size,
                                                unsigned Alignment,

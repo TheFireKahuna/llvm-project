@@ -76,11 +76,7 @@ public:
                size_t allocationSize, uintptr_t objAddress)
       : Name(std::string(name)), Address(address), Size(size),
         LoadAddress(reinterpret_cast<uintptr_t>(address)), StubOffset(size),
-        AllocationSize(allocationSize), ObjAddress(objAddress) {
-    // AllocationSize is used only in asserts, prevent an "unused private field"
-    // warning:
-    (void)AllocationSize;
-  }
+        AllocationSize(allocationSize), ObjAddress(objAddress) {}
 
   StringRef getName() const { return Name; }
 
@@ -93,6 +89,8 @@ public:
   }
 
   size_t getSize() const { return Size; }
+
+  size_t getAllocationSize() const { return AllocationSize; }
 
   uint64_t getLoadAddress() const { return LoadAddress; }
   void setLoadAddress(uint64_t LA) { LoadAddress = LA; }

@@ -31,6 +31,8 @@
 
 namespace llvm {
 
+class JITEventListener;
+
 namespace orc {
 
 class LLJITBuilderState;
@@ -277,6 +279,7 @@ protected:
   DataLayout DL;
   Triple TT;
 
+  std::unique_ptr<JITEventListener> CallTargetRestrictor;
   std::unique_ptr<ObjectLayer> ObjLinkingLayer;
   std::unique_ptr<ObjectTransformLayer> ObjTransformLayer;
   std::unique_ptr<IRCompileLayer> CompileLayer;

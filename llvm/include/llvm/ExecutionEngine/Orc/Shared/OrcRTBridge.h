@@ -29,6 +29,8 @@ LLVM_ABI extern const SymbolNameSpec DeregisterEHFrameSectionAllocActionName;
 LLVM_ABI extern const SymbolNameSpec RegisterJITLoaderGDBAllocActionName;
 LLVM_ABI extern const SymbolNameSpec DeregisterJITLoaderGDBAllocActionName;
 
+LLVM_ABI extern const SymbolNameSpec RestrictCallTargetsAllocActionName;
+
 LLVM_ABI extern const SymbolNameSpec DispatchName;
 LLVM_ABI extern const SymbolNameSpec DispatchCtxName;
 

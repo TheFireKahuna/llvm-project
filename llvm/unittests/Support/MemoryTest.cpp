@@ -7,9 +7,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Memory.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/Program.h"
 #include "gtest/gtest.h"
 #include <cstdlib>
+#include <cstring>
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #if defined(__NetBSD__)
 // clang-format off
@@ -23,6 +30,8 @@
 
 using namespace llvm;
 using namespace sys;
+
+extern const char *TestMainArgv0;
 
 namespace {
 
@@ -429,5 +438,87 @@ unsigned MemoryFlags[] = {
 
 INSTANTIATE_TEST_SUITE_P(AllocationTests, MappedMemoryTest,
                          ::testing::ValuesIn(MemoryFlags));
+
+#if defined(_WIN32) && (defined(_M_X64) || defined(_M_ARM64))
+static int callAt(unsigned char *P) {
+  volatile auto F = reinterpret_cast<int (*)()>(P);
+  return F();
+}
+
+// Under Control Flow Guard, the restricted granules are valid targets only at
+// the entries; one with an entry off its start, or that the block covers only
+// in part, keeps its targets.
+TEST(CallTargetsTest, RestrictCallTargets) {
+  PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY Policy = {};
+  if (!GetProcessMitigationPolicy(GetCurrentProcess(),
+                                  ProcessControlFlowGuardPolicy, &Policy,
+                                  sizeof(Policy)) ||
+      !Policy.EnableControlFlowGuard)
+    GTEST_SKIP() << "Control Flow Guard is off";
+#ifdef _M_X64
+  // mov eax, 42; ret
+  static const unsigned char Code[] = {0xB8, 42, 0, 0, 0, 0xC3};
+#else
+  // mov w0, #42; ret
+  static const unsigned char Code[] = {0x40, 0x05, 0x80, 0x52,
+                                       0xC0, 0x03, 0x5F, 0xD6};
+#endif
+  std::error_code EC;
+  MemoryBlock M = Memory::allocateMappedMemory(
+      4096, nullptr, Memory::MF_READ | Memory::MF_WRITE, EC);
+  ASSERT_FALSE(EC);
+  auto *Base = static_cast<unsigned char *>(M.base());
+  for (size_t Offset : {0, 16, 32, 64, 4080})
+    memcpy(Base + Offset, Code, sizeof(Code));
+  ASSERT_FALSE(
+      Memory::protectMappedMemory(M, Memory::MF_READ | Memory::MF_EXEC));
+  uintptr_t Entries[] = {reinterpret_cast<uintptr_t>(Base),
+                         reinterpret_cast<uintptr_t>(Base + 32),
+                         reinterpret_cast<uintptr_t>(Base + 72)};
+  EXPECT_FALSE(Memory::restrictCallTargets(MemoryBlock(Base, 4088), Entries));
+  EXPECT_EQ(42, callAt(Base));
+  EXPECT_EQ(42, callAt(Base + 32));
+  EXPECT_EQ(42, callAt(Base + 64));
+  EXPECT_EQ(42, callAt(Base + 4080));
+  EXPECT_DEATH(callAt(Base + 16), "");
+  EXPECT_FALSE(Memory::releaseMappedMemory(M));
+}
+#endif
+
+#ifdef _WIN32
+static int MemoryTestAnchor;
+
+// Only a request for large pages looks up the privilege they need, which
+// loads advapi32.dll. Check in a child process, which has done nothing else.
+TEST(MappedMemoryTest, LargePagePrivilegeOnlyOnRequest) {
+  if (getenv("LLVM_MEMORY_TEST_CHILD")) {
+    // A host that imports advapi32.dll cannot tell. Success is 3, which a
+    // filter that selects no test cannot return.
+    if (::GetModuleHandleW(L"advapi32.dll"))
+      exit(2);
+    std::error_code EC;
+    unsigned Flags = Memory::MF_READ | Memory::MF_WRITE;
+    MemoryBlock M = Memory::allocateMappedMemory(16, nullptr, Flags, EC);
+    if (EC || ::GetModuleHandleW(L"advapi32.dll"))
+      exit(1);
+    M = Memory::allocateMappedMemory(16, nullptr, Flags | Memory::MF_HUGE_HINT,
+                                     EC);
+    exit(EC || !::GetModuleHandleW(L"advapi32.dll") ? 1 : 3);
+  }
+
+  std::string Exe = fs::getMainExecutable(TestMainArgv0, &MemoryTestAnchor);
+  StringRef Args[] = {
+      Exe, "--gtest_filter=MappedMemoryTest.LargePagePrivilegeOnlyOnRequest"};
+  ASSERT_TRUE(::SetEnvironmentVariableW(L"LLVM_MEMORY_TEST_CHILD", L"1"));
+  // The child runs its one test only outside a lit shard.
+  ::SetEnvironmentVariableW(L"GTEST_SHARD_INDEX", nullptr);
+  ::SetEnvironmentVariableW(L"GTEST_TOTAL_SHARDS", nullptr);
+  int RC = ExecuteAndWait(Exe, Args);
+  ::SetEnvironmentVariableW(L"LLVM_MEMORY_TEST_CHILD", nullptr);
+  if (RC == 2)
+    GTEST_SKIP() << "advapi32.dll is loaded at start";
+  EXPECT_EQ(3, RC);
+}
+#endif
 
 }  // anonymous namespace

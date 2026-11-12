@@ -11,6 +11,7 @@
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Config/llvm-config.h" // for LLVM_ENABLE_THREADS
 #include "llvm/ExecutionEngine/Orc/COFFPlatform.h"
+#include "llvm/ExecutionEngine/Orc/CallTargetRestrictionPlugin.h"
 #include "llvm/ExecutionEngine/Orc/DlfcnSPS.h"
 #include "llvm/ExecutionEngine/Orc/EHFrameRegistrationPlugin.h"
 #include "llvm/ExecutionEngine/Orc/ELFNixPlatform.h"
@@ -29,6 +30,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Module.h"
+#include "llvm/Object/COFF.h"
 #include "llvm/Support/DynamicLibrary.h"
 
 #define DEBUG_TYPE "orc"
@@ -37,6 +39,36 @@ using namespace llvm;
 using namespace llvm::orc;
 
 namespace {
+
+/// Leaves only the entries of the code RuntimeDyld loads valid targets of
+/// indirect calls, by the rule CallTargetRestrictionPlugin applies to
+/// JITLink's.
+class CallTargetRestrictionListener : public JITEventListener {
+public:
+  CallTargetRestrictionListener(ExecutionSession &ES) : ES(ES) {}
+
+  void notifyObjectLoaded(ObjectKey K, const object::ObjectFile &Obj,
+                          const RuntimeDyld::LoadedObjectInfo &L) override {
+    if (auto *COFFObj = dyn_cast<object::COFFObjectFile>(&Obj))
+      if (Error Err = restrictCallTargets(*COFFObj, L))
+        ES.reportError(std::move(Err));
+  }
+
+private:
+  Error restrictCallTargets(const object::COFFObjectFile &Obj,
+                            const RuntimeDyld::LoadedObjectInfo &L) {
+    SmallVector<sys::MemoryBlock> Code;
+    std::vector<uintptr_t> Entries;
+    if (Error Err = getCallTargets(Obj, L, Code, Entries))
+      return Err;
+    for (const sys::MemoryBlock &Block : Code)
+      if (std::error_code EC = sys::Memory::restrictCallTargets(Block, Entries))
+        return errorCodeToError(EC);
+    return Error::success();
+  }
+
+  ExecutionSession &ES;
+};
 
 /// Adds helper function decls and wrapper functions that call the helper with
 /// some additional prefix arguments.
@@ -1037,6 +1069,28 @@ LLJIT::LLJIT(LLJITBuilderState &S, Error &Err)
     return;
   }
   ObjLinkingLayer = std::move(*ObjLayer);
+
+  // Leave only the entries of JIT'd code valid indirect call targets where
+  // Control Flow Guard checks them.
+  if (TT.isOSWindows()) {
+    if (auto *OLL = dyn_cast<ObjectLinkingLayer>(ObjLinkingLayer.get())) {
+      auto P = CallTargetRestrictionPlugin::Create(*ES);
+      if (!P) {
+        Err = P.takeError();
+        return;
+      }
+      if (*P)
+        OLL->addPlugin(std::move(*P));
+      else
+        LLVM_DEBUG(dbgs() << "Executor does not restrict call targets.\n");
+    } else if (auto *RTDyldLayer =
+                   dyn_cast<RTDyldObjectLinkingLayer>(ObjLinkingLayer.get())) {
+      CallTargetRestrictor =
+          std::make_unique<CallTargetRestrictionListener>(*ES);
+      RTDyldLayer->registerJITEventListener(*CallTargetRestrictor);
+    }
+  }
+
   ObjTransformLayer =
       std::make_unique<ObjectTransformLayer>(*ES, *ObjLinkingLayer);
 

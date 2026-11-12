@@ -13,6 +13,7 @@
 #ifndef LLVM_SUPPORT_MEMORY_H
 #define LLVM_SUPPORT_MEMORY_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/DataTypes.h"
 #include <system_error>
@@ -127,6 +128,16 @@ namespace sys {
     /// Set memory protection state.
     LLVM_ABI static std::error_code
     protectMappedMemory(const MemoryBlock &Block, unsigned Flags);
+
+    /// Where the process enforces Control Flow Guard, restricts the valid
+    /// targets of indirect calls into the executable memory \p Block to the
+    /// sorted \p Entries. CFG keeps one state per 16-byte granule, so a
+    /// granule that holds an entry other than at its start, or that \p Block
+    /// covers only in part, keeps its targets. It must follow the last change
+    /// to the block's protection, which makes every address in it a target
+    /// again.
+    LLVM_ABI static std::error_code
+    restrictCallTargets(const MemoryBlock &Block, ArrayRef<uintptr_t> Entries);
 
     /// InvalidateInstructionCache - Before the JIT can run a block of code
     /// that has been emitted it must invalidate the instruction cache on some

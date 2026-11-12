@@ -6,15 +6,21 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "OrcTestCommon.h"
 #include "llvm/ExecutionEngine/ExecutionEngine.h"
+#include "llvm/ExecutionEngine/Orc/AbsoluteSymbols.h"
+#include "llvm/ExecutionEngine/Orc/CallTargetRestrictionPlugin.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
-#include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/LLVMContext.h"
+#include "llvm/IRReader/IRReader.h"
+#include "llvm/Object/COFF.h"
+#include "llvm/Support/SourceMgr.h"
 #include "gtest/gtest.h"
+#include <set>
 #include <string>
 
 using namespace llvm;
@@ -296,6 +302,158 @@ TEST(RTDyldObjectLinkingLayerTest, TestMemoryBufferNamePropagation) {
     ES.reportError(std::move(Err));
 
   EXPECT_TRUE(ObjectIdentifer.find(ModuleName) != std::string::npos);
+}
+
+void external() {}
+
+// The listeners see an object before its symbols are published, and the
+// memory each section takes includes the stubs RuntimeDyld places after it.
+TEST(RTDyldObjectLinkingLayerTest, NotifyObjectLoadedBeforePublishing) {
+  OrcNativeTarget::initialize();
+  std::unique_ptr<TargetMachine> TM(EngineBuilder().selectTarget(
+      Triple("x86_64-pc-windows-msvc"), "", "", SmallVector<std::string, 1>()));
+  if (!TM)
+    GTEST_SKIP();
+
+  LLVMContext Ctx;
+  SMDiagnostic Diag;
+  std::unique_ptr<Module> M = parseIR(MemoryBufferRef(R"(
+      declare void @external()
+      define void @f() {
+        call void @external()
+        ret void
+      })",
+                                                      "m"),
+                                      Diag, Ctx);
+  ExecutionSession ES(std::make_unique<UnsupportedExecutorProcessControl>());
+  JITDylib &JD = ES.createBareJITDylib("main");
+  cantFail(JD.define(absoluteSymbols(
+      {{ES.intern("external"),
+        {ExecutorAddr::fromPtr(&external), JITSymbolFlags::Exported}}})));
+  RTDyldObjectLinkingLayer ObjLayer(ES, [](const MemoryBuffer &) {
+    return std::make_unique<SectionMemoryManager>();
+  });
+  ObjLayer.setOverrideObjectFlagsWithResponsibilityFlags(true);
+
+  struct Listener : JITEventListener {
+    Listener(ExecutionSession &ES, JITDylib &JD) : ES(ES), JD(JD) {}
+    void notifyObjectLoaded(ObjectKey K, const object::ObjectFile &Obj,
+                            const RuntimeDyld::LoadedObjectInfo &L) override {
+      ES.lookup(
+          LookupKind::Static, makeJITDylibSearchOrder(&JD),
+          SymbolLookupSet(ES.intern("f")), SymbolState::Ready,
+          [this](Expected<SymbolMap> R) {
+            Found = !cantFail(std::move(R)).empty();
+          },
+          NoDependenciesToRegister);
+      FoundWhenLoaded = Found;
+      for (const object::SectionRef &Sec : Obj.sections())
+        if (Sec.isText())
+          StubSize = L.getSectionAllocationSize(Sec) - Sec.getSize();
+    }
+    ExecutionSession &ES;
+    JITDylib &JD;
+    bool Found = false, FoundWhenLoaded = false;
+    uint64_t StubSize = 0;
+  } L(ES, JD);
+  ObjLayer.registerJITEventListener(L);
+  cantFail(ObjLayer.add(JD, cantFail(SimpleCompiler(*TM)(*M))));
+
+  // With its dependency ready, f is ready, and found, once published.
+  cantFail(ES.lookup({&JD}, "external"));
+  cantFail(ES.lookup({&JD}, "f"));
+  EXPECT_FALSE(L.FoundWhenLoaded);
+  EXPECT_TRUE(L.Found);
+  EXPECT_GT(L.StubSize, 0U);
+  cantFail(ES.endSession());
+}
+
+// The call targets of the code RuntimeDyld loads: each code section with its
+// stubs, and as entries its global functions and the functions its
+// relocations name, an i386 REL32 and unwind data aside, or, if it was built
+// with Control Flow Guard, those its .gfids$y names.
+TEST(RTDyldObjectLinkingLayerTest, GetCallTargets) {
+  OrcNativeTarget::initialize();
+  auto SelectTarget = [](StringRef TT) {
+    return std::unique_ptr<TargetMachine>(EngineBuilder().selectTarget(
+        Triple(TT), "", "", SmallVector<std::string, 1>()));
+  };
+  if (!SelectTarget("x86_64-pc-windows-msvc"))
+    GTEST_SKIP();
+
+  struct NoResolver : JITSymbolResolver {
+    void lookup(const LookupSet &, OnResolvedFunction OnResolved) override {
+      OnResolved(LookupResult());
+    }
+    Expected<LookupSet> getResponsibilitySet(const LookupSet &) override {
+      return LookupSet();
+    }
+  };
+
+  auto Targets = [&](StringRef TT, StringRef Extra) {
+    LLVMContext Ctx;
+    SMDiagnostic Diag;
+    std::string IR = (R"(
+      declare void @external()
+      define void @f() {
+        call void @external()
+        call void @called()
+        ret void
+      }
+      define internal void @called() { ret void }
+      define internal void @listed() { ret void }
+      define internal void @unnamed() { ret void }
+    )" + Extra)
+                         .str();
+    std::unique_ptr<Module> M = parseIR(MemoryBufferRef(IR, "m"), Diag, Ctx);
+    M->setTargetTriple(Triple(TT));
+    std::unique_ptr<MemoryBuffer> Obj =
+        cantFail(SimpleCompiler(*SelectTarget(TT))(*M));
+    auto COFFObj = cantFail(object::ObjectFile::createCOFFObjectFile(*Obj));
+    SectionMemoryManager MemMgr;
+    NoResolver Resolver;
+    RuntimeDyld Dyld(MemMgr, Resolver);
+    auto L = Dyld.loadObject(*COFFObj);
+    SmallVector<sys::MemoryBlock> Code;
+    std::vector<uintptr_t> Entries;
+    cantFail(getCallTargets(*cast<object::COFFObjectFile>(COFFObj.get()), *L,
+                            Code, Entries));
+
+    // The code includes its stubs, and the entries lie in its contents.
+    std::set<std::string> Names;
+    EXPECT_EQ(Code.size(), 1U);
+    for (const object::SectionRef &Sec : COFFObj->sections()) {
+      if (!Sec.isText())
+        continue;
+      uint64_t Base = L->getSectionLoadAddress(Sec);
+      EXPECT_EQ(reinterpret_cast<uintptr_t>(Code[0].base()), Base);
+      EXPECT_GT(Code[0].allocatedSize(), Sec.getSize());
+      for (uintptr_t E : Entries)
+        EXPECT_TRUE(E >= Base && E < Base + Sec.getSize());
+      for (const object::SymbolRef &Sym : COFFObj->symbols())
+        if (cantFail(Sym.getType()) == object::SymbolRef::ST_Function &&
+            !(cantFail(Sym.getFlags()) & object::SymbolRef::SF_Undefined) &&
+            llvm::is_contained(Entries, Base + cantFail(Sym.getValue())))
+          Names.insert(cantFail(Sym.getName()).str());
+    }
+    return Names;
+  };
+
+  using Names = std::set<std::string>;
+  StringRef TakesListed = "@p = global ptr @listed\n";
+  StringRef Unwinds = R"(
+      module asm ".section .pdata,\22dr\22"
+      module asm ".rva unnamed")";
+  StringRef GuardCF = R"(
+      !llvm.module.flags = !{!0}
+      !0 = !{i32 2, !"cfguard", i32 2})";
+  EXPECT_EQ(Targets("x86_64-pc-windows-msvc", (TakesListed + Unwinds).str()),
+            (Names{"called", "f", "listed"}));
+  EXPECT_EQ(Targets("x86_64-pc-windows-msvc", (TakesListed + GuardCF).str()),
+            (Names{"f", "listed"}));
+  EXPECT_EQ(Targets("x86_64-pc-windows-msvc", GuardCF), (Names{"f"}));
+  EXPECT_EQ(Targets("i686-pc-windows-msvc", TakesListed),
+            (Names{"_f", "_listed"}));
 }
 
 } // end anonymous namespace

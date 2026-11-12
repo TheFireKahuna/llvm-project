@@ -378,22 +378,26 @@ void RTDyldObjectLinkingLayer::onObjEmit(
     SDG.Symbols.insert(Sym);
   SDG.Dependencies = std::move(*Deps);
 
-  if (auto Err = R.notifyEmitted(SDG)) {
-    getExecutionSession().reportError(std::move(Err));
-    R.failMaterialization();
-    return;
-  }
-
   std::unique_ptr<object::ObjectFile> Obj;
   std::unique_ptr<MemoryBuffer> ObjBuffer;
   std::tie(Obj, ObjBuffer) = O.takeBinary();
 
-  // Run EventListener notifyLoaded callbacks.
+  // Run EventListener notifyLoaded callbacks before the symbols are published,
+  // so that a listener can act on the code before anything calls it.
   {
     std::lock_guard<std::mutex> Lock(RTDyldLayerMutex);
     for (auto *L : EventListeners)
       L->notifyObjectLoaded(pointerToJITTargetAddress(MemMgr.get()), *Obj,
                             *LoadedObjInfo);
+  }
+
+  if (auto Err = R.notifyEmitted(SDG)) {
+    getExecutionSession().reportError(std::move(Err));
+    R.failMaterialization();
+    std::lock_guard<std::mutex> Lock(RTDyldLayerMutex);
+    for (auto *L : EventListeners)
+      L->notifyFreeingObject(pointerToJITTargetAddress(MemMgr.get()));
+    return;
   }
 
   if (NotifyEmitted)

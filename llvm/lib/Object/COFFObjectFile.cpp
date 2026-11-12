@@ -2489,3 +2489,13 @@ ResourceSectionRef::getContents(const coff_resource_data_entry &Entry) {
                              "address not found in image");
   }
 }
+
+bool COFFObjectFile::isGuardCFAddressTakingSection(StringRef SectionName) {
+  return SectionName.split('$').first != ".pdata" &&
+         !SectionName.starts_with(".debug");
+}
+
+bool COFFObjectFile::isGuardCFAddressTakingRelocation(uint16_t Type) const {
+  return getMachine() != COFF::IMAGE_FILE_MACHINE_I386 ||
+         Type != COFF::IMAGE_REL_I386_REL32;
+}

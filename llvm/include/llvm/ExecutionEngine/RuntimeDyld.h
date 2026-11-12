@@ -82,6 +82,10 @@ public:
     uint64_t
     getSectionLoadAddress(const object::SectionRef &Sec) const override;
 
+    /// Returns the size of the memory the section was loaded into, which
+    /// includes the stubs that follow its contents, or 0 if it was not loaded.
+    uint64_t getSectionAllocationSize(const object::SectionRef &Sec) const;
+
   protected:
     virtual void anchor();
 

@@ -11,6 +11,8 @@
 //===----------------------------------------------------------------------===//
 #include "COFFLinkGraphBuilder.h"
 
+#include "llvm/Support/Endian.h"
+
 #include <memory>
 
 #define DEBUG_TYPE "jitlink"
@@ -79,6 +81,16 @@ Expected<std::unique_ptr<LinkGraph>> COFFLinkGraphBuilder::buildGraph() {
 
   if (auto Err = graphifySymbols())
     return std::move(Err);
+
+  // .gfids$y names the functions whose address the object takes by symbol
+  // index, which only the object's symbol table resolves: keep each as an
+  // edge.
+  if (Section *GFIDs = G->findSectionByName(".gfids$y"))
+    for (Block *B : GFIDs->blocks())
+      for (size_t I = 0; I + 4 <= B->getSize(); I += 4)
+        if (Symbol *Sym = getGraphSymbol(
+                support::endian::read32le(B->getContent().data() + I)))
+          B->addEdge(Edge::KeepAlive, I, *Sym, 0);
 
   if (auto Err = addRelocations())
     return std::move(Err);

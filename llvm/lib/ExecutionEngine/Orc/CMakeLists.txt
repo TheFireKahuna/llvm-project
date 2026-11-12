@@ -9,6 +9,7 @@ endif()
 add_llvm_component_library(LLVMOrcJIT
   AbsoluteSymbols.cpp
   BacktraceTools.cpp
+  CallTargetRestrictionPlugin.cpp
   COFF.cpp
   COFFAutoImportGenerator.cpp
   COFFVCRuntimeSupport.cpp

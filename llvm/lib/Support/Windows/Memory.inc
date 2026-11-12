@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Process.h"
@@ -183,6 +184,60 @@ std::error_code Memory::protectMappedMemory(const MemoryBlock &M,
   if (Flags & MF_EXEC)
     Memory::InvalidateInstructionCache(M.Address, M.AllocatedSize);
 
+  return std::error_code();
+}
+
+std::error_code Memory::restrictCallTargets(const MemoryBlock &M,
+                                            ArrayRef<uintptr_t> Entries) {
+  assert(llvm::is_sorted(Entries) && "Entries must be sorted");
+  // These functions are newer than the compile-time floor that _WIN32_WINNT
+  // sets, so they are looked up.
+  typedef BOOL(WINAPI * GetProcessMitigationPolicy_t)(
+      HANDLE, PROCESS_MITIGATION_POLICY, PVOID, SIZE_T);
+  typedef BOOL(WINAPI * SetProcessValidCallTargets_t)(
+      HANDLE, PVOID, SIZE_T, ULONG, PCFG_CALL_TARGET_INFO);
+
+  // Only a process that enforces Control Flow Guard checks call targets.
+  static auto SetValidCallTargets = []() -> SetProcessValidCallTargets_t {
+    HMODULE KernelBase = windows::loadSystemModuleSecure(L"kernelbase.dll");
+    if (!KernelBase)
+      return nullptr;
+    auto GetPolicy = (GetProcessMitigationPolicy_t)(void *)::GetProcAddress(
+        KernelBase, "GetProcessMitigationPolicy");
+    PROCESS_MITIGATION_CONTROL_FLOW_GUARD_POLICY Policy = {};
+    if (!GetPolicy ||
+        !GetPolicy(::GetCurrentProcess(), ProcessControlFlowGuardPolicy,
+                   &Policy, sizeof(Policy)) ||
+        !Policy.EnableControlFlowGuard)
+      return nullptr;
+    return (SetProcessValidCallTargets_t)(void *)::GetProcAddress(
+        KernelBase, "SetProcessValidCallTargets");
+  }();
+  if (!SetValidCallTargets)
+    return std::error_code();
+
+  // The call takes whole pages and leaves the granules it is not given alone.
+  // A granule is given if the block covers it whole and it holds no entry or
+  // one entry at its start.
+  uintptr_t PageSize = Process::getPageSizeEstimate();
+  uintptr_t Start = reinterpret_cast<uintptr_t>(M.Address);
+  uintptr_t End = Start + M.AllocatedSize;
+  uintptr_t Base = alignDown(Start, PageSize);
+  std::vector<CFG_CALL_TARGET_INFO> Targets;
+  uintptr_t Granule = alignTo(Start, 16);
+  const uintptr_t *E = llvm::lower_bound(Entries, Granule);
+  for (; Granule + 16 <= End; Granule += 16) {
+    const uintptr_t *Next = std::lower_bound(E, Entries.end(), Granule + 16);
+    if (E == Next || (*E == Granule && Next[-1] == Granule))
+      Targets.push_back(
+          {Granule - Base, E != Next ? ULONG_PTR(CFG_CALL_TARGET_VALID) : 0});
+    E = Next;
+  }
+  if (!Targets.empty() && !SetValidCallTargets(::GetCurrentProcess(),
+                                               reinterpret_cast<void *>(Base),
+                                               alignTo(End - Base, PageSize),
+                                               Targets.size(), Targets.data()))
+    return mapWindowsError(::GetLastError());
   return std::error_code();
 }
 

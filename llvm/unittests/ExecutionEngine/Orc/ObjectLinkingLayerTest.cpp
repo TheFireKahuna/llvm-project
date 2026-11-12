@@ -7,14 +7,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ExecutionEngine/Orc/ObjectLinkingLayer.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
 #include "llvm/ExecutionEngine/JITLink/JITLinkMemoryManager.h"
 #include "llvm/ExecutionEngine/JITLink/x86_64.h"
 #include "llvm/ExecutionEngine/JITSymbol.h"
+#include "llvm/ExecutionEngine/Orc/CallTargetRestrictionPlugin.h"
 #include "llvm/ExecutionEngine/Orc/EPCDynamicLibrarySearchGenerator.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
 #include "llvm/ExecutionEngine/Orc/Shared/TargetProcessControlTypes.h"
+#include "llvm/ExecutionEngine/Orc/Shared/WrapperFunctionUtils.h"
 #include "llvm/ExecutionEngine/Orc/SymbolStringPool.h"
 #include "llvm/Testing/Support/Error.h"
 #include "gtest/gtest.h"
@@ -283,6 +286,91 @@ TEST_F(ObjectLinkingLayerTest, AddAndRemovePlugins) {
 
   P.reset();
   EXPECT_TRUE(PluginDestroyed);
+}
+
+std::vector<
+    std::pair<std::vector<ExecutorAddrRange>, std::vector<ExecutorAddr>>>
+    CallTargetRestrictions;
+
+shared::CWrapperFunctionBuffer recordCallTargetRestriction(const char *ArgData,
+                                                           size_t ArgSize) {
+  using namespace shared;
+  return WrapperFunction<SPSError(SPSSequence<SPSExecutorAddrRange>,
+                                  SPSSequence<SPSExecutorAddr>)>::
+      handle(ArgData, ArgSize,
+             [](std::vector<ExecutorAddrRange> Code,
+                std::vector<ExecutorAddr> Entries) {
+               CallTargetRestrictions.push_back(
+                   {std::move(Code), std::move(Entries)});
+               return Error::success();
+             })
+          .release();
+}
+
+// A graph's code is restricted to its global symbols and the functions its
+// edges name outside unwind data and debug info, or, if its object was built
+// with Control Flow Guard, the functions its .gfids$y names.
+TEST_F(ObjectLinkingLayerTest, CallTargetRestriction) {
+  ObjLinkingLayer.addPlugin(std::make_unique<CallTargetRestrictionPlugin>(
+      ExecutorAddr::fromPtr(&recordCallTargetRestriction)));
+  static const char Zeros[64] = {};
+  auto Link = [&](StringRef Global, bool GuardCF, bool WithGFIDs) {
+    auto G = std::make_unique<LinkGraph>(
+        "foo", ES.getSymbolStringPool(), Triple("x86_64-pc-windows-msvc"), 8,
+        SubtargetFeatures(), x86_64::getEdgeKindName);
+    auto Add = [&](StringRef SecName, MemProt Prot, size_t Size) -> Block & {
+      return G->createContentBlock(G->createSection(SecName, Prot),
+                                   ArrayRef(Zeros, Size), ExecutorAddr(), 16,
+                                   0);
+    };
+    Block &Text = Add(".text", MemProt::Read | MemProt::Exec, 64);
+    G->addDefinedSymbol(Text, 0, Global, 16, Linkage::Strong, Scope::Default,
+                        true, false);
+    Symbol &Named = G->addDefinedSymbol(Text, 16, "named", 16, Linkage::Strong,
+                                        Scope::Local, true, false);
+    Symbol &Listed = G->addDefinedSymbol(
+        Text, 32, "listed", 16, Linkage::Strong, Scope::Local, true, false);
+    Symbol &Debug = G->addDefinedSymbol(Text, 48, "debug", 16, Linkage::Strong,
+                                        Scope::Local, true, false);
+    Block &Data = Add(".data", MemProt::Read | MemProt::Write, 8);
+    G->addAnonymousSymbol(Data, 0, 8, false, true);
+    Data.addEdge(x86_64::Pointer64, 0, Named, 0);
+    Block &DebugInfo = Add(".debug$S", MemProt::Read, 8);
+    G->addAnonymousSymbol(DebugInfo, 0, 8, false, true);
+    DebugInfo.addEdge(x86_64::Pointer64, 0, Debug, 0);
+    Block &Unwind = Add(".pdata", MemProt::Read, 8);
+    G->addAnonymousSymbol(Unwind, 0, 8, false, true);
+    Unwind.addEdge(x86_64::Pointer64, 0, Debug, 0);
+    if (GuardCF)
+      G->addAbsoluteSymbol("@feat.00", ExecutorAddr(COFF::Feat00Flags::GuardCF),
+                           0, Linkage::Strong, Scope::Local, false);
+    if (WithGFIDs)
+      Add(".gfids$y", MemProt::Read, 4).addEdge(Edge::KeepAlive, 0, Listed, 0);
+    CallTargetRestrictions.clear();
+    EXPECT_THAT_ERROR(ObjLinkingLayer.add(JD, std::move(G)), Succeeded());
+    ExecutorAddr Base = cantFail(ES.lookup(&JD, Global)).getAddress();
+    std::vector<ExecutorAddrDiff> Offsets;
+    for (auto &[Code, Entries] : CallTargetRestrictions) {
+      EXPECT_EQ(Code,
+                std::vector<ExecutorAddrRange>({{Base, ExecutorAddrDiff(64)}}));
+      for (ExecutorAddr A : Entries)
+        if (Code[0].contains(A))
+          Offsets.push_back(A - Base);
+    }
+    return Offsets;
+  };
+
+  EXPECT_EQ(Link("relocated", false, false),
+            (std::vector<ExecutorAddrDiff>{0, 16}));
+  EXPECT_EQ(Link("listed", true, true), (std::vector<ExecutorAddrDiff>{0, 32}));
+  EXPECT_EQ(Link("unlisted", true, false), (std::vector<ExecutorAddrDiff>{0}));
+}
+
+// An executor that does not offer the action runs its code unrestricted.
+TEST_F(ObjectLinkingLayerTest, CallTargetRestrictionNotOffered) {
+  auto P = CallTargetRestrictionPlugin::Create(ES);
+  ASSERT_THAT_EXPECTED(P, Succeeded());
+  EXPECT_EQ(*P, nullptr);
 }
 
 TEST(ObjectLinkingLayerSearchGeneratorTest, AbsoluteSymbolsObjectLayer) {

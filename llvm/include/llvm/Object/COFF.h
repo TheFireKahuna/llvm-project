@@ -1045,6 +1045,17 @@ public:
 
   StringRef getRelocationTypeName(uint16_t Type) const;
 
+  /// Returns true if the relocations in section \p SectionName may take the
+  /// address of the functions they name, which Control Flow Guard then lists
+  /// as indirect call targets for an object without .gfids$y. Unwind data and
+  /// debug info only describe the functions they name.
+  static bool isGuardCFAddressTakingSection(StringRef SectionName);
+
+  /// Returns true if a relocation of \p Type may take the address of the
+  /// function it names, as isGuardCFAddressTakingSection counts it. i386's
+  /// REL32 only branches; x86-64's also computes addresses.
+  bool isGuardCFAddressTakingRelocation(uint16_t Type) const;
+
 protected:
   void moveSymbolNext(DataRefImpl &Symb) const override;
   Expected<StringRef> getSymbolName(DataRefImpl Symb) const override;
