@@ -1245,6 +1245,46 @@ Error readNativeFileToEOF(file_t FileHandle, SmallVectorImpl<char> &Buffer,
   }
 }
 
+template <typename T>
+static std::error_code remove_directories_impl(const T &Entry,
+                                               bool IgnoreErrors) {
+  std::error_code EC;
+  directory_iterator Begin(Entry, EC, false);
+  directory_iterator End;
+  while (Begin != End) {
+    auto &Item = *Begin;
+    ErrorOr<basic_file_status> st = Item.status();
+    if (st) {
+      if (is_directory(*st)) {
+        EC = remove_directories_impl(Item, IgnoreErrors);
+        if (EC && !IgnoreErrors)
+          return EC;
+      }
+
+      EC = fs::remove(Item.path(), true);
+      if (EC && !IgnoreErrors)
+        return EC;
+    } else if (!IgnoreErrors) {
+      return st.getError();
+    }
+
+    Begin.increment(EC);
+    if (EC && !IgnoreErrors)
+      return EC;
+  }
+  return std::error_code();
+}
+
+std::error_code remove_directories(const Twine &path, bool IgnoreErrors) {
+  auto EC = remove_directories_impl(path, IgnoreErrors);
+  if (EC && !IgnoreErrors)
+    return EC;
+  EC = fs::remove(path, true);
+  if (EC && !IgnoreErrors)
+    return EC;
+  return std::error_code();
+}
+
 } // end namespace fs
 } // end namespace sys
 } // end namespace llvm
@@ -1326,15 +1366,13 @@ Error TempFile::keep(const Twine &Name) {
     }
   }
 
-  // If we can't rename or copy, discard the temporary file.
+  // If we can't rename or copy, discard the temporary file. Delete-on-close
+  // was withdrawn above and cannot be requested again on an open handle, so
+  // remove it by name.
   if (RenameEC)
     ShouldDelete = true;
-  if (ShouldDelete) {
-    if (!RemoveOnClose)
-      setDeleteDisposition(H, true);
-    else
-      remove(TmpName);
-  }
+  if (ShouldDelete)
+    remove(TmpName);
 #else
   std::error_code RenameEC = fs::rename(TmpName, Name);
   if (RenameEC) {
@@ -1382,18 +1420,38 @@ Expected<TempFile> TempFile::create(const Twine &Model, unsigned Mode,
   int FD;
   SmallString<128> ResultPath;
   if (std::error_code EC =
-          createUniqueFile(Model, FD, ResultPath, OF_Delete | ExtraFlags, Mode))
+          createUniqueFile(Model, FD, ResultPath,
+                           OF_Delete | OF_DeleteOnClose | ExtraFlags, Mode))
     return errorCodeToError(EC);
 
-  TempFile Ret(ResultPath, FD);
 #ifdef _WIN32
   auto H = reinterpret_cast<HANDLE>(_get_osfhandle(FD));
-  bool SetSignalHandler = false;
-  if (std::error_code EC = setDeleteDisposition(H, true)) {
-    Ret.RemoveOnClose = true;
-    SetSignalHandler = true;
+  TempRemoval Removal;
+  if (std::error_code EC = setDeleteDisposition(H, true, &Removal)) {
+    // A file opened delete-on-close whose deletion could not be withdrawn
+    // would be deleted even if kept, so fail; closing it deletes it.
+    // Otherwise, the file is removed by name.
+    if (haveDispositionEx()) {
+      close(FD);
+      return errorCodeToError(EC);
+    }
+    Removal = TempRemoval::ByName;
   }
+  if (Removal == TempRemoval::Reopen) {
+    // The volume cannot withdraw a delete-on-close, so this file could never
+    // be kept. Closing it deletes it; create another without delete-on-close
+    // and remove that one by name.
+    close(FD);
+    if (std::error_code EC = createUniqueFile(Model, FD, ResultPath,
+                                              OF_Delete | ExtraFlags, Mode))
+      return errorCodeToError(EC);
+    Removal = TempRemoval::ByName;
+  }
+  TempFile Ret(ResultPath, FD);
+  Ret.RemoveOnClose = Removal == TempRemoval::ByName;
+  bool SetSignalHandler = Ret.RemoveOnClose;
 #else
+  TempFile Ret(ResultPath, FD);
   bool SetSignalHandler = true;
 #endif
   if (SetSignalHandler && sys::RemoveFileOnSignal(ResultPath)) {

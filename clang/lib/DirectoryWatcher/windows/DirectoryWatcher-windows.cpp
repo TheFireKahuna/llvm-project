@@ -272,7 +272,7 @@ clang::DirectoryWatcher::create(StringRef Path,
         "DirectoryWatcher::create can not accept a filepath.");
 
   SmallVector<wchar_t, MAX_PATH> WidePath;
-  if (sys::windows::UTF8ToUTF16(Path, WidePath))
+  if (sys::windows::widenPath(Path, WidePath))
     return llvm::make_error<llvm::StringError>(
         "unable to convert path to UTF-16", llvm::inconvertibleErrorCode());
 

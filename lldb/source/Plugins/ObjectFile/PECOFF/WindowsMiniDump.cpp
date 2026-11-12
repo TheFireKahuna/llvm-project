@@ -11,10 +11,10 @@
 
 #include "WindowsMiniDump.h"
 #include "lldb/Utility/FileSpec.h"
-#include "llvm/Support/ConvertUTF.h"
 
 #ifdef _WIN32
 #include "lldb/Host/windows/windows.h"
+#include "llvm/Support/Windows/WindowsSupport.h"
 #include <dbghelp.h>
 #endif
 
@@ -29,18 +29,13 @@ bool SaveMiniDump(const lldb::ProcessSP &process_sp,
   const auto &outfile = outfileSpec.value();
   HANDLE process_handle = ::OpenProcess(
       PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, process_sp->GetID());
-  const std::string file_name = outfile.GetPath();
-  std::wstring wide_name;
-  wide_name.resize(file_name.size() + 1);
-  char *result_ptr = reinterpret_cast<char *>(&wide_name[0]);
-  const llvm::UTF8 *error_ptr = nullptr;
-  if (!llvm::ConvertUTF8toWide(sizeof(wchar_t), file_name, result_ptr,
-                               error_ptr)) {
+  llvm::SmallVector<wchar_t, MAX_PATH> wide_name;
+  if (llvm::sys::windows::widenPath(outfile.GetPath(), wide_name)) {
     error = Status::FromErrorString("cannot convert file name");
     return false;
   }
   HANDLE file_handle =
-      ::CreateFileW(wide_name.c_str(), GENERIC_WRITE, FILE_SHARE_READ, NULL,
+      ::CreateFileW(wide_name.data(), GENERIC_WRITE, FILE_SHARE_READ, NULL,
                     CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
   const auto result =
       ::MiniDumpWriteDump(process_handle, process_sp->GetID(), file_handle,

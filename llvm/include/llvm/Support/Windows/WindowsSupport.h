@@ -256,6 +256,11 @@ LLVM_ABI HMODULE loadSystemModuleSecure(LPCWSTR lpModuleName);
 /// components.
 LLVM_ABI std::error_code makeLongFormPath(const Twine &Path8,
                                           llvm::SmallVectorImpl<char> &Result8);
+
+/// Retrieves the UTF-8 path of the file that \p Module was loaded from, or of
+/// the program's executable if \p Module is null, whatever its length.
+LLVM_ABI std::error_code getModuleFileName(HMODULE Module,
+                                           llvm::SmallVectorImpl<char> &Path8);
 } // end namespace windows
 } // end namespace sys
 } // end namespace llvm.

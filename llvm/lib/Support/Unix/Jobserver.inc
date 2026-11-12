@@ -31,9 +31,7 @@ bool areFdsValid(int ReadFD, int WriteFD) {
 /// The constructor sets up the client based on the provided configuration.
 /// For pipe-based jobservers, it duplicates the inherited file descriptors,
 /// sets them to close-on-exec, and makes the read descriptor non-blocking.
-/// For FIFO-based jobservers, it opens the named pipe. After setup, it drains
-/// all available tokens from the jobserver to determine the total number of
-/// available jobs (`NumJobs`), then immediately releases them back.
+/// For FIFO-based jobservers, it opens the named pipe.
 JobserverClientImpl::JobserverClientImpl(const JobserverConfig &Config) {
   switch (Config.TheMode) {
   case JobserverConfig::PosixPipe: {
@@ -82,19 +80,6 @@ JobserverClientImpl::JobserverClientImpl(const JobserverConfig &Config) {
   }
 
   IsInitialized = true;
-  // Determine the total number of jobs by acquiring all available slots and
-  // then immediately releasing them.
-  SmallVector<JobSlot, 8> Slots;
-  while (true) {
-    auto S = tryAcquire();
-    if (!S.isValid())
-      break;
-    Slots.push_back(std::move(S));
-  }
-  NumJobs = Slots.size();
-  assert(NumJobs >= 1 && "Invalid number of jobs");
-  for (auto &S : Slots)
-    release(std::move(S));
 }
 
 /// The destructor closes any open file descriptors.

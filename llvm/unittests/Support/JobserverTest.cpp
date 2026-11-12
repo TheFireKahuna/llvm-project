@@ -12,6 +12,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Jobserver.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/FileUtilities.h"
@@ -521,6 +522,33 @@ TEST_F(JobserverStrategyTest, ParallelSortIsLimited_SubprocessChild) {
 }
 
 #endif // LLVM_ENABLE_THREADS
+
+#elif defined(_WIN32)
+
+TEST_F(JobserverClientTest, WindowsClientSemaphore) {
+  std::string Name =
+      ("llvm-jobserver-test-" + Twine(::GetCurrentProcessId())).str();
+  HANDLE Semaphore = ::CreateSemaphoreA(nullptr, 2, 2, Name.c_str());
+  ASSERT_NE(Semaphore, nullptr);
+  llvm::scope_exit CloseSemaphore([&] { ::CloseHandle(Semaphore); });
+  std::string Makeflags = "-j3 --jobserver-auth=" + Name;
+  ScopedEnvironment Env("MAKEFLAGS", Makeflags.c_str());
+
+  JobserverClient *Client = JobserverClient::getInstance();
+  ASSERT_NE(Client, nullptr);
+  // The implicit slot and the semaphore's two, which counting gave back.
+  EXPECT_EQ(Client->getNumJobs(), 3u);
+  JobSlot S1 = Client->tryAcquire();
+  JobSlot S2 = Client->tryAcquire();
+  JobSlot S3 = Client->tryAcquire();
+  EXPECT_TRUE(S1.isImplicit());
+  EXPECT_TRUE(S2.isExplicit());
+  EXPECT_TRUE(S3.isExplicit());
+  EXPECT_FALSE(Client->tryAcquire().isValid());
+  Client->release(std::move(S3));
+  Client->release(std::move(S2));
+  Client->release(std::move(S1));
+}
 
 #endif // defined(LLVM_ON_UNIX)
 

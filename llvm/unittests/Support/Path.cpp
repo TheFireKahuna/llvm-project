@@ -21,6 +21,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/MemoryBuffer.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Host.h"
 #include "llvm/TargetParser/Triple.h"
@@ -687,6 +688,7 @@ protected:
   void TearDown() override { ASSERT_NO_ERROR(fs::remove(TestDirectory.str())); }
 };
 
+
 TEST_F(FileSystemTest, Unique) {
   // Create a temp file.
   int FileDescriptor;
@@ -699,6 +701,11 @@ TEST_F(FileSystemTest, Unique) {
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath), F1));
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath), F2));
   ASSERT_EQ(F1, F2);
+
+  // Querying the file through a descriptor gives the same unique id.
+  fs::file_status FDStatus;
+  ASSERT_NO_ERROR(fs::status(FileDescriptor, FDStatus));
+  ASSERT_EQ(FDStatus.getUniqueID(), F1);
 
   // Different files should return different unique ids.
   int FileDescriptor2;
@@ -713,16 +720,12 @@ TEST_F(FileSystemTest, Unique) {
 
   ASSERT_NO_ERROR(fs::remove(Twine(TempPath2)));
 
-#ifndef _WIN32
   // Two paths representing the same file on disk should still provide the
   // same unique id.  We can test this by making a hard link.
-  // FIXME: Our implementation of getUniqueID on Windows doesn't consider hard
-  // links to be the same file.
-  ASSERT_NO_ERROR(fs::create_link(Twine(TempPath), Twine(TempPath2)));
+  ASSERT_NO_ERROR(fs::create_hard_link(Twine(TempPath), Twine(TempPath2)));
   fs::UniqueID D2;
   ASSERT_NO_ERROR(fs::getUniqueID(Twine(TempPath2), D2));
   ASSERT_EQ(D2, F1);
-#endif
 
   ::close(FileDescriptor);
 
@@ -931,6 +934,60 @@ TEST_F(FileSystemTest, ReadlinkNonExistent) {
             errc::no_such_file_or_directory);
 }
 
+TEST_F(FileSystemTest, StatusEmptyPath) {
+  // An empty name is not the current directory.
+  fs::file_status Status;
+  EXPECT_EQ(fs::status("", Status), errc::no_such_file_or_directory);
+  EXPECT_FALSE(fs::exists(""));
+  EXPECT_FALSE(fs::is_directory(""));
+}
+
+TEST_F(FileSystemTest, StatusTrailingSeparator) {
+  // A name followed by a separator must be a directory, as in POSIX.
+  SmallString<128> FilePath(TestDirectory);
+  path::append(FilePath, "file");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(FilePath, FD));
+  ::close(FD);
+
+  fs::file_status Status;
+  EXPECT_TRUE(fs::status(FilePath + "/", Status));
+  EXPECT_FALSE(fs::is_regular_file(FilePath + "/"));
+#ifdef _WIN32
+  EXPECT_TRUE(fs::status(FilePath + "\\", Status));
+#endif
+  ASSERT_NO_ERROR(fs::status(TestDirectory + "/", Status));
+  EXPECT_TRUE(fs::is_directory(Status));
+
+  ASSERT_NO_ERROR(fs::remove(FilePath));
+}
+
+#ifdef _WIN32
+TEST_F(FileSystemTest, StatusWin32Names) {
+  // status() reads a name as the Win32 layer does: a single trailing dot is
+  // dropped from every segment, and a reserved device name in the last one
+  // names the device.
+  SmallString<128> Dir(TestDirectory);
+  path::append(Dir, "d");
+  ASSERT_NO_ERROR(fs::create_directory(Dir));
+  SmallString<128> FilePath(Dir);
+  path::append(FilePath, "f");
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForWrite(FilePath, FD));
+  ::close(FD);
+
+  fs::file_status Status;
+  ASSERT_NO_ERROR(fs::status(TestDirectory + "\\d.\\f", Status));
+  EXPECT_TRUE(fs::is_regular_file(Status));
+  EXPECT_TRUE(fs::exists(TestDirectory + "\\d.\\f"));
+  EXPECT_TRUE(fs::exists(Dir + "\\NUL"));
+
+  ASSERT_NO_ERROR(fs::remove(FilePath));
+  ASSERT_NO_ERROR(fs::remove(Dir));
+}
+
+#endif
+
 TEST_F(FileSystemTest, ExpandTilde) {
   SmallString<64> Expected;
   SmallString<64> Actual;
@@ -1017,6 +1074,22 @@ TEST_F(FileSystemTest, TempFileDiscardDiscard) {
   ASSERT_FALSE(fs::exists(TestDirectory + "/keep"));
 }
 
+TEST_F(FileSystemTest, TempFileOpenByName) {
+  // A temporary can be opened and queried by name while it is in use.
+  auto TempFileOrError = fs::TempFile::create(TestDirectory + "/test-%%%%");
+  ASSERT_TRUE((bool)TempFileOrError);
+  fs::TempFile File = std::move(*TempFileOrError);
+  std::string TmpName = File.TmpName;
+  fs::file_status Status;
+  ASSERT_NO_ERROR(fs::status(TmpName, Status));
+  EXPECT_TRUE(fs::is_regular_file(Status));
+  int FD;
+  ASSERT_NO_ERROR(fs::openFileForRead(TmpName, FD));
+  ::close(FD);
+  ASSERT_FALSE((bool)File.discard());
+  ASSERT_FALSE(fs::exists(TmpName));
+}
+
 TEST_F(FileSystemTest, TempFiles) {
   // Create a temp file.
   int FileDescriptor;
@@ -1061,17 +1134,13 @@ TEST_F(FileSystemTest, TempFiles) {
   FileRemover Cleanup3(TempPath3);
 
   // Create a hard link to Temp1.
-  ASSERT_NO_ERROR(fs::create_link(Twine(TempPath), Twine(TempPath2)));
-#ifndef _WIN32
-  // FIXME: Our implementation of equivalent() on Windows doesn't consider hard
-  // links to be the same file.
+  ASSERT_NO_ERROR(fs::create_hard_link(Twine(TempPath), Twine(TempPath2)));
   bool equal;
   ASSERT_NO_ERROR(fs::equivalent(Twine(TempPath), Twine(TempPath2), equal));
   EXPECT_TRUE(equal);
   ASSERT_NO_ERROR(fs::status(Twine(TempPath), A));
   ASSERT_NO_ERROR(fs::status(Twine(TempPath2), B));
   EXPECT_TRUE(fs::equivalent(A, B));
-#endif
 
   // Remove Temp1.
   ::close(FileDescriptor);
@@ -1409,6 +1478,48 @@ TEST_F(FileSystemTest, BrokenSymlinkDirectoryIteration) {
 #endif
 
 #ifdef _WIN32
+TEST_F(FileSystemTest, RemoveDirectoriesJunction) {
+  // A directory junction is a link like a symlink, and removing a tree that
+  // holds one must remove the link and leave the target's contents alone.
+  // Unlike a symlink, a junction can be created without privileges.
+  SmallString<128> Target(TestDirectory);
+  path::append(Target, "target");
+  ASSERT_NO_ERROR(fs::create_directories(Target));
+  SmallString<128> File(Target);
+  path::append(File, "file");
+  {
+    std::error_code EC;
+    raw_fd_ostream OS(File, EC);
+    ASSERT_NO_ERROR(EC);
+  }
+
+  SmallString<128> Tree(TestDirectory);
+  path::append(Tree, "tree");
+  ASSERT_NO_ERROR(fs::create_directories(Tree));
+  SmallString<128> Junction(Tree);
+  path::append(Junction, "junction");
+
+  ErrorOr<std::string> Cmd = sys::findProgramByName("cmd");
+  ASSERT_TRUE(bool(Cmd));
+  StringRef Args[] = {*Cmd, "/c", "mklink", "/j", Junction, Target};
+  std::optional<StringRef> Redirects[] = {std::nullopt, StringRef(),
+                                          StringRef()};
+  ASSERT_EQ(sys::ExecuteAndWait(*Cmd, Args, std::nullopt, Redirects), 0);
+
+  fs::file_status Status;
+  ASSERT_NO_ERROR(fs::status(Junction, Status, /*Follow=*/false));
+  EXPECT_EQ(Status.type(), fs::file_type::symlink_file);
+  ASSERT_NO_ERROR(fs::status(Junction, Status, /*Follow=*/true));
+  EXPECT_EQ(Status.type(), fs::file_type::directory_file);
+
+  ASSERT_NO_ERROR(fs::remove_directories(Tree));
+  EXPECT_FALSE(fs::exists(Tree));
+  EXPECT_TRUE(fs::exists(File));
+
+  ASSERT_NO_ERROR(fs::remove(File));
+  ASSERT_NO_ERROR(fs::remove(Target));
+}
+
 TEST_F(FileSystemTest, UTF8ToUTF16DirectoryIteration) {
   // The Windows filesystem support uses UTF-16 and converts paths from the
   // input UTF-8. The UTF-16 equivalent of the input path can be shorter in
@@ -1440,6 +1551,24 @@ TEST_F(FileSystemTest, UTF8ToUTF16DirectoryIteration) {
   ASSERT_NO_ERROR(fs::remove(Twine(RootDir)));
 }
 #endif
+
+// unlink(2) removes a file regardless of the file's own permissions, and on
+// Windows the read-only attribute prevents neither the file's removal nor its
+// directory's.
+TEST_F(FileSystemTest, RemoveReadOnlyFile) {
+  SmallString<128> Tree(TestDirectory), Path;
+  path::append(Tree, "tree");
+  for (bool WithDirectory : {false, true}) {
+    ASSERT_NO_ERROR(fs::create_directories(Tree));
+    (Path = Tree) += "/readonly.txt";
+    int FD;
+    ASSERT_NO_ERROR(fs::openFileForWrite(Path, FD, fs::CD_CreateNew));
+    ASSERT_EQ(close(FD), 0);
+    ASSERT_NO_ERROR(fs::setPermissions(Path, fs::all_read));
+    ASSERT_NO_ERROR(WithDirectory ? fs::remove_directories(Tree) : fs::remove(Path));
+    EXPECT_FALSE(fs::exists(WithDirectory ? Tree : Path));
+  }
+}
 
 TEST_F(FileSystemTest, Remove) {
   SmallString<64> BaseDir;
