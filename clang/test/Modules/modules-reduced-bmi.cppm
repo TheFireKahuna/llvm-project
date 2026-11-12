@@ -21,6 +21,20 @@
 //
 // RUN: %clang_cc1 -std=c++20 %t/b.cppm -fmodule-file=a=%t/a.pcm -fsyntax-only -verify
 // RUN: %clang_cc1 -std=c++20 %t/b.cppm -fmodule-file=a=%t/a.full.pcm -fsyntax-only -verify
+//
+// Module files are written relative to -working-directory like other outputs.
+// RUN: mkdir %t/wd
+// RUN: %clang_cc1 -std=c++20 %t/a.cppm -emit-reduced-module-interface \
+// RUN:     -working-directory %t/wd -o a.reduced.pcm
+// RUN: %clang_cc1 -std=c++20 %t/a.cppm -fexperimental-modules-reduced-bmi \
+// RUN:     -working-directory %t/wd -fmodule-output=a.pcm -emit-llvm -o a.ll
+// RUN: %clang_cc1 -std=c++20 %t/a.cppm -fexperimental-modules-reduced-bmi \
+// RUN:     -working-directory %t/wd -fmodule-output=b.pcm \
+// RUN:     -emit-module-interface -o a.full.pcm
+// RUN: diff %t/wd/a.reduced.pcm %t/wd/a.pcm
+// RUN: diff %t/wd/a.reduced.pcm %t/wd/b.pcm
+// RUN: %clang_cc1 -std=c++20 %t/b.cppm -fmodule-file=a=%t/wd/a.full.pcm \
+// RUN:     -fsyntax-only -verify
 
 //--- a.cppm
 export module a;

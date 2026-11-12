@@ -282,15 +282,23 @@ GenerateModuleInterfaceAction::CreateASTConsumer(CompilerInstance &CI,
 
   if (CI.getFrontendOpts().GenReducedBMI &&
       !CI.getFrontendOpts().ModuleOutputPath.empty()) {
+    std::unique_ptr<raw_pwrite_stream> ReducedOS = CI.createOutputFile(
+        CI.getFrontendOpts().ModuleOutputPath, /*Binary=*/true,
+        /*RemoveFileOnSignal=*/true, CI.getFrontendOpts().UseTemporary);
+    if (!ReducedOS)
+      return nullptr;
     Consumers.push_back(std::make_unique<ReducedBMIGenerator>(
         CI.getPreprocessor(), CI.getModuleCache(),
-        CI.getFrontendOpts().ModuleOutputPath, CI.getCodeGenOpts(),
-        +CI.getFrontendOpts().AllowPCMWithCompilerErrors));
+        CI.getFrontendOpts().ModuleOutputPath, std::move(ReducedOS),
+        CI.getCodeGenOpts(), +CI.getFrontendOpts().AllowPCMWithCompilerErrors));
   }
 
+  std::unique_ptr<raw_pwrite_stream> OS = CreateOutputFile(CI, InFile);
+  if (!OS)
+    return nullptr;
   Consumers.push_back(std::make_unique<CXX20ModulesGenerator>(
       CI.getPreprocessor(), CI.getModuleCache(),
-      CI.getFrontendOpts().OutputFile, CI.getCodeGenOpts(),
+      CI.getFrontendOpts().OutputFile, std::move(OS), CI.getCodeGenOpts(),
       +CI.getFrontendOpts().AllowPCMWithCompilerErrors));
 
   return std::make_unique<MultiplexConsumer>(std::move(Consumers));
@@ -305,9 +313,13 @@ GenerateModuleInterfaceAction::CreateOutputFile(CompilerInstance &CI,
 std::unique_ptr<ASTConsumer>
 GenerateReducedModuleInterfaceAction::CreateASTConsumer(CompilerInstance &CI,
                                                         StringRef InFile) {
+  std::unique_ptr<raw_pwrite_stream> OS = CreateOutputFile(CI, InFile);
+  if (!OS)
+    return nullptr;
   return std::make_unique<ReducedBMIGenerator>(
       CI.getPreprocessor(), CI.getModuleCache(),
-      CI.getFrontendOpts().OutputFile, CI.getCodeGenOpts());
+      CI.getFrontendOpts().OutputFile, std::move(OS), CI.getCodeGenOpts(),
+      +CI.getFrontendOpts().AllowPCMWithCompilerErrors);
 }
 
 bool GenerateHeaderUnitAction::BeginSourceFileAction(CompilerInstance &CI) {

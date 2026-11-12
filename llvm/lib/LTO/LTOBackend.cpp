@@ -37,8 +37,8 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/ThreadPool.h"
-#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/VirtualFileSystem.h"
+#include "llvm/Support/VirtualOutputBackends.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/SubtargetFeature.h"
@@ -453,7 +453,7 @@ static void codegen(const Config &Conf, TargetMachine *TM,
                                /*EmbedCmdline*/ false,
                                /*CmdArgs*/ std::vector<uint8_t>());
 
-  std::unique_ptr<ToolOutputFile> DwoOut;
+  vfs::OutputFile DwoOut;
   SmallString<1024> DwoFile(Conf.SplitDwarfOutput);
   if (!Conf.DwoDir.empty()) {
     std::error_code EC;
@@ -467,13 +467,16 @@ static void codegen(const Config &Conf, TargetMachine *TM,
   } else
     TM->Options.MCOptions.SplitDwarfFile = Conf.SplitDwarfFile;
 
-  if (!DwoFile.empty()) {
-    std::error_code EC;
-    DwoOut = std::make_unique<ToolOutputFile>(DwoFile, EC, sys::fs::OF_None);
-    if (EC)
+  // The .dwo is renamed into place once written, since a debugger may still
+  // have the previous one mapped.
+  if (!DwoFile.empty())
+    if (Error Err =
+            vfs::OnDiskOutputBackend()
+                .createFile(DwoFile,
+                            vfs::OutputConfig().setNoImplyCreateDirectories())
+                .moveInto(DwoOut))
       report_fatal_error(Twine("Failed to open ") + DwoFile + ": " +
-                         EC.message());
-  }
+                         toString(std::move(Err)));
 
   Expected<std::unique_ptr<CachedFileStream>> StreamOrErr =
       AddStream(Task, Mod.getModuleIdentifier());
@@ -504,14 +507,15 @@ static void codegen(const Config &Conf, TargetMachine *TM,
     if (Conf.PreCodeGenPassesHook)
       Conf.PreCodeGenPassesHook(CodeGenPasses);
     if (TM->addPassesToEmitFile(CodeGenPasses, *Stream->OS,
-                                DwoOut ? &DwoOut->os() : nullptr,
+                                DwoOut ? &DwoOut.getOS() : nullptr,
                                 Conf.CGFileType))
       report_fatal_error("Failed to setup codegen");
     CodeGenPasses.run(Mod);
-
-    if (DwoOut)
-      DwoOut->keep();
   }
+
+  if (DwoOut)
+    if (Error Err = DwoOut.keep())
+      report_fatal_error(std::move(Err));
 
   if (Error Err = Stream->commit())
     report_fatal_error(std::move(Err));

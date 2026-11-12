@@ -1067,19 +1067,27 @@ public:
 class CXX20ModulesGenerator : public PCHGenerator {
   void anchor() override;
 
+  /// The module file, from the frontend's output manager, so that it is
+  /// written atomically and removed on failure.
+  std::unique_ptr<raw_pwrite_stream> OS;
+
 protected:
   virtual Module *getEmittingModule(ASTContext &Ctx) override;
 
   CXX20ModulesGenerator(Preprocessor &PP, ModuleCache &ModCache,
-                        StringRef OutputFile, const CodeGenOptions &CodeGenOpts,
+                        StringRef OutputFile,
+                        std::unique_ptr<raw_pwrite_stream> OS,
+                        const CodeGenOptions &CodeGenOpts,
                         bool GeneratingReducedBMI, bool AllowASTWithErrors);
 
 public:
   CXX20ModulesGenerator(Preprocessor &PP, ModuleCache &ModCache,
-                        StringRef OutputFile, const CodeGenOptions &CodeGenOpts,
+                        StringRef OutputFile,
+                        std::unique_ptr<raw_pwrite_stream> OS,
+                        const CodeGenOptions &CodeGenOpts,
                         bool AllowASTWithErrors = false)
-      : CXX20ModulesGenerator(PP, ModCache, OutputFile, CodeGenOpts,
-                              /*GeneratingReducedBMI=*/false,
+      : CXX20ModulesGenerator(PP, ModCache, OutputFile, std::move(OS),
+                              CodeGenOpts, /*GeneratingReducedBMI=*/false,
                               AllowASTWithErrors) {}
 
   void HandleTranslationUnit(ASTContext &Ctx) override;
@@ -1090,10 +1098,12 @@ class ReducedBMIGenerator : public CXX20ModulesGenerator {
 
 public:
   ReducedBMIGenerator(Preprocessor &PP, ModuleCache &ModCache,
-                      StringRef OutputFile, const CodeGenOptions &CodeGenOpts,
+                      StringRef OutputFile,
+                      std::unique_ptr<raw_pwrite_stream> OS,
+                      const CodeGenOptions &CodeGenOpts,
                       bool AllowASTWithErrors = false)
-      : CXX20ModulesGenerator(PP, ModCache, OutputFile, CodeGenOpts,
-                              /*GeneratingReducedBMI=*/true,
+      : CXX20ModulesGenerator(PP, ModCache, OutputFile, std::move(OS),
+                              CodeGenOpts, /*GeneratingReducedBMI=*/true,
                               AllowASTWithErrors) {}
 };
 

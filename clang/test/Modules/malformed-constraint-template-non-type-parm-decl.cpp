@@ -5,6 +5,7 @@
 // RUN: %clang_cc1 -std=c++20 mod.cppm -emit-module-interface -o mod.pcm -fallow-pcm-with-compiler-errors -verify
 // RUN: %clang_cc1 -std=c++20 main.cpp -fmodule-file=mod=mod.pcm -verify -fallow-pcm-with-compiler-errors -fsyntax-only -ast-dump-all | FileCheck %s
 
+// RUN: rm mod.pcm
 // RUN: %clang_cc1 -std=c++20 mod.cppm -emit-reduced-module-interface -o mod.pcm -fallow-pcm-with-compiler-errors -verify
 // RUN: %clang_cc1 -std=c++20 main.cpp -fmodule-file=mod=mod.pcm -verify -fallow-pcm-with-compiler-errors -fsyntax-only -ast-dump-all | FileCheck %s
 

@@ -58,7 +58,6 @@
 #include "llvm/Support/Program.h"
 #include "llvm/Support/TimeProfiler.h"
 #include "llvm/Support/Timer.h"
-#include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/VirtualFileSystem.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
@@ -188,23 +187,19 @@ class EmitAssemblyHelper {
   /// the requested target.
   void CreateTargetMachine(bool MustCreateTM);
 
-  std::unique_ptr<llvm::ToolOutputFile> openOutputFile(StringRef Path) {
-    std::error_code EC;
-    auto F = std::make_unique<llvm::ToolOutputFile>(Path, EC,
-                                                     llvm::sys::fs::OF_None);
-    if (EC) {
-      Diags.Report(diag::err_fe_unable_to_open_output) << Path << EC.message();
-      F.reset();
-    }
-    return F;
+  // Side outputs are written like the main output: through a temporary that
+  // is renamed into place on success and discarded on failure.
+  std::unique_ptr<raw_pwrite_stream> openOutputFile(StringRef Path) {
+    return CI.createOutputFile(Path, /*Binary=*/true,
+                               /*RemoveFileOnSignal=*/true,
+                               CI.getFrontendOpts().UseTemporary);
   }
 
-  void RunOptimizationPipeline(
-      BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS,
-      std::unique_ptr<llvm::ToolOutputFile> &ThinLinkOS, BackendConsumer *BC);
+  void RunOptimizationPipeline(BackendAction Action,
+                               std::unique_ptr<raw_pwrite_stream> &OS,
+                               BackendConsumer *BC);
   void RunCodegenPipeline(BackendAction Action,
-                          std::unique_ptr<raw_pwrite_stream> &OS,
-                          std::unique_ptr<llvm::ToolOutputFile> &DwoOS);
+                          std::unique_ptr<raw_pwrite_stream> &OS);
   void TimeCodegenPasses(llvm::function_ref<void()> RunPasses);
 
   /// Check whether we should emit a module summary for regular LTO.
@@ -838,7 +833,7 @@ static void addAMDGCNSPIRVSizeOptimizationPasses(ModulePassManager &MPM) {
 
 void EmitAssemblyHelper::RunOptimizationPipeline(
     BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS,
-    std::unique_ptr<llvm::ToolOutputFile> &ThinLinkOS, BackendConsumer *BC) {
+    BackendConsumer *BC) {
   const cl::LibraryOptionsContext &LibraryOptions =
       TheModule->getContext().getLibraryOptions();
   std::optional<PGOOptions> PGOOpt;
@@ -1184,6 +1179,7 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
   if (!actionRequiresCodeGen(Action) && CodeGenOpts.VerifyModule)
     MPM.addPass(VerifierPass());
 
+  std::unique_ptr<raw_pwrite_stream> ThinLinkOS;
   if (Action == Backend_EmitBC || Action == Backend_EmitLL ||
       CodeGenOpts.FatLTO) {
     if (CodeGenOpts.PrepareForThinLTO && !CodeGenOpts.DisableLLVMPasses) {
@@ -1196,8 +1192,7 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
           if (!ThinLinkOS)
             return;
         }
-        MPM.addPass(ThinLTOBitcodeWriterPass(
-            *OS, ThinLinkOS ? &ThinLinkOS->os() : nullptr));
+        MPM.addPass(ThinLTOBitcodeWriterPass(*OS, ThinLinkOS.get()));
       } else if (Action == Backend_EmitLL) {
         MPM.addPass(PrintModulePass(*OS, "", CodeGenOpts.EmitLLVMUseLists,
                                     /*EmitLTOSummary=*/true,
@@ -1258,8 +1253,7 @@ void EmitAssemblyHelper::RunOptimizationPipeline(
 }
 
 void EmitAssemblyHelper::RunCodegenPipeline(
-    BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS,
-    std::unique_ptr<llvm::ToolOutputFile> &DwoOS) {
+    BackendAction Action, std::unique_ptr<raw_pwrite_stream> &OS) {
   if (!actionRequiresCodeGen(Action))
     return;
 
@@ -1274,6 +1268,7 @@ void EmitAssemblyHelper::RunCodegenPipeline(
       return;
   }
 
+  std::unique_ptr<raw_pwrite_stream> DwoOS;
   if (!CodeGenOpts.SplitDwarfOutput.empty()) {
     DwoOS = openOutputFile(CodeGenOpts.SplitDwarfOutput);
     if (!DwoOS)
@@ -1282,7 +1277,7 @@ void EmitAssemblyHelper::RunCodegenPipeline(
 
   TimeCodegenPasses([&]() {
     Error CodeGenError = runCodeGenPipeline(
-        *TM, *TheModule, *OS, DwoOS, CGFT, !CodeGenOpts.VerifyModule,
+        *TM, *TheModule, *OS, DwoOS.get(), CGFT, !CodeGenOpts.VerifyModule,
         /*DisableSimplifyLibCalls=*/false, CI.getVirtualFileSystemPtr());
     if (CodeGenError)
       Diags.Report(diag::err_fe_unable_to_interface_with_target);
@@ -1320,14 +1315,8 @@ void EmitAssemblyHelper::emitAssembly(BackendAction Action,
   // Before executing passes, print the final values of the LLVM options.
   cl::PrintOptionValues();
 
-  std::unique_ptr<llvm::ToolOutputFile> ThinLinkOS, DwoOS;
-  RunOptimizationPipeline(Action, OS, ThinLinkOS, BC);
-  RunCodegenPipeline(Action, OS, DwoOS);
-
-  if (ThinLinkOS)
-    ThinLinkOS->keep();
-  if (DwoOS)
-    DwoOS->keep();
+  RunOptimizationPipeline(Action, OS, BC);
+  RunCodegenPipeline(Action, OS);
 }
 
 static void
