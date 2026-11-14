@@ -77,7 +77,6 @@ add_lld_library(lldELF
   ProfileData
   Support
   TargetParser
-  TransformUtils
 
   LINK_LIBS
   lldCommon

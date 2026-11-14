@@ -24,6 +24,7 @@ set_source_files_properties("${version_inc}"
 
 add_lld_library(lldCommon
   Args.cpp
+  CallGraphSort.cpp
   CommonLinkerContext.cpp
   DriverDispatcher.cpp
   DWARF.cpp
@@ -51,6 +52,7 @@ add_lld_library(lldCommon
   Support
   Target
   TargetParser
+  TransformUtils
 
   LINK_LIBS
   ${LLVM_PTHREAD_LIB}
