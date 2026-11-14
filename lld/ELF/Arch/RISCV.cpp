@@ -12,6 +12,7 @@
 #include "Symbols.h"
 #include "SyntheticSections.h"
 #include "Target.h"
+#include "lld/Common/Relaxation.h"
 #include "llvm/Support/ELFAttributes.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/RISCVAttributeParser.h"
@@ -1036,16 +1037,13 @@ static bool relax(Ctx &ctx, int pass, InputSection &sec) {
   const uint64_t secAddr = sec.getVA();
   const MutableArrayRef<Relocation> relocs = sec.relocs();
   auto &aux = *sec.relaxAux;
-  bool changed = false;
-  ArrayRef<SymbolAnchor> sa = ArrayRef(aux.anchors);
-  uint64_t delta = 0;
   bool tlsdescRelax = false, toLeShortForm = false;
 
   std::fill_n(aux.relocTypes.get(), relocs.size(), R_RISCV_NONE);
   aux.writes.clear();
-  for (auto [i, r] : llvm::enumerate(relocs)) {
+  auto getRemove = [&](size_t i, Relocation &r, uint64_t delta) -> uint32_t {
     const uint64_t loc = secAddr + r.offset - delta;
-    uint32_t &cur = aux.relocDeltas[i], remove = 0;
+    uint32_t cur = aux.relocDeltas[i], remove = 0;
     switch (r.type) {
     case R_RISCV_ALIGN: {
       const uint64_t nextLoc = loc + r.addend;
@@ -1103,29 +1101,10 @@ static bool relax(Ctx &ctx, int pass, InputSection &sec) {
         remove = 4;
       break;
     }
-
-    // For all anchors whose offsets are <= r.offset, they are preceded by
-    // the previous relocation whose `relocDeltas` value equals `delta`.
-    // Decrease their st_value and update their st_size.
-    for (; sa.size() && sa[0].offset <= r.offset; sa = sa.slice(1)) {
-      if (sa[0].end)
-        sa[0].d->size = sa[0].offset - delta - sa[0].d->value;
-      else
-        sa[0].d->value = sa[0].offset - delta;
-    }
-    delta += remove;
-    if (delta != cur) {
-      cur = delta;
-      changed = true;
-    }
-  }
-
-  for (const SymbolAnchor &a : sa) {
-    if (a.end)
-      a.d->size = a.offset - delta - a.d->value;
-    else
-      a.d->value = a.offset - delta;
-  }
+    return remove;
+  };
+  int64_t delta;
+  bool changed = relaxSection(aux, relocs, delta, getRemove);
   // Inform assignAddresses that the size has changed.
   if (!isUInt<32>(delta))
     Err(ctx) << "section size decrease is too large: " << delta;
@@ -1294,26 +1273,14 @@ void RISCV::finalizeRelax(int passes) const {
       size_t newSize = old.size() - aux.relocDeltas[rels.size() - 1];
       size_t writesIdx = 0;
       uint8_t *p = ctx.bAlloc.Allocate<uint8_t>(newSize);
-      uint64_t offset = 0;
-      int64_t delta = 0;
       sec->content_ = p;
       sec->size = newSize;
       sec->bytesDropped = 0;
 
       // Update section content: remove NOPs for R_RISCV_ALIGN and rewrite
       // instructions for relaxed relocations.
-      for (size_t i = 0, e = rels.size(); i != e; ++i) {
-        uint32_t remove = aux.relocDeltas[i] - delta;
-        delta = aux.relocDeltas[i];
-        if (remove == 0 && aux.relocTypes[i] == R_RISCV_NONE)
-          continue;
-
-        // Copy from last location to the current relocated location.
-        const Relocation &r = rels[i];
-        uint64_t size = r.offset - offset;
-        memcpy(p, old.data() + offset, size);
-        p += size;
-
+      auto write = [&](uint8_t *p, size_t i, const Relocation &r,
+                       uint32_t remove) -> int64_t {
         // For R_RISCV_ALIGN, we will place `offset` in a location (among NOPs)
         // to satisfy the alignment requirement. If both `remove` and r.addend
         // are multiples of 4, it is as if we have skipped some NOPs. Otherwise
@@ -1361,24 +1328,9 @@ void RISCV::finalizeRelax(int passes) const {
           }
         }
 
-        p += skip;
-        offset = r.offset + skip + remove;
-      }
-      memcpy(p, old.data() + offset, old.size() - offset);
-
-      // Subtract the previous relocDeltas value from the relocation offset.
-      // For a pair of R_RISCV_CALL/R_RISCV_RELAX with the same offset, decrease
-      // their r_offset by the same delta.
-      delta = 0;
-      for (size_t i = 0, e = rels.size(); i != e;) {
-        uint64_t cur = rels[i].offset;
-        do {
-          rels[i].offset -= delta;
-          if (aux.relocTypes[i] != R_RISCV_NONE)
-            rels[i].type = aux.relocTypes[i];
-        } while (++i != e && rels[i].offset == cur);
-        delta = aux.relocDeltas[i - 1];
-      }
+        return skip;
+      };
+      rewriteRelaxedSection(aux, rels, old, p, write);
     }
   }
 }

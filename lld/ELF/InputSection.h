@@ -11,6 +11,7 @@
 
 #include "Config.h"
 #include "Relocations.h"
+#include "Symbols.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/LLVM.h"
 #include "lld/Common/Memory.h"
@@ -126,6 +127,13 @@ struct SymbolAnchor {
   uint64_t offset;
   Defined *d;
   bool end; // true for the anchor of st_value+st_size
+  // Update st_value, or st_size for an end anchor, to the anchor's new offset.
+  void apply(uint64_t newOffset) const {
+    if (end)
+      d->size = newOffset - d->value;
+    else
+      d->value = newOffset;
+  }
 };
 
 struct RelaxAux {
