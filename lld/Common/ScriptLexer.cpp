@@ -62,6 +62,12 @@ std::string ScriptLexer::getCurrentLocation() {
   return (curBuf.filename + ":" + Twine(prevTokLine)).str();
 }
 
+StringRef ScriptLexer::unquote(StringRef s) {
+  if (s.starts_with("\""))
+    return s.substr(1, s.size() - 2);
+  return s;
+}
+
 // We don't want to record cascading errors. Keep only the first one.
 void ScriptLexer::setError(const Twine &msg) {
   if (ctx.e.errorCount)

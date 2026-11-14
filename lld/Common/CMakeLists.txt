@@ -39,6 +39,7 @@ add_lld_library(lldCommon
   Utils.cpp
   VCSVersion.inc
   Version.cpp
+  VersionScript.cpp
   VtableTypeInfos.cpp
 
   ADDITIONAL_HEADER_DIRS

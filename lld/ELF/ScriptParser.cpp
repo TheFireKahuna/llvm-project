@@ -20,7 +20,7 @@
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Target.h"
-#include "lld/Common/ScriptLexer.h"
+#include "lld/Common/VersionScript.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -55,10 +55,12 @@ static bool isUnderSysroot(Ctx &ctx, MemoryBufferRef mb) {
 }
 
 namespace {
-class ScriptParser final : ScriptLexer {
+class ScriptParser final : VersionScriptParser {
 public:
   ScriptParser(Ctx &ctx, MemoryBufferRef mb)
-      : ScriptLexer(ctx, mb, isUnderSysroot(ctx, mb)), ctx(ctx) {}
+      : VersionScriptParser(ctx, mb, isUnderSysroot(ctx, mb),
+                            ctx.arg.versionDefinitions),
+        ctx(ctx) {}
 
   void readLinkerScript();
   void readVersionScript();
@@ -90,7 +92,6 @@ private:
   void readStmts(llvm::function_ref<void(StringRef)> readStmt);
   void readTarget();
   void readVersion();
-  void readVersionScriptCommand();
   void readNoCrossRefs(bool to);
 
   StringRef readName();
@@ -134,14 +135,6 @@ private:
   Expr readTernary(Expr cond);
   Expr readParenExpr();
 
-  // For parsing version script.
-  SmallVector<SymbolVersion, 0> readVersionExtern();
-  void readAnonymousDeclaration();
-  void readVersionDeclaration(StringRef verStr);
-
-  std::pair<SmallVector<SymbolVersion, 0>, SmallVector<SymbolVersion, 0>>
-  readSymbols();
-
   Ctx &ctx;
 
   // If we are currently parsing a PROVIDE|PROVIDE_HIDDEN command,
@@ -149,12 +142,6 @@ private:
   std::optional<llvm::StringRef> activeProvideSym;
 };
 } // namespace
-
-static StringRef unquote(StringRef s) {
-  if (s.starts_with("\""))
-    return s.substr(1, s.size() - 2);
-  return s;
-}
 
 // Some operations only support one non absolute value. Move the
 // absolute one to the right hand side for convenience.
@@ -223,27 +210,6 @@ void ScriptParser::readVersionScript() {
   StringRef tok = peek();
   if (tok.size())
     setError("EOF expected, but got " + tok);
-}
-
-void ScriptParser::readVersionScriptCommand() {
-  SaveAndRestore saved(lexState, State::VersionNode);
-  if (consume("{")) {
-    readAnonymousDeclaration();
-    return;
-  }
-
-  if (atEOF())
-    setError("unexpected EOF");
-  while (peek() != "}" && !atEOF()) {
-    StringRef verStr = next();
-    if (verStr == "{") {
-      setError("anonymous version definition is used in "
-               "combination with other version definitions");
-      return;
-    }
-    expect("{");
-    readVersionDeclaration(verStr);
-  }
 }
 
 void ScriptParser::readVersion() {
@@ -1768,98 +1734,6 @@ unsigned ScriptParser::readPhdrType() {
   if (ret == (unsigned)-1) {
     setError("invalid program header type: " + tok);
     return PT_NULL;
-  }
-  return ret;
-}
-
-// Reads an anonymous version declaration.
-void ScriptParser::readAnonymousDeclaration() {
-  SmallVector<SymbolVersion, 0> locals;
-  SmallVector<SymbolVersion, 0> globals;
-  std::tie(locals, globals) = readSymbols();
-  for (const SymbolVersion &pat : locals)
-    ctx.arg.versionDefinitions[VER_NDX_LOCAL].localPatterns.push_back(pat);
-  for (const SymbolVersion &pat : globals)
-    ctx.arg.versionDefinitions[VER_NDX_GLOBAL].nonLocalPatterns.push_back(pat);
-
-  expect(";");
-}
-
-// Reads a non-anonymous version definition,
-// e.g. "VerStr { global: foo; bar; local: *; };".
-void ScriptParser::readVersionDeclaration(StringRef verStr) {
-  // Read a symbol list.
-  SmallVector<SymbolVersion, 0> locals;
-  SmallVector<SymbolVersion, 0> globals;
-  std::tie(locals, globals) = readSymbols();
-
-  // Create a new version definition and add that to the global symbols.
-  VersionDefinition ver;
-  ver.name = verStr;
-  ver.nonLocalPatterns = std::move(globals);
-  ver.localPatterns = std::move(locals);
-  ver.id = ctx.arg.versionDefinitions.size();
-  ctx.arg.versionDefinitions.push_back(ver);
-
-  // Each version may have a parent version. For example, "Ver2"
-  // defined as "Ver2 { global: foo; local: *; } Ver1;" has "Ver1"
-  // as a parent. This version hierarchy is, probably against your
-  // instinct, purely for hint; the runtime doesn't care about it
-  // at all. In LLD, we simply ignore it.
-  if (next() != ";")
-    expect(";");
-}
-
-bool elf::hasWildcard(StringRef s) {
-  return s.find_first_of("?*[") != StringRef::npos;
-}
-
-// Reads a list of symbols, e.g. "{ global: foo; bar; local: *; };".
-std::pair<SmallVector<SymbolVersion, 0>, SmallVector<SymbolVersion, 0>>
-ScriptParser::readSymbols() {
-  SmallVector<SymbolVersion, 0> locals;
-  SmallVector<SymbolVersion, 0> globals;
-  SmallVector<SymbolVersion, 0> *v = &globals;
-
-  while (auto tok = till("}")) {
-    if (tok == "extern") {
-      SmallVector<SymbolVersion, 0> ext = readVersionExtern();
-      v->insert(v->end(), ext.begin(), ext.end());
-    } else {
-      if (tok == "local" && consume(":")) {
-        v = &locals;
-        continue;
-      }
-      if (tok == "global" && consume(":")) {
-        v = &globals;
-        continue;
-      }
-      v->push_back({unquote(tok), false, hasWildcard(tok)});
-    }
-    expect(";");
-  }
-  return {locals, globals};
-}
-
-// Reads an "extern C++" directive, e.g.,
-// "extern "C++" { ns::*; "f(int, double)"; };"
-//
-// The last semicolon is optional. E.g. this is OK:
-// "extern "C++" { ns::*; "f(int, double)" };"
-SmallVector<SymbolVersion, 0> ScriptParser::readVersionExtern() {
-  StringRef tok = next();
-  bool isCXX = tok == "\"C++\"";
-  if (!isCXX && tok != "\"C\"")
-    setError("Unknown language");
-  expect("{");
-
-  SmallVector<SymbolVersion, 0> ret;
-  while (auto tok = till("}")) {
-    ret.push_back(
-        {unquote(tok), isCXX, !tok.str.starts_with("\"") && hasWildcard(tok)});
-    if (consume("}"))
-      return ret;
-    expect(";");
   }
   return ret;
 }

@@ -80,6 +80,7 @@ public:
   void expect(StringRef expect);
   Token till(StringRef tok);
   std::string getCurrentLocation();
+  static StringRef unquote(StringRef s);
 
 private:
   StringRef getLine();

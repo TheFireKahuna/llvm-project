@@ -27,8 +27,6 @@ void readDynamicList(Ctx &ctx, MemoryBufferRef mb);
 // Parses the defsym expression.
 void readDefsym(Ctx &ctx, MemoryBufferRef mb);
 
-bool hasWildcard(StringRef s);
-
 } // namespace lld::elf
 
 #endif

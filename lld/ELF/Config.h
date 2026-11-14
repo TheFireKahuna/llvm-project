@@ -13,6 +13,7 @@
 #include "lld/Common/CallGraphSort.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/ErrorHandler.h"
+#include "lld/Common/VersionScript.h"
 #include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/MapVector.h"
@@ -168,21 +169,6 @@ struct AArch64PauthAbiCoreInfo {
   bool operator!=(const AArch64PauthAbiCoreInfo &other) const {
     return !(*this == other);
   }
-};
-
-struct SymbolVersion {
-  llvm::StringRef name;
-  bool isExternCpp;
-  bool hasWildcard;
-};
-
-// This struct contains symbols version definition that
-// can be found in version script if it is used for link.
-struct VersionDefinition {
-  llvm::StringRef name;
-  uint16_t id;
-  SmallVector<SymbolVersion, 0> nonLocalPatterns;
-  SmallVector<SymbolVersion, 0> localPatterns;
 };
 
 // Deferred file-load job: one per input, expanded by loadFiles().

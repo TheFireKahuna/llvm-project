@@ -20,7 +20,6 @@
 #include "lld/Common/Memory.h"
 #include "lld/Common/Strings.h"
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/Demangle/Demangle.h"
 #include "llvm/Support/Parallel.h"
 
 using namespace llvm;
@@ -129,14 +128,6 @@ static bool canBeVersioned(const Symbol &sym) {
   return sym.isDefined() || sym.isCommon() || sym.isLazy();
 }
 
-static std::string demangleForVersion(StringRef name) {
-  auto [base, ver] = name.split('@');
-  std::string s = demangle(base);
-  if (!ver.empty() && !ver.starts_with('@'))
-    s += ("@" + ver).str();
-  return s;
-}
-
 // Map from demangled name to symbols, for exact lookups in extern "C++" blocks.
 StringMap<SmallVector<Symbol *, 0>> &SymbolTable::getDemangledSyms() {
   if (!demangledSyms) {
@@ -193,16 +184,6 @@ bool SymbolTable::assignExactVersion(SymbolVersion ver, uint16_t versionId) {
   return !syms.empty();
 }
 
-namespace {
-struct WildcardPattern {
-  SingleStringMatcher matcher;
-  bool isExternCpp;
-  uint16_t versionId;
-  WildcardPattern(const SymbolVersion &ver, uint16_t versionId)
-      : matcher(ver.name), isExternCpp(ver.isExternCpp), versionId(versionId) {}
-};
-} // namespace
-
 // This function processes version scripts by updating the versionId
 // member of symbols.
 // If there's only one anonymous version definition in a version
@@ -234,88 +215,38 @@ void SymbolTable::scanVersionScript() {
         assignExact(pat, VER_NDX_LOCAL, "local");
   }
 
-  // Next, collect wildcards in precedence order, where "*" patterns have the
-  // lowest precedence in GNU ld. Because the last match takes precedence over
-  // previous matches, we iterate over the definitions in the reverse order.
-  SmallVector<WildcardPattern, 0> pats, asterisks;
-  bool globalAsteriskFound = false;
-  bool localAsteriskFound = false;
-  bool asteriskReported = false;
-  for (VersionDefinition &v : llvm::reverse(ctx.arg.versionDefinitions)) {
-    for (bool isLocal : {false, true}) {
-      uint16_t id = isLocal ? VER_NDX_LOCAL : v.id;
-      for (SymbolVersion &pat :
-           isLocal ? v.localPatterns : v.nonLocalPatterns) {
-        if (!pat.hasWildcard)
-          continue;
-        if (pat.name != "*") {
-          pats.emplace_back(pat, id);
-          continue;
-        }
-        if (!asteriskReported) {
-          if ((isLocal && globalAsteriskFound) ||
-              (!isLocal && localAsteriskFound)) {
-            Warn(ctx)
-                << "wildcard pattern '*' is used for both 'local' and 'global' "
-                   "scopes in version script";
-            asteriskReported = true;
-          } else if (!isLocal && globalAsteriskFound) {
-            Warn(ctx) << "wildcard pattern '*' is used for multiple version "
-                         "definitions in version script";
-            asteriskReported = true;
-          } else {
-            localAsteriskFound = isLocal;
-            globalAsteriskFound = !isLocal;
-          }
-        }
-        asterisks.emplace_back(pat, id);
-      }
-    }
-  }
-  pats.append(asterisks);
-
-  auto findFirstMatch = [&](ArrayRef<WildcardPattern> pats,
-                            StringRef name) -> const WildcardPattern * {
-    std::optional<std::string> demangled;
-    for (auto &pat : pats) {
-      if (pat.isExternCpp && !demangled)
-        demangled = demangleForVersion(name);
-      if (pat.matcher.match(pat.isExternCpp ? StringRef(*demangled) : name))
-        return &pat;
-    }
-    return nullptr;
-  };
-
-  // Exact matching takes precedence over wildcard matching, so a wildcard
-  // assigns a version only if none has been assigned.
+  // Next, match wildcards in precedence order. Exact matching takes
+  // precedence over wildcard matching, so a wildcard assigns a version only if
+  // none has been assigned.
+  VersionPatternMatcher pats(ctx, ctx.arg.versionDefinitions);
   if (!pats.empty()) {
     parallelForEach(symVector, [&](Symbol *sym) {
       if (sym->versionScriptAssigned || sym->hasVersionSuffix ||
           !canBeVersioned(*sym))
         return;
-      if (auto *pat = findFirstMatch(pats, sym->getName()))
-        sym->versionId = pat->versionId;
+      if (std::optional<uint16_t> id = pats.match(sym->getName()))
+        sym->versionId = *id;
     });
   }
 
   // Handle --dynamic-list. If a specified symbol is also matched by local: in a
   // version script, the version script takes precedence.
   SmallVector<Symbol *, 0> syms;
-  pats.clear();
+  VersionPatternMatcher dynamicList;
   for (SymbolVersion &ver : ctx.arg.dynamicList) {
     if (ver.hasWildcard) {
-      pats.emplace_back(ver, 0);
+      dynamicList.add(ver, 0);
     } else {
       for (Symbol *sym : findByVersion(ver))
         sym->isExported = sym->inDynamicList = true;
     }
   }
-  if (!pats.empty()) {
+  if (!dynamicList.empty()) {
     parallelForEach(symVector, [&](Symbol *sym) {
       if (!canBeVersioned(*sym))
         return;
       StringRef name = sym->getName();
-      if (findFirstMatch(pats, name))
+      if (dynamicList.match(name))
         sym->isExported = sym->inDynamicList = true;
     });
   }
