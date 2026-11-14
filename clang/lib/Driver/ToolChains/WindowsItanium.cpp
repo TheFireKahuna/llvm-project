@@ -349,3 +349,74 @@ void WindowsItaniumToolChain::addSystemLibArgs(const ArgList &Args,
       A && A->getOption().matches(options::OPT_mwindows))
     CmdArgs.push_back("-defaultlib:user32.lib");
 }
+
+/// Returns \p Root's \p Sub directory for the target, then the one every
+/// target shares, where they exist.
+static SmallVector<std::string, 2>
+getTargetAndCommonDirs(const ToolChain &TC, StringRef Root, StringRef Sub) {
+  SmallVector<std::string, 2> Dirs;
+  SmallString<128> Common(Root), Target;
+  llvm::sys::path::append(Common, Sub);
+  Target = Common;
+  llvm::sys::path::append(Target, TC.getTripleString());
+  for (StringRef Dir : {Target.str(), Common.str()})
+    if (!Root.empty() && TC.getVFS().exists(Dir))
+      Dirs.push_back(Dir.str());
+  return Dirs;
+}
+
+NTPOSIXToolChain::NTPOSIXToolChain(const Driver &D, const llvm::Triple &Triple,
+                                   const ArgList &Args)
+    : WindowsItaniumBase(D, Triple, Args) {
+  // ntposix.dll's import library and the C library's, in the sysroot.
+  llvm::append_range(getFilePaths(),
+                     getTargetAndCommonDirs(*this, D.SysRoot, "lib"));
+}
+
+void NTPOSIXToolChain::addClangTargetOptions(
+    const ArgList &DriverArgs, ArgStringList &CC1Args, BoundArch BA,
+    Action::OffloadKind DeviceOffloadKind) const {
+  WindowsItaniumBase::addClangTargetOptions(DriverArgs, CC1Args, BA,
+                                            DeviceOffloadKind);
+  // ntposix.dll is always thread-capable.
+  CC1Args.push_back("-pthread");
+
+  // A 16-bit wchar_t alone would bind to the interfaces of the 32-bit one.
+  if (const Arg *A = DriverArgs.getLastArg(options::OPT_fshort_wchar,
+                                           options::OPT_fno_short_wchar);
+      A && A->getOption().matches(options::OPT_fshort_wchar))
+    getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
+        << A->getAsString(DriverArgs) << getTripleString();
+}
+
+void NTPOSIXToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
+                                                 ArgStringList &CC1Args) const {
+  if (DriverArgs.hasArg(options::OPT_nostdinc))
+    return;
+
+  const Driver &D = getDriver();
+  if (!DriverArgs.hasArg(options::OPT_nobuiltininc))
+    AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, D.ResourceDir,
+                                  "include");
+
+  if (DriverArgs.hasArg(options::OPT_nostdlibinc))
+    return;
+
+  // The C library's headers, the target's own first, in the sysroot and beside
+  // the toolchain.
+  for (const std::string &Dir :
+       getTargetAndCommonDirs(*this, D.SysRoot, "include"))
+    addSystemInclude(DriverArgs, CC1Args, Dir);
+  if (std::optional<std::string> Dir = getStdlibIncludePath())
+    addSystemInclude(DriverArgs, CC1Args, *Dir);
+}
+
+void NTPOSIXToolChain::addSystemLibArgs(const ArgList &Args,
+                                        ArgStringList &CmdArgs) const {
+  // ntposix.dll is the runtime and the unwinder, and no image links the
+  // Universal CRT or the library of its POSIX names, which objects that MSVC
+  // built name.
+  CmdArgs.push_back("-defaultlib:ntposix");
+  CmdArgs.push_back("-nodefaultlib:ucrt");
+  CmdArgs.push_back("-nodefaultlib:oldnames");
+}

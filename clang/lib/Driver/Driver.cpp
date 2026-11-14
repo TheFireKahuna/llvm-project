@@ -6314,6 +6314,10 @@ const ToolChain &Driver::getToolChain(const ArgList &Args,
           TC = std::make_unique<toolchains::CrossWindowsToolChain>(
               *this, Target, Args);
         break;
+      case llvm::Triple::NTPOSIX:
+        TC =
+            std::make_unique<toolchains::NTPOSIXToolChain>(*this, Target, Args);
+        break;
       case llvm::Triple::MSVC:
       case llvm::Triple::UnknownEnvironment:
         if (Args.getLastArgValue(options::OPT_fuse_ld_EQ)

@@ -111,6 +111,23 @@ public:
                         llvm::opt::ArgStringList &CmdArgs) const override;
 };
 
+/// NT-POSIX: POSIX on NT, whose runtime is ntposix.dll.
+class LLVM_LIBRARY_VISIBILITY NTPOSIXToolChain : public WindowsItaniumBase {
+public:
+  NTPOSIXToolChain(const Driver &D, const llvm::Triple &Triple,
+                   const llvm::opt::ArgList &Args);
+
+  void
+  addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,
+                        llvm::opt::ArgStringList &CC1Args, BoundArch BA,
+                        Action::OffloadKind DeviceOffloadKind) const override;
+  void
+  AddClangSystemIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                            llvm::opt::ArgStringList &CC1Args) const override;
+  void addSystemLibArgs(const llvm::opt::ArgList &Args,
+                        llvm::opt::ArgStringList &CmdArgs) const override;
+};
+
 } // end namespace toolchains
 } // end namespace driver
 } // end namespace clang

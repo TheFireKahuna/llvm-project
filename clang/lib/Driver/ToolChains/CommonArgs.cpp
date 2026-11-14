@@ -87,7 +87,7 @@ static bool useFramePointerForTargetByDefault(const llvm::opt::ArgList &Args,
   if (Args.hasArg(options::OPT_pg) && !Args.hasArg(options::OPT_mfentry))
     return true;
 
-  if (Triple.isAndroid())
+  if (Triple.isAndroid() || Triple.isWindowsNTPOSIXEnvironment())
     return true;
 
   switch (Triple.getArch()) {
@@ -169,7 +169,8 @@ static bool useFramePointerForTargetByDefault(const llvm::opt::ArgList &Args,
 
 static bool useLeafFramePointerForTargetByDefault(const llvm::Triple &Triple) {
   if (Triple.isAArch64() || Triple.isPS() || Triple.isVE() ||
-      (Triple.isAndroid() && !Triple.isARM()))
+      (Triple.isAndroid() && !Triple.isARM()) ||
+      Triple.isWindowsNTPOSIXEnvironment())
     return false;
 
   if ((Triple.isARM() || Triple.isThumb()) && Triple.isOSBinFormatMachO())
@@ -194,6 +195,11 @@ static bool mustUseNonLeafFramePointerForTarget(const llvm::Triple &Triple) {
 // even if new frame records are not created.
 static bool mustMaintainValidFrameChain(const llvm::opt::ArgList &Args,
                                         const llvm::Triple &Triple) {
+  // NT-POSIX keeps a frame pointer in every non-leaf frame, as its runtime
+  // is built, and the register for nothing else.
+  if (Triple.isWindowsNTPOSIXEnvironment())
+    return true;
+
   switch (Triple.getArch()) {
   default:
     return false;
@@ -2170,7 +2176,8 @@ tools::ParsePICArgs(const ToolChain &ToolChain, const ArgList &Args) {
                                     options::OPT_fpic, options::OPT_fno_pic,
                                     options::OPT_fPIE, options::OPT_fno_PIE,
                                     options::OPT_fpie, options::OPT_fno_pie);
-  if (Triple.isOSWindows() && !Triple.isOSCygMing() && LastPICArg &&
+  if (Triple.isOSWindows() && !Triple.isOSCygMing() &&
+      !Triple.isWindowsNTPOSIXEnvironment() && LastPICArg &&
       LastPICArg == Args.getLastArg(options::OPT_fPIC, options::OPT_fpic,
                                     options::OPT_fPIE, options::OPT_fpie)) {
     ToolChain.getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
