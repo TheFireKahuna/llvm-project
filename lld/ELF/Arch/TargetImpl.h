@@ -13,6 +13,7 @@
 #include "InputSection.h"
 #include "Relocations.h"
 #include "Symbols.h"
+#include "lld/Common/BranchToBranch.h"
 #include "llvm/BinaryFormat/ELF.h"
 
 namespace lld::elf {
@@ -62,28 +63,10 @@ inline void applyBranchToBranchOptImpl(
       auto *s = dyn_cast_or_null<InputSection>(sb);
       if (!s)
         continue;
-      for (Relocation &r : s->relocations) {
-        std::optional<uint64_t> addend = getControlTransferAddend(*s, r);
-        if (!addend)
-          continue;
-        std::pair<Relocation *, uint64_t> targetAndAddend =
-            getRelocBranchInfo(r, *addend);
-        if (!targetAndAddend.first)
-          continue;
-        // Avoid getting stuck in an infinite loop if we encounter a branch
-        // that (possibly indirectly) branches to itself. It is unlikely
-        // that more than 5 iterations will ever be needed in practice.
-        size_t iterations = 5;
-        while (iterations--) {
-          std::pair<Relocation *, uint64_t> nextTargetAndAddend =
-              getRelocBranchInfo(*targetAndAddend.first,
-                                 targetAndAddend.second);
-          if (!nextTargetAndAddend.first)
-            break;
-          targetAndAddend = nextTargetAndAddend;
-        }
-        redirectControlTransferRelocations(r, *targetAndAddend.first);
-      }
+      for (Relocation &r : s->relocations)
+        if (std::optional<uint64_t> addend = getControlTransferAddend(*s, r))
+          redirectBranchToBranch(r, *addend, getRelocBranchInfo,
+                                 redirectControlTransferRelocations);
     }
   }
 }
