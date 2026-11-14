@@ -1270,6 +1270,54 @@ static unsigned int checkCastFunctionType(Sema &Self, const ExprResult &SrcExpr,
   return 0;
 }
 
+/// Diagnose a cast of GetProcAddress(Module, "Name") to a function pointer type
+/// other than the one a system header declares for Name: the loader returns
+/// whatever the module exports under that name.
+static void checkGetProcAddressCast(Sema &Self, const Expr *Src,
+                                    QualType DestType, SourceRange OpRange) {
+  if (!DestType->isFunctionPointerType() ||
+      Self.Diags.isIgnored(diag::warn_get_proc_address_type_mismatch,
+                           OpRange.getBegin()))
+    return;
+  const auto *Call = dyn_cast<CallExpr>(Src->IgnoreParenCasts());
+  const FunctionDecl *Callee = Call ? Call->getDirectCallee() : nullptr;
+  if (!Callee || Call->getNumArgs() != 2 || !Callee->isExternC() ||
+      !Callee->getIdentifier() ||
+      !Callee->getIdentifier()->isStr("GetProcAddress"))
+    return;
+  const auto *Name =
+      dyn_cast<StringLiteral>(Call->getArg(1)->IgnoreParenCasts());
+  if (!Name || Name->getCharByteWidth() != 1)
+    return;
+
+  // A name no declaration uses has no identifier.
+  ASTContext &Ctx = Self.Context;
+  auto II = Ctx.Idents.find(Name->getString());
+  if (II == Ctx.Idents.end())
+    return;
+  const auto *FD = Ctx.getTranslationUnitDecl()
+                       ->lookup(II->second)
+                       .find_first<FunctionDecl>();
+  if (!FD || !FD->isExternC() ||
+      !Self.getSourceManager().isInSystemHeader(FD->getLocation()))
+    return;
+
+  // Neither the calling convention nor the exception specification changes
+  // what the export is.
+  const auto *DeclTy =
+      FD->getType().getCanonicalType()->getAs<FunctionProtoType>();
+  const auto *DestTy =
+      DestType->getPointeeType().getCanonicalType()->getAs<FunctionProtoType>();
+  if (!DeclTy || !DestTy ||
+      (DeclTy->getReturnType() == DestTy->getReturnType() &&
+       DeclTy->isVariadic() == DestTy->isVariadic() &&
+       DeclTy->param_types() == DestTy->param_types()))
+    return;
+  Self.Diag(OpRange.getBegin(), diag::warn_get_proc_address_type_mismatch)
+      << FD << DestType << FD->getType() << OpRange;
+  Self.Diag(FD->getLocation(), diag::note_entity_declared_at) << FD;
+}
+
 /// CheckReinterpretCast - Check that a reinterpret_cast\<DestType\>(SrcExpr) is
 /// valid.
 /// Refer to C++ 5.2.10 for details. reinterpret_cast is typically used in code
@@ -1312,6 +1360,7 @@ void CastOperation::CheckReinterpretCast() {
     if (unsigned DiagID = checkCastFunctionType(Self, SrcExpr, DestType))
       Self.Diag(OpRange.getBegin(), DiagID)
           << SrcExpr.get()->getType() << DestType << OpRange;
+    checkGetProcAddressCast(Self, SrcExpr.get(), DestType, OpRange);
   } else {
     SrcExpr = ExprError();
   }
@@ -2929,6 +2978,7 @@ void CastOperation::CheckCXXCStyleCast(bool FunctionalStyle,
     if (unsigned DiagID = checkCastFunctionType(Self, SrcExpr, DestType))
       Self.Diag(OpRange.getBegin(), DiagID)
           << SrcExpr.get()->getType() << DestType << OpRange;
+    checkGetProcAddressCast(Self, SrcExpr.get(), DestType, OpRange);
 
   } else {
     SrcExpr = ExprError();
@@ -3370,6 +3420,7 @@ void CastOperation::CheckCStyleCast() {
 
   if (unsigned DiagID = checkCastFunctionType(Self, SrcExpr, DestType))
     Self.Diag(OpRange.getBegin(), DiagID) << SrcType << DestType << OpRange;
+  checkGetProcAddressCast(Self, SrcExpr.get(), DestType, OpRange);
 
   if (isa<PointerType>(SrcType) && isa<PointerType>(DestType)) {
     QualType SrcTy = cast<PointerType>(SrcType)->getPointeeType();
