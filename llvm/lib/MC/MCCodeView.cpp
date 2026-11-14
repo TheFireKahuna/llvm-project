@@ -394,40 +394,6 @@ void CodeViewContext::emitLineTableForFunction(MCObjectStreamer &OS,
   OS.emitLabel(LineEnd);
 }
 
-static bool compressAnnotation(uint32_t Data, SmallVectorImpl<char> &Buffer) {
-  if (isUInt<7>(Data)) {
-    Buffer.push_back(Data);
-    return true;
-  }
-
-  if (isUInt<14>(Data)) {
-    Buffer.push_back((Data >> 8) | 0x80);
-    Buffer.push_back(Data & 0xff);
-    return true;
-  }
-
-  if (isUInt<29>(Data)) {
-    Buffer.push_back((Data >> 24) | 0xC0);
-    Buffer.push_back((Data >> 16) & 0xff);
-    Buffer.push_back((Data >> 8) & 0xff);
-    Buffer.push_back(Data & 0xff);
-    return true;
-  }
-
-  return false;
-}
-
-static bool compressAnnotation(BinaryAnnotationsOpCode Annotation,
-                               SmallVectorImpl<char> &Buffer) {
-  return compressAnnotation(static_cast<uint32_t>(Annotation), Buffer);
-}
-
-static uint32_t encodeSignedNumber(uint32_t Data) {
-  if (Data >> 31)
-    return ((-Data) << 1) | 1;
-  return Data << 1;
-}
-
 void CodeViewContext::emitInlineLineTableForFunction(MCObjectStreamer &OS,
                                                      unsigned PrimaryFunctionId,
                                                      unsigned SourceFileId,

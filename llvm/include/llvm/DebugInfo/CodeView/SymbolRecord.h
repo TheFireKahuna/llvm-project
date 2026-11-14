@@ -11,6 +11,7 @@
 
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/iterator.h"
 #include "llvm/ADT/iterator_range.h"
@@ -21,6 +22,7 @@
 #include "llvm/Support/BinaryStreamArray.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Endian.h"
+#include "llvm/Support/MathExtras.h"
 #include <cstdint>
 #include <vector>
 
@@ -360,6 +362,45 @@ private:
   ArrayRef<uint8_t> Data;
   ArrayRef<uint8_t> Next;
 };
+
+/// Appends \p Data to \p Buffer in the compressed form that
+/// BinaryAnnotationIterator reads. Returns false if \p Data does not fit the
+/// form's 29 bits.
+inline bool compressAnnotation(uint32_t Data, SmallVectorImpl<char> &Buffer) {
+  if (isUInt<7>(Data)) {
+    Buffer.push_back(Data);
+    return true;
+  }
+
+  if (isUInt<14>(Data)) {
+    Buffer.push_back((Data >> 8) | 0x80);
+    Buffer.push_back(Data & 0xff);
+    return true;
+  }
+
+  if (isUInt<29>(Data)) {
+    Buffer.push_back((Data >> 24) | 0xC0);
+    Buffer.push_back((Data >> 16) & 0xff);
+    Buffer.push_back((Data >> 8) & 0xff);
+    Buffer.push_back(Data & 0xff);
+    return true;
+  }
+
+  return false;
+}
+
+inline bool compressAnnotation(BinaryAnnotationsOpCode Annotation,
+                               SmallVectorImpl<char> &Buffer) {
+  return compressAnnotation(static_cast<uint32_t>(Annotation), Buffer);
+}
+
+/// Returns the form in which a binary annotation holds the signed operand
+/// \p Data: the magnitude shifted left by one, with the sign in bit 0.
+inline uint32_t encodeSignedNumber(uint32_t Data) {
+  if (Data >> 31)
+    return ((-Data) << 1) | 1;
+  return Data << 1;
+}
 
 // S_INLINESITE
 class InlineSiteSym : public SymbolRecord {
