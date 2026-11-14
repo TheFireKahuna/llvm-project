@@ -1363,13 +1363,12 @@ public:
            getTriple().isWindowsItaniumEnvironment() || getTriple().isPS();
   }
 
-  // Does this target have PS4 specific dllimport/export handling?
+  // Does this target have PS4 specific dllimport/export handling? Windows
+  // Itanium and NT-POSIX take it too, so that a class whose key function is
+  // dllimport keeps it, and its vtable and type_info are emitted once, in the
+  // image that defines the key function, which exports them.
   virtual bool hasPS4DLLImportExport() const {
-    return getTriple().isPS() ||
-           // Windows Itanium support allows for testing the SCEI flavour of
-           // dllimport/export handling on a Windows system.
-           (getTriple().isWindowsItaniumEnvironment() &&
-            getTriple().getVendor() == llvm::Triple::SCEI);
+    return getTriple().isPS() || getTriple().isWindowsItaniumABIEnvironment();
   }
 
   /// Set forced language options.

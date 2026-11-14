@@ -5844,8 +5844,14 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
     }
   }
 
-  bool IsTargetDefaultMSABI =
-      Context.getTargetInfo().getTriple().hasDefaultMSABI();
+  const llvm::Triple &Triple = Context.getTargetInfo().getTriple();
+  bool IsTargetDefaultMSABI = Triple.hasDefaultMSABI();
+  // Windows Itanium returns a class from a member function as the Itanium C++
+  // ABI has it, and as MSVC does only where the function's type carries
+  // Microsoft's convention, which a COM method spells as __stdcall.
+  bool HasDistinctMSABI =
+      Triple.isGenericWindowsItaniumEnvironment() &&
+      !getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23);
   // TODO: diagnose uses of these conventions on the wrong target.
   switch (Attrs.getKind()) {
   case ParsedAttr::AT_CDecl:
@@ -5855,10 +5861,10 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
     CC = CC_X86FastCall;
     break;
   case ParsedAttr::AT_StdCall:
-    CC = CC_X86StdCall;
+    CC = HasDistinctMSABI ? CC_Win64 : CC_X86StdCall;
     break;
   case ParsedAttr::AT_ThisCall:
-    CC = CC_X86ThisCall;
+    CC = HasDistinctMSABI ? CC_Win64 : CC_X86ThisCall;
     break;
   case ParsedAttr::AT_Pascal:
     CC = CC_X86Pascal;
@@ -5882,7 +5888,7 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
     CC = CC_X86RegCall;
     break;
   case ParsedAttr::AT_MSABI:
-    CC = IsTargetDefaultMSABI ? CC_C : CC_Win64;
+    CC = IsTargetDefaultMSABI && !HasDistinctMSABI ? CC_C : CC_Win64;
     break;
   case ParsedAttr::AT_SysVABI:
     CC = IsTargetDefaultMSABI ? CC_X86_64SysV : CC_C;

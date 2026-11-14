@@ -8422,6 +8422,14 @@ static bool handleFunctionTypeAttr(TypeProcessingState &state, ParsedAttr &attr,
     return true;
 
   const FunctionType *fn = unwrapped.get();
+  // Where Microsoft's convention is the default, spelling it changes only how
+  // a member function returns a class, so no other type keeps it, and none
+  // in C, which has no member functions.
+  if (CC == CC_Win64 &&
+      S.Context.getTargetInfo().getTriple().hasDefaultMSABI() &&
+      !(S.getLangOpts().CPlusPlus && (fn->getReturnType()->isRecordType() ||
+                                      fn->getReturnType()->isDependentType())))
+    CC = CC_C;
   CallingConv CCOld = fn->getCallConv();
   Attr *CCAttr = getCCTypeAttr(S.Context, attr);
 

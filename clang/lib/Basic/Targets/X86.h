@@ -929,6 +929,7 @@ public:
     case CC_PreserveAll:
     case CC_PreserveNone:
     case CC_X86_64SysV:
+    case CC_Win64:
     case CC_Swift:
     case CC_SwiftAsync:
     case CC_X86RegCall:

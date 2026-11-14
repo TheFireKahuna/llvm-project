@@ -12764,6 +12764,7 @@ bool Sema::CheckFunctionDeclaration(Scope *S, FunctionDecl *NewFD,
 
       if (Method->isStatic())
         checkThisInStaticMemberFunctionType(Method);
+      checkMSABIMethodParams(Method);
     }
 
     if (CXXConversionDecl *Conversion = dyn_cast<CXXConversionDecl>(NewFD))
@@ -16660,9 +16661,11 @@ Decl *Sema::ActOnStartOfFunctionDef(Scope *FnBodyScope, Decl *D,
     PushDeclContext(FnBodyScope, FD);
 
   // Check the validity of our function parameters
-  if (BodyKind != FnBodyKind::Delete)
+  if (BodyKind != FnBodyKind::Delete) {
     CheckParmsForFunctionDef(FD->parameters(),
                              /*CheckParameterNames=*/true);
+    checkMSABIMethodParams(FD);
+  }
 
   // Add non-parameter declarations already in the function to the current
   // scope.

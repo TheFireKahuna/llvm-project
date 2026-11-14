@@ -1405,14 +1405,23 @@ bool ItaniumCXXABI::classifyReturnType(CGFunctionInfo &FI) const {
   if (!RD)
     return false;
 
+  // On Windows Itanium a member function whose type carries Microsoft's
+  // convention, as a COM method's does, returns every class as MSVC has it:
+  // through a pointer that follows 'this', which is in x1 on ARM64.
+  bool IsMSABIMethod = FI.isInstanceMethod() &&
+                       FI.getASTCallingConvention() == CC_Win64 &&
+                       CGM.getTriple().isGenericWindowsItaniumEnvironment();
+
   // If C++ prohibits us from making a copy, return by address using the target
   // hook getSRetAddrSpace to decide the AS.
-  if (!RD->canPassInRegisters()) {
+  if (!RD->canPassInRegisters() || IsMSABIMethod) {
     auto Align = CGM.getContext().getTypeAlignInChars(FI.getReturnType());
     LangAS SRetAS = CGM.getTargetCodeGenInfo().getSRetAddrSpace(RD);
     unsigned AS = CGM.getContext().getTargetAddressSpace(SRetAS);
     FI.getReturnInfo() =
         ABIArgInfo::getIndirect(Align, /*AddrSpace=*/AS, /*ByVal=*/false);
+    FI.getReturnInfo().setSRetAfterThis(IsMSABIMethod);
+    FI.getReturnInfo().setInReg(IsMSABIMethod && CGM.getTriple().isAArch64());
     return true;
   }
   return false;
@@ -2357,6 +2366,9 @@ void ItaniumCXXABI::emitVirtualInheritanceTables(const CXXRecordDecl *RD) {
   CodeGenVTables &VTables = CGM.getVTables();
   llvm::GlobalVariable *VTT = VTables.GetAddrOfVTT(RD);
   VTables.EmitVTTDefinition(VTT, CGM.getVTableLinkage(RD), RD);
+  // The VTT is exported with the vtable.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    setVTableSelectiveDLLImportExport(CGM, VTT, RD);
 }
 
 bool ItaniumCXXABI::canSpeculativelyEmitVTableAsBaseClass(

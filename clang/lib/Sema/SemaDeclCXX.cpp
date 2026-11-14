@@ -19113,6 +19113,26 @@ void Sema::SetFunctionBodyKind(Decl *D, SourceLocation Loc, FnBodyKind BodyKind,
   }
 }
 
+void Sema::checkMSABIMethodParams(const FunctionDecl *FD) {
+  const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+  if (!MD || !MD->isInstance() ||
+      MD->getFunctionType()->getCallConv() != CC_Win64 ||
+      !Context.getTargetInfo().getTriple().hasDefaultMSABI())
+    return;
+  // Microsoft's convention has the callee destroy a class argument. The
+  // Itanium C++ ABI passes a class that is not trivial for calls by reference
+  // and has the caller destroy it.
+  for (ParmVarDecl *Param : MD->parameters()) {
+    const CXXRecordDecl *RD = Param->getType()->getAsCXXRecordDecl();
+    if (RD && RD->isCompleteDefinition() && !RD->canPassInRegisters() &&
+        !Param->isInvalidDecl()) {
+      Diag(Param->getLocation(), diag::err_ms_abi_method_nontrivial_param)
+          << Param->getType();
+      Param->setInvalidDecl();
+    }
+  }
+}
+
 bool Sema::CheckOverridingFunctionAttributes(CXXMethodDecl *New,
                                              const CXXMethodDecl *Old) {
   const auto *NewFT = New->getType()->castAs<FunctionProtoType>();
@@ -19206,6 +19226,19 @@ bool Sema::CheckOverridingFunctionAttributes(CXXMethodDecl *New,
   // Sema::CheckFunctionDeclaration) is more clear.
   if (New->getStorageClass() == SC_Static)
     return false;
+
+  // Where Microsoft's convention is the default and the overridden function's
+  // type still carries it, an override that spells no convention takes it, as
+  // a COM method implemented without the SDK's macro does.
+  if (OldCC == CC_Win64 &&
+      Context.getTargetInfo().getTriple().hasDefaultMSABI() &&
+      !getCallingConvAttributedType(New->getType())) {
+    New->setType(
+        QualType(Context.adjustFunctionType(
+                     NewFT, NewFT->getExtInfo().withCallingConv(OldCC)),
+                 0));
+    return false;
+  }
 
   Diag(New->getLocation(),
        diag::err_conflicting_overriding_cc_attributes)

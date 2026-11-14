@@ -2390,6 +2390,9 @@ def err_conflicting_overriding_cc_attributes : Error<
   "virtual function %0 has different calling convention attributes "
   "%diff{($) than the function it overrides (which has calling convention $)|"
   "than the function it overrides}1,2">;
+def err_ms_abi_method_nontrivial_param : Error<
+  "%0, which is not trivial for calls, cannot be passed by value to a member "
+  "function with Microsoft's calling convention">;
 def warn_overriding_method_missing_noescape : Warning<
   "parameter of overriding method should be annotated with "
   "__attribute__((noescape))">, InGroup<MissingNoEscape>;

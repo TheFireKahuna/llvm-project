@@ -6618,6 +6618,14 @@ QualType Sema::FindCompositePointerType(SourceLocation Loc,
         EPI1.ExtInfo = EPI1.ExtInfo.withNoReturn(Noreturn);
         EPI2.ExtInfo = EPI2.ExtInfo.withNoReturn(Noreturn);
 
+        // Pointers to functions that are not members unify to the default
+        // convention where Microsoft's, which one spells, is the same ABI.
+        if (Steps[0].K == Step::Pointer &&
+            isMSABIAndDefault(EPI1.ExtInfo.getCC(), EPI2.ExtInfo.getCC())) {
+          EPI1.ExtInfo = EPI1.ExtInfo.withCallingConv(CC_C);
+          EPI2.ExtInfo = EPI2.ExtInfo.withCallingConv(CC_C);
+        }
+
         bool CFIUncheckedCallee =
             EPI1.CFIUncheckedCallee || EPI2.CFIUncheckedCallee;
         EPI1.CFIUncheckedCallee = CFIUncheckedCallee;

@@ -6391,6 +6391,11 @@ public:
   /// @endcode
   std::string getAmbiguousPathsDisplayString(CXXBasePaths &Paths);
 
+  /// Diagnose a by-value parameter of the member function \p FD that
+  /// Microsoft's calling convention, where the function's type keeps it apart
+  /// from the default, would have the callee destroy.
+  void checkMSABIMethodParams(const FunctionDecl *FD);
+
   bool CheckOverridingFunctionAttributes(CXXMethodDecl *New,
                                          const CXXMethodDecl *Old);
 
@@ -10448,6 +10453,11 @@ public:
   /// type information in legal manner (e.g. by strictly stripping "noreturn"
   /// or "noexcept", or by stripping "noescape" for arguments).
   bool IsFunctionConversion(QualType FromType, QualType ToType) const;
+
+  /// Whether \p A and \p B are Microsoft's calling convention and the default
+  /// one on a target whose default is Microsoft's, where a function type keeps
+  /// them apart though a function that is not a member has one ABI under both.
+  bool isMSABIAndDefault(CallingConv A, CallingConv B) const;
 
   /// Same as `IsFunctionConversion`, but if this would return true, it sets
   /// `ResultTy` to `ToType`.

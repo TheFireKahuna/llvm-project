@@ -1970,6 +1970,12 @@ bool Sema::TryFunctionConversion(QualType FromType, QualType ToType,
   return Changed;
 }
 
+bool Sema::isMSABIAndDefault(CallingConv A, CallingConv B) const {
+  return A != B && (A == CC_C || A == CC_Win64) &&
+         (B == CC_C || B == CC_Win64) &&
+         Context.getTargetInfo().getTriple().hasDefaultMSABI();
+}
+
 bool Sema::IsFunctionConversion(QualType FromType, QualType ToType) const {
   if (Context.hasSameUnqualifiedType(FromType, ToType))
     return false;
@@ -1985,6 +1991,7 @@ bool Sema::IsFunctionConversion(QualType FromType, QualType ToType) const {
   CanQualType CanFrom = Context.getCanonicalType(FromType);
   Type::TypeClass TyClass = CanTo->getTypeClass();
   if (TyClass != CanFrom->getTypeClass()) return false;
+  bool IsMember = false;
   if (TyClass != Type::FunctionProto && TyClass != Type::FunctionNoProto) {
     if (TyClass == Type::Pointer) {
       CanTo = CanTo.castAs<PointerType>()->getPointeeType();
@@ -2005,6 +2012,7 @@ bool Sema::IsFunctionConversion(QualType FromType, QualType ToType) const {
       return false;
     }
 
+    IsMember = TyClass == Type::MemberPointer;
     TyClass = CanTo->getTypeClass();
     if (TyClass != CanFrom->getTypeClass()) return false;
     if (TyClass != Type::FunctionProto && TyClass != Type::FunctionNoProto)
@@ -2022,6 +2030,15 @@ bool Sema::IsFunctionConversion(QualType FromType, QualType ToType) const {
   // Drop 'noreturn' if not present in target type.
   if (FromEInfo.getNoReturn() && !ToEInfo.getNoReturn()) {
     FromFn = Context.adjustFunctionType(FromFn, FromEInfo.withNoReturn(false));
+    Changed = true;
+  }
+
+  // Where Microsoft's convention is the default, a function that is not a
+  // member has one ABI whether or not its type spells the convention, so the
+  // two types convert either way.
+  if (!IsMember && isMSABIAndDefault(FromEInfo.getCC(), ToEInfo.getCC())) {
+    FromFn = Context.adjustFunctionType(
+        FromFn, FromFn->getExtInfo().withCallingConv(ToEInfo.getCC()));
     Changed = true;
   }
 
