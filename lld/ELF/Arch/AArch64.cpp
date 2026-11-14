@@ -13,6 +13,7 @@
 #include "SyntheticSections.h"
 #include "Target.h"
 #include "TargetImpl.h"
+#include "lld/Common/AArch64Instructions.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/Support/Endian.h"
 
@@ -1028,31 +1029,23 @@ bool AArch64Relaxer::tryRelaxAdrpAdd(const Relocation &adrpRel,
   if (adrpRel.addend != 0 || addRel.addend != 0)
     return false;
 
-  uint32_t adrpInstr = read32le(buf + adrpRel.offset);
-  uint32_t addInstr = read32le(buf + addRel.offset);
+  aarch64::Adrp adrp;
+  aarch64::Add add;
   // Check if the first instruction is ADRP and the second instruction is ADD.
-  if ((adrpInstr & 0x9f000000) != 0x90000000 ||
-      (addInstr & 0xffc00000) != 0x91000000)
+  if (!aarch64::parseAdrp(read32le(buf + adrpRel.offset), adrp) ||
+      !aarch64::parseAdd(read32le(buf + addRel.offset), add))
     return false;
-  uint32_t adrpDestReg = adrpInstr & 0x1f;
-  uint32_t addDestReg = addInstr & 0x1f;
-  uint32_t addSrcReg = (addInstr >> 5) & 0x1f;
-  if (adrpDestReg != addDestReg || adrpDestReg != addSrcReg)
+  if (adrp.destRegister != add.destRegister ||
+      adrp.destRegister != add.srcRegister)
     return false;
 
-  Symbol &sym = *adrpRel.sym;
   // Check if the address difference is within 1MiB range.
-  int64_t val = sym.getVA(ctx) - (secAddr + addRel.offset);
+  int64_t val = adrpRel.sym->getVA(ctx) - (secAddr + addRel.offset);
   if (val < -1024 * 1024 || val >= 1024 * 1024)
     return false;
 
-  Relocation adrRel = {R_ABS, R_AARCH64_ADR_PREL_LO21, addRel.offset,
-                       /*addend=*/0, &sym};
-  // nop
-  write32le(buf + adrpRel.offset, 0xd503201f);
-  // adr x_<dest_reg>
-  write32le(buf + adrRel.offset, 0x10000000 | adrpDestReg);
-  ctx.target->relocate(buf + adrRel.offset, adrRel, val);
+  aarch64::writeNop(buf + adrpRel.offset);
+  aarch64::writeAdr(buf + addRel.offset, adrp.destRegister, val);
   return true;
 }
 
