@@ -56,7 +56,59 @@ public:
 
 namespace toolchains {
 
-class LLVM_LIBRARY_VISIBILITY MSVCToolChain : public ToolChain {
+/// The base of the toolchains that compile against the Windows SDK and the
+/// Universal CRT, which /winsdkdir, /winsdkversion and /winsysroot locate, and
+/// offload to the CUDA, ROCm and SYCL installations beside them.
+class LLVM_LIBRARY_VISIBILITY WindowsSDKToolChain : public ToolChain {
+public:
+  WindowsSDKToolChain(const Driver &D, const llvm::Triple &Triple,
+                      const llvm::opt::ArgList &Args);
+
+  bool getWindowsSDKLibraryPath(const llvm::opt::ArgList &Args,
+                                std::string &path) const;
+  bool getUniversalCRTLibraryPath(const llvm::opt::ArgList &Args,
+                                  std::string &path) const;
+
+  void AddCudaIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                          llvm::opt::ArgStringList &CC1Args) const override;
+
+  void AddHIPIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                         llvm::opt::ArgStringList &CC1Args) const override;
+
+  void addOffloadRTLibs(unsigned ActiveKinds, const llvm::opt::ArgList &Args,
+                        llvm::opt::ArgStringList &CmdArgs) const override;
+
+  void addSYCLIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                          llvm::opt::ArgStringList &CC1Args) const override;
+
+  void printVerboseInfo(raw_ostream &OS) const override;
+
+protected:
+  void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
+                                     llvm::opt::ArgStringList &CC1Args,
+                                     const std::string &folder,
+                                     const Twine &subfolder1,
+                                     const Twine &subfolder2 = "",
+                                     const Twine &subfolder3 = "") const;
+  /// Adds the directories the environment variable \p Var lists as system
+  /// include directories. Returns whether it lists any.
+  bool addSystemIncludesFromEnv(const llvm::opt::ArgList &DriverArgs,
+                                llvm::opt::ArgStringList &CC1Args,
+                                StringRef Var) const;
+  void addUniversalCRTIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                                  llvm::opt::ArgStringList &CC1Args) const;
+  void addWindowsSDKIncludeArgs(const llvm::opt::ArgList &DriverArgs,
+                                llvm::opt::ArgStringList &CC1Args) const;
+
+  std::optional<llvm::StringRef> WinSdkDir, WinSdkVersion, WinSysRoot;
+
+private:
+  LazyDetector<CudaInstallationDetector> CudaInstallation;
+  LazyDetector<RocmInstallationDetector> RocmInstallation;
+  LazyDetector<SYCLInstallationDetector> SYCLInstallation;
+};
+
+class LLVM_LIBRARY_VISIBILITY MSVCToolChain : public WindowsSDKToolChain {
 public:
   MSVCToolChain(const Driver &D, const llvm::Triple &Triple,
                 const llvm::opt::ArgList &Args);
@@ -103,22 +155,6 @@ public:
       const llvm::opt::ArgList &DriverArgs,
       llvm::opt::ArgStringList &CC1Args) const override;
 
-  void AddCudaIncludeArgs(const llvm::opt::ArgList &DriverArgs,
-                          llvm::opt::ArgStringList &CC1Args) const override;
-
-  void AddHIPIncludeArgs(const llvm::opt::ArgList &DriverArgs,
-                         llvm::opt::ArgStringList &CC1Args) const override;
-
-  void addOffloadRTLibs(unsigned ActiveKinds, const llvm::opt::ArgList &Args,
-                        llvm::opt::ArgStringList &CmdArgs) const override;
-
-  void addSYCLIncludeArgs(const llvm::opt::ArgList &DriverArgs,
-                          llvm::opt::ArgStringList &CC1Args) const override;
-
-  bool getWindowsSDKLibraryPath(
-      const llvm::opt::ArgList &Args, std::string &path) const;
-  bool getUniversalCRTLibraryPath(const llvm::opt::ArgList &Args,
-                                  std::string &path) const;
   bool useUniversalCRT() const;
   VersionTuple
   computeMSVCVersion(const Driver *D,
@@ -130,8 +166,6 @@ public:
   SanitizerMask
   getSupportedSanitizers(BoundArch BA,
                          Action::OffloadKind DeviceOffloadKind) const override;
-
-  void printVerboseInfo(raw_ostream &OS) const override;
 
   bool FoundMSVCInstall() const { return !VCToolChainPath.empty(); }
 
@@ -147,24 +181,13 @@ protected:
   void AddMSVCStdlibIncludeArgs(const llvm::opt::ArgList &DriverArgs,
                                 llvm::opt::ArgStringList &CC1Args) const;
 
-  void AddSystemIncludeWithSubfolder(const llvm::opt::ArgList &DriverArgs,
-                                     llvm::opt::ArgStringList &CC1Args,
-                                     const std::string &folder,
-                                     const Twine &subfolder1,
-                                     const Twine &subfolder2 = "",
-                                     const Twine &subfolder3 = "") const;
-
   Tool *getTool(Action::ActionClass AC) const override;
   Tool *buildLinker() const override;
   Tool *buildAssembler() const override;
 
 private:
-  std::optional<llvm::StringRef> WinSdkDir, WinSdkVersion, WinSysRoot;
   std::string VCToolChainPath;
   llvm::ToolsetLayout VSLayout = llvm::ToolsetLayout::OlderVS;
-  LazyDetector<CudaInstallationDetector> CudaInstallation;
-  LazyDetector<RocmInstallationDetector> RocmInstallation;
-  LazyDetector<SYCLInstallationDetector> SYCLInstallation;
   mutable std::unique_ptr<tools::ARM64XObjcopy> Objcopy;
 };
 

@@ -337,6 +337,15 @@ void aarch64::getAArch64TargetFeatures(const Driver &D,
   // set to a feature list.
   Extensions.toLLVMFeatureList(Features);
 
+  // The hardware floor of Windows Itanium and NT-POSIX. It is a feature set
+  // and not an architecture version: Armv8.2-A cores back-port LSE2, whose
+  // 16-byte atomic accesses are what exclude the older ones.
+  if (Triple.isWindowsItaniumOrNTPOSIXEnvironment())
+    Features.insert(Features.end(),
+                    {"+v8.2a", "+neon", "+crc", "+lse", "+lse2", "+rcpc",
+                     "+rcpc-immo", "+flagm", "+dotprod", "+fullfp16", "+rdm",
+                     "+aes", "+sha2", "+ccpp", "+pauth"});
+
   if (Arg *A = Args.getLastArg(options::OPT_mtp_mode_EQ)) {
     StringRef Mtp = A->getValue();
     if (Mtp == "el3" || Mtp == "tpidr_el3")

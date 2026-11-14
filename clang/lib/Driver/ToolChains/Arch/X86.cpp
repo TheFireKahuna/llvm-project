@@ -100,6 +100,9 @@ std::string x86::getX86TargetCPU(const Driver &D, const ArgList &Args,
   if (Triple.isAndroid())
     return Is64Bit ? "x86-64" : "i686";
 
+  if (Is64Bit && Triple.isWindowsItaniumOrNTPOSIXEnvironment())
+    return "x86-64-v3";
+
   // Everything else goes to x86-64 in 64-bit mode.
   if (Is64Bit)
     return "x86-64";
@@ -158,6 +161,13 @@ void x86::getX86TargetFeatures(const Driver &D, const llvm::Triple &Triple,
     } else
       Features.push_back("+ssse3");
   }
+
+  // A target's hardware floor, which every processor it supports has, holds
+  // whatever CPU the compilation is tuned for.
+  SmallVector<StringRef, 32> Baseline;
+  llvm::X86::getTripleBaselineFeatures(Triple, Baseline, /*NeedPlus=*/true);
+  for (StringRef F : Baseline)
+    Features.push_back(Args.MakeArgString(F));
 
   // Translate the high level `-mretpoline` flag to the specific target feature
   // flags. We also detect if the user asked for retpoline external thunks but

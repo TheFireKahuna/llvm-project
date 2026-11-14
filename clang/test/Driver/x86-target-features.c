@@ -485,3 +485,32 @@
 //
 // ERROR: unsupported argument 'foo' to option '-mapx-features='
 // ERROR: unsupported argument 'bar' to option '-mapx-features='
+
+// Windows Itanium and NT-POSIX default to x86-64-v3, and every compilation for
+// them uses their hardware floor: that level, with the features beside it that
+// every processor they support has. -march= and /arch: only tune.
+// RUN: %clang --target=x86_64-unknown-windows-itanium -### -S %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=WIN-V3,WIN-FLOOR %s
+// RUN: %clang --target=x86_64-pc-windows-ntposix -### -S %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=WIN-V3,WIN-FLOOR %s
+// RUN: %clang --target=x86_64-unknown-windows-itanium -march=x86-64 -### -S \
+// RUN:   %s 2>&1 | FileCheck --check-prefixes=WIN-MARCH,WIN-FLOOR %s
+// RUN: %clang --target=x86_64-unknown-windows-itanium --driver-mode=cl \
+// RUN:   /arch:AVX -### -c %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=WIN-ARCH,WIN-FLOOR %s
+// WIN-V3: "-target-cpu" "x86-64-v3"
+// WIN-MARCH: "-target-cpu" "x86-64"
+// WIN-ARCH: "-target-cpu" "sandybridge"
+// WIN-FLOOR: "-target-feature" "+avx2"
+// WIN-FLOOR-SAME: "-target-feature" "+fma"
+// WIN-FLOOR-SAME: "-target-feature" "+bmi2"
+// WIN-FLOOR-SAME: "-target-feature" "+cx16"
+// WIN-FLOOR-SAME: "-target-feature" "+aes"
+// WIN-FLOOR-SAME: "-target-feature" "+pclmul"
+// WIN-FLOOR-SAME: "-target-feature" "+fsgsbase"
+// WIN-FLOOR-SAME: "-target-feature" "+adx"
+// WIN-FLOOR-SAME: "-target-feature" "+rdrnd"
+// WIN-FLOOR-SAME: "-target-feature" "+rdseed"
+// WIN-FLOOR-SAME: "-target-feature" "+clflushopt"
+// WIN-FLOOR-SAME: "-target-feature" "+xsavec"
+// WIN-FLOOR-NOT: "+xsaves"

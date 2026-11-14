@@ -466,6 +466,13 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
   SanitizerMask InvalidTrappingKinds = TrappingKinds & NotAllowedWithTrap;
   const llvm::Triple &Triple = TC.getTriple();
 
+  // Cross-DSO CFI calls a runtime for a target outside the image, and Windows
+  // Itanium and NT-POSIX have no sanitizer runtime.
+  if (CfiCrossDso && Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+      DiagnoseErrors)
+    D.Diag(diag::err_drv_unsupported_opt_for_target)
+        << "-fsanitize-cfi-cross-dso" << Triple.str();
+
   MinimalRuntime =
       Args.hasFlag(options::OPT_fsanitize_minimal_runtime,
                    options::OPT_fno_sanitize_minimal_runtime, MinimalRuntime);
@@ -848,6 +855,10 @@ SanitizerArgs::SanitizerArgs(const ToolChain &TC,
     // for CFI. FIXME: Remove this once we support vptr on Windows.
     if (TC.getTriple().isOSWindows())
       KindsToDiagnose &= ~SanitizerKind::CFI;
+    // Windows Itanium and NT-POSIX have no sanitizer runtime at all, so every
+    // check must trap.
+    if (TC.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      KindsToDiagnose = Kinds & ~TrappingKinds & NeedsUbsanRt;
     if (KindsToDiagnose) {
       SanitizerSet S;
       S.Mask = KindsToDiagnose;

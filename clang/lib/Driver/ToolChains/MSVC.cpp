@@ -527,10 +527,22 @@ void tools::ARM64XObjcopy::ConstructJob(Compilation &C, const JobAction &JA,
                                          Exec, CmdArgs, Inputs, Output));
 }
 
-MSVCToolChain::MSVCToolChain(const Driver &D, const llvm::Triple &Triple,
-                             const ArgList &Args)
+WindowsSDKToolChain::WindowsSDKToolChain(const Driver &D,
+                                         const llvm::Triple &Triple,
+                                         const ArgList &Args)
     : ToolChain(D, Triple, Args), CudaInstallation(D, Triple, Args),
       RocmInstallation(D, Triple, Args), SYCLInstallation(D, Triple, Args) {
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsdkdir))
+    WinSdkDir = A->getValue();
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsdkversion))
+    WinSdkVersion = A->getValue();
+  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsysroot))
+    WinSysRoot = A->getValue();
+}
+
+MSVCToolChain::MSVCToolChain(const Driver &D, const llvm::Triple &Triple,
+                             const ArgList &Args)
+    : WindowsSDKToolChain(D, Triple, Args) {
   getProgramPaths().push_back(getDriver().Dir);
 
   std::optional<llvm::StringRef> VCToolsDir, VCToolsVersion;
@@ -538,12 +550,6 @@ MSVCToolChain::MSVCToolChain(const Driver &D, const llvm::Triple &Triple,
     VCToolsDir = A->getValue();
   if (Arg *A = Args.getLastArg(options::OPT__SLASH_vctoolsversion))
     VCToolsVersion = A->getValue();
-  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsdkdir))
-    WinSdkDir = A->getValue();
-  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsdkversion))
-    WinSdkVersion = A->getValue();
-  if (Arg *A = Args.getLastArg(options::OPT__SLASH_winsysroot))
-    WinSysRoot = A->getValue();
 
   // Check the command line first, that's the user explicitly telling us what to
   // use. Check the environment next, in case we're being invoked from a VS
@@ -612,23 +618,24 @@ bool MSVCToolChain::isPICDefaultForced() const {
          getArch() == llvm::Triple::aarch64;
 }
 
-void MSVCToolChain::AddCudaIncludeArgs(const ArgList &DriverArgs,
-                                       ArgStringList &CC1Args) const {
+void WindowsSDKToolChain::AddCudaIncludeArgs(const ArgList &DriverArgs,
+                                             ArgStringList &CC1Args) const {
   CudaInstallation->AddCudaIncludeArgs(DriverArgs, CC1Args);
 }
 
-void MSVCToolChain::AddHIPIncludeArgs(const ArgList &DriverArgs,
-                                      ArgStringList &CC1Args) const {
+void WindowsSDKToolChain::AddHIPIncludeArgs(const ArgList &DriverArgs,
+                                            ArgStringList &CC1Args) const {
   RocmInstallation->AddHIPIncludeArgs(DriverArgs, CC1Args);
 }
 
-void MSVCToolChain::addSYCLIncludeArgs(const ArgList &DriverArgs,
-                                       ArgStringList &CC1Args) const {
+void WindowsSDKToolChain::addSYCLIncludeArgs(const ArgList &DriverArgs,
+                                             ArgStringList &CC1Args) const {
   SYCLInstallation->addSYCLIncludeArgs(DriverArgs, CC1Args);
 }
 
-void MSVCToolChain::addOffloadRTLibs(unsigned ActiveKinds, const ArgList &Args,
-                                     ArgStringList &CmdArgs) const {
+void WindowsSDKToolChain::addOffloadRTLibs(unsigned ActiveKinds,
+                                           const ArgList &Args,
+                                           ArgStringList &CmdArgs) const {
   if (!Args.hasFlag(options::OPT_offloadlib, options::OPT_no_offloadlib,
                     true) ||
       Args.hasArg(options::OPT_no_hip_rt) || Args.hasArg(options::OPT_r))
@@ -654,7 +661,7 @@ void MSVCToolChain::addOffloadRTLibs(unsigned ActiveKinds, const ArgList &Args,
   }
 }
 
-void MSVCToolChain::printVerboseInfo(raw_ostream &OS) const {
+void WindowsSDKToolChain::printVerboseInfo(raw_ostream &OS) const {
   CudaInstallation->print(OS);
   RocmInstallation->print(OS);
 }
@@ -678,8 +685,8 @@ MSVCToolChain::getSubDirectoryPath(llvm::SubDirectoryType Type,
 // directory by name and uses the last one of the list.
 // So we compare entry names lexicographically to find the greatest one.
 // Gets the library path required to link against the Windows SDK.
-bool MSVCToolChain::getWindowsSDKLibraryPath(const ArgList &Args,
-                                             std::string &path) const {
+bool WindowsSDKToolChain::getWindowsSDKLibraryPath(const ArgList &Args,
+                                                   std::string &path) const {
   std::string sdkPath;
   int sdkMajor = 0;
   std::string windowsSDKIncludeVersion;
@@ -707,8 +714,8 @@ bool MSVCToolChain::useUniversalCRT() const {
   return llvm::useUniversalCRT(VSLayout, VCToolChainPath, getArch(), getVFS());
 }
 
-bool MSVCToolChain::getUniversalCRTLibraryPath(const ArgList &Args,
-                                               std::string &Path) const {
+bool WindowsSDKToolChain::getUniversalCRTLibraryPath(const ArgList &Args,
+                                                     std::string &Path) const {
   std::string UniversalCRTSdkPath;
   std::string UCRTVersion;
 
@@ -769,13 +776,82 @@ static VersionTuple getMSVCVersionFromExe(const std::string &BinDir) {
   return Version;
 }
 
-void MSVCToolChain::AddSystemIncludeWithSubfolder(
+void WindowsSDKToolChain::AddSystemIncludeWithSubfolder(
     const ArgList &DriverArgs, ArgStringList &CC1Args,
     const std::string &folder, const Twine &subfolder1, const Twine &subfolder2,
     const Twine &subfolder3) const {
   llvm::SmallString<128> path(folder);
   llvm::sys::path::append(path, subfolder1, subfolder2, subfolder3);
   addSystemInclude(DriverArgs, CC1Args, path);
+}
+
+bool WindowsSDKToolChain::addSystemIncludesFromEnv(const ArgList &DriverArgs,
+                                                   ArgStringList &CC1Args,
+                                                   StringRef Var) const {
+  if (auto Val = llvm::sys::Process::GetEnv(Var)) {
+    SmallVector<StringRef, 8> Dirs;
+    StringRef(*Val).split(Dirs, ";", /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+    if (!Dirs.empty()) {
+      addSystemIncludes(DriverArgs, CC1Args, Dirs);
+      return true;
+    }
+  }
+  return false;
+}
+
+void WindowsSDKToolChain::addUniversalCRTIncludeArgs(
+    const ArgList &DriverArgs, ArgStringList &CC1Args) const {
+  std::string UniversalCRTSdkPath;
+  std::string UCRTVersion;
+  if (llvm::getUniversalCRTSdkDir(getVFS(), WinSdkDir, WinSdkVersion,
+                                  WinSysRoot, UniversalCRTSdkPath,
+                                  UCRTVersion)) {
+    if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
+        WinSdkVersion.has_value())
+      UCRTVersion = *WinSdkVersion;
+    AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, UniversalCRTSdkPath,
+                                  "Include", UCRTVersion, "ucrt");
+  }
+}
+
+void WindowsSDKToolChain::addWindowsSDKIncludeArgs(
+    const ArgList &DriverArgs, ArgStringList &CC1Args) const {
+  std::string WindowsSDKDir;
+  int major = 0;
+  std::string windowsSDKIncludeVersion;
+  std::string windowsSDKLibVersion;
+  if (llvm::getWindowsSDKDir(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
+                             WindowsSDKDir, major, windowsSDKIncludeVersion,
+                             windowsSDKLibVersion)) {
+    if (major >= 10)
+      if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
+          WinSdkVersion.has_value())
+        windowsSDKIncludeVersion = windowsSDKLibVersion = *WinSdkVersion;
+    if (major >= 8) {
+      // Note: windowsSDKIncludeVersion is empty for SDKs prior to v10.
+      // Anyway, llvm::sys::path::append is able to manage it.
+      AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
+                                    "Include", windowsSDKIncludeVersion,
+                                    "shared");
+      AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
+                                    "Include", windowsSDKIncludeVersion, "um");
+      AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
+                                    "Include", windowsSDKIncludeVersion,
+                                    "winrt");
+      if (major >= 10) {
+        llvm::VersionTuple Tuple;
+        if (!Tuple.tryParse(windowsSDKIncludeVersion) &&
+            Tuple.getSubminor().value_or(0) >= 17134) {
+          AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
+                                        "Include", windowsSDKIncludeVersion,
+                                        "cppwinrt");
+        }
+      }
+    } else {
+      AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
+                                    "Include");
+    }
+  }
 }
 
 void MSVCToolChain::AddMSVCStdlibMultilibIncludeArgs(
@@ -823,22 +899,10 @@ void MSVCToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   for (const auto &Path : DriverArgs.getAllArgValues(options::OPT__SLASH_imsvc))
     addSystemInclude(DriverArgs, CC1Args, Path);
 
-  auto AddSystemIncludesFromEnv = [&](StringRef Var) -> bool {
-    if (auto Val = llvm::sys::Process::GetEnv(Var)) {
-      SmallVector<StringRef, 8> Dirs;
-      StringRef(*Val).split(Dirs, ";", /*MaxSplit=*/-1, /*KeepEmpty=*/false);
-      if (!Dirs.empty()) {
-        addSystemIncludes(DriverArgs, CC1Args, Dirs);
-        return true;
-      }
-    }
-    return false;
-  };
-
   // Add %INCLUDE%-like dirs via /external:env: flags.
   for (const auto &Var :
        DriverArgs.getAllArgValues(options::OPT__SLASH_external_env)) {
-    AddSystemIncludesFromEnv(Var);
+    addSystemIncludesFromEnv(DriverArgs, CC1Args, Var);
   }
 
   // Add DIA SDK include if requested.
@@ -867,8 +931,8 @@ void MSVCToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
           options::OPT__SLASH_vctoolsdir, options::OPT__SLASH_vctoolsversion,
           options::OPT__SLASH_winsysroot, options::OPT__SLASH_winsdkdir,
           options::OPT__SLASH_winsdkversion)) {
-    bool Found = AddSystemIncludesFromEnv("INCLUDE");
-    Found |= AddSystemIncludesFromEnv("EXTERNAL_INCLUDE");
+    bool Found = addSystemIncludesFromEnv(DriverArgs, CC1Args, "INCLUDE");
+    Found |= addSystemIncludesFromEnv(DriverArgs, CC1Args, "EXTERNAL_INCLUDE");
     if (Found)
       return;
   }
@@ -882,58 +946,9 @@ void MSVCToolChain::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
         DriverArgs, CC1Args,
         getSubDirectoryPath(llvm::SubDirectoryType::Include, "atlmfc"));
 
-    if (useUniversalCRT()) {
-      std::string UniversalCRTSdkPath;
-      std::string UCRTVersion;
-      if (llvm::getUniversalCRTSdkDir(getVFS(), WinSdkDir, WinSdkVersion,
-                                      WinSysRoot, UniversalCRTSdkPath,
-                                      UCRTVersion)) {
-        if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
-            WinSdkVersion.has_value())
-          UCRTVersion = *WinSdkVersion;
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, UniversalCRTSdkPath,
-                                      "Include", UCRTVersion, "ucrt");
-      }
-    }
-
-    std::string WindowsSDKDir;
-    int major = 0;
-    std::string windowsSDKIncludeVersion;
-    std::string windowsSDKLibVersion;
-    if (llvm::getWindowsSDKDir(getVFS(), WinSdkDir, WinSdkVersion, WinSysRoot,
-                               WindowsSDKDir, major, windowsSDKIncludeVersion,
-                               windowsSDKLibVersion)) {
-      if (major >= 10)
-        if (!(WinSdkDir.has_value() || WinSysRoot.has_value()) &&
-            WinSdkVersion.has_value())
-          windowsSDKIncludeVersion = windowsSDKLibVersion = *WinSdkVersion;
-      if (major >= 8) {
-        // Note: windowsSDKIncludeVersion is empty for SDKs prior to v10.
-        // Anyway, llvm::sys::path::append is able to manage it.
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                      "Include", windowsSDKIncludeVersion,
-                                      "shared");
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                      "Include", windowsSDKIncludeVersion,
-                                      "um");
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                      "Include", windowsSDKIncludeVersion,
-                                      "winrt");
-        if (major >= 10) {
-          llvm::VersionTuple Tuple;
-          if (!Tuple.tryParse(windowsSDKIncludeVersion) &&
-              Tuple.getSubminor().value_or(0) >= 17134) {
-            AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                          "Include", windowsSDKIncludeVersion,
-                                          "cppwinrt");
-          }
-        }
-      } else {
-        AddSystemIncludeWithSubfolder(DriverArgs, CC1Args, WindowsSDKDir,
-                                      "Include");
-      }
-    }
-
+    if (useUniversalCRT())
+      addUniversalCRTIncludeArgs(DriverArgs, CC1Args);
+    addWindowsSDKIncludeArgs(DriverArgs, CC1Args);
     return;
   }
 
