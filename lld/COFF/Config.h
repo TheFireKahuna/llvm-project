@@ -302,6 +302,15 @@ struct Configuration {
   // Used for /lto-pgo-warn-mismatch:
   bool ltoPGOWarnMismatch = true;
 
+  // Used for /lto-whole-program-visibility:
+  bool ltoWholeProgramVisibility = false;
+
+  // Used for /lto-validate-all-vtables-have-type-infos:
+  bool ltoValidateAllVtablesHaveTypeInfos = false;
+
+  // The result of the check /lto-validate-all-vtables-have-type-infos asks for.
+  bool ltoAllVtablesHaveTypeInfos = false;
+
   // Used for /lto-sample-profile:
   llvm::StringRef ltoSampleProfileName;
 

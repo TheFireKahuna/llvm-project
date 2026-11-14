@@ -57,6 +57,8 @@ private:
   std::unique_ptr<llvm::raw_fd_ostream> indexFile;
   llvm::DenseSet<StringRef> thinIndices;
   std::vector<Symbol *> prevailingSyms;
+  // The symbols the image exports, under /lto-whole-program-visibility.
+  llvm::DenseSet<Symbol *> exportedSyms;
 
   std::string getThinLTOOutputFile(StringRef path);
   llvm::lto::Config createConfig();

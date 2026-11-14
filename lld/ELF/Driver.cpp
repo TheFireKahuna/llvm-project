@@ -43,6 +43,7 @@
 #include "lld/Common/Memory.h"
 #include "lld/Common/Strings.h"
 #include "lld/Common/Version.h"
+#include "lld/Common/VtableTypeInfos.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -1120,14 +1121,7 @@ template <class ELFT> static void readCallGraphsFromObjectFiles(Ctx &ctx) {
 template <class ELFT>
 static void ltoValidateAllVtablesHaveTypeInfos(Ctx &ctx,
                                                opt::InputArgList &args) {
-  DenseSet<StringRef> typeInfoSymbols;
-  SmallSetVector<StringRef, 0> vtableSymbols;
-  auto processVtableAndTypeInfoSymbols = [&](StringRef name) {
-    if (name.consume_front("_ZTI"))
-      typeInfoSymbols.insert(name);
-    else if (name.consume_front("_ZTV"))
-      vtableSymbols.insert(name);
-  };
+  VtableTypeInfoCheck typeInfoCheck;
 
   // Examine all native symbol tables.
   for (ELFFileBase *f : ctx.objectFiles) {
@@ -1135,7 +1129,7 @@ static void ltoValidateAllVtablesHaveTypeInfos(Ctx &ctx,
     for (const Elf_Sym &s : f->template getGlobalELFSyms<ELFT>()) {
       if (s.st_shndx != SHN_UNDEF) {
         StringRef name = check(s.getName(f->getStringTable()));
-        processVtableAndTypeInfoSymbols(name);
+        typeInfoCheck.addSymbol(name);
       }
     }
   }
@@ -1145,41 +1139,13 @@ static void ltoValidateAllVtablesHaveTypeInfos(Ctx &ctx,
     for (const Elf_Sym &s : f->template getELFSyms<ELFT>()) {
       if (s.st_shndx != SHN_UNDEF) {
         StringRef name = check(s.getName(f->getStringTable()));
-        processVtableAndTypeInfoSymbols(name);
+        typeInfoCheck.addSymbol(name);
       }
     }
   }
 
-  SmallSetVector<StringRef, 0> vtableSymbolsWithNoRTTI;
-  for (StringRef s : vtableSymbols)
-    if (!typeInfoSymbols.contains(s))
-      vtableSymbolsWithNoRTTI.insert(s);
-
-  // Remove known safe symbols.
-  for (auto *arg : args.filtered(OPT_lto_known_safe_vtables)) {
-    StringRef knownSafeName = arg->getValue();
-    if (!knownSafeName.consume_front("_ZTV"))
-      ErrAlways(ctx)
-          << "--lto-known-safe-vtables=: expected symbol to start with _ZTV, "
-             "but got "
-          << knownSafeName;
-    Expected<GlobPattern> pat = GlobPattern::create(knownSafeName);
-    if (!pat) {
-      ErrAlways(ctx) << "--lto-known-safe-vtables=: " << pat.takeError();
-      continue;
-    }
-    vtableSymbolsWithNoRTTI.remove_if(
-        [&](StringRef s) { return pat->match(s); });
-  }
-
-  ctx.ltoAllVtablesHaveTypeInfos = vtableSymbolsWithNoRTTI.empty();
-  // Check for unmatched RTTI symbols
-  for (StringRef s : vtableSymbolsWithNoRTTI) {
-    Msg(ctx) << "--lto-validate-all-vtables-have-type-infos: RTTI missing for "
-                "vtable "
-                "_ZTV"
-             << s << ", --lto-whole-program-visibility disabled";
-  }
+  ctx.ltoAllVtablesHaveTypeInfos = typeInfoCheck.run(
+      ctx, args::getStrings(args, OPT_lto_known_safe_vtables));
 }
 
 static CGProfileSortKind getCGProfileSortKind(Ctx &ctx,

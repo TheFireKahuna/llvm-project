@@ -45,6 +45,12 @@ from the [LLVM releases web site](https://llvm.org/releases/).
   function table only because they are exported are now marked
   export-suppressed.
 
+* Added `/lto-whole-program-visibility`,
+  `/lto-validate-all-vtables-have-type-infos` and `/lto-known-safe-vtables`,
+  which work as ELF's `--lto-whole-program-visibility`,
+  `--lto-validate-all-vtables-have-type-infos` and `--lto-known-safe-vtables`
+  do. A vtable the image exports stays public.
+
 ### MinGW Improvements
 
 ### MachO Improvements

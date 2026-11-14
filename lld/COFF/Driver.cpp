@@ -22,6 +22,7 @@
 #include "lld/Common/Filesystem.h"
 #include "lld/Common/Timer.h"
 #include "lld/Common/Version.h"
+#include "lld/Common/VtableTypeInfos.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -1572,6 +1573,27 @@ void LinkerDriver::pullArm64ECIcallHelper() {
         ctx.symtab.addGCRoot("__icall_helper_arm64ec");
 }
 
+// Checks the vtables that native objects and DLLs define. An import library
+// names what a DLL defines.
+static void ltoValidateAllVtablesHaveTypeInfos(COFFLinkerContext &ctx,
+                                               opt::InputArgList &args) {
+  VtableTypeInfoCheck typeInfoCheck;
+  for (ObjFile *f : ctx.objFileInstances) {
+    COFFObjectFile *obj = f->getCOFFObj();
+    for (const object::SymbolRef &sym : obj->symbols()) {
+      COFFSymbolRef coffSym = obj->getCOFFSymbol(sym);
+      if (coffSym.isExternal() && !coffSym.isUndefined())
+        typeInfoCheck.addSymbol(check(obj->getSymbolName(coffSym)));
+    }
+  }
+  for (ImportFile *f : ctx.importFileInstances)
+    if (f->impSym)
+      typeInfoCheck.addSymbol(
+          f->impSym->getName().drop_front(strlen("__imp_")));
+  ctx.config.ltoAllVtablesHaveTypeInfos = typeInfoCheck.run(
+      ctx, args::getStrings(args, OPT_lto_known_safe_vtables));
+}
+
 // In MinGW, if no symbols are chosen to be exported, then all symbols are
 // automatically exported by default. This behavior can be forced by the
 // -export-all-symbols option, so that it happens even when exports are
@@ -2356,6 +2378,12 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Handle miscellaneous boolean flags.
   config->ltoPGOWarnMismatch = args.hasFlag(OPT_lto_pgo_warn_mismatch,
                                             OPT_lto_pgo_warn_mismatch_no, true);
+  config->ltoWholeProgramVisibility =
+      args.hasFlag(OPT_lto_whole_program_visibility,
+                   OPT_lto_whole_program_visibility_no, false);
+  config->ltoValidateAllVtablesHaveTypeInfos =
+      args.hasFlag(OPT_lto_validate_all_vtables_have_type_infos,
+                   OPT_lto_validate_all_vtables_have_type_infos_no, false);
   config->allowBind = args.hasFlag(OPT_allowbind, OPT_allowbind_no, true);
   config->allowIsolation =
       args.hasFlag(OPT_allowisolation, OPT_allowisolation_no, true);
@@ -2935,6 +2963,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     // are chosen to be exported.
     maybeExportMinGWSymbols(args);
   }
+
+  if (config->ltoValidateAllVtablesHaveTypeInfos)
+    ltoValidateAllVtablesHaveTypeInfos(ctx, args);
 
   // Do LTO by compiling bitcode input files to a set of native COFF files then
   // link those files (unless -thinlto-index-only was given, in which case we
