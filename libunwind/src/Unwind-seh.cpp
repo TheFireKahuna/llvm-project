@@ -116,7 +116,9 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
     // parameters which we set below, and pass them to the personality function.
     ours = true;
     exc = (_Unwind_Exception *)ms_exc->ExceptionInformation[0];
-    if (!IS_UNWINDING(ms_exc->ExceptionFlags) && ms_exc->NumberParameters > 1) {
+    // Only __libunwind_seh_personality() passes three parameters. Its record
+    // carries the unwinding flags when it runs a forced unwind.
+    if (ms_exc->NumberParameters == 3) {
       ctx = (struct _Unwind_Context *)ms_exc->ExceptionInformation[1];
       action = (_Unwind_Action)ms_exc->ExceptionInformation[2];
     }
@@ -134,10 +136,7 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
     ctx = (struct _Unwind_Context *)&cursor;
 
     if (!IS_UNWINDING(ms_exc->ExceptionFlags)) {
-      if (ours && ms_exc->NumberParameters > 1)
-        action =  (_Unwind_Action)(_UA_CLEANUP_PHASE | _UA_FORCE_UNWIND);
-      else
-        action = _UA_SEARCH_PHASE;
+      action = _UA_SEARCH_PHASE;
     } else {
       if (ours && ms_exc->ExceptionInformation[1] == (ULONG_PTR)frame)
         action = (_Unwind_Action)(_UA_CLEANUP_PHASE | _UA_HANDLER_FRAME);
@@ -162,7 +161,7 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
   case _URC_HANDLER_FOUND:
     // If we were called by __libunwind_seh_personality(), indicate that
     // a handler was found; otherwise, initiate phase 2 by unwinding.
-    if (ours && ms_exc->NumberParameters > 1)
+    if (ours && ms_exc->NumberParameters == 3)
       return static_cast<EXCEPTION_DISPOSITION>(4);
     // This should never happen in phase 2.
     if (IS_UNWINDING(ms_exc->ExceptionFlags))
@@ -181,7 +180,7 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
     // If we were called by __libunwind_seh_personality(), indicate that
     // a handler was found; otherwise, it's time to initiate a collided
     // unwind to the target.
-    if (ours && !IS_UNWINDING(ms_exc->ExceptionFlags) && ms_exc->NumberParameters > 1)
+    if (ours && ms_exc->NumberParameters == 3)
       return static_cast<EXCEPTION_DISPOSITION>(4);
     // This should never happen in phase 1.
     if (!IS_UNWINDING(ms_exc->ExceptionFlags))
@@ -232,7 +231,12 @@ __libunwind_seh_personality(int version, _Unwind_Action state,
   EXCEPTION_RECORD ms_exc;
   bool phase2 = (state & (_UA_SEARCH_PHASE|_UA_CLEANUP_PHASE)) == _UA_CLEANUP_PHASE;
   ms_exc.ExceptionCode = STATUS_GCC_THROW;
-  ms_exc.ExceptionFlags = 0;
+  // A forced unwind has no handler to search for: a foreign frame is told it
+  // is being unwound towards the end of the stack, so its termination
+  // handlers run and its exception filters are not consulted.
+  ms_exc.ExceptionFlags = (state & _UA_FORCE_UNWIND)
+                              ? EXCEPTION_UNWINDING | EXCEPTION_EXIT_UNWIND
+                              : 0;
   ms_exc.NumberParameters = 3;
   ms_exc.ExceptionInformation[0] = (ULONG_PTR)exc;
   ms_exc.ExceptionInformation[1] = (ULONG_PTR)context;
@@ -259,6 +263,13 @@ __libunwind_seh_personality(int version, _Unwind_Action state,
                              (void *)disp_ctx->LanguageHandler, (void *)&ms_exc,
                              (void *)disp_ctx->EstablisherFrame,
                              (void *)disp_ctx->ContextRecord, (void *)disp_ctx);
+  // The cursor holds the establisher frame of the frame it last left. A
+  // handler takes its own frame's.
+  CONTEXT caller = *disp_ctx->ContextRecord;
+  PVOID data;
+  RtlVirtualUnwind(UNW_FLAG_NHANDLER, disp_ctx->ImageBase, disp_ctx->ControlPc,
+                   disp_ctx->FunctionEntry, &caller, &data,
+                   &disp_ctx->EstablisherFrame, nullptr);
   int ms_act = static_cast<int>(
       disp_ctx->LanguageHandler(&ms_exc, (PVOID)disp_ctx->EstablisherFrame,
                                 disp_ctx->ContextRecord, disp_ctx));
