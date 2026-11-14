@@ -23,6 +23,10 @@
 # RUN: lld-link -dll -out:%t.dll -entry:main -libpath:%t.dir %t.main.obj %t.dir/./foo.lib -wholearchive:foo.lib -implib:%t.lib
 # RUN: llvm-readobj %t.lib | FileCheck %s -check-prefix CHECK-IMPLIB
 
+## As with link.exe, a name without an extension is a library's.
+# RUN: lld-link -dll -out:%t.dll -entry:main -libpath:%t.dir %t.main.obj -wholearchive:foo -implib:%t.lib
+# RUN: llvm-readobj %t.lib | FileCheck %s -check-prefix CHECK-IMPLIB
+
 # CHECK-IMPLIB: Symbol: __imp_exportfn3
 # CHECK-IMPLIB: Symbol: exportfn3
 

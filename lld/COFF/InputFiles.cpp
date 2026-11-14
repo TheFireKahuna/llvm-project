@@ -247,15 +247,16 @@ void ArchiveFile::addMember(const Archive::Symbol &sym) {
   symtab.ctx.driver.enqueueArchiveMember(c, sym, getName());
 }
 
-std::vector<MemoryBufferRef>
-lld::coff::getArchiveMembers(COFFLinkerContext &ctx, Archive *file) {
-  std::vector<MemoryBufferRef> v;
+void ArchiveFile::addAllMembers(bool lazy) {
+  COFFLinkerContext &ctx = symtab.ctx;
   Error err = Error::success();
 
   // Thin archives refer to .o files, so --reproduces needs the .o files too.
   bool addToTar = file->isThin() && ctx.driver.tar;
 
   for (const Archive::Child &c : file->children(err)) {
+    if (!seen.insert(c.getChildOffset()).second)
+      continue;
     MemoryBufferRef mbref =
         CHECK(c.getMemoryBufferRef(),
               file->getFileName() +
@@ -264,12 +265,15 @@ lld::coff::getArchiveMembers(COFFLinkerContext &ctx, Archive *file) {
       ctx.driver.tar->append(relativeToRoot(check(c.getFullName())),
                              mbref.getBuffer());
     }
-    v.push_back(mbref);
+    if (file->isThin())
+      ctx.driver.addThinArchiveBuffer(mbref, "<whole-archive>", lazy);
+    else
+      ctx.driver.addArchiveBuffer(mbref, "<whole-archive>", getName(),
+                                  c.getChildOffset(), lazy);
   }
   if (err)
     Fatal(ctx) << file->getFileName()
                << ": Archive::children failed: " << toString(std::move(err));
-  return v;
 }
 
 ObjFile::ObjFile(SymbolTable &symtab, COFFObjectFile *coffObj, bool lazy)
@@ -1503,9 +1507,11 @@ void BitcodeFile::parse() {
 }
 
 void BitcodeFile::parseLazy() {
+  // The names may be in a symbol table that obj builds, which LTO frees with
+  // obj, so the table keeps copies, as parse() does.
   for (const lto::InputFile::Symbol &sym : obj->symbols())
     if (!sym.isUndefined()) {
-      symtab.addLazyObject(this, sym.getName());
+      symtab.addLazyObject(this, saver().save(sym.getName()));
       if (!lazy)
         return;
     }

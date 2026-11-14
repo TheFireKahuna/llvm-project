@@ -1160,10 +1160,14 @@ Archive::child_iterator Archive::child_end() const {
 
 bool Archive::Symbol::isECSymbol() const {
   // Symbols use SymbolCount..SymbolCount+getNumberOfECSymbols() for EC symbol
-  // indexes.
+  // indexes. Most archives have none, which getNumberOfECSymbols tells more
+  // cheaply than getNumberOfSymbols tells the symbol count.
+  uint32_t ECSymbolCount = Parent->getNumberOfECSymbols();
+  if (!ECSymbolCount)
+    return false;
   uint32_t SymbolCount = Parent->getNumberOfSymbols();
   return SymbolCount <= SymbolIndex &&
-         SymbolIndex < SymbolCount + Parent->getNumberOfECSymbols();
+         SymbolIndex < SymbolCount + ECSymbolCount;
 }
 
 uint32_t Archive::Symbol::getZOSAttributes() const {

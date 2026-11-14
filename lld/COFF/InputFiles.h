@@ -42,9 +42,6 @@ class COFFLinkerContext;
 
 const COFFSyncStream &operator<<(const COFFSyncStream &, const InputFile *);
 
-std::vector<MemoryBufferRef> getArchiveMembers(COFFLinkerContext &,
-                                               llvm::object::Archive *file);
-
 using llvm::COFF::IMAGE_FILE_MACHINE_UNKNOWN;
 using llvm::COFF::MachineTypes;
 using llvm::object::Archive;
@@ -127,6 +124,8 @@ public:
   // enqueued a load for the same archive member, this function does nothing,
   // which ensures that we don't load the same member more than once.
   void addMember(const Archive::Symbol &sym);
+  // Adds every member not enqueued or added yet, lazily if lazy.
+  void addAllMembers(bool lazy);
 
 private:
   std::unique_ptr<Archive> file;

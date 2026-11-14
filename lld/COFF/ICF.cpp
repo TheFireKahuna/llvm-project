@@ -20,6 +20,7 @@
 #include "ICF.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
+#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
 #include "llvm/Support/Parallel.h"
@@ -251,12 +252,19 @@ void ICF::run() {
   for (Symbol *s : ctx.config.guardSuppressed)
     if (auto *d = dyn_cast<Defined>(s))
       suppressed.insert(d->getChunk());
+  // A program enumerates a run of sections through its bounds, so folding one
+  // away would drop an entry.
+  DenseSet<SectionChunk *> bounded;
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (SymbolTable::SectionRun &run : symtab.sectionRuns)
+      bounded.insert_range(run.chunks);
+  });
 
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;
   for (Chunk *c : ctx.driver.getChunks()) {
     if (auto *sc = dyn_cast<SectionChunk>(c)) {
-      if (isEligible(sc))
+      if (isEligible(sc) && !bounded.contains(sc))
         chunks.push_back(sc);
       else
         sc->eqClass[0] = nextId++;

@@ -246,6 +246,7 @@ private:
   void createECChunks();
   void insertCtorDtorSymbols();
   void insertBssDataStartEndSymbols();
+  void placeStartStopSymbols();
   void markSymbolsWithRelocations(ObjFile *file, const SymbolRVASet &guardSlots,
                                   SymbolRVASet &usedSymbols,
                                   std::vector<Symbol *> &giatsSymbols);
@@ -822,6 +823,7 @@ void Writer::run() {
     finalizeAddresses();
     removeEmptySections();
     assignOutputSectionIndices();
+    placeStartStopSymbols();
     setSectionPermissions();
     setECSymbols();
     createSymbolAndStringTable();
@@ -2731,6 +2733,74 @@ void Writer::insertCtorDtorSymbols() {
     ctorsSec->splitECChunks();
     dtorsSec->splitECChunks();
   }
+}
+
+// Places the symbols that SymbolTable::addStartStopSymbols defined: __start_X
+// at the start of run X's first live section and __stop_X at the end of its
+// last, and _etext, _edata and _end at the ends of .text, of .data's
+// initialized data and of .data.
+void Writer::placeStartStopSymbols() {
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (SymbolTable::SectionRun &run : symtab.sectionRuns) {
+      Chunk *first = nullptr, *last = nullptr;
+      OutputSection *os = nullptr;
+      bool split = false;
+      for (SectionChunk *c : run.chunks) {
+        if (!c->live)
+          continue;
+        OutputSection *s = ctx.getOutputSection(c);
+        split |= os && s != os;
+        os = s;
+        if (!first || c->getRVA() < first->getRVA())
+          first = c;
+        if (!last ||
+            c->getRVA() + c->getSize() > last->getRVA() + last->getSize())
+          last = c;
+      }
+      // A run whose sections were all collected is empty: both bounds stay at
+      // the image base.
+      if (!first)
+        continue;
+      if (split) {
+        Err(ctx) << "section " << run.name
+                 << " is split across output sections and cannot be bounded "
+                    "by __start_"
+                 << run.name << " and __stop_" << run.name;
+        continue;
+      }
+      if (run.start)
+        replaceSymbol<DefinedSynthetic>(run.start, run.start->getName(), first);
+      if (run.stop)
+        replaceSymbol<DefinedSynthetic>(run.stop, run.stop->getName(), last,
+                                        last->getSize());
+    }
+
+    for (Symbol *sym : symtab.boundarySymbols) {
+      StringRef name = sym->getName();
+      if (ctx.config.machine == I386)
+        name = name.drop_front();
+      name.consume_front("_");
+      OutputSection *sec = name == "etext" ? textSec : dataSec;
+      if (!sec->getVirtualSize()) {
+        // A weak reference keeps its default of zero.
+        if (!isa<DefinedAbsolute>(sym))
+          Err(ctx) << sym->getName() << " is referenced, but the image has no "
+                   << sec->name << " section";
+        continue;
+      }
+      // _edata ends the initialized data, which precedes the uninitialized.
+      auto it = sec->chunks.end();
+      if (name == "edata")
+        it = llvm::find_if(llvm::reverse(sec->chunks), [](Chunk *c) {
+               return c->hasData;
+             }).base();
+      if (it == sec->chunks.begin())
+        replaceSymbol<DefinedSynthetic>(sym, sym->getName(), *it);
+      else
+        replaceSymbol<DefinedSynthetic>(sym, sym->getName(), it[-1],
+                                        it[-1]->getSize());
+    }
+  });
 }
 
 // MinGW (really, Cygwin) specific.

@@ -13,6 +13,7 @@
 #include "SymbolTable.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/IR/RuntimeLibcalls.h"
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/TimeProfiler.h"
@@ -214,35 +215,74 @@ static StringRef mangle(Twine sym, MachineTypes machine) {
 // This function instantiates wrapper symbols. At this point, they seem
 // like they are not being used at all, so we explicitly set some flags so
 // that LTO won't eliminate them.
-void lld::coff::addWrappedSymbols(SymbolTable &symtab,
+// Binds __real_X, which something refers to, to X. As with GNU ld, a strong
+// reference loads X if an archive or an import library offers it, and a weak
+// one, which loads no archive member elsewhere, does not.
+static void addWrappedReal(SymbolTable &symtab, WrappedSymbol &w,
+                           Symbol *real) {
+  w.real = real;
+  real->deferUndefined = true;
+  real->canInline = false;
+  real->isUsedInRegularObj = true;
+  auto *u = dyn_cast<Undefined>(real);
+  if (w.sym->isLazy() && !(u && u->weakAlias))
+    symtab.addUndefined(w.sym->getName());
+}
+
+bool lld::coff::addWrappedSymbols(SymbolTable &symtab,
                                   opt::InputArgList &args) {
+  size_t numWrapped = symtab.wrapped.size();
+  bool bound = false;
+  for (WrappedSymbol &w : symtab.wrapped)
+    if (!w.real)
+      if (Symbol *real =
+              symtab.find(mangle("__real_" + w.name, symtab.machine))) {
+        addWrappedReal(symtab, w, real);
+        bound = true;
+      }
   for (auto *arg : args.filtered(OPT_wrap))
     addWrappedSymbol(symtab, arg->getValue());
   for (StringRef name : symtab.directiveWraps)
-    addWrappedSymbol(symtab, name);
+    addWrappedSymbol(symtab, name, /*fromDirective=*/true);
   symtab.wrapsAdded = true;
+  return bound || symtab.wrapped.size() != numWrapped;
 }
 
-void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
+void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name,
+                                 bool fromDirective) {
   Symbol *sym = symtab.findUnderscore(name);
   if (!sym || llvm::any_of(symtab.wrapped, [&](const WrappedSymbol &w) {
         return w.sym == sym;
       }))
     return;
+  // The program's own X stands, and its wrapper is not loaded.
+  if (fromDirective && isa<DefinedCOFF>(sym))
+    return;
 
-  Symbol *real = symtab.addUndefined(mangle("__real_" + name, symtab.machine));
+  // As with GNU ld, a wrap renames references and loads nothing else, so it
+  // waits while nothing refers to X, __imp_X or __real_X. The LTO code
+  // generator may call a runtime library function that no bitcode symbol
+  // names, so with bitcode such a function counts as referenced.
+  auto isReferenced = [](Symbol *s) { return s && !s->isLazy(); };
+  Symbol *real = symtab.find(mangle("__real_" + name, symtab.machine));
+  if (!isReferenced(sym) && !isReferenced(real) &&
+      !isReferenced(symtab.find(("__imp_" + sym->getName()).str())) &&
+      (symtab.bitcodeFileInstances.empty() ||
+       RTLIB::RuntimeLibcallsInfo::lookupLibcallImplName(name).empty()))
+    return;
+
   Symbol *wrap = symtab.addUndefined(mangle("__wrap_" + name, symtab.machine));
-  symtab.wrapped.push_back({sym, real, wrap});
+  symtab.wrapped.push_back({sym, nullptr, wrap, name, fromDirective});
+  if (real)
+    addWrappedReal(symtab, symtab.wrapped.back(), real);
 
   // These symbols may seem undefined initially, but don't bail out
   // at symtab.reportUnresolvable() due to them, but let wrapSymbols
   // below sort things out before checking finally with
   // symtab.resolveRemainingUndefines().
   sym->deferUndefined = true;
-  real->deferUndefined = true;
   // We want to tell LTO not to inline symbols to be overwritten
   // because LTO doesn't know the final symbol contents after renaming.
-  real->canInline = false;
   sym->canInline = false;
 
   // Tell LTO not to eliminate these symbols.
@@ -259,8 +299,13 @@ void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name) {
 void lld::coff::wrapSymbols(SymbolTable &symtab) {
   DenseMap<Symbol *, Symbol *> map;
   for (const WrappedSymbol &w : symtab.wrapped) {
+    // A weak __real_X keeps its default while nothing loaded X.
+    if (w.real && !w.sym->isLazy())
+      map[w.real] = w.sym;
+    // A definition of X loaded since the wrap was added stands too.
+    if (w.fromDirective && isa<DefinedCOFF>(w.sym))
+      continue;
     map[w.sym] = w.wrap;
-    map[w.real] = w.sym;
     if (Defined *d = dyn_cast<Defined>(w.wrap)) {
       Symbol *imp = symtab.find(("__imp_" + w.sym->getName()).str());
       // Create a new defined local import for the wrap symbol. If
@@ -288,4 +333,40 @@ void lld::coff::wrapSymbols(SymbolTable &symtab) {
       if (Symbol *s = map.lookup(sym))
         sym = s;
   });
+
+  // Without garbage collection every loaded import stays in the image. Leave
+  // out, as the collector would, the imports that the wrap left unreachable:
+  // X's, which a reference read before the wrap loaded, and an imported
+  // wrapper of a runtime library function the generated code never called,
+  // whose X is still lazy. Nothing must refer to the thunk or its __imp_.
+  COFFLinkerContext &ctx = symtab.ctx;
+  if (ctx.config.doGC || ctx.hybridSymtab)
+    return;
+  SmallVector<DefinedImportThunk *, 0> thunks;
+  for (const WrappedSymbol &w : symtab.wrapped) {
+    auto *t = dyn_cast<DefinedImportThunk>(w.sym);
+    if (t && !w.real)
+      thunks.push_back(t);
+    t = dyn_cast<DefinedImportThunk>(w.wrap);
+    if (t && w.sym->isLazy())
+      thunks.push_back(t);
+  }
+  if (thunks.empty())
+    return;
+  DenseSet<Symbol *> unused;
+  for (DefinedImportThunk *t : thunks) {
+    unused.insert(t);
+    unused.insert(t->wrappedSym);
+  }
+  for (Symbol *s : ctx.config.gcroot)
+    unused.erase(s);
+  for (ObjFile *file : ctx.objFileInstances)
+    for (Symbol *s : file->getSymbols())
+      unused.erase(s);
+  for (DefinedImportThunk *t : thunks) {
+    if (unused.contains(t) && unused.contains(t->wrappedSym)) {
+      t->wrappedSym->file->live = false;
+      t->getChunk()->live = false;
+    }
+  }
 }

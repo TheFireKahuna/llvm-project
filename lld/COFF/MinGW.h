@@ -53,9 +53,17 @@ void writeDefFile(COFFLinkerContext &, StringRef name,
 // occurrences of symbol `foo` are resolved to `__wrap_foo` (so, you are
 // expected to write `__wrap_foo` function as a wrapper). The original
 // symbol becomes accessible as `__real_foo`, so you can call that from your
-// wrapper. An object can ask for the same with /wrap in its .drectve section.
-void addWrappedSymbols(SymbolTable &symtab, llvm::opt::InputArgList &args);
-void addWrappedSymbol(SymbolTable &symtab, StringRef name);
+// wrapper. An object can ask for the same with /wrap in its .drectve section;
+// such a wrap gives a library its own definition of a function another
+// library offers too, so it leaves a symbol that an object or a loaded
+// archive member defines to that definition.
+//
+// A wrap applies once something refers to the symbol; addWrappedSymbols
+// applies the wraps and binds the __real_ names that something refers to now,
+// and returns whether there were any.
+bool addWrappedSymbols(SymbolTable &symtab, llvm::opt::InputArgList &args);
+void addWrappedSymbol(SymbolTable &symtab, StringRef name,
+                      bool fromDirective = false);
 
 void wrapSymbols(SymbolTable &symtab);
 

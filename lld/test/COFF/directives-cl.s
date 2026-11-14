@@ -5,29 +5,23 @@
 ## /icfsection lets ICF fold such read-only data; /coffsecttopdbstrm moves such
 ## a section into a named PDB stream, with or without /debug, the files'
 ## sections in reverse order; /includecoffsection keeps it under /opt:ref.
-## /wholearchive loads every member of a library, and bare, of every library
-## the command line names.
+## wholearchive-directive.s pins /wholearchive.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc a.s -o a.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc dir.s -o dir.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc b.s -o b.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc m1.s -o m1.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc m2.s -o m2.obj
 # RUN: llvm-as bc.ll -o bc.obj
-# RUN: llvm-lib -out:m1.lib m1.obj
-# RUN: llvm-lib -out:m2.lib m2.obj
-# RUN: lld-link -entry:start -subsystem:console -opt:ref,icf -debug -map \
-# RUN:   -out:out.exe a.obj dir.obj b.obj bc.obj m2.lib -verbose 2>&1 \
+# RUN: lld-link -entry:start -subsystem:console -opt:ref,icf -debug \
+# RUN:   -out:out.exe a.obj dir.obj b.obj bc.obj -verbose 2>&1 \
 # RUN:   | FileCheck --check-prefix=ICF %s
 # RUN: llvm-readobj --sections out.exe | FileCheck %s
 # RUN: llvm-pdbutil export -stream=mystrm -out=- out.pdb \
 # RUN:   | FileCheck --check-prefix=PDB %s
 # RUN: llvm-pdbutil export -stream=bcstrm -out=- out.pdb \
 # RUN:   | FileCheck --check-prefix=PDB-BC %s
-# RUN: FileCheck --check-prefix=MAP %s < out.map
 # RUN: lld-link -entry:start -subsystem:console -opt:ref -out:nodebug.exe \
-# RUN:   a.obj dir.obj b.obj bc.obj m2.lib
+# RUN:   a.obj dir.obj b.obj bc.obj
 # RUN: llvm-readobj --sections nodebug.exe | FileCheck %s
 
 # ICF:        Selected a1
@@ -43,10 +37,6 @@
 
 # PDB: {{^}}CCCCBBBBAAAA{{$}}
 # PDB-BC: {{^}}EEEE{{$}}
-
-# MAP-DAG: {{ }}m1sym{{ }}
-# MAP-DAG: {{ }}m2sym{{ }}
-# MAP-DAG: {{ }}k1{{ }}
 
 ## The arguments of /coffsecttopdbstrm.
 # RUN: env LLD_IN_TEST=1 not lld-link -entry:start -out:bad.exe a.obj \
@@ -82,7 +72,7 @@ k1:
 #--- dir.s
   .section .drectve,"yn"
   .ascii " /icfsection:.rdata /coffsecttopdbstrm:.pdbdata=mystrm"
-  .ascii " /includecoffsection:.keep /wholearchive:m1.lib /wholearchive"
+  .ascii " /includecoffsection:.keep"
   .section .pdbdata,"dr"
   .ascii "BBBB"
 
@@ -107,15 +97,3 @@ target triple = "x86_64-pc-windows-msvc"
 
 !llvm.linker.options = !{!0}
 !0 = !{!"/coffsecttopdbstrm:.bcdata=bcstrm"}
-
-#--- m1.s
-  .data
-  .globl m1sym
-m1sym:
-  .long 1
-
-#--- m2.s
-  .data
-  .globl m2sym
-m2sym:
-  .long 2

@@ -85,9 +85,19 @@ public:
 
   void addClangLibSearchPaths(const std::string &argv0);
 
-  // Used by ArchiveFile to enqueue members.
+  // Used by ArchiveFile to enqueue and add members.
   void enqueueArchiveMember(const Archive::Child &c, const Archive::Symbol &sym,
                             StringRef parentName);
+  void addArchiveBuffer(MemoryBufferRef mbref, StringRef symName,
+                        StringRef parentName, uint64_t offsetInArchive,
+                        bool lazy);
+  void addThinArchiveBuffer(MemoryBufferRef mbref, StringRef symName,
+                            bool lazy);
+
+  // Loads every member of lib, as /wholearchive:lib in a directive does,
+  // whenever lib is read; without lib, of the libraries the command line named
+  // that were read before, as a bare /wholearchive in a directive does.
+  void addWholeArchives(StringRef lib = "");
 
   enum class InputOpt { None, DefaultLib, WholeArchive };
   void enqueuePDB(StringRef Path) { enqueuePath(Path, false); }
@@ -114,6 +124,11 @@ private:
 
   // Determines the location of the sysroot based on `args`, environment, etc.
   void detectWinSysRoot(const llvm::opt::InputArgList &args);
+
+  // Detects the MSVC and Windows SDK library directories if that waits for a
+  // search to miss and the machine type is known, and appends them to the
+  // search paths. Returns whether it added any.
+  bool addPendingWinSysRootLibSearchPaths();
 
   // Adds various search paths based on the sysroot.  Must only be called once
   // config.machine has been set.
@@ -180,13 +195,13 @@ private:
 
   std::set<std::string> visitedLibs;
 
-  void addBuffer(std::unique_ptr<MemoryBuffer> mb, bool wholeArchive,
+  // The libraries read, and whether the command line named them; and the file
+  // names of those queued that a directive loads whole.
+  std::vector<std::pair<ArchiveFile *, bool>> archives;
+  llvm::StringSet<> wholeArchiveNames;
+
+  void addBuffer(std::unique_ptr<MemoryBuffer> mb, InputOpt inputOpt,
                  bool lazy);
-  void addArchiveBuffer(MemoryBufferRef mbref, StringRef symName,
-                        StringRef parentName, uint64_t offsetInArchive,
-                        bool lazy);
-  void addThinArchiveBuffer(MemoryBufferRef mbref, StringRef symName,
-                            bool lazy);
 
   void enqueueTask(std::function<void()> task);
   bool run();
@@ -197,6 +212,10 @@ private:
   llvm::DenseSet<StringRef> excludedSymbols;
 
   COFFLinkerContext &ctx;
+
+  // The arguments to detect the MSVC and Windows SDK library directories from
+  // once a search misses the other paths.
+  const llvm::opt::InputArgList *pendingWinSysRootArgs = nullptr;
 
   llvm::ToolsetLayout vsLayout = llvm::ToolsetLayout::OlderVS;
   std::string vcToolChainPath;

@@ -300,7 +300,10 @@ InputFile *LinkerDriver::addObjectFile(COFFLinkerContext &ctx,
 }
 
 void LinkerDriver::addBuffer(std::unique_ptr<MemoryBuffer> mb,
-                             bool wholeArchive, bool lazy) {
+                             InputOpt inputOpt, bool lazy) {
+  bool wholeArchive =
+      inputOpt == InputOpt::WholeArchive ||
+      (inputOpt == InputOpt::None && ctx.config.wholeArchive);
   StringRef filename = mb->getBufferIdentifier();
 
   MemoryBufferRef mbref = takeBuffer(std::move(mb));
@@ -313,6 +316,8 @@ void LinkerDriver::addBuffer(std::unique_ptr<MemoryBuffer> mb,
   case file_magic::archive: {
     std::unique_ptr<Archive> file =
         CHECK(Archive::create(mbref), filename + ": failed to parse archive");
+    if (wholeArchiveNames.erase(sys::path::filename(filename).lower()))
+      wholeArchive = true;
 
     // On ARM64EC/ARM64X, the archive may contain both, potentially conflicting,
     // native and EC symbols in the symbol table. Regular archives handle this
@@ -320,22 +325,14 @@ void LinkerDriver::addBuffer(std::unique_ptr<MemoryBuffer> mb,
     // separate section, but it is not available for thin archives.
     // Work around this limitation by lazily parsing all thin archive members
     // instead of relying on the archive symbol table.
-    if (wholeArchive || (ctx.symtab.isEC() && file->isThin())) {
-      Archive *archive = file.get();
-      make<std::unique_ptr<Archive>>(std::move(file)); // take ownership
-
-      int memberIndex = 0;
-      for (MemoryBufferRef m : getArchiveMembers(ctx, archive)) {
-        if (!archive->isThin())
-          addArchiveBuffer(m, "<whole-archive>", filename, memberIndex++,
-                           !wholeArchive);
-        else
-          addThinArchiveBuffer(m, "<whole-archive>", !wholeArchive);
-      }
-
+    bool allMembers = wholeArchive || (ctx.symtab.isEC() && file->isThin());
+    auto *f = make<ArchiveFile>(ctx, mbref, file);
+    archives.push_back({f, inputOpt == InputOpt::None});
+    if (allMembers) {
+      f->addAllMembers(!wholeArchive);
       return;
     }
-    addFile(make<ArchiveFile>(ctx, mbref, file));
+    addFile(f);
     break;
   }
   case file_magic::bitcode:
@@ -451,10 +448,7 @@ void LinkerDriver::enqueuePath(StringRef path, bool lazy, InputOpt inputOpt) {
         Err(ctx) << msg << "; did you mean '" << nearest << "'";
     } else {
       handleReproFile(pathStr, inputOpt);
-      bool wholeArchive =
-          inputOpt == InputOpt::WholeArchive ||
-          (inputOpt == InputOpt::None && ctx.config.wholeArchive);
-      ctx.driver.addBuffer(std::move(mb), wholeArchive, lazy);
+      ctx.driver.addBuffer(std::move(mb), inputOpt, lazy);
     }
   });
 }
@@ -540,6 +534,26 @@ void LinkerDriver::enqueueArchiveMember(const Archive::Child &c,
     ctx.driver.addThinArchiveBuffer(takeBuffer(std::move(mbOrErr.first)),
                                     toCOFFString(ctx, sym), false);
   });
+}
+
+void LinkerDriver::addWholeArchives(StringRef lib) {
+  if (lib.empty()) {
+    for (auto [f, named] : archives)
+      if (named)
+        enqueueTask([file = f] { file->addAllMembers(/*lazy=*/false); });
+    return;
+  }
+  // lib is the first library of its file name read or queued, else the one
+  // found as /defaultlib finds one, but despite /nodefaultlib.
+  StringRef path = findLib(lib);
+  std::string name = sys::path::filename(path).lower();
+  if (!visitedLibs.count(name))
+    if (std::optional<StringRef> newPath = findFileIfNew(path))
+      return enqueuePath(*newPath, false, InputOpt::WholeArchive);
+  for (auto [f, named] : archives)
+    if (sys::path::filename(f->getName()).equals_insensitive(name))
+      return enqueueTask([file = f] { file->addAllMembers(/*lazy=*/false); });
+  wholeArchiveNames.insert(name);
 }
 
 bool LinkerDriver::isDecorated(StringRef sym) {
@@ -668,10 +682,10 @@ void LinkerDriver::parseDirectives(InputFile *file) {
     case OPT_wrap:
       // The renaming runs once the link has resolved, so a later object's
       // wrap still reaches every reference.
+      file->symtab.directiveWraps.push_back(arg->getValue());
       if (file->symtab.wrapsAdded)
-        addWrappedSymbol(file->symtab, arg->getValue());
-      else
-        file->symtab.directiveWraps.push_back(arg->getValue());
+        addWrappedSymbol(file->symtab, arg->getValue(),
+                         /*fromDirective=*/true);
       break;
     // Only add flags here that link.exe accepts in
     // `#pragma comment(linker, "/flag")`-generated sections.
@@ -688,12 +702,12 @@ void LinkerDriver::parseDirectives(InputFile *file) {
       ctx.config.noFunctionPadSections.insert(arg->getValue());
       break;
     case OPT_wholearchive_file:
-      if (std::optional<StringRef> path = findLibIfNew(arg->getValue()))
-        enqueuePath(*path, false, InputOpt::WholeArchive);
+      addWholeArchives(arg->getValue());
       break;
     case OPT_wholearchive_flag:
       // As in link.exe, it applies to the libraries the command line names.
       ctx.config.wholeArchive = true;
+      addWholeArchives();
       break;
     case OPT_editandcontinue:
     case OPT_throwingnew:
@@ -733,6 +747,8 @@ StringRef LinkerDriver::findFile(StringRef filename) {
         return saver().save(path.str());
     }
   }
+  if (addPendingWinSysRootLibSearchPaths())
+    return findFile(filename);
   return filename;
 }
 
@@ -822,6 +838,22 @@ void LinkerDriver::setMachine(MachineTypes machine) {
   }
 
   addWinSysRootLibSearchPaths();
+}
+
+// The MSVC and Windows SDK library directories come last in the search order,
+// so they matter only once a search misses every other path. Unless the
+// command line names them, detecting them, which can query the registry and
+// the Visual Studio setup COM server, waits for that miss.
+bool LinkerDriver::addPendingWinSysRootLibSearchPaths() {
+  // The directories depend on the machine type.
+  if (!pendingWinSysRootArgs ||
+      ctx.config.machine == IMAGE_FILE_MACHINE_UNKNOWN)
+    return false;
+  const opt::InputArgList &args = *std::exchange(pendingWinSysRootArgs, {});
+  size_t numSearchPaths = searchPaths.size();
+  detectWinSysRoot(args);
+  addWinSysRootLibSearchPaths();
+  return searchPaths.size() != numSearchPaths;
 }
 
 void LinkerDriver::detectWinSysRoot(const opt::InputArgList &Args) {
@@ -916,6 +948,7 @@ void LinkerDriver::addClangLibSearchPaths(const std::string &argv0) {
 }
 
 void LinkerDriver::addWinSysRootLibSearchPaths() {
+  size_t numSearchPaths = searchPaths.size();
   if (!diaPath.empty()) {
     // The DIA SDK always uses the legacy vc arch, even in new MSVC versions.
     path::append(diaPath, "lib", archToLegacyVCArch(getArch()));
@@ -944,6 +977,8 @@ void LinkerDriver::addWinSysRootLibSearchPaths() {
 
   // Libraries specified by `/nodefaultlib:` may not be found in incomplete
   // search paths before lld infers a machine type from input files.
+  if (searchPaths.size() == numSearchPaths)
+    return;
   llvm::StringSet<> noDefaultLibs;
   for (auto &iter : ctx.config.noDefaultLibs)
     noDefaultLibs.insert(findLib(iter.first()).lower());
@@ -1559,7 +1594,7 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
     AutoExporter exporter(symtab, excludedSymbols);
 
     for (auto *arg : args.filtered(OPT_wholearchive_file))
-      if (std::optional<StringRef> path = findFile(arg->getValue()))
+      if (std::optional<StringRef> path = findLib(arg->getValue()))
         exporter.addWholeArchive(*path);
 
     for (auto *arg : args.filtered(OPT_exclude_symbols)) {
@@ -1796,7 +1831,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       // Don't automatically deduce the lib path from the environment or MSVC
       // installations when operating in mingw mode. (This also makes LLD ignore
       // winsysroot and vctoolsdir arguments.)
-      detectWinSysRoot(args);
+      if (args.hasArg(OPT_winsysroot, OPT_vctoolsdir, OPT_winsdkdir))
+        detectWinSysRoot(args);
+      else
+        pendingWinSysRootArgs = &args;
       if (!args.hasArg(OPT_lldignoreenv, OPT_winsysroot, OPT_vctoolsdir,
                        OPT_vctoolsversion, OPT_winsdkdir, OPT_winsdkversion))
         addLibSearchPaths();
@@ -2399,7 +2437,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   SmallSet<sys::fs::UniqueID, 0> wholeArchives;
   for (auto *arg : args.filtered(OPT_wholearchive_file))
-    if (std::optional<StringRef> path = findFile(arg->getValue()))
+    if (std::optional<StringRef> path = findLib(arg->getValue()))
       if (std::optional<sys::fs::UniqueID> id = getUniqueID(*path))
         wholeArchives.insert(*id);
 
@@ -2434,7 +2472,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         inLib = true;
         break;
       case OPT_wholearchive_file:
-        if (std::optional<StringRef> path = findFileIfNew(arg->getValue()))
+        if (std::optional<StringRef> path =
+                findFileIfNew(findLib(arg->getValue())))
           enqueuePath(*path, inLib, InputOpt::WholeArchive);
         break;
       case OPT_INPUT:
@@ -2839,9 +2878,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Create wrapped symbols for -wrap option.
   ctx.forEachSymtab([&](SymbolTable &symtab) {
-    addWrappedSymbols(symtab, args);
-    // Load more object files that might be needed for wrapped symbols.
-    if (!symtab.wrapped.empty())
+    // Load more object files that might be needed for wrapped symbols. They
+    // may refer to a symbol whose wrap waits for a reference.
+    while (addWrappedSymbols(symtab, args))
       while (run())
         ;
   });
@@ -2933,6 +2972,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   if (isArm64EC(config->machine))
     createECExportThunks();
+
+  // Define the section bounds that GNU linkers define.
+  if (config->mingw)
+    ctx.forEachSymtab(
+        [](SymbolTable &symtab) { symtab.addStartStopSymbols(); });
 
   // Resolve remaining undefined symbols and warn about imported locals.
   std::vector<Undefined *> aliases;
@@ -3073,7 +3117,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // /manifestdependency: enables /manifest unless an explicit /manifest:no is
   // also passed.
   if (config->manifest == Configuration::Embed)
-    addBuffer(createManifestRes(), false, false);
+    addBuffer(createManifestRes(), InputOpt::None, false);
   else if (config->manifest == Configuration::SideBySide ||
            (config->manifest == Configuration::Default &&
             !config->manifestDependencies.empty()))

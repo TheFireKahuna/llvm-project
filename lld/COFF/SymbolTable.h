@@ -14,6 +14,8 @@
 #include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -38,8 +40,13 @@ class Symbol;
 // This data structure is instantiated for each -wrap option.
 struct WrappedSymbol {
   Symbol *sym;
+  // __real_X, once something refers to it.
   Symbol *real;
   Symbol *wrap;
+  StringRef name;
+  // Whether an object's .drectve asked for the wrap, which then yields to a
+  // definition of X among the inputs.
+  bool fromDirective;
 };
 
 struct UndefinedDiag;
@@ -73,14 +80,21 @@ public:
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
 
+  // Defines the referenced, undefined __start_X and __stop_X of each run of
+  // sections named X or X$*, where X is a C identifier, and _etext, _edata and
+  // _end, unprefixed too. The writer places them once the layout is known.
+  void addStartStopSymbols();
+
   // Load lazy objects that are needed for MinGW automatic import and for
   // doing stdcall fixups.
   void loadMinGWSymbols();
   bool handleMinGWAutomaticImport(Symbol *sym, StringRef name);
 
   // Returns a symbol for a given name. Returns a nullptr if not found.
-  Symbol *find(StringRef name) const;
-  Symbol *findUnderscore(StringRef name) const;
+  Symbol *find(StringRef name);
+  Symbol *findUnderscore(StringRef name);
+  // Returns the symbols whose names match, in the order they entered the table.
+  std::vector<Symbol *> findAll(llvm::function_ref<bool(StringRef)> match);
 
   void addUndefinedGlob(StringRef arg);
 
@@ -167,6 +181,17 @@ public:
 
   std::vector<SameAddressThunkARM64EC *> sameAddressThunks;
 
+  // The runs of sections that addStartStopSymbols bounds, and the _etext,
+  // _edata and _end it defines, a weak one as its zero default.
+  struct SectionRun {
+    StringRef name;
+    Symbol *start = nullptr;
+    Symbol *stop = nullptr;
+    std::vector<SectionChunk *> chunks;
+  };
+  std::vector<SectionRun> sectionRuns;
+  std::vector<Symbol *> boundarySymbols;
+
   // A list of DLL exports.
   std::vector<Export> exports;
   // Exports that repeat one of those names through EXPORTAS: the export table
@@ -183,8 +208,8 @@ public:
 
   // A list of wrapped symbols.
   std::vector<WrappedSymbol> wrapped;
-  // The names /wrap in .drectve sections asks for before the wrapped symbols
-  // are created, after which a directive wraps at once.
+  // The names /wrap in .drectve sections asks for. Once the wrapped symbols
+  // are created, a directive also wraps at once.
   std::vector<StringRef> directiveWraps;
   bool wrapsAdded = false;
 
@@ -200,10 +225,16 @@ public:
   void parseAlternateName(StringRef);
   void parseAligncomm(StringRef);
 
-  // Iterates symbols in non-determinstic hash table order.
+  // The symbols in the table when the walk begins, in the order they entered
+  // it; the walk may enter more. An archive's symbol enters only once its name
+  // is looked up, so findAll is the walk that finds lazy symbols by name.
+  auto getSymbols() {
+    return llvm::map_range(llvm::seq(size_t(0), symVector.size()),
+                           [this](size_t i) { return symVector[i]; });
+  }
   template <typename T> void forEachSymbol(T callback) {
-    for (auto &pair : symMap)
-      callback(pair.second);
+    for (Symbol *sym : getSymbols())
+      callback(sym);
   }
 
   std::vector<BitcodeFile *> bitcodeFileInstances;
@@ -225,8 +256,20 @@ private:
 
   bool findUnderscoreMangle(StringRef sym);
   std::vector<Symbol *> getSymsWithPrefix(StringRef prefix);
+  // The undefined symbols, by name, so that what is done with them does not
+  // depend on the table's hashing, and they can be looked up meanwhile.
+  std::vector<Symbol *> getUndefinedSymbols();
 
-  llvm::DenseMap<llvm::CachedHashStringRef, Symbol *> symMap;
+  // Each name's index in symVector, as in lld/ELF.
+  llvm::DenseMap<llvm::CachedHashStringRef, int> symMap;
+  SmallVector<Symbol *, 0> symVector;
+  // The archive symbols whose names the table lacks, the first of each name.
+  // An archive read once the machine is known enters a lazy symbol only when
+  // its name is looked up or inserted: most of an import library's are never
+  // referenced.
+  llvm::DenseMap<llvm::CachedHashStringRef,
+                 std::pair<ArchiveFile *, Archive::Symbol>>
+      archiveSymbols;
   std::unique_ptr<BitcodeCompiler> lto;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;

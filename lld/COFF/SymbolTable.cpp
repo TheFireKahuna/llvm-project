@@ -15,7 +15,9 @@
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
+#include "lld/Common/Strings.h"
 #include "lld/Common/Timer.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/DebugInfo/DIContext.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Mangler.h"
@@ -245,18 +247,7 @@ void SymbolTable::reportUndefinedSymbol(const UndefinedDiag &undefDiag) {
 }
 
 void SymbolTable::loadMinGWSymbols() {
-  std::vector<Symbol *> undefs;
-  for (auto &i : symMap) {
-    Symbol *sym = i.second;
-    auto *undef = dyn_cast<Undefined>(sym);
-    if (!undef)
-      continue;
-    if (undef->getWeakAlias())
-      continue;
-    undefs.push_back(sym);
-  }
-
-  for (auto sym : undefs) {
+  for (Symbol *sym : getSymbols()) {
     auto *undef = dyn_cast<Undefined>(sym);
     if (!undef)
       continue;
@@ -341,7 +332,7 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
     impSize = sizeof(DefinedRegular);
   } else {
     Warn(ctx) << "unable to automatically import " << name << " from "
-              << imp->getName() << " from " << cast<DefinedRegular>(imp)->file
+              << imp->getName() << " from " << imp->getFile()
               << "; unexpected symbol type";
     return false;
   }
@@ -427,8 +418,7 @@ void SymbolTable::reportProblemSymbols(
 
 void SymbolTable::reportUnresolvable() {
   SmallPtrSet<Symbol *, 8> undefs;
-  for (auto &i : symMap) {
-    Symbol *sym = i.second;
+  for (Symbol *sym : getSymbols()) {
     auto *undef = dyn_cast<Undefined>(sym);
     if (!undef || sym->deferUndefined)
       continue;
@@ -452,13 +442,68 @@ void SymbolTable::reportUnresolvable() {
   reportProblemSymbols(undefs, /*localImports=*/nullptr, true);
 }
 
+void SymbolTable::addStartStopSymbols() {
+  MapVector<StringRef, SectionRun> runs;
+  for (Symbol *sym : getSymbols()) {
+    StringRef name = sym->getName();
+    if (!isa<Undefined>(sym) || !sym->isUsedInRegularObj ||
+        (machine == I386 && !name.consume_front("_")))
+      continue;
+    if (is_contained({"_etext", "etext", "_edata", "edata", "_end", "end"},
+                     name)) {
+      // A plain reference, or a weak one, which resolves to its zero default.
+      auto *alias = cast<Undefined>(sym)->getWeakAlias();
+      auto *abs = dyn_cast_or_null<DefinedAbsolute>(alias);
+      if (alias && !(abs && abs->getVA() == 0))
+        continue;
+      if (!alias)
+        replaceSymbol<DefinedSynthetic>(sym, sym->getName(), nullptr);
+      boundarySymbols.push_back(sym);
+      continue;
+    }
+    bool isStop = name.consume_front("__stop_");
+    if ((isStop || name.consume_front("__start_")) &&
+        isValidCIdentifier(name)) {
+      SectionRun &run = runs[name];
+      run.name = name;
+      (isStop ? run.stop : run.start) = sym;
+    }
+  }
+  if (runs.empty())
+    return;
+
+  for (Chunk *c : ctx.driver.getChunks())
+    if (auto *sc = dyn_cast<SectionChunk>(c); sc && &sc->file->symtab == this)
+      if (auto it = runs.find(sc->getSectionName().split('$').first);
+          it != runs.end())
+        it->second.chunks.push_back(sc);
+
+  for (SectionRun &run : llvm::make_second_range(runs)) {
+    // With no section to bound, the reference stays undefined.
+    if (run.chunks.empty())
+      continue;
+    if (!run.start || !run.stop) {
+      std::string other = (run.start ? "__stop_" : "__start_") + run.name.str();
+      if (isa_and_nonnull<Defined>(find(mangle(other)))) {
+        Err(ctx) << (run.start ? run.start : run.stop)->getName()
+                 << " cannot be defined by the linker: " << mangle(other)
+                 << " is defined by an input";
+        continue;
+      }
+    }
+    for (Symbol *sym : {run.start, run.stop})
+      if (sym)
+        replaceSymbol<DefinedSynthetic>(sym, sym->getName(), nullptr);
+    sectionRuns.push_back(std::move(run));
+  }
+}
+
 void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
   llvm::TimeTraceScope timeScope("Resolve remaining undefined symbols");
   SmallPtrSet<Symbol *, 8> undefs;
   DenseMap<Symbol *, Symbol *> localImports;
 
-  for (auto &i : symMap) {
-    Symbol *sym = i.second;
+  for (Symbol *sym : getUndefinedSymbols()) {
     auto *undef = dyn_cast<Undefined>(sym);
     if (!undef)
       continue;
@@ -512,12 +557,15 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     if (ctx.config.autoImport && handleMinGWAutomaticImport(sym, name))
       continue;
 
-    // Remaining undefined symbols are not fatal if /force is specified.
-    // They are replaced with dummy defined symbols.
-    if (ctx.config.forceUnresolved)
-      replaceSymbol<DefinedAbsolute>(sym, ctx, name, 0);
     undefs.insert(sym);
   }
+
+  // Remaining undefined symbols are not fatal if /force is specified. They are
+  // replaced with dummy defined symbols once none is left to automatically
+  // import X, which would otherwise find __imp_X's dummy.
+  if (ctx.config.forceUnresolved)
+    for (Symbol *sym : undefs)
+      replaceSymbol<DefinedAbsolute>(sym, ctx, sym->getName(), 0);
 
   reportProblemSymbols(
       undefs, ctx.config.warnLocallyDefinedImported ? &localImports : nullptr,
@@ -525,19 +573,27 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
 }
 
 std::pair<Symbol *, bool> SymbolTable::insert(StringRef name) {
-  bool inserted = false;
-  Symbol *&sym = symMap[CachedHashStringRef(name)];
-  if (!sym) {
-    sym = reinterpret_cast<Symbol *>(make<SymbolUnion>());
-    sym->isUsedInRegularObj = false;
-    sym->pendingArchiveLoad = false;
-    sym->canInline = true;
-    inserted = true;
+  CachedHashStringRef key(name);
+  auto [it, inserted] = symMap.try_emplace(key, symVector.size());
+  if (!inserted)
+    return {symVector[it->second], false};
 
-    if (isEC() && name.starts_with("EXP+"))
-      expSymbols.push_back(sym);
+  Symbol *sym = reinterpret_cast<Symbol *>(make<SymbolUnion>());
+  sym->isUsedInRegularObj = false;
+  sym->pendingArchiveLoad = false;
+  sym->canInline = true;
+  symVector.push_back(sym);
+  if (isEC() && name.starts_with("EXP+"))
+    expSymbols.push_back(sym);
+
+  if (!archiveSymbols.empty()) {
+    auto ai = archiveSymbols.find(key);
+    if (ai != archiveSymbols.end()) {
+      replaceSymbol<LazyArchive>(sym, ai->second.first, ai->second.second);
+      return {sym, false};
+    }
   }
-  return {sym, inserted};
+  return {sym, true};
 }
 
 std::pair<Symbol *, bool> SymbolTable::insert(StringRef name, InputFile *file) {
@@ -788,11 +844,18 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
   StringRef name = sym.getName();
   if (isEC() && !checkLazyECPair<LazyArchive>(this, name, f))
     return;
-  auto [s, wasInserted] = insert(name);
-  if (wasInserted) {
-    replaceSymbol<LazyArchive>(s, f, sym);
+  CachedHashStringRef key(name);
+  auto it = symMap.find(key);
+  if (it == symMap.end()) {
+    // Hybrid links check each lazy symbol against its counterpart as they
+    // enter it, and before the machine is known the link may become one.
+    if (ctx.config.machine == IMAGE_FILE_MACHINE_UNKNOWN || ctx.hybridSymtab)
+      replaceSymbol<LazyArchive>(insert(name).first, f, sym);
+    else
+      archiveSymbols.try_emplace(key, f, sym);
     return;
   }
+  Symbol *s = symVector[it->second];
   if (!loadsLazy(s, f))
     return;
   s->pendingArchiveLoad = true;
@@ -1005,28 +1068,51 @@ void SymbolTable::addLibcall(StringRef name) {
   }
 }
 
-Symbol *SymbolTable::find(StringRef name) const {
-  return symMap.lookup(CachedHashStringRef(name));
+Symbol *SymbolTable::find(StringRef name) {
+  CachedHashStringRef key(name);
+  if (auto it = symMap.find(key); it != symMap.end())
+    return symVector[it->second];
+  // An archive's symbol enters under the archive's copy of the name, which
+  // outlives the link.
+  auto it = archiveSymbols.find(key);
+  return it == archiveSymbols.end() ? nullptr : insert(it->first.val()).first;
 }
 
-Symbol *SymbolTable::findUnderscore(StringRef name) const {
+Symbol *SymbolTable::findUnderscore(StringRef name) {
   if (machine == I386)
     return find(("_" + name).str());
   return find(name);
 }
 
+std::vector<Symbol *>
+SymbolTable::findAll(function_ref<bool(StringRef)> match) {
+  for (auto &i : archiveSymbols)
+    if (match(i.first.val()))
+      insert(i.first.val());
+  std::vector<Symbol *> syms;
+  for (Symbol *sym : symVector)
+    if (match(sym->getName()))
+      syms.push_back(sym);
+  return syms;
+}
+
 // Return all symbols that start with Prefix, possibly ignoring the first
 // character of Prefix or the first character symbol.
 std::vector<Symbol *> SymbolTable::getSymsWithPrefix(StringRef prefix) {
+  return findAll([&](StringRef name) {
+    return name.starts_with(prefix) || name.starts_with(prefix.drop_front()) ||
+           name.drop_front().starts_with(prefix) ||
+           name.drop_front().starts_with(prefix.drop_front());
+  });
+}
+
+std::vector<Symbol *> SymbolTable::getUndefinedSymbols() {
   std::vector<Symbol *> syms;
-  for (auto pair : symMap) {
-    StringRef name = pair.first.val();
-    if (name.starts_with(prefix) || name.starts_with(prefix.drop_front()) ||
-        name.drop_front().starts_with(prefix) ||
-        name.drop_front().starts_with(prefix.drop_front())) {
-      syms.push_back(pair.second);
-    }
-  }
+  for (Symbol *sym : symVector)
+    if (isa<Undefined>(sym))
+      syms.push_back(sym);
+  llvm::sort(syms,
+             [](Symbol *a, Symbol *b) { return a->getName() < b->getName(); });
   return syms;
 }
 
@@ -1168,14 +1254,7 @@ void SymbolTable::addUndefinedGlob(StringRef arg) {
     return;
   }
 
-  SmallVector<Symbol *, 0> syms;
-  forEachSymbol([&syms, &pat](Symbol *sym) {
-    if (pat->match(sym->getName())) {
-      syms.push_back(sym);
-    }
-  });
-
-  for (Symbol *sym : syms)
+  for (Symbol *sym : findAll([&](StringRef name) { return pat->match(name); }))
     addGCRoot(sym->getName());
 }
 

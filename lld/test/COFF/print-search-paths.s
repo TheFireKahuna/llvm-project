@@ -25,6 +25,22 @@
 # X86-NEXT:   [[SYSROOT]]{{[/\\]}}sysroot{{[/\\]}}Windows Kits{{[/\\]}}10{{[/\\]}}Lib{{[/\\]}}10.0.1{{[/\\]}}ucrt{{[/\\]}}x86
 # X86-NEXT:   [[SYSROOT]]{{[/\\]}}sysroot{{[/\\]}}Windows Kits{{[/\\]}}10{{[/\\]}}Lib{{[/\\]}}10.0.1{{[/\\]}}um{{[/\\]}}x86
 
+## Without /winsysroot, /vctoolsdir or /winsdkdir, the MSVC and Windows SDK
+## directories are looked for only once a search misses the other paths.
+# RUN: mkdir -p %t.dir/vc/lib/x64 %t.dir/lib
+# RUN: cp %p/Inputs/std64.lib %t.dir/vc/lib/x64
+# RUN: cp %p/Inputs/std64.lib %t.dir/lib
+# RUN: env -u LIB VCToolsInstallDir=%t.dir/vc lld-link %p/Inputs/hello64.obj \
+# RUN:   /libpath:%t.dir/lib std64.lib /entry:main /out:%t.exe \
+# RUN:   -print-search-paths | FileCheck --check-prefix=FOUND %s
+# RUN: env -u LIB VCToolsInstallDir=%t.dir/vc lld-link %p/Inputs/hello64.obj \
+# RUN:   std64.lib /entry:main /out:%t.exe -print-search-paths \
+# RUN:   | FileCheck --check-prefix=MISS %s
+# FOUND:     Library search paths:
+# FOUND-NOT: {{[/\\]}}vc{{[/\\]}}lib
+# MISS:      Library search paths:
+# MISS:      {{[/\\]}}vc{{[/\\]}}lib{{[/\\]}}x64
+
 
         .text
         .globl  _main
