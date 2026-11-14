@@ -30,6 +30,7 @@ class Function;
 class FunctionCallee;
 class GlobalIFunc;
 class GlobalValue;
+class TargetTransformInfo;
 class Constant;
 class ConstantStruct;
 class Value;
@@ -162,6 +163,15 @@ LLVM_ABI GlobalVariable *embedBufferInModule(Module &M, MemoryBufferRef Buf,
 LLVM_ABI bool
 lowerGlobalIFuncUsersAsGlobalCtor(Module &M,
                                   ArrayRef<GlobalIFunc *> IFuncsToLower = {});
+
+/// Collects in \p Versions the functions that \p Resolver, the resolver of a
+/// multiversioned function's ifunc, may return. Returns false if a returned
+/// value is anything but a multiversioned function reached through selects
+/// and phis.
+LLVM_ABI bool
+collectFunctionVersions(Function &Resolver,
+                        SmallVectorImpl<Function *> &Versions,
+                        function_ref<TargetTransformInfo &(Function &)> GetTTI);
 
 } // End llvm namespace
 

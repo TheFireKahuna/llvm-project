@@ -13,6 +13,7 @@
 #include "llvm/Transforms/Utils/ModuleUtils.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallString.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/VectorUtils.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -506,4 +507,40 @@ bool llvm::lowerGlobalIFuncUsersAsGlobalCtor(
   appendToGlobalCtors(M, NewCtor, Priority,
                       ConstantPointerNull::get(ConstantDataTy));
   return UnhandledUsers;
+}
+
+// Follows the use-def chain of \p V backwards until it finds a Function,
+// in which case it collects in \p Versions. Return true on successful
+// use-def chain traversal, false otherwise.
+static bool
+collectVersions(Value *V, SmallVectorImpl<Function *> &Versions,
+                function_ref<TargetTransformInfo &(Function &)> GetTTI) {
+  if (auto *F = dyn_cast<Function>(V)) {
+    if (!GetTTI(*F).isMultiversionedFunction(*F))
+      return false;
+    Versions.push_back(F);
+  } else if (auto *Sel = dyn_cast<SelectInst>(V)) {
+    if (!collectVersions(Sel->getTrueValue(), Versions, GetTTI))
+      return false;
+    if (!collectVersions(Sel->getFalseValue(), Versions, GetTTI))
+      return false;
+  } else if (auto *Phi = dyn_cast<PHINode>(V)) {
+    for (unsigned I = 0, E = Phi->getNumIncomingValues(); I != E; ++I)
+      if (!collectVersions(Phi->getIncomingValue(I), Versions, GetTTI))
+        return false;
+  } else {
+    // Unknown instruction type. Bail.
+    return false;
+  }
+  return true;
+}
+
+bool llvm::collectFunctionVersions(
+    Function &Resolver, SmallVectorImpl<Function *> &Versions,
+    function_ref<TargetTransformInfo &(Function &)> GetTTI) {
+  for (BasicBlock &BB : Resolver)
+    if (auto *Ret = dyn_cast<ReturnInst>(BB.getTerminator()))
+      if (!collectVersions(Ret->getReturnValue(), Versions, GetTTI))
+        return false;
+  return true;
 }
