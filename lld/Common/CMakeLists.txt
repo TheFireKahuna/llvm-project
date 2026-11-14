@@ -32,6 +32,7 @@ add_lld_library(lldCommon
   Filesystem.cpp
   Memory.cpp
   Reproduce.cpp
+  ScriptLexer.cpp
   Strings.cpp
   TargetOptionsCommandFlags.cpp
   Timer.cpp

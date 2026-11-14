@@ -17,10 +17,10 @@
 #include "InputFiles.h"
 #include "LinkerScript.h"
 #include "OutputSections.h"
-#include "ScriptLexer.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Target.h"
+#include "lld/Common/ScriptLexer.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -42,10 +42,23 @@ using namespace llvm::support::endian;
 using namespace lld;
 using namespace lld::elf;
 
+// Returns true if the script is opened as an absolute path under the --sysroot
+// directory.
+static bool isUnderSysroot(Ctx &ctx, MemoryBufferRef mb) {
+  if (ctx.arg.sysroot == "")
+    return false;
+  for (StringRef path = mb.getBufferIdentifier(); !path.empty();
+       path = sys::path::parent_path(path))
+    if (sys::fs::equivalent(ctx.arg.sysroot, path))
+      return true;
+  return false;
+}
+
 namespace {
 class ScriptParser final : ScriptLexer {
 public:
-  ScriptParser(Ctx &ctx, MemoryBufferRef mb) : ScriptLexer(ctx, mb), ctx(ctx) {}
+  ScriptParser(Ctx &ctx, MemoryBufferRef mb)
+      : ScriptLexer(ctx, mb, isUnderSysroot(ctx, mb)), ctx(ctx) {}
 
   void readLinkerScript();
   void readVersionScript();
@@ -411,7 +424,7 @@ void ScriptParser::readInclude(llvm::function_ref<void()> parse) {
   if (!mb)
     return;
 
-  SaveAndRestore savedBuf(curBuf, Buffer(ctx, *mb));
+  SaveAndRestore savedBuf(curBuf, Buffer(*mb, isUnderSysroot(ctx, *mb)));
   SaveAndRestore savedPrevTok(prevTok, StringRef());
   SaveAndRestore savedPrevTokLine(prevTokLine, size_t(1));
   parse();

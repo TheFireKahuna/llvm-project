@@ -6,8 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef LLD_ELF_SCRIPT_LEXER_H
-#define LLD_ELF_SCRIPT_LEXER_H
+#ifndef LLD_COMMON_SCRIPT_LEXER_H
+#define LLD_COMMON_SCRIPT_LEXER_H
 
 #include "lld/Common/LLVM.h"
 #include "llvm/ADT/DenseSet.h"
@@ -15,8 +15,8 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/MemoryBufferRef.h"
 
-namespace lld::elf {
-struct Ctx;
+namespace lld {
+class CommonLinkerContext;
 
 class ScriptLexer {
 protected:
@@ -30,9 +30,9 @@ protected:
     bool isUnderSysroot = false;
 
     Buffer() = default;
-    Buffer(Ctx &ctx, MemoryBufferRef mb);
+    Buffer(MemoryBufferRef mb, bool isUnderSysroot);
   };
-  Ctx &ctx;
+  CommonLinkerContext &ctx;
   // The currently lexed buffer. INCLUDE runs a nested parse on a new `Buffer`,
   // similar to a call stack frame.
   Buffer curBuf;
@@ -66,7 +66,8 @@ protected:
   bool eof = false;
 
 public:
-  explicit ScriptLexer(Ctx &ctx, MemoryBufferRef mb);
+  ScriptLexer(CommonLinkerContext &ctx, MemoryBufferRef mb,
+              bool isUnderSysroot);
 
   void setError(const Twine &msg);
   void lex();
@@ -84,7 +85,6 @@ private:
   StringRef getLine();
   size_t getColumnNumber();
 };
-
-} // namespace lld::elf
+} // namespace lld
 
 #endif

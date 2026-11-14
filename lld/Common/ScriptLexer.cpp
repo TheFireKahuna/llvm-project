@@ -26,33 +26,21 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ScriptLexer.h"
-#include "Config.h"
+#include "lld/Common/ScriptLexer.h"
+#include "lld/Common/CommonLinkerContext.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/FileSystem.h"
-#include "llvm/Support/Path.h"
 
 using namespace llvm;
 using namespace lld;
-using namespace lld::elf;
 
-ScriptLexer::Buffer::Buffer(Ctx &ctx, MemoryBufferRef mb)
+ScriptLexer::Buffer::Buffer(MemoryBufferRef mb, bool isUnderSysroot)
     : s(mb.getBuffer()), filename(mb.getBufferIdentifier()),
-      begin(mb.getBufferStart()) {
-  if (ctx.arg.sysroot == "")
-    return;
-  StringRef path = filename;
-  for (; !path.empty(); path = sys::path::parent_path(path)) {
-    if (!sys::fs::equivalent(ctx.arg.sysroot, path))
-      continue;
-    isUnderSysroot = true;
-    return;
-  }
-}
+      begin(mb.getBufferStart()), isUnderSysroot(isUnderSysroot) {}
 
-ScriptLexer::ScriptLexer(Ctx &ctx, MemoryBufferRef mb)
-    : ctx(ctx), curBuf(ctx, mb) {
+ScriptLexer::ScriptLexer(CommonLinkerContext &ctx, MemoryBufferRef mb,
+                         bool isUnderSysroot)
+    : ctx(ctx), curBuf(mb, isUnderSysroot) {
   activeFilenames.insert(mb.getBufferIdentifier());
 }
 
@@ -76,14 +64,14 @@ std::string ScriptLexer::getCurrentLocation() {
 
 // We don't want to record cascading errors. Keep only the first one.
 void ScriptLexer::setError(const Twine &msg) {
-  if (errCount(ctx))
+  if (ctx.e.errorCount)
     return;
 
   std::string s = (getCurrentLocation() + ": " + msg).str();
   if (prevTok.size())
     s += "\n>>> " + getLine().str() + "\n>>> " +
          std::string(getColumnNumber(), ' ') + "^";
-  ErrAlways(ctx) << s;
+  SyncStream(ctx.e, DiagLevel::Err).os << s;
 }
 
 void ScriptLexer::lex() {
@@ -107,8 +95,8 @@ void ScriptLexer::lex() {
       if (e == StringRef::npos) {
         size_t lineno =
             StringRef(curBuf.begin, s.data() - curBuf.begin).count('\n');
-        ErrAlways(ctx) << curBuf.filename << ":" << (lineno + 1)
-                       << ": unclosed quote";
+        SyncStream(ctx.e, DiagLevel::Err).os
+            << curBuf.filename << ":" << (lineno + 1) << ": unclosed quote";
         return;
       }
 
@@ -215,7 +203,7 @@ StringRef ScriptLexer::skipSpace(StringRef s) {
 }
 
 // Used to determine whether to stop parsing. Treat errors like EOF.
-bool ScriptLexer::atEOF() { return eof || errCount(ctx); }
+bool ScriptLexer::atEOF() { return eof || ctx.e.errorCount; }
 
 StringRef ScriptLexer::next() {
   prevTok = peek();
@@ -247,7 +235,7 @@ bool ScriptLexer::consume(StringRef tok) {
 void ScriptLexer::skip() { (void)next(); }
 
 void ScriptLexer::expect(StringRef expect) {
-  if (errCount(ctx))
+  if (ctx.e.errorCount)
     return;
   StringRef tok = next();
   if (tok != expect) {
