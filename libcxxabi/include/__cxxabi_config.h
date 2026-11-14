@@ -23,7 +23,8 @@
 #  define _LIBCXXABI_COMPILER_GCC
 #endif
 
-#if defined(_WIN32)
+// Windows Itanium exports and imports by visibility, as ELF does.
+#if defined(_WIN32) && !defined(_WIN32_ITANIUM)
  #if defined(_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS) || (defined(__MINGW32__) && !defined(_LIBCXXABI_BUILDING_LIBRARY))
   #define _LIBCXXABI_HIDDEN
   #define _LIBCXXABI_DATA_VIS
@@ -142,8 +143,9 @@
 // On Windows, Clang either doesn't use __cxa_thread_atexit at all (in the MSVC ABI),
 // or (on MinGW) the function is already provided by C runtime.
 //
-// On other platforms, libc++abi provides __cxa_thread_atexit.
-#if defined(__APPLE__) || defined(_AIX) || defined(_WIN32)
+// On other platforms, Windows Itanium among them, libc++abi provides
+// __cxa_thread_atexit.
+#if defined(__APPLE__) || defined(_AIX) || (defined(_WIN32) && !defined(_WIN32_ITANIUM))
 #  define _LIBCXXABI_DEFINE_THREAD_ATEXIT 0
 #else
 #  define _LIBCXXABI_DEFINE_THREAD_ATEXIT 1

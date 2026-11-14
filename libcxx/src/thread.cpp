@@ -28,6 +28,13 @@
 #  include <windows.h>
 #endif
 
+#if defined(_WIN32_ITANIUM)
+// The C runtime: runs the destructors that __cxa_thread_atexit registered on
+// this thread.
+extern "C" void __cxa_thread_finalize(void*);
+extern "C" __declspec(dllimport) BOOLEAN NTAPI RtlDllShutdownInProgress(void);
+#endif
+
 #if defined(__ELF__) && defined(_LIBCPP_LINK_PTHREAD_LIB)
 #  pragma comment(lib, "pthread")
 #endif
@@ -142,7 +149,18 @@ void __thread_struct_imp::__make_ready_at_thread_exit(__assoc_sub_state* __s) {
 
 __thread_struct::__thread_struct() : __p_(new __thread_struct_imp) {}
 
-__thread_struct::~__thread_struct() { delete __p_; }
+__thread_struct::~__thread_struct() {
+#if defined(_WIN32_ITANIUM)
+  // This runs from a fiber-local storage callback, which Windows runs at
+  // thread exit before the TLS callbacks that destroy the thread's
+  // thread_local objects, and the *_at_thread_exit functions act after those
+  // are destroyed. So destroy them first, through the C runtime, unless this
+  // is the data of another fiber being deleted or the process is exiting.
+  if (__thread_local_data().get() == this && !RtlDllShutdownInProgress())
+    __cxa_thread_finalize(nullptr);
+#endif
+  delete __p_;
+}
 
 void __thread_struct::notify_all_at_thread_exit(condition_variable* cv, mutex* m) {
   __p_->notify_all_at_thread_exit(cv, m);

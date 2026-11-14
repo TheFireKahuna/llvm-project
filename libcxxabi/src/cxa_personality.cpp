@@ -71,10 +71,16 @@
 #include <windows.h>
 #include <winnt.h>
 
-extern "C" EXCEPTION_DISPOSITION _GCC_specific_handler(PEXCEPTION_RECORD,
-                                                       void *, PCONTEXT,
-                                                       PDISPATCHER_CONTEXT,
-                                                       _Unwind_Personality_Fn);
+// The system's dispatcher calls a language handler with the Microsoft x64
+// convention, which is not NT-POSIX's default.
+#if defined(__NTPOSIX__) && defined(__x86_64__)
+#  define _LIBCXXABI_SEH_HANDLER_CC __attribute__((__ms_abi__))
+#else
+#  define _LIBCXXABI_SEH_HANDLER_CC
+#endif
+
+extern "C" EXCEPTION_DISPOSITION _LIBCXXABI_SEH_HANDLER_CC
+_GCC_specific_handler(PEXCEPTION_RECORD, void*, PCONTEXT, PDISPATCHER_CONTEXT, _Unwind_Personality_Fn);
 #endif
 
 /*
@@ -1103,7 +1109,7 @@ __gxx_personality_v0
 }
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
-extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION
+extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION _LIBCXXABI_SEH_HANDLER_CC
 __gxx_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
                        PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp)
 {

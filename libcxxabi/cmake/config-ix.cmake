@@ -105,6 +105,11 @@ elseif(ANDROID)
   set(LIBCXXABI_HAS_PTHREAD_LIB NO)
   check_library_exists(c __cxa_thread_atexit_impl ""
     LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL)
+elseif(WIN32_ITANIUM)
+  set(LIBCXXABI_HAS_DL_LIB NO)
+  set(LIBCXXABI_HAS_PTHREAD_LIB NO)
+  # The start-up library that every image links defines it.
+  set(LIBCXXABI_HAS_CXA_THREAD_ATEXIT_IMPL YES)
 else()
   check_library_exists(dl dladdr "" LIBCXXABI_HAS_DL_LIB)
   check_library_exists(pthread pthread_once "" LIBCXXABI_HAS_PTHREAD_LIB)

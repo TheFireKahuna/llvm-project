@@ -188,7 +188,7 @@ inline _LIBCPP_HIDE_FROM_ABI double __str_to_float_c_locale<double>(const char* 
   return ::_strtod_l(__nptr, __endptr, __get_c_locale());
 }
 
-#if defined(_LIBCPP_MSVCRT)
+#if defined(_LIBCPP_MSVCRT) || defined(_WIN32_ITANIUM)
 template <>
 inline _LIBCPP_HIDE_FROM_ABI long double __str_to_float_c_locale<long double>(const char* __nptr, char** __endptr) {
   return ::_strtold_l(__nptr, __endptr, __get_c_locale());

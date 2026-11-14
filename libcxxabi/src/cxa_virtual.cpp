@@ -8,11 +8,18 @@
 
 #include "cxxabi.h"
 #include "abort_message.h"
+#include <stdlib.h>
 
 namespace __cxxabiv1 {
 extern "C" {
 [[noreturn]] _LIBCXXABI_FUNC_VIS
 void __cxa_pure_virtual(void) {
+#ifdef _WIN32_ITANIUM
+  // Clang's vtables name _purecall there, which runs the handler a program
+  // sets with _set_purecall_handler; a call that reaches this entry runs it too.
+  if (_purecall_handler handler = _get_purecall_handler())
+    handler();
+#endif
   __abort_message("Pure virtual function called!");
 }
 

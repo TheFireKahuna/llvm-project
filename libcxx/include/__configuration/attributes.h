@@ -47,7 +47,8 @@
 // Visibility attributes
 // ---------------------
 
-#if defined(_LIBCPP_OBJECT_FORMAT_COFF)
+// Windows Itanium exports and imports by visibility, as ELF does.
+#if defined(_LIBCPP_OBJECT_FORMAT_COFF) && !defined(_WIN32_ITANIUM)
 
 #  ifdef _DLL
 #    define _LIBCPP_CRT_FUNC __declspec(dllimport)
@@ -108,7 +109,7 @@
 #    define _LIBCPP_NAMESPACE_VISIBILITY
 #  endif
 
-#endif // defined(_LIBCPP_OBJECT_FORMAT_COFF)
+#endif // defined(_LIBCPP_OBJECT_FORMAT_COFF) && !defined(_WIN32_ITANIUM)
 
 // hide_from_abi
 // -------------

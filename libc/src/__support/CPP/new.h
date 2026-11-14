@@ -20,8 +20,9 @@
 
 // The Microsoft C runtime has no aligned_alloc, and its free cannot release an
 // over-aligned block: such blocks come from _aligned_malloc and go back to
-// _aligned_free.
-#ifdef LIBC_TARGET_OS_IS_WINDOWS
+// _aligned_free. Windows Itanium's runtime has an aligned_alloc whose blocks
+// free releases.
+#if defined(LIBC_TARGET_OS_IS_WINDOWS) && !defined(_WIN32_ITANIUM)
 #define LIBC_ALIGNED_ALLOC_NEEDS_ALIGNED_FREE
 #endif
 

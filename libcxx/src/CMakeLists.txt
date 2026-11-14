@@ -103,10 +103,15 @@ endif()
 
 if(WIN32)
   list(APPEND LIBCXX_SOURCES
-    support/win32/compiler_rt_shims.cpp
     support/win32/locale_win32.cpp
     support/win32/support.cpp
     )
+  # Every Windows Itanium image links compiler-rt's builtins.
+  if (NOT WIN32_ITANIUM)
+    list(APPEND LIBCXX_SOURCES
+      support/win32/compiler_rt_shims.cpp
+      )
+  endif()
 
   if (NOT LIBCXX_HAS_PTHREAD_API)
     list(APPEND LIBCXX_SOURCES

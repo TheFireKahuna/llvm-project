@@ -300,7 +300,7 @@ const char* __get_locale_encoding(__locale_t loc) {
 //
 // _strtold_l is unavailable on MinGW; provide a plain exported helper instead
 // so that no abi_tag is inherited by the exported symbol.
-#if !defined(_LIBCPP_MSVCRT)
+#if !defined(_LIBCPP_MSVCRT) && !defined(_WIN32_ITANIUM)
 long double __strtold_c_locale(const char* nptr, char** endptr) {
   __locale_guard __current(__get_c_locale());
   return std::strtold(nptr, endptr);

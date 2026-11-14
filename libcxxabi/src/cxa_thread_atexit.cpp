@@ -145,6 +145,18 @@ extern "C" {
 #endif // HAVE___CXA_THREAD_ATEXIT_IMPL
   }
 
+#if defined(HAVE___CXA_THREAD_ATEXIT_IMPL) && defined(_LIBCXXABI_COMPILER_CLANG) && __has_feature(function_type_prefix)
+  // Clang registers a destructor here, since it carries the salted destructor
+  // type, which a function passed to __cxa_thread_atexit need not. The C
+  // library records which type to call each function through.
+  int __llvm_kcfi_cxa_thread_atexit_impl(Dtor, void*, void*);
+  _LIBCXXABI_FUNC_VIS int __llvm_kcfi_cxa_thread_atexit(Dtor, void*, void*) throw();
+
+  int __llvm_kcfi_cxa_thread_atexit(Dtor dtor, void* obj, void* dso_symbol) throw() {
+    return __llvm_kcfi_cxa_thread_atexit_impl(dtor, obj, dso_symbol);
+  }
+#endif
+
 } // extern "C"
 
 } // namespace __cxxabiv1

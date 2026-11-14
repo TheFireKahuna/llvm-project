@@ -30,6 +30,9 @@
 #  define WIN32_LEAN_AND_MEAN
 #  define NOMINMAX
 #  include <windows.h>
+#  if defined(_WIN32_ITANIUM)
+#    include <winternl.h>
+#  endif
 #else
 #  include <dirent.h>
 #  include <sys/stat.h>
@@ -821,7 +824,12 @@ bool __remove(const path& p, error_code* ec) {
 //
 // The second implementation is used on platforms where `openat()` & friends are available,
 // and it threads file descriptors through recursive calls to avoid such race conditions.
-#if defined(_WIN32) || defined(__MVS__)
+//
+// Windows Itanium threads directory handles through them instead: Win32 cannot open a name
+// relative to a directory, but NtOpenFile can, and every Windows Itanium image links ntdll.
+#if defined(_WIN32_ITANIUM)
+#  define REMOVE_ALL_USE_DIRECTORY_HANDLES
+#elif defined(_WIN32) || defined(__MVS__)
 #  define REMOVE_ALL_USE_DIRECTORY_ITERATOR
 #endif
 
@@ -865,7 +873,100 @@ uintmax_t __remove_all(const path& p, error_code* ec) {
   return count;
 }
 
-#else // !REMOVE_ALL_USE_DIRECTORY_ITERATOR
+#elif defined(REMOVE_ALL_USE_DIRECTORY_HANDLES)
+
+namespace {
+
+// Opens the entry `name` of the directory `dir`, or `dir` again if `name` is empty, for
+// deletion, without following a link there. Returns a Win32 error code.
+DWORD open_at(HANDLE dir, wstring_view name, DWORD access, ULONG options, HANDLE& h) {
+  UNICODE_STRING uname;
+  uname.Buffer = const_cast<wchar_t*>(name.data());
+  uname.Length = uname.MaximumLength = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+  OBJECT_ATTRIBUTES attrs;
+  InitializeObjectAttributes(&attrs, &uname, OBJ_DONT_REPARSE, dir, nullptr);
+  IO_STATUS_BLOCK iosb;
+  return ::RtlNtStatusToDosError(::NtOpenFile(
+      &h,
+      access | DELETE | SYNCHRONIZE,
+      &attrs,
+      &iosb,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+      options | FILE_SYNCHRONOUS_IO_NONALERT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_OPEN_REPARSE_POINT));
+}
+
+uintmax_t remove_all_impl(HANDLE dir, wstring_view name, error_code& ec) {
+  // First, try to open the entry as a directory. A link to a directory opens as the link
+  // itself, which lists nothing.
+  HANDLE h;
+  DWORD error     = open_at(dir, name, FILE_LIST_DIRECTORY, FILE_DIRECTORY_FILE, h);
+  uintmax_t count = 0;
+  if (error == ERROR_DIRECTORY) {
+    // It isn't a directory: remove it as a file instead.
+    error = open_at(dir, name, 0, FILE_NON_DIRECTORY_FILE, h);
+  } else if (!error) {
+    // If that worked, remove everything in it, recursively.
+    auto buffer     = make_unique<char[]>(4096);
+    auto info_class = FileFullDirectoryRestartInfo;
+    while (!ec && ::GetFileInformationByHandleEx(h, info_class, buffer.get(), 4096)) {
+      info_class = FileFullDirectoryInfo;
+      for (auto* entry = reinterpret_cast<const FILE_FULL_DIR_INFO*>(buffer.get()); !ec;
+           entry       = reinterpret_cast<const FILE_FULL_DIR_INFO*>(
+               reinterpret_cast<const char*>(entry) + entry->NextEntryOffset)) {
+        wstring_view child(entry->FileName, entry->FileNameLength / sizeof(wchar_t));
+        if (child != L"." && child != L"..")
+          count += remove_all_impl(h, child, ec);
+        if (entry->NextEntryOffset == 0)
+          break;
+      }
+    }
+    if (!ec && ::GetLastError() != ERROR_NO_MORE_FILES)
+      ec = detail::get_last_error();
+  }
+
+  if (error) {
+    ec = error_code(static_cast<int>(error), system_category());
+    // If the entry doesn't exist, it's not an error -- it might have moved or have been
+    // deleted already.
+    if (ec == errc::no_such_file_or_directory)
+      ec.clear();
+    return 0;
+  }
+
+  // Then, remove the entry itself as POSIX unlink does: its name goes at once, even while
+  // another handle holds it open, so that its directory can be removed next. A file system
+  // without POSIX deletion removes it when its last handle closes.
+  if (!ec) {
+    FILE_DISPOSITION_INFO_EX posix = {FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS};
+    FILE_DISPOSITION_INFO plain    = {TRUE};
+    if (::SetFileInformationByHandle(h, FileDispositionInfoEx, &posix, sizeof(posix)) ||
+        ::SetFileInformationByHandle(h, FileDispositionInfo, &plain, sizeof(plain)))
+      ++count;
+    else
+      ec = detail::get_last_error();
+  }
+  ::CloseHandle(h);
+  return count;
+}
+
+} // namespace
+
+uintmax_t __remove_all(const path& p, error_code* ec) {
+  ErrorHandler<uintmax_t> err("remove_all", ec, &p);
+  error_code mec;
+  uintmax_t count = 0;
+  // Win32 opens what `p` names, a link included, and the removal opens it again through that
+  // handle, as it opens any other entry.
+  if (detail::WinHandle root(p.c_str(), FILE_READ_ATTRIBUTES, FILE_FLAG_OPEN_REPARSE_POINT); root)
+    count = remove_all_impl(root, {}, mec);
+  else
+    mec = detail::get_last_error();
+  if (mec && mec != errc::no_such_file_or_directory)
+    return err.report(mec);
+  return count;
+}
+
+#else // !REMOVE_ALL_USE_DIRECTORY_ITERATOR && !REMOVE_ALL_USE_DIRECTORY_HANDLES
 
 namespace {
 

@@ -146,10 +146,19 @@ void kmp_set_defaults(char const *str) { i; }
 void kmp_set_disp_num_buffers(omp_int_t arg) { i; }
 
 /* KMP memory management functions. */
+// The Microsoft C runtime's free cannot release an over-aligned block, so
+// every block comes from the _aligned_malloc family and goes back to
+// _aligned_free. Windows Itanium's runtime has a posix_memalign whose blocks
+// free releases.
+#if KMP_OS_WINDOWS && !defined(_WIN32_ITANIUM)
+#define KMP_STUB_ALIGNED_MALLOC 1
+#else
+#define KMP_STUB_ALIGNED_MALLOC 0
+#endif
 void *kmp_malloc(size_t size) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_ALIGNED_MALLOC
   // If successful returns a pointer to the memory block, otherwise returns
   // NULL.
   // Sets errno to ENOMEM or EINVAL if memory allocation failed or parameter
@@ -163,7 +172,7 @@ void *kmp_malloc(size_t size) {
 void *kmp_aligned_malloc(size_t sz, size_t a) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_ALIGNED_MALLOC
   res = _aligned_malloc(sz, a);
 #else
   // posix_memalign rejects a power of two below the pointer size.
@@ -180,7 +189,7 @@ void *kmp_aligned_malloc(size_t sz, size_t a) {
 void *kmp_calloc(size_t nelem, size_t elsize) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_ALIGNED_MALLOC
   res = _aligned_recalloc(NULL, nelem, elsize, 1);
 #else
   res = calloc(nelem, elsize);
@@ -190,7 +199,7 @@ void *kmp_calloc(size_t nelem, size_t elsize) {
 void *kmp_realloc(void *ptr, size_t size) {
   i;
   void *res;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_ALIGNED_MALLOC
   res = _aligned_realloc(ptr, size, 1);
 #else
   res = realloc(ptr, size);
@@ -199,7 +208,7 @@ void *kmp_realloc(void *ptr, size_t size) {
 }
 void kmp_free(void *ptr) {
   i;
-#if KMP_OS_WINDOWS
+#if KMP_STUB_ALIGNED_MALLOC
   _aligned_free(ptr);
 #else
   free(ptr);

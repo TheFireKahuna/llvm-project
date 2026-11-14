@@ -15,8 +15,9 @@
 // until macOS 10.15
 // XFAIL: target={{.+}}-apple-macosx10.{{13|14}}
 
-// ::aligned_alloc is not implemented on Windows
-// XFAIL: target={{.+}}-windows-{{.+}}
+// ::aligned_alloc is not implemented on Windows, except by Windows Itanium's
+// C runtime
+// XFAIL: target={{.+}}-windows-{{.+}} && !target={{.+}}-windows-itanium
 
 // ::aligned_alloc is available starting with Android P (API 28)
 // XFAIL: target={{.+}}-android{{(eabi)?(21|22|23|24|25|26|27)}}

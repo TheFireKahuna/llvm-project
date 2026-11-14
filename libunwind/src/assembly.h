@@ -202,7 +202,7 @@
 #endif
 #define HIDDEN_SYMBOL(name)
 
-#if defined(__MINGW32__)
+#if defined(__MINGW32__) || defined(_WIN32_ITANIUM)
 #define WEAK_ALIAS(name, aliasname)                                            \
   .globl SYMBOL_NAME(aliasname) SEPARATOR                                      \
   EXPORT_SYMBOL(aliasname) SEPARATOR                                           \
