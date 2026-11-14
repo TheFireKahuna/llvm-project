@@ -98,7 +98,7 @@ static bool parseLdr(uint32_t insn, Ldr &ldr) {
   return true;
 }
 
-static bool isValidAdrOffset(int32_t delta) { return isInt<21>(delta); }
+static bool isValidAdrOffset(int64_t delta) { return isInt<21>(delta); }
 
 static void writeAdr(void *loc, uint32_t dest, int32_t delta) {
   assert(isValidAdrOffset(delta));
