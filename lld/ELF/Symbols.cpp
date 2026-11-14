@@ -380,12 +380,8 @@ bool elf::computeIsPreemptible(Ctx &ctx, const Symbol &sym) {
   // specified and the symbol is STT_FUNC, the symbol is preemptible iff it is
   // in the dynamic list. -Bsymbolic-non-weak-functions is a non-weak subset of
   // -Bsymbolic-functions.
-  if (ctx.arg.symbolic ||
-      (ctx.arg.bsymbolic == BsymbolicKind::NonWeak &&
-       sym.binding != STB_WEAK) ||
-      (ctx.arg.bsymbolic == BsymbolicKind::Functions && sym.isFunc()) ||
-      (ctx.arg.bsymbolic == BsymbolicKind::NonWeakFunctions && sym.isFunc() &&
-       sym.binding != STB_WEAK))
+  if (isBoundBySymbolic(ctx.arg.bsymbolic, ctx.arg.symbolic, sym.isFunc(),
+                        sym.binding == STB_WEAK))
     return sym.inDynamicList;
   return true;
 }

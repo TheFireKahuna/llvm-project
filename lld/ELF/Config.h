@@ -10,6 +10,7 @@
 #define LLD_ELF_CONFIG_H
 
 #include "lld/Common/BPSectionOrdererBase.h"
+#include "lld/Common/Bsymbolic.h"
 #include "lld/Common/CallGraphSort.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/ErrorHandler.h"
@@ -94,10 +95,6 @@ enum ELFKind : uint8_t {
   ELF64LEKind,
   ELF64BEKind
 };
-
-// For -Bno-symbolic, -Bsymbolic-non-weak-functions, -Bsymbolic-functions,
-// -Bsymbolic-non-weak, -Bsymbolic.
-enum class BsymbolicKind { None, NonWeakFunctions, Functions, NonWeak, All };
 
 // For --build-id.
 enum class BuildIdKind { None, Fast, Md5, Sha1, Hexstring, Uuid };
