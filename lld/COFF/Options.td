@@ -289,6 +289,9 @@ def pdb_source_path : P<"pdbsourcepath",
     "Base path used to make relative source file path absolute in PDB">;
 def rsp_quoting : Joined<["--"], "rsp-quoting=">,
   HelpText<"Quoting style for response files, 'windows' (default) or 'posix'">;
+def rpath : Separate<["--", "-"], "rpath">, MetaVarName<"<dir>">,
+  HelpText<"Ignored: a PE image has no run-time library search path">;
+def : Joined<["--", "-"], "rpath=">, Alias<rpath>;
 def start_lib : F<"start-lib">,
   HelpText<"Start group of objects treated as if they were in a library">;
 defm stdcall_fixup : B_priv<"stdcall-fixup">;

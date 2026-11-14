@@ -2393,6 +2393,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (args.hasFlag(OPT_inferasanlibs, OPT_inferasanlibs_no, false))
     Warn(ctx) << "ignoring '/inferasanlibs', this flag is not supported";
 
+  if (args.hasArg(OPT_rpath))
+    Warn(ctx) << "ignoring '-rpath', a PE image has no run-time library "
+                 "search path";
+
   if (config->incremental && args.hasArg(OPT_profile)) {
     Warn(ctx) << "ignoring '/incremental' due to '/profile' specification";
     config->incremental = false;
