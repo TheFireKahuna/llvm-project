@@ -7,6 +7,13 @@
 // WARN:      lld-link: warning: {{.*}}.arm64.obj: locally defined symbol imported: func (native symbol)
 // WARN-NEXT: lld-link: warning: {{.*}}.arm64ec.obj: locally defined symbol imported: func (EC symbol)
 
+// A hybrid image keeps the loads of the pointers.
+// RUN: llvm-objdump -d --no-show-raw-insn %t.dll | FileCheck --check-prefix=DISASM %s
+// DISASM:      adrp x0, 0x180003000
+// DISASM-NEXT: ldr x0, [x0]
+// DISASM:      adrp x0, 0x180003000
+// DISASM-NEXT: ldr x0, [x0, #0x8]
+
 // RUN: llvm-readobj --hex-dump=.test %t.dll | FileCheck --check-prefix=TEST %s
 // TEST: 0x180005000 00300000 08300000
 
@@ -27,6 +34,8 @@
     .globl func
 func:
     ret
+    adrp x0, __imp_func
+    ldr x0, [x0, :lo12:__imp_func]
 
     .section .test, "r"
     .rva __imp_func

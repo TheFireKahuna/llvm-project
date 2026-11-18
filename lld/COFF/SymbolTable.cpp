@@ -359,27 +359,18 @@ bool SymbolTable::handleMinGWAutomaticImport(Symbol *sym, StringRef name) {
 
 /// Helper function for reportUnresolvable and resolveRemainingUndefines.
 /// This function emits an "undefined symbol" diagnostic for each symbol in
-/// undefs. If localImports is not nullptr, it also emits a "locally
-/// defined symbol imported" diagnostic for symbols in localImports.
-/// objFiles and bitcodeFiles (if not nullptr) are used to report where
+/// undefs. objFiles and bitcodeFiles (if not nullptr) are used to report where
 /// undefined symbols are referenced.
-void SymbolTable::reportProblemSymbols(
-    const SmallPtrSetImpl<Symbol *> &undefs,
-    const DenseMap<Symbol *, Symbol *> *localImports, bool needBitcodeFiles) {
+void SymbolTable::reportProblemSymbols(const SmallPtrSetImpl<Symbol *> &undefs,
+                                       bool needBitcodeFiles) {
   // Return early if there is nothing to report (which should be
   // the common case).
-  if (undefs.empty() && (!localImports || localImports->empty()))
+  if (undefs.empty())
     return;
 
-  for (Symbol *b : ctx.config.gcroot) {
+  for (Symbol *b : ctx.config.gcroot)
     if (undefs.contains(b))
       errorOrWarn(ctx) << "<root>: undefined symbol: " << printSymbol(b);
-    if (localImports)
-      if (Symbol *imp = localImports->lookup(b))
-        Warn(ctx) << "<root>: locally defined symbol imported: "
-                  << printSymbol(imp) << " (defined in "
-                  << toString(imp->getFile()) << ") [LNK4217]";
-  }
 
   std::vector<UndefinedDiag> undefDiags;
   DenseMap<Symbol *, int> firstDiag;
@@ -397,11 +388,6 @@ void SymbolTable::reportProblemSymbols(
         else
           undefDiags[it->second].files.push_back({file, symIndex});
       }
-      if (localImports)
-        if (Symbol *imp = localImports->lookup(sym))
-          Warn(ctx) << file
-                    << ": locally defined symbol imported: " << printSymbol(imp)
-                    << " (defined in " << imp->getFile() << ") [LNK4217]";
     }
   };
 
@@ -439,7 +425,7 @@ void SymbolTable::reportUnresolvable() {
     undefs.insert(sym);
   }
 
-  reportProblemSymbols(undefs, /*localImports=*/nullptr, true);
+  reportProblemSymbols(undefs, /*needBitcodeFiles=*/true);
 }
 
 void SymbolTable::addStartStopSymbols() {
@@ -501,9 +487,9 @@ void SymbolTable::addStartStopSymbols() {
 void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
   llvm::TimeTraceScope timeScope("Resolve remaining undefined symbols");
   SmallPtrSet<Symbol *, 8> undefs;
-  DenseMap<Symbol *, Symbol *> localImports;
+  SmallVector<DefinedLocalImport *, 0> localImports;
 
-  for (Symbol *sym : getUndefinedSymbols()) {
+  for (Symbol *sym : getSymbols()) {
     auto *undef = dyn_cast<Undefined>(sym);
     if (!undef)
       continue;
@@ -543,8 +529,7 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       }
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
-        localImportChunks.push_back(cast<DefinedLocalImport>(sym)->getChunk());
-        localImports[sym] = imp;
+        localImports.push_back(cast<DefinedLocalImport>(sym));
         continue;
       }
     }
@@ -560,6 +545,13 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     undefs.insert(sym);
   }
 
+  // Lay the pointers out by name, so that reordering the inputs moves none.
+  llvm::sort(localImports, [](DefinedLocalImport *a, DefinedLocalImport *b) {
+    return a->getName() < b->getName();
+  });
+  for (DefinedLocalImport *li : localImports)
+    localImportChunks.push_back(li->getChunk());
+
   // Remaining undefined symbols are not fatal if /force is specified. They are
   // replaced with dummy defined symbols once none is left to automatically
   // import X, which would otherwise find __imp_X's dummy.
@@ -567,9 +559,127 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     for (Symbol *sym : undefs)
       replaceSymbol<DefinedAbsolute>(sym, ctx, sym->getName(), 0);
 
-  reportProblemSymbols(
-      undefs, ctx.config.warnLocallyDefinedImported ? &localImports : nullptr,
-      false);
+  reportProblemSymbols(undefs, /*needBitcodeFiles=*/false);
+}
+
+// How rel, in sc, uses the local import pointer li. Data that refers to it is
+// a cell the compiler made, such as a catch-type entry. With relax, the adrp or
+// the 64-bit ldr of a load of it with no offset can reach a relative target.
+static LocalImportChunk::Use getUse(SectionChunk *sc,
+                                    const coff_relocation &rel,
+                                    DefinedLocalImport *li, bool relax) {
+  ArrayRef<uint8_t> data = sc->getContents();
+  if (!(sc->header->Characteristics & IMAGE_SCN_CNT_CODE))
+    return LocalImportChunk::Keep;
+  if (!relax || isa<DefinedAbsolute>(li->getTarget()) ||
+      rel.VirtualAddress + 4 > data.size())
+    return LocalImportChunk::Read;
+  uint32_t insn = endian::read32le(&data[rel.VirtualAddress]);
+  bool load = rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21
+                  ? (insn & 0x9f000000) == 0x90000000 && !(insn & 0x60ffffe0)
+                  : rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L &&
+                        (insn & 0xffc00000) == 0xf9400000 &&
+                        !(insn & 0x3ffc00) && !sc->getPair(rel);
+  return load ? LocalImportChunk::Load : LocalImportChunk::Read;
+}
+
+void SymbolTable::bindLocalImports() {
+  bool arm64 = machine == ARM64 && !ctx.hybridSymtab;
+  bool warn = ctx.config.warnLocallyDefinedImported;
+
+  // A live .refptr.X cell, which holds only X's address, binds as a local
+  // import pointer to X when X is in the image.
+  DenseMap<SectionChunk *, LocalImportChunk *> cells;
+  if (arm64)
+    forEachSymbol([&](Symbol *s) {
+      auto *d = dyn_cast<DefinedRegular>(s);
+      if (!d || !d->getName().starts_with(".refptr."))
+        return;
+      SectionChunk *sc = d->getChunk();
+      if (!sc->live || sc->getSize() != 8 || sc->getRelocs().size() != 1 ||
+          !sc->children().empty() || endian::read64le(sc->getContents().data()))
+        return;
+      const coff_relocation &rel = sc->getRelocs()[0];
+      Symbol *x = sc->file->getSymbol(rel.SymbolTableIndex);
+      Defined *target = x ? x->getDefined() : nullptr;
+      if (rel.Type != IMAGE_REL_ARM64_ADDR64 || rel.VirtualAddress || !target ||
+          x->getName() != d->getName().drop_front(8) ||
+          isa<DefinedImportData, DefinedImportThunk, DefinedAbsolute>(target))
+        return;
+      replaceSymbol<DefinedLocalImport>(d, ctx, d->getName(), target);
+      LocalImportChunk *c = cast<DefinedLocalImport>(d)->getChunk();
+      c->cell = sc;
+      cells[sc] = c;
+      localImportChunks.push_back(c);
+    });
+  if (localImportChunks.empty() || (!arm64 && !warn))
+    return;
+
+  // Another name that reaches a cell's section keeps the cell.
+  auto keepCell = [&](Symbol *s) {
+    if (auto *d = dyn_cast_or_null<DefinedRegular>(s); d && !cells.empty())
+      if (LocalImportChunk *c = cells.lookup(d->getChunk()))
+        c->uses |= LocalImportChunk::Keep;
+  };
+  // Code refers to __imp_X from a dllimport declaration of X, which LNK4217
+  // reports when X is local; a .refptr cell or -wrap's pointer is no __imp_X.
+  auto report = [&](StringRef where, DefinedLocalImport *li) {
+    if (warn && !li->getChunk()->cell && find(li->getName()) == li)
+      Warn(ctx) << where << ": locally defined symbol imported: "
+                << printSymbol(li->getTarget()) << " (defined in "
+                << li->getTarget()->getFile() << ") [LNK4217]";
+  };
+  for (Symbol *b : ctx.config.gcroot)
+    if (auto *li = dyn_cast<DefinedLocalImport>(b)) {
+      li->getChunk()->uses |= LocalImportChunk::Keep;
+      report("<root>", li);
+    }
+  for (ObjFile *file : ctx.objFileInstances) {
+    if (&file->symtab != this)
+      continue;
+    bool refers = false;
+    for (Symbol *s : file->getSymbols()) {
+      refers |= isa_and_nonnull<DefinedLocalImport>(s);
+      if (auto *d = dyn_cast_or_null<DefinedRegular>(s);
+          d && d->getCOFFSymbol().isExternal())
+        keepCell(d);
+    }
+    if (!refers)
+      continue;
+    SmallPtrSet<DefinedLocalImport *, 4> reported;
+    for (Chunk *c : file->getChunks()) {
+      auto *sc = dyn_cast_or_null<SectionChunk>(c);
+      if (!sc)
+        continue;
+      for (const coff_relocation &rel : sc->getRelocs()) {
+        Symbol *s = sc->getRelocTarget(rel);
+        auto *li = dyn_cast_or_null<DefinedLocalImport>(s);
+        // Only the cell's own object refers to a local name in its section.
+        if (!li) {
+          if (sc->live)
+            keepCell(s);
+          continue;
+        }
+        // Data does not refer to __imp_X from a dllimport declaration.
+        LocalImportChunk::Use use = getUse(sc, rel, li, arm64);
+        if (use != LocalImportChunk::Keep && reported.insert(li).second)
+          report(toString(file), li);
+        if (sc->live)
+          li->getChunk()->uses |= use;
+      }
+    }
+  }
+  if (!arm64)
+    return;
+
+  // The loads of a pointer are rewritten per symbol, since an adrp may serve
+  // several loads, so another instruction reading it keeps them all.
+  llvm::erase_if(localImportChunks, [](Chunk *c) {
+    auto *lc = cast<LocalImportChunk>(c);
+    if (lc->cell)
+      lc->cell->live = lc->isLive();
+    return !lc->isLive() || lc->cell;
+  });
 }
 
 std::pair<Symbol *, bool> SymbolTable::insert(StringRef name) {
@@ -1104,16 +1214,6 @@ std::vector<Symbol *> SymbolTable::getSymsWithPrefix(StringRef prefix) {
            name.drop_front().starts_with(prefix) ||
            name.drop_front().starts_with(prefix.drop_front());
   });
-}
-
-std::vector<Symbol *> SymbolTable::getUndefinedSymbols() {
-  std::vector<Symbol *> syms;
-  for (Symbol *sym : symVector)
-    if (isa<Undefined>(sym))
-      syms.push_back(sym);
-  llvm::sort(syms,
-             [](Symbol *a, Symbol *b) { return a->getName() < b->getName(); });
-  return syms;
 }
 
 Symbol *SymbolTable::findMangle(StringRef name) {

@@ -531,6 +531,19 @@ void SectionChunk::applyRelocation(uint8_t *off,
                   !isa<DefinedSynthetic>(d));
   };
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+  // The adrp and ldr of a local import pointer that bindLocalImports bypassed
+  // become the adrp and add of its symbol.
+  uint16_t type = rel.Type;
+  auto *li = dyn_cast_or_null<DefinedLocalImport>(sym);
+  if (li && li->getChunk()->isBypassed() &&
+      (type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
+       type == IMAGE_REL_ARM64_PAGEOFFSET_12L)) {
+    sym = li->getTarget();
+    if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
+      write32le(off, 0x91000000 | (read32le(off) & 0x3ff));
+      type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
+    }
+  }
   const coff_relocation *pair = getPair(rel);
   auto *b =
       pair ? dyn_cast_or_null<Defined>(file->getSymbol(pair->SymbolTableIndex))
@@ -607,7 +620,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
     applyRelARM(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::aarch64:
-    applyRelARM64(off, rel.Type, os, s, p, imageBase);
+    applyRelARM64(off, type, os, s, p, imageBase);
     break;
   case Triple::mipsel:
     applyRelMIPS(off, rel.Type, os, s, p, imageBase);
@@ -1045,7 +1058,9 @@ LocalImportChunk::LocalImportChunk(COFFLinkerContext &c, Defined *s)
 }
 
 void LocalImportChunk::getBaserels(std::vector<Baserel> *res) {
-  res->emplace_back(getRVA(), ctx.config.machine);
+  // An absolute value does not move with the image.
+  if (!isa<DefinedAbsolute>(sym))
+    res->emplace_back(getRVA(), ctx.config.machine);
 }
 
 size_t LocalImportChunk::getSize() const { return ctx.config.wordsize; }

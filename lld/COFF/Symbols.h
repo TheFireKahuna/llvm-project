@@ -449,8 +449,12 @@ public:
     return s->kind() == DefinedLocalImportKind;
   }
 
-  uint64_t getRVA() { return data->getRVA(); }
-  Chunk *getChunk() { return data; }
+  uint64_t getRVA() { return getStorage()->getRVA(); }
+  LocalImportChunk *getChunk() const { return data; }
+  // The chunk that holds the pointer.
+  Chunk *getStorage() {
+    return data->cell ? static_cast<Chunk *>(data->cell->repl) : data;
+  }
   Defined *getTarget() { return data->getTarget(); }
 
 private:
@@ -495,7 +499,7 @@ inline Chunk *Defined::getChunk() {
   case DefinedImportThunkKind:
     return cast<DefinedImportThunk>(this)->getChunk();
   case DefinedLocalImportKind:
-    return cast<DefinedLocalImport>(this)->getChunk();
+    return cast<DefinedLocalImport>(this)->getStorage();
   case DefinedCommonKind:
     return cast<DefinedCommon>(this)->getChunk();
   case LazyArchiveKind:

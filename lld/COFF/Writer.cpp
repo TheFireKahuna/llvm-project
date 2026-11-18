@@ -2546,6 +2546,10 @@ void Writer::getSymbolsFromSections(ObjFile *file,
         continue;
       }
       if (Symbol *s = objSymbols[symIndex]) {
+        // A local import's entry is its target's, which every load of the
+        // pointer may reach without it.
+        if (auto *imp = dyn_cast<DefinedLocalImport>(s))
+          s = imp->getTarget();
         if (s->isLive())
           symbols.push_back(cast<Symbol>(s));
       }

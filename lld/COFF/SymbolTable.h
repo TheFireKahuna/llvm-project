@@ -80,6 +80,12 @@ public:
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
 
+  // On ARM64, once liveness is known, binds .refptr cells as local import
+  // pointers, and when every instruction that refers to a pointer loads it,
+  // makes the loads reach its symbol directly, keeping the pointer only for a
+  // root or data that refers to it.
+  void bindLocalImports();
+
   // Defines the referenced, undefined __start_X and __stop_X of each run of
   // sections named X or X$*, where X is a C identifier, and _etext, _edata and
   // _end, unprefixed too. The writer places them once the layout is known.
@@ -259,9 +265,6 @@ private:
 
   bool findUnderscoreMangle(StringRef sym);
   std::vector<Symbol *> getSymsWithPrefix(StringRef prefix);
-  // The undefined symbols, by name, so that what is done with them does not
-  // depend on the table's hashing, and they can be looked up meanwhile.
-  std::vector<Symbol *> getUndefinedSymbols();
 
   // Each name's index in symVector, as in lld/ELF.
   llvm::DenseMap<llvm::CachedHashStringRef, int> symMap;
@@ -277,10 +280,8 @@ private:
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;
 
-  void
-  reportProblemSymbols(const llvm::SmallPtrSetImpl<Symbol *> &undefs,
-                       const llvm::DenseMap<Symbol *, Symbol *> *localImports,
-                       bool needBitcodeFiles);
+  void reportProblemSymbols(const llvm::SmallPtrSetImpl<Symbol *> &undefs,
+                            bool needBitcodeFiles);
   void reportUndefinedSymbol(const UndefinedDiag &undefDiag);
 };
 

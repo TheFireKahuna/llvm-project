@@ -719,6 +719,18 @@ public:
   void writeTo(uint8_t *buf) const override;
   Defined *getTarget() const { return sym; }
 
+  // How roots and live sections use the pointer. On ARM64, when every
+  // instruction that refers to it loads it, they reach the symbol instead, and
+  // it is left out unless something keeps it.
+  enum Use : uint8_t { Keep = 1, Load = 2, Read = 4 };
+  uint8_t uses = 0;
+  bool isBypassed() const { return (uses & (Load | Read)) == Load; }
+  bool isLive() const { return !isBypassed() || (uses & Keep); }
+  // The compiler's .refptr cell that this pointer binds, if any. The cell
+  // stays the pointer, so that it keeps one address, and this one is never
+  // written.
+  SectionChunk *cell = nullptr;
+
 private:
   Defined *sym;
   COFFLinkerContext &ctx;
