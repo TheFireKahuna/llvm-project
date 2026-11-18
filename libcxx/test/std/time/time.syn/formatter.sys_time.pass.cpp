@@ -773,6 +773,16 @@ static void test_valid_values_date_time() {
         fmt,
         std::chrono::sys_seconds(1'234'567'890s)); // 23:31:30 UTC on Friday, 13 February 2009
 
+#if defined(_WIN32)
+  // The C library rejects years outside [0, 9999]; libc++ formats them itself.
+  check(SV("%c='Sat Jan  1 00:00:00 10000'\t%Ec='Sat Jan  1 00:00:00 10000'\n"),
+        fmt,
+        std::chrono::sys_seconds(std::chrono::sys_days{std::chrono::year{10'000} / 1 / 1}));
+  check(SV("%c='Fri Jan  1 00:00:00 -0001'\t%Ec='Fri Jan  1 00:00:00 -0001'\n"),
+        fmt,
+        std::chrono::sys_seconds(std::chrono::sys_days{std::chrono::year{-1} / 1 / 1}));
+#endif // defined(_WIN32)
+
   // Use the global locale (fr_FR)
   check(
 // https://sourceware.org/bugzilla/show_bug.cgi?id=24054

@@ -12,6 +12,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 #define __KMP_IMP
@@ -165,6 +166,9 @@ void *kmp_aligned_malloc(size_t sz, size_t a) {
 #if KMP_OS_WINDOWS
   res = _aligned_malloc(sz, a);
 #else
+  // posix_memalign rejects a power of two below the pointer size.
+  if (a && !(a & (a - 1)) && a < sizeof(void *))
+    a = sizeof(void *);
   int err;
   if ((err = posix_memalign(&res, a, sz))) {
     errno = err; // can be EINVAL or ENOMEM
@@ -381,82 +385,35 @@ omp_memspace_handle_t const llvm_omp_target_device_mem_space =
 #endif /* KMP_OS_WINDOWS */
 
 void *omp_alloc(size_t size, omp_allocator_handle_t allocator) {
-  i;
-  void *res;
-#if KMP_OS_WINDOWS
-  // Returns a pointer to the memory block, or NULL if failed.
-  // Sets errno to ENOMEM or EINVAL if memory allocation failed or parameter
-  // validation failed.
-  res = _aligned_malloc(size, 1);
-#else
-  res = malloc(size);
-#endif
-  return res;
+  return kmp_malloc(size);
 }
 
 void *omp_aligned_alloc(size_t a, size_t size, omp_allocator_handle_t al) {
-  i;
-  void *res;
-#if KMP_OS_WINDOWS
-  res = _aligned_malloc(size, a);
-#else
-  int err;
-  if ((err = posix_memalign(&res, a, size))) {
-    errno = err; // can be EINVAL or ENOMEM
-    res = NULL;
-  }
-#endif
-  return res;
+  return kmp_aligned_malloc(size, a);
 }
 
 void *omp_calloc(size_t nmemb, size_t size, omp_allocator_handle_t al) {
-  i;
-  void *res;
-#if KMP_OS_WINDOWS
-  res = _aligned_recalloc(NULL, nmemb, size, 1);
-#else
-  res = calloc(nmemb, size);
-#endif
-  return res;
+  return kmp_calloc(nmemb, size);
 }
 
 void *omp_aligned_calloc(size_t a, size_t nmemb, size_t size,
                          omp_allocator_handle_t al) {
-  i;
-  void *res;
-#if KMP_OS_WINDOWS
-  res = _aligned_recalloc(NULL, nmemb, size, a);
-#else
-  int err;
-  if ((err = posix_memalign(&res, a, nmemb * size))) {
-    errno = err; // can be EINVAL or ENOMEM
-    res = NULL;
+  if (nmemb && size > SIZE_MAX / nmemb) {
+    errno = ENOMEM;
+    return NULL;
   }
-  memset(res, 0x00, size);
-#endif
+  void *res = kmp_aligned_malloc(nmemb * size, a);
+  if (res)
+    memset(res, 0x00, nmemb * size);
   return res;
 }
 
 void *omp_realloc(void *ptr, size_t size, omp_allocator_handle_t al,
                   omp_allocator_handle_t free_al) {
-  i;
-  void *res;
-#if KMP_OS_WINDOWS
-  res = _aligned_realloc(ptr, size, 1);
-#else
-  res = realloc(ptr, size);
-#endif
-  return res;
+  return kmp_realloc(ptr, size);
 }
 
-void omp_free(void *ptr, omp_allocator_handle_t allocator) {
-  i;
-#if KMP_OS_WINDOWS
-  _aligned_free(ptr);
-#else
-  free(ptr);
-#endif
-}
+void omp_free(void *ptr, omp_allocator_handle_t allocator) { kmp_free(ptr); }
 
 void *omp_get_dyn_gprivate_ptr(size_t offset, omp_access_t access_group) {
   i;

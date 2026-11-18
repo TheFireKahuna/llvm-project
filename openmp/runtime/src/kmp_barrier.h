@@ -30,11 +30,8 @@
 static inline void *KMP_ALIGNED_ALLOCATE(size_t size, size_t alignment) {
   void *ptr;
   int n = posix_memalign(&ptr, alignment, size);
-  if (n != 0) {
-    if (ptr)
-      free(ptr);
+  if (n != 0)
     return nullptr;
-  }
   return ptr;
 }
 #define KMP_ALIGNED_FREE(ptr) free(ptr)

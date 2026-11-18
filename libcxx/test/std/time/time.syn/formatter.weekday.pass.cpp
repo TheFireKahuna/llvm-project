@@ -117,7 +117,7 @@ static void test_invalid_values() {
   const std::locale loc(LOCALE_ja_JP_UTF_8);
   std::locale::global(std::locale(LOCALE_fr_FR_UTF_8));
 
-#if defined(__APPLE__) || defined(__FreeBSD__)
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(_WIN32)
   // Non localized output using C-locale
   check(SV("%u='8'\t%Ou='8'\t%w='8'\t%Ow='8'\n"), fmt, std::chrono::weekday(8));
   check(SV("%u='255'\t%Ou='255'\t%w='255'\t%Ow='255'\n"), fmt, std::chrono::weekday(255));
@@ -129,7 +129,7 @@ static void test_invalid_values() {
   // Use supplied locale (ja_JP). This locale has a different alternate.
   check(loc, SV("%u='8'\t%Ou='8'\t%w='8'\t%Ow='8'\n"), lfmt, std::chrono::weekday(8));
   check(loc, SV("%u='255'\t%Ou='255'\t%w='255'\t%Ow='255'\n"), lfmt, std::chrono::weekday(255));
-#elif defined(_AIX)   // defined(__APPLE__) || defined(__FreeBSD__)
+#elif defined(_AIX) // defined(__APPLE__) || defined(__FreeBSD__) || defined(_WIN32)
   // Non localized output using C-locale
   check(SV("%u='8'\t%Ou='8'\t%w='8'\t%Ow='8'\n"), fmt, std::chrono::weekday(8));
   check(SV("%u='5'\t%Ou='5'\t%w='5'\t%Ow='5'\n"), fmt, std::chrono::weekday(255));
@@ -141,19 +141,7 @@ static void test_invalid_values() {
   // Use supplied locale (ja_JP). This locale has a different alternate.
   check(loc, SV("%u='8'\t%Ou='8'\t%w='8'\t%Ow='8'\n"), lfmt, std::chrono::weekday(8));
   check(loc, SV("%u='5'\t%Ou='5'\t%w='5'\t%Ow='5'\n"), lfmt, std::chrono::weekday(255));
-#elif defined(_WIN32) // defined(__APPLE__) || defined(__FreeBSD__)
-  // Non localized output using C-locale
-  check(SV("%u=''\t%Ou=''\t%w=''\t%Ow=''\n"), fmt, std::chrono::weekday(8));
-  check(SV("%u=''\t%Ou=''\t%w=''\t%Ow=''\n"), fmt, std::chrono::weekday(255));
-
-  // Use the global locale (fr_FR)
-  check(SV("%u=''\t%Ou=''\t%w=''\t%Ow=''\n"), lfmt, std::chrono::weekday(8));
-  check(SV("%u=''\t%Ou=''\t%w=''\t%Ow=''\n"), lfmt, std::chrono::weekday(255));
-
-  // Use supplied locale (ja_JP). This locale has a different alternate.
-  check(loc, SV("%u=''\t%Ou=''\t%w=''\t%Ow=''\n"), lfmt, std::chrono::weekday(8));
-  check(loc, SV("%u=''\t%Ou=''\t%w=''\t%Ow=''\n"), lfmt, std::chrono::weekday(255));
-#else                 // defined(__APPLE__) || defined(__FreeBSD__)
+#else               // defined(__APPLE__) || defined(__FreeBSD__) || defined(_WIN32)
   // Non localized output using C-locale
   check(SV("%u='1'\t%Ou='1'\t%w='8'\t%Ow='8'\n"), fmt, std::chrono::weekday(8));
   check(SV("%u='3'\t%Ou='3'\t%w='255'\t%Ow='255'\n"), fmt, std::chrono::weekday(255));
@@ -165,7 +153,7 @@ static void test_invalid_values() {
   // Use supplied locale (ja_JP). This locale has a different alternate.
   check(loc, SV("%u='1'\t%Ou='一'\t%w='8'\t%Ow='八'\n"), lfmt, std::chrono::weekday(8));
   check(loc, SV("%u='3'\t%Ou='三'\t%w='255'\t%Ow='255'\n"), lfmt, std::chrono::weekday(255));
-#endif                // defined(__APPLE__) || defined(__FreeBSD__)
+#endif              // defined(__APPLE__) || defined(__FreeBSD__) || defined(_WIN32)
 
   std::locale::global(std::locale::classic());
 }

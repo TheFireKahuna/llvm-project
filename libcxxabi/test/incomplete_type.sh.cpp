@@ -79,6 +79,18 @@ void ThrowNullptr() { throw nullptr; }
 
 struct IncompleteAtThrow {};
 
+template <class T>
+void CatchesNull(void (*thrower)()) {
+  try {
+    thrower();
+    assert(false);
+  } catch (T p) {
+    assert(!p);
+  } catch (...) {
+    assert(!"FAIL: Didn't catch through a qualification conversion");
+  }
+}
+
 int main(int, char**) {
   AssertIncompleteTypeInfoEquals(ReturnTypeInfoNeverDefinedMP(), typeid(int NeverDefined::*));
   try {
@@ -176,6 +188,13 @@ int main(int, char**) {
     assert(!p);
   }
   catch(...) { assert(!"FAIL: Didn't catch CompleteAtThrow::**" ); }
+
+  // Qualification conversions compare the types pointed to, which reach a
+  // class one side sees as incomplete.
+  CatchesNull<IncompleteAtThrow* const*>(ThrowIncompletePP);
+  CatchesNull<const CompleteAtThrow* const*>(ThrowCompletePP);
+  CatchesNull<const int IncompleteAtThrow::*>(ThrowIncompleteMP);
+  CatchesNull<int CompleteAtThrow::* const*>(ThrowCompletePMP);
 
 #if __cplusplus >= 201103L
   // Catch nullptr as complete type

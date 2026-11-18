@@ -74,7 +74,7 @@ void __assoc_sub_state::set_value_at_thread_exit() {
   if (__has_value())
     std::__throw_future_error(future_errc::promise_already_satisfied);
   __state_ |= __constructed;
-  __thread_local_data()->__make_ready_at_thread_exit(this);
+  __thread_local_data_or_create()->__make_ready_at_thread_exit(this);
 }
 
 void __assoc_sub_state::set_exception(exception_ptr __p) {
@@ -91,7 +91,7 @@ void __assoc_sub_state::set_exception_at_thread_exit(exception_ptr __p) {
   if (__has_value())
     std::__throw_future_error(future_errc::promise_already_satisfied);
   __exception_ = __p;
-  __thread_local_data()->__make_ready_at_thread_exit(this);
+  __thread_local_data_or_create()->__make_ready_at_thread_exit(this);
 }
 
 void __assoc_sub_state::__make_ready() {

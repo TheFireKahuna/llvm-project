@@ -62,7 +62,7 @@ struct __non_trivially_default_constructible_if<true, _Unique> {
 // `allocator::deallocate`. These are here to the `__builtin_operator`s are never in a constant
 // context due to a Clang bug.
 template <class _Tp, class... _Args>
-_Tp* __operator_new_wrapper(size_t __count, _Args&&... __args) {
+_LIBCPP_NO_CFI _Tp* __operator_new_wrapper(size_t __count, _Args&&... __args) {
   return static_cast<_Tp*>(__builtin_operator_new(__count * sizeof(_Tp), std::forward<_Args>(__args)...));
 }
 

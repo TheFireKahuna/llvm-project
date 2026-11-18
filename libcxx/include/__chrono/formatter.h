@@ -199,6 +199,105 @@ void __format_century(basic_stringstream<_CharT>& __sstr, int __year) {
   __sstr << std::format(_LIBCPP_STATICALLY_WIDEN(_CharT, "{:02}"), __century);
 }
 
+#    if defined(_WIN32)
+// The Microsoft C library's strftime calls the invalid parameter handler, whose
+// default ends the process, when a tm field that the conversion reads is out of
+// range. These are the fields a chrono value can bring out of the accepted
+// range in a conversion whose value the caller does not validate.
+_LIBCPP_HIDE_FROM_ABI inline bool __crt_rejects_mday(const tm& __t) {
+  return static_cast<unsigned>(__t.tm_mday - 1) > 30;
+}
+_LIBCPP_HIDE_FROM_ABI inline bool __crt_rejects_mon(const tm& __t) { return static_cast<unsigned>(__t.tm_mon) > 11; }
+_LIBCPP_HIDE_FROM_ABI inline bool __crt_rejects_year(const tm& __t) {
+  return static_cast<unsigned>(__t.tm_year + 1900) > 9999;
+}
+_LIBCPP_HIDE_FROM_ABI inline bool __crt_rejects_wday(const tm& __t) { return static_cast<unsigned>(__t.tm_wday) > 6; }
+_LIBCPP_HIDE_FROM_ABI inline bool __crt_rejects_date(const tm& __t) {
+  return __formatter::__crt_rejects_mday(__t) || __formatter::__crt_rejects_mon(__t) ||
+         __formatter::__crt_rejects_year(__t);
+}
+
+// Whether strftime rejects the conversion __c that follows an E or O modifier.
+template <class _CharT>
+bool __crt_rejects(const tm& __t, _CharT __c) {
+  switch (__c) {
+  case _CharT('d'):
+  case _CharT('e'):
+    return __formatter::__crt_rejects_mday(__t);
+  case _CharT('m'):
+    return __formatter::__crt_rejects_mon(__t);
+  case _CharT('u'):
+  case _CharT('w'):
+    return __formatter::__crt_rejects_wday(__t);
+  case _CharT('c'): // Only a time point reaches %c, whose other fields are in range.
+  case _CharT('C'):
+  case _CharT('y'):
+  case _CharT('Y'):
+    return __formatter::__crt_rejects_year(__t);
+  case _CharT('x'):
+    return __formatter::__crt_rejects_date(__t);
+  default:
+    return false;
+  }
+}
+
+// Formats the conversion __c, whose fields strftime rejects, with each field as
+// a decimal number of the conversion's minimum width.
+template <class _CharT>
+void __format_crt_rejected(
+    basic_stringstream<_CharT>& __sstr, const tm& __t, _CharT __c, const time_put<_CharT>& __facet) {
+  int __year = __t.tm_year + 1900;
+  switch (__c) {
+  case _CharT('d'):
+    __sstr << std::format(_LIBCPP_STATICALLY_WIDEN(_CharT, "{:02}"), __t.tm_mday);
+    break;
+  case _CharT('e'):
+    __sstr << std::format(_LIBCPP_STATICALLY_WIDEN(_CharT, "{:2}"), __t.tm_mday);
+    break;
+  case _CharT('m'):
+    __sstr << std::format(_LIBCPP_STATICALLY_WIDEN(_CharT, "{:02}"), __t.tm_mon + 1);
+    break;
+  case _CharT('u'):
+  case _CharT('w'):
+    __sstr << std::format(_LIBCPP_STATICALLY_WIDEN(_CharT, "{}"), __t.tm_wday);
+    break;
+  case _CharT('D'):
+  case _CharT('x'):
+    __sstr << std::format(
+        _LIBCPP_STATICALLY_WIDEN(_CharT, "{:02}/{:02}/{:02}"), __t.tm_mon + 1, __t.tm_mday, std::abs(__year) % 100);
+    break;
+  case _CharT('c'): {
+    // The "C" locale's representation; only the year is out of range.
+    basic_string_view<_CharT> __time = _LIBCPP_STATICALLY_WIDEN(_CharT, "%a %b %e %H:%M:%S ");
+    __facet.put({__sstr}, __sstr, _CharT(' '), std::addressof(__t), __time.data(), __time.data() + __time.size());
+    __formatter::__format_year(__sstr, __year);
+  } break;
+  case _CharT('C'):
+    __formatter::__format_century(__sstr, __year);
+    break;
+  case _CharT('y'):
+    __sstr << std::format(_LIBCPP_STATICALLY_WIDEN(_CharT, "{:02}"), std::abs(__year) % 100);
+    break;
+  case _CharT('Y'):
+    __formatter::__format_year(__sstr, __year);
+    break;
+  case _CharT('g'):
+  case _CharT('G'): {
+    // The ISO week-based year is the year of the week's Thursday.
+    int __thursday = __t.tm_yday + 3 - (__t.tm_wday + 6) % 7;
+    if (__thursday < 0)
+      --__year;
+    else if (__thursday >= 365 + chrono::year{__year}.is_leap())
+      ++__year;
+    if (__c == _CharT('g'))
+      __sstr << std::format(_LIBCPP_STATICALLY_WIDEN(_CharT, "{:02}"), std::abs(__year) % 100);
+    else
+      __formatter::__format_year(__sstr, __year);
+  } break;
+  }
+}
+#    endif // defined(_WIN32)
+
 // Implements the %z format specifier according to [tab:time.format.spec], where
 // '__modifier' signals %Oz or %Ez were used. (Both modifiers behave the same,
 // so there is no need to distinguish between them.)
@@ -371,6 +470,54 @@ void __format_chrono_using_chrono_specs(
         __sstr << std::format(_LIBCPP_STATICALLY_WIDEN(_CharT, "-{:02}-{:02}"), __t.tm_mon + 1, __t.tm_mday);
         break;
 
+#    if defined(_WIN32)
+      // strftime ends the process for a field out of range; see __crt_rejects.
+      case _CharT('d'):
+      case _CharT('e'):
+        if (__formatter::__crt_rejects_mday(__t))
+          __formatter::__format_crt_rejected(__sstr, __t, *__it, __facet);
+        else
+          __facet.put(
+              {__sstr}, __sstr, _CharT(' '), std::addressof(__t), std::to_address(__s), std::to_address(__it + 1));
+        break;
+
+      case _CharT('m'):
+        if (__formatter::__crt_rejects_mon(__t))
+          __formatter::__format_crt_rejected(__sstr, __t, *__it, __facet);
+        else
+          __facet.put(
+              {__sstr}, __sstr, _CharT(' '), std::addressof(__t), std::to_address(__s), std::to_address(__it + 1));
+        break;
+
+      case _CharT('u'):
+      case _CharT('w'):
+        if (__formatter::__crt_rejects_wday(__t))
+          __formatter::__format_crt_rejected(__sstr, __t, *__it, __facet);
+        else
+          __facet.put(
+              {__sstr}, __sstr, _CharT(' '), std::addressof(__t), std::to_address(__s), std::to_address(__it + 1));
+        break;
+
+      case _CharT('c'):
+      case _CharT('g'):
+      case _CharT('G'):
+        if (__formatter::__crt_rejects_year(__t))
+          __formatter::__format_crt_rejected(__sstr, __t, *__it, __facet);
+        else
+          __facet.put(
+              {__sstr}, __sstr, _CharT(' '), std::addressof(__t), std::to_address(__s), std::to_address(__it + 1));
+        break;
+
+      case _CharT('D'):
+      case _CharT('x'):
+        if (__formatter::__crt_rejects_date(__t))
+          __formatter::__format_crt_rejected(__sstr, __t, *__it, __facet);
+        else
+          __facet.put(
+              {__sstr}, __sstr, _CharT(' '), std::addressof(__t), std::to_address(__s), std::to_address(__it + 1));
+        break;
+#    endif // defined(_WIN32)
+
       case _CharT('z'):
         __formatter::__format_zone_offset(__sstr, __z.__offset, false);
         break;
@@ -402,6 +549,12 @@ void __format_chrono_using_chrono_specs(
           __formatter::__format_zone_offset(__sstr, __z.__offset, true);
           break;
         }
+#    if defined(_WIN32)
+        if (__formatter::__crt_rejects(__t, *__it)) {
+          __formatter::__format_crt_rejected(__sstr, __t, *__it, __facet);
+          break;
+        }
+#    endif
         [[fallthrough]];
       default:
         __facet.put(

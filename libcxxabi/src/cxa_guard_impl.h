@@ -166,6 +166,16 @@ uint32_t PlatformThreadID() {
   static_assert(sizeof(pid_t) == sizeof(uint32_t), "");
   return static_cast<uint32_t>(syscall(SYS_gettid));
 }
+#elif defined(_WIN32)
+// Declared here rather than taken from <windows.h>, which would bring its
+// macros into the library. std::__libcpp_thread_get_current_id is no option:
+// on Windows it is defined in libc++, which libc++abi cannot depend on.
+extern "C" __declspec(dllimport) unsigned long __stdcall GetCurrentThreadId();
+
+uint32_t PlatformThreadID() {
+  static_assert(sizeof(unsigned long) == sizeof(uint32_t), "");
+  return static_cast<uint32_t>(GetCurrentThreadId());
+}
 #else
 constexpr uint32_t (*PlatformThreadID)() = nullptr;
 #endif

@@ -383,6 +383,17 @@ static void test_invalid_values() {
   check_exception("Formatting a week of year needs a valid date",
                   SV("{:%OW}"),
                   std::chrono::year_month_day{std::chrono::year{-32768}, std::chrono::month{1}, std::chrono::day{31}});
+
+#if defined(_WIN32)
+  // The C library rejects these fields; libc++ formats them itself.
+  constexpr std::basic_string_view<CharT> fmt = SV("{:%%D='%D'%t%%x='%x'%t%%Ex='%Ex'%n}");
+  check(SV("%D='13/00/70'\t%x='13/00/70'\t%Ex='13/00/70'\n"),
+        fmt,
+        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::month{13}, std::chrono::day{0}});
+  check(SV("%D='01/255/70'\t%x='01/255/70'\t%Ex='01/255/70'\n"),
+        fmt,
+        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::month{1}, std::chrono::day{255}});
+#endif // defined(_WIN32)
 }
 
 template <class CharT>
@@ -396,15 +407,9 @@ static void test_valid_md_values() {
   std::locale::global(std::locale(LOCALE_fr_FR_UTF_8));
 
   // Non localized output using C-locale
-#ifdef _WIN32
-  check(SV("%b='Jan'\t%B='January'\t%h='Jan'\t%m='01'\t%Om='01'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        fmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::January, std::chrono::day{0}});
-#else
   check(SV("%b='Jan'\t%B='January'\t%h='Jan'\t%m='01'\t%Om='01'\t%d='00'\t%e=' 0'\t%Od='00'\t%Oe=' 0'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::January, std::chrono::day{0}});
-#endif
   check(SV("%b='Feb'\t%B='February'\t%h='Feb'\t%m='02'\t%Om='02'\t%d='01'\t%e=' 1'\t%Od='01'\t%Oe=' 1'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::February, std::chrono::day{1}});
@@ -426,53 +431,32 @@ static void test_valid_md_values() {
   check(SV("%b='Aug'\t%B='August'\t%h='Aug'\t%m='08'\t%Om='08'\t%d='31'\t%e='31'\t%Od='31'\t%Oe='31'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::August, std::chrono::day{31}});
-#ifdef _WIN32
-  check(SV("%b='Sep'\t%B='September'\t%h='Sep'\t%m='09'\t%Om='09'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        fmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::September, std::chrono::day{32}});
-  check(SV("%b='Oct'\t%B='October'\t%h='Oct'\t%m='10'\t%Om='10'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        fmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::October, std::chrono::day{99}});
-  check(SV("%b='Nov'\t%B='November'\t%h='Nov'\t%m='11'\t%Om='11'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        fmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::November, std::chrono::day{100}});
-  check(SV("%b='Dec'\t%B='December'\t%h='Dec'\t%m='12'\t%Om='12'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        fmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::December, std::chrono::day{255}});
-#else // _WIN32
   check(SV("%b='Sep'\t%B='September'\t%h='Sep'\t%m='09'\t%Om='09'\t%d='32'\t%e='32'\t%Od='32'\t%Oe='32'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::September, std::chrono::day{32}});
   check(SV("%b='Oct'\t%B='October'\t%h='Oct'\t%m='10'\t%Om='10'\t%d='99'\t%e='99'\t%Od='99'\t%Oe='99'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::October, std::chrono::day{99}});
-#  if defined(_AIX)
+#if defined(_AIX)
   check(SV("%b='Nov'\t%B='November'\t%h='Nov'\t%m='11'\t%Om='11'\t%d='00'\t%e=' 0'\t%Od='00'\t%Oe=' 0'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::November, std::chrono::day{100}});
   check(SV("%b='Dec'\t%B='December'\t%h='Dec'\t%m='12'\t%Om='12'\t%d='55'\t%e='55'\t%Od='55'\t%Oe='55'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::December, std::chrono::day{255}});
-#  else  //  defined(_AIX)
+#else  //  defined(_AIX)
   check(SV("%b='Nov'\t%B='November'\t%h='Nov'\t%m='11'\t%Om='11'\t%d='100'\t%e='100'\t%Od='100'\t%Oe='100'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::November, std::chrono::day{100}});
   check(SV("%b='Dec'\t%B='December'\t%h='Dec'\t%m='12'\t%Om='12'\t%d='255'\t%e='255'\t%Od='255'\t%Oe='255'\n"),
         fmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::December, std::chrono::day{255}});
-#  endif //  defined(_AIX)
-#endif   // _WIN32
+#endif //  defined(_AIX)
 
   // Use the global locale (fr_FR)
-#ifdef _WIN32
-  check(SV("%b='janv.'\t%B='janvier'\t%h='janv.'\t%m='01'\t%Om='01'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        lfmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::January, std::chrono::day{0}});
-#else
   check(SV("%b='janv.'\t%B='janvier'\t%h='janv.'\t%m='01'\t%Om='01'\t%d='00'\t%e=' 0'\t%Od='00'\t%Oe=' 0'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::January, std::chrono::day{0}});
-#endif
   check(SV("%b='févr.'\t%B='février'\t%h='févr.'\t%m='02'\t%Om='02'\t%d='01'\t%e=' 1'\t%Od='01'\t%Oe=' 1'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::February, std::chrono::day{1}});
@@ -499,47 +483,32 @@ static void test_valid_md_values() {
   check(SV("%b='août'\t%B='août'\t%h='août'\t%m='08'\t%Om='08'\t%d='31'\t%e='31'\t%Od='31'\t%Oe='31'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::August, std::chrono::day{31}});
-#ifdef _WIN32
-  check(SV("%b='sept.'\t%B='septembre'\t%h='sept.'\t%m='09'\t%Om='09'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        lfmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::September, std::chrono::day{32}});
-  check(SV("%b='oct.'\t%B='octobre'\t%h='oct.'\t%m='10'\t%Om='10'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        lfmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::October, std::chrono::day{99}});
-  check(SV("%b='nov.'\t%B='novembre'\t%h='nov.'\t%m='11'\t%Om='11'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        lfmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::November, std::chrono::day{100}});
-  check(SV("%b='déc.'\t%B='décembre'\t%h='déc.'\t%m='12'\t%Om='12'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
-        lfmt,
-        std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::December, std::chrono::day{255}});
-#else // _WIN32
   check(SV("%b='sept.'\t%B='septembre'\t%h='sept.'\t%m='09'\t%Om='09'\t%d='32'\t%e='32'\t%Od='32'\t%Oe='32'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::September, std::chrono::day{32}});
   check(SV("%b='oct.'\t%B='octobre'\t%h='oct.'\t%m='10'\t%Om='10'\t%d='99'\t%e='99'\t%Od='99'\t%Oe='99'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::October, std::chrono::day{99}});
-#  if defined(_AIX)
+#if defined(_AIX)
   check(SV("%b='nov.'\t%B='novembre'\t%h='nov.'\t%m='11'\t%Om='11'\t%d='00'\t%e=' 0'\t%Od='00'\t%Oe=' 0'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::November, std::chrono::day{100}});
   check(SV("%b='déc.'\t%B='décembre'\t%h='déc.'\t%m='12'\t%Om='12'\t%d='55'\t%e='55'\t%Od='55'\t%Oe='55'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::December, std::chrono::day{255}});
-#  else  //   defined(_AIX)
+#else  //   defined(_AIX)
   check(SV("%b='nov.'\t%B='novembre'\t%h='nov.'\t%m='11'\t%Om='11'\t%d='100'\t%e='100'\t%Od='100'\t%Oe='100'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::November, std::chrono::day{100}});
   check(SV("%b='déc.'\t%B='décembre'\t%h='déc.'\t%m='12'\t%Om='12'\t%d='255'\t%e='255'\t%Od='255'\t%Oe='255'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::December, std::chrono::day{255}});
-#  endif //   defined(_AIX)
-#endif   // _WIN32
+#endif //   defined(_AIX)
 
   // Use supplied locale (ja_JP)
 #if defined(_WIN32)
   check(loc,
-        SV("%b='1'\t%B='1月'\t%h='1'\t%m='01'\t%Om='01'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
+        SV("%b='1'\t%B='1月'\t%h='1'\t%m='01'\t%Om='01'\t%d='00'\t%e=' 0'\t%Od='00'\t%Oe=' 0'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::January, std::chrono::day{0}});
   check(loc,
@@ -571,19 +540,19 @@ static void test_valid_md_values() {
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::August, std::chrono::day{31}});
   check(loc,
-        SV("%b='9'\t%B='9月'\t%h='9'\t%m='09'\t%Om='09'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
+        SV("%b='9'\t%B='9月'\t%h='9'\t%m='09'\t%Om='09'\t%d='32'\t%e='32'\t%Od='32'\t%Oe='32'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::September, std::chrono::day{32}});
   check(loc,
-        SV("%b='10'\t%B='10月'\t%h='10'\t%m='10'\t%Om='10'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
+        SV("%b='10'\t%B='10月'\t%h='10'\t%m='10'\t%Om='10'\t%d='99'\t%e='99'\t%Od='99'\t%Oe='99'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::October, std::chrono::day{99}});
   check(loc,
-        SV("%b='11'\t%B='11月'\t%h='11'\t%m='11'\t%Om='11'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
+        SV("%b='11'\t%B='11月'\t%h='11'\t%m='11'\t%Om='11'\t%d='100'\t%e='100'\t%Od='100'\t%Oe='100'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::November, std::chrono::day{100}});
   check(loc,
-        SV("%b='12'\t%B='12月'\t%h='12'\t%m='12'\t%Om='12'\t%d=''\t%e=''\t%Od=''\t%Oe=''\n"),
+        SV("%b='12'\t%B='12月'\t%h='12'\t%m='12'\t%Om='12'\t%d='255'\t%e='255'\t%Od='255'\t%Oe='255'\n"),
         lfmt,
         std::chrono::year_month_day{std::chrono::year{1970}, std::chrono::December, std::chrono::day{255}});
 #elif defined(_AIX)      // defined(_WIN32)
@@ -1027,6 +996,23 @@ static void test_valid_ymd_values() {
          "\n"),
       lfmt,
       std::chrono::year_month_day{std::chrono::year{2004}, std::chrono::May, std::chrono::day{29}});
+
+#if defined(_WIN32)
+  // The C library rejects years outside [0, 9999]; libc++ formats them itself.
+  constexpr std::basic_string_view<CharT> yfmt = SV("{:%%D='%D'%t%%x='%x'%t%%g='%g'%t%%G='%G'%n}");
+  check(SV("%D='01/01/01'\t%x='01/01/01'\t%g='02'\t%G='-0002'\n"),
+        yfmt,
+        std::chrono::year_month_day{std::chrono::year{-1}, std::chrono::January, std::chrono::day{1}});
+  check(SV("%D='01/01/00'\t%x='01/01/00'\t%g='99'\t%G='9999'\n"),
+        yfmt,
+        std::chrono::year_month_day{std::chrono::year{10'000}, std::chrono::January, std::chrono::day{1}});
+  check(SV("%D='12/31/00'\t%x='12/31/00'\t%g='00'\t%G='10000'\n"),
+        yfmt,
+        std::chrono::year_month_day{std::chrono::year{10'000}, std::chrono::December, std::chrono::day{31}});
+  check(SV("%D='01/01/67'\t%x='01/01/67'\t%g='68'\t%G='-32768'\n"),
+        yfmt,
+        std::chrono::year_month_day{std::chrono::year{-32'767}, std::chrono::January, std::chrono::day{1}});
+#endif // defined(_WIN32)
 
   std::locale::global(std::locale::classic());
 }

@@ -63,32 +63,20 @@ static void test_valid_values() {
   std::locale::global(std::locale(LOCALE_fr_FR_UTF_8));
 
   // Non localized output using C-locale
-#if defined(_WIN32)
-  check(SV("%d=''\t%Od=''\t%e=''\t%Oe=''\n"), fmt, 0d);
-#else
   check(SV("%d='00'\t%Od='00'\t%e=' 0'\t%Oe=' 0'\n"), fmt, 0d);
-#endif
   check(SV("%d='01'\t%Od='01'\t%e=' 1'\t%Oe=' 1'\n"), fmt, 1d);
   check(SV("%d='31'\t%Od='31'\t%e='31'\t%Oe='31'\n"), fmt, 31d);
-#if defined(_WIN32)
-  check(SV("%d=''\t%Od=''\t%e=''\t%Oe=''\n"), fmt, 0d);
-#elif defined(_AIX)
+#if defined(_AIX)
   check(SV("%d='55'\t%Od='55'\t%e='55'\t%Oe='55'\n"), fmt, 255d);
 #else
   check(SV("%d='255'\t%Od='255'\t%e='255'\t%Oe='255'\n"), fmt, 255d);
 #endif
 
   // Use the global locale (fr_FR)
-#if defined(_WIN32)
-  check(SV("%d=''\t%Od=''\t%e=''\t%Oe=''\n"), lfmt, 0d);
-#else
   check(SV("%d='00'\t%Od='00'\t%e=' 0'\t%Oe=' 0'\n"), lfmt, 0d);
-#endif
   check(SV("%d='01'\t%Od='01'\t%e=' 1'\t%Oe=' 1'\n"), lfmt, 1d);
   check(SV("%d='31'\t%Od='31'\t%e='31'\t%Oe='31'\n"), lfmt, 31d);
-#if defined(_WIN32)
-  check(SV("%d=''\t%Od=''\t%e=''\t%Oe=''\n"), lfmt, 255d);
-#elif defined(_AIX)
+#if defined(_AIX)
   check(SV("%d='55'\t%Od='55'\t%e='55'\t%Oe='55'\n"), lfmt, 255d);
 #else
   check(SV("%d='255'\t%Od='255'\t%e='255'\t%Oe='255'\n"), lfmt, 255d);
@@ -96,16 +84,10 @@ static void test_valid_values() {
 
   // Use supplied locale (ja_JP). This locale has a different alternate on some platforms.
 #if defined(__APPLE__) || defined(_AIX) || defined(_WIN32) || defined(__FreeBSD__)
-#  if defined(_WIN32)
-  check(loc, SV("%d=''\t%Od=''\t%e=''\t%Oe=''\n"), lfmt, 0d);
-#  else
   check(loc, SV("%d='00'\t%Od='00'\t%e=' 0'\t%Oe=' 0'\n"), lfmt, 0d);
-#  endif
   check(loc, SV("%d='01'\t%Od='01'\t%e=' 1'\t%Oe=' 1'\n"), lfmt, 1d);
   check(loc, SV("%d='31'\t%Od='31'\t%e='31'\t%Oe='31'\n"), lfmt, 31d);
-#  if defined(_WIN32)
-  check(SV("%d=''\t%Od=''\t%e=''\t%Oe=''\n"), fmt, 255d);
-#  elif defined(_AIX)
+#  if defined(_AIX)
   check(SV("%d='55'\t%Od='55'\t%e='55'\t%Oe='55'\n"), fmt, 255d);
 #  else
   check(SV("%d='255'\t%Od='255'\t%e='255'\t%Oe='255'\n"), fmt, 255d);

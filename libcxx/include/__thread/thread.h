@@ -124,6 +124,19 @@ void __thread_specific_ptr<_Tp>::set_pointer(pointer __p) {
   std::__libcpp_tls_set(__key_, __p);
 }
 
+// std::thread creates the data of the threads it starts. Any other thread,
+// the main thread included, has none until it first registers work to do at
+// its exit.
+inline _LIBCPP_HIDE_FROM_ABI __thread_struct* __thread_local_data_or_create() {
+  __thread_specific_ptr<__thread_struct>& __tsp = __thread_local_data();
+  __thread_struct* __p                          = __tsp.get();
+  if (__p == nullptr) {
+    __p = new __thread_struct;
+    __tsp.set_pointer(__p);
+  }
+  return __p;
+}
+
 template <>
 struct hash<__thread_id> : public __unary_function<__thread_id, size_t> {
   _LIBCPP_HIDE_FROM_ABI size_t operator()(__thread_id __v) const _NOEXCEPT {

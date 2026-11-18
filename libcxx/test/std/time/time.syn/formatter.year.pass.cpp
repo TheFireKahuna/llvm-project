@@ -277,6 +277,15 @@ static void test_padding() {
   check(SV("%C='09'\t%y='99'\t%Y='0999'\t\n"), fmt, std::chrono::year{999});
   check(SV("%C='99'\t%y='99'\t%Y='9999'\t\n"), fmt, std::chrono::year{9'999});
   check(SV("%C='100'\t%y='00'\t%Y='10000'\t\n"), fmt, std::chrono::year{10'000});
+
+#if defined(_WIN32)
+  // The C library rejects years outside [0, 9999]; libc++ formats them itself.
+  constexpr std::basic_string_view<CharT> efmt = SV("{:%%EC='%EC'%t%%Ey='%Ey'%t%%Oy='%Oy'%t%%EY='%EY'%t%n}");
+  check(SV("%EC='-100'\t%Ey='99'\t%Oy='99'\t%EY='-9999'\t\n"), efmt, std::chrono::year{-9'999});
+  check(SV("%EC='-1'\t%Ey='01'\t%Oy='01'\t%EY='-0001'\t\n"), efmt, std::chrono::year{-1});
+  check(SV("%EC='100'\t%Ey='00'\t%Oy='00'\t%EY='10000'\t\n"), efmt, std::chrono::year{10'000});
+  check(SV("%EC='327'\t%Ey='67'\t%Oy='67'\t%EY='32767'\t\n"), efmt, std::chrono::year{32'767});
+#endif // defined(_WIN32)
 }
 
 template <class CharT>

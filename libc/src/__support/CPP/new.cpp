@@ -13,14 +13,20 @@
 void operator delete(void *mem) noexcept { ::free(mem); }
 
 // NOLINTNEXTLINE(llvmlibc-implementation-in-namespace): global namespace
-void operator delete(void *mem, std::align_val_t) noexcept { ::free(mem); }
+void operator delete(void *mem, std::align_val_t) noexcept {
+#ifdef LIBC_ALIGNED_ALLOC_NEEDS_ALIGNED_FREE
+  ::_aligned_free(mem);
+#else
+  ::free(mem);
+#endif
+}
 
 // NOLINTNEXTLINE(llvmlibc-implementation-in-namespace): global namespace
 void operator delete(void *mem, size_t) noexcept { ::free(mem); }
 
 // NOLINTNEXTLINE(llvmlibc-implementation-in-namespace): global namespace
 void operator delete(void *mem, size_t, std::align_val_t) noexcept {
-#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#ifdef LIBC_ALIGNED_ALLOC_NEEDS_ALIGNED_FREE
   ::_aligned_free(mem);
 #else
   ::free(mem);
@@ -32,7 +38,7 @@ void operator delete[](void *mem) noexcept { ::free(mem); }
 
 // NOLINTNEXTLINE(llvmlibc-implementation-in-namespace): global namespace
 void operator delete[](void *mem, std::align_val_t) noexcept {
-#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#ifdef LIBC_ALIGNED_ALLOC_NEEDS_ALIGNED_FREE
   ::_aligned_free(mem);
 #else
   ::free(mem);
@@ -44,7 +50,7 @@ void operator delete[](void *mem, size_t) noexcept { ::free(mem); }
 
 // NOLINTNEXTLINE(llvmlibc-implementation-in-namespace): global namespace
 void operator delete[](void *mem, size_t, std::align_val_t) noexcept {
-#ifdef LIBC_TARGET_OS_IS_WINDOWS
+#ifdef LIBC_ALIGNED_ALLOC_NEEDS_ALIGNED_FREE
   ::_aligned_free(mem);
 #else
   ::free(mem);

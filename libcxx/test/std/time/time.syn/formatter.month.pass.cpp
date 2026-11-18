@@ -159,9 +159,21 @@ static void test_valid_values() {
 }
 
 template <class CharT>
+static void test_invalid_values() {
+#if defined(_WIN32)
+  // The C library rejects these months; libc++ formats them itself.
+  constexpr std::basic_string_view<CharT> fmt = SV("{:%%m='%m'%t%%Om='%Om'%n}");
+  check(SV("%m='00'\t%Om='00'\n"), fmt, std::chrono::month{0});
+  check(SV("%m='13'\t%Om='13'\n"), fmt, std::chrono::month{13});
+  check(SV("%m='255'\t%Om='255'\n"), fmt, std::chrono::month{255});
+#endif // defined(_WIN32)
+}
+
+template <class CharT>
 static void test() {
   test_no_chrono_specs<CharT>();
   test_valid_values<CharT>();
+  test_invalid_values<CharT>();
   check_invalid_types<CharT>({SV("b"), SV("B"), SV("h"), SV("m"), SV("Om")}, std::chrono::January);
 
   check_exception("The format specifier expects a '%' or a '}'", SV("{:A"), std::chrono::January);
