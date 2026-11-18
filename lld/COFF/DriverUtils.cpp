@@ -153,6 +153,9 @@ void LinkerDriver::resolveGuardSyms() {
       }
       if (sym)
         ctx.config.guardSuppressed.push_back(sym);
+      if (auto *d = dyn_cast_or_null<Defined>(sym))
+        if (auto *sc = dyn_cast_or_null<SectionChunk>(d->getChunk()))
+          sc->guardSuppressed = true;
     });
   }
 }

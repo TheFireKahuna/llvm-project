@@ -37,7 +37,8 @@ using llvm::support::ulittle32_t;
 namespace lld::coff {
 
 SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
-    : Chunk(k), file(f), header(h), repl(this) {
+    : Chunk(k), file(f), header(h), resizable(false), keepDistinct(false),
+      guardSuppressed(false), repl(this) {
   // Initialize relocs.
   if (file)
     setRelocs(file->getCOFFObj()->getRelocations(header));

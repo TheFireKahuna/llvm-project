@@ -398,7 +398,16 @@ public:
   // Whether the object states that the linker may change the size of this
   // section: every value that depends on its layout is then a relocation or
   // CodeView.
-  bool resizable = false;
+  bool resizable : 1;
+
+  // Whether ICF must never fold this section: a program enumerates it through
+  // __start_ and __stop_ symbols, or it is a function override's body, whose
+  // branches stay sites of its own record.
+  bool keepDistinct : 1;
+
+  // Whether /guardsym suppresses a function here, so that it folds only with
+  // another such section.
+  bool guardSuppressed : 1;
 
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;

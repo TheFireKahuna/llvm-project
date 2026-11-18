@@ -483,6 +483,9 @@ void SymbolTable::addStartStopSymbols() {
     for (Symbol *sym : {run.start, run.stop})
       if (sym)
         replaceSymbol<DefinedSynthetic>(sym, sym->getName(), nullptr);
+    // Folding a section of the run away would drop an entry.
+    for (SectionChunk *sc : run.chunks)
+      sc->keepDistinct = true;
     sectionRuns.push_back(std::move(run));
   }
 }
@@ -866,6 +869,7 @@ void SymbolTable::initializeFunctionOverrides() {
         make<FunctionOverrideThunk>(*fo, prefix, machine, !ctx.config.doGC);
     if (x->getChunk()->sym == x)
       x->getChunk()->sym = fo->body;
+    x->getChunk()->keepDistinct = true;
     replaceSymbol<DefinedSynthetic>(x, x->getName(), fo->stub, prefix.size());
     functionOverrides.push_back(fo);
   }

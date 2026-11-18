@@ -20,7 +20,6 @@
 #include "ICF.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
-#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
 #include "llvm/Support/Parallel.h"
@@ -57,8 +56,6 @@ private:
   void forEachClass(std::function<void(size_t, size_t)> fn);
 
   std::vector<SectionChunk *> chunks;
-  // Functions /guardsym suppresses, which fold only with each other.
-  llvm::DenseSet<const Chunk *> suppressed;
   int cnt = 0;
   std::atomic<bool> repeat = {false};
 
@@ -77,10 +74,11 @@ private:
 // section is insignificant to the user program and the behaviour matches that
 // of the Visual C++ linker.
 bool ICF::isEligible(SectionChunk *c) {
-  // Non-comdat chunks, dead chunks, and writable chunks are not eligible.
+  // Non-comdat chunks, dead chunks, writable chunks and chunks kept distinct
+  // are not eligible.
   bool writable =
       c->getOutputCharacteristics() & llvm::COFF::IMAGE_SCN_MEM_WRITE;
-  if (!c->isCOMDAT() || !c->live || writable)
+  if (!c->isCOMDAT() || !c->live || writable || c->keepDistinct)
     return false;
 
   // Under regular (not safe) ICF, all code sections are eligible.
@@ -195,8 +193,7 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
            a->header->SizeOfRawData == b->header->SizeOfRawData &&
            a->checksum == b->checksum && a->getContents() == b->getContents() &&
            a->getMachine() == b->getMachine() && a->resizable == b->resizable &&
-           suppressed.contains(a) == suppressed.contains(b) &&
-           assocEquals(a, b);
+           a->guardSuppressed == b->guardSuppressed && assocEquals(a, b);
   } else {
     Symbol *e1 = a->getEntryThunk();
     Symbol *e2 = b->getEntryThunk();
@@ -263,25 +260,11 @@ void ICF::run() {
   llvm::TimeTraceScope timeScope("ICF");
   ScopedTimer t(ctx.icfTimer);
 
-  for (Symbol *s : ctx.config.guardSuppressed)
-    if (auto *d = dyn_cast<Defined>(s))
-      suppressed.insert(d->getChunk());
-  // A program enumerates a run of sections through its bounds, so folding one
-  // away would drop an entry. A function override's body keeps its own, so
-  // that branches to two of them stay apart, each a site of its own record.
-  DenseSet<SectionChunk *> distinct;
-  ctx.forEachSymtab([&](SymbolTable &symtab) {
-    for (SymbolTable::SectionRun &run : symtab.sectionRuns)
-      distinct.insert_range(run.chunks);
-    for (FunctionOverride *fo : symtab.functionOverrides)
-      distinct.insert(fo->body->getChunk());
-  });
-
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;
   for (Chunk *c : ctx.driver.getChunks()) {
     if (auto *sc = dyn_cast<SectionChunk>(c)) {
-      if (isEligible(sc) && !distinct.contains(sc))
+      if (isEligible(sc))
         chunks.push_back(sc);
       else
         sc->eqClass[0] = nextId++;
