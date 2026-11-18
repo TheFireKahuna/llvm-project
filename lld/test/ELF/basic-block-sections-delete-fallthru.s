@@ -120,8 +120,20 @@ aaaaaaaaa.BB.foo:
  jae	aaaaaaaaaa.BB.foo
  jmp	r.BB.foo
 
-.section	.text,"ax",@progbits,unique,20
+## A jcc is flipped whatever its condition, here the sign flag.
+# CHECK:      <aaaaaaaaaa.BB.foo>:
+# CHECK-NEXT:  nopl (%rax)
+# CHECK-NEXT:  jns 0x{{[[:xdigit:]]+}} <r.BB.foo>
+# CHECK-NOT:   jmp
+#
+.section	.text,"ax",@progbits,unique,12
 aaaaaaaaaa.BB.foo:
+ nopl (%rax)
+ js	aaaaaaaaaaa.BB.foo
+ jmp	r.BB.foo
+
+.section	.text,"ax",@progbits,unique,20
+aaaaaaaaaaa.BB.foo:
  nopl (%rax)
 
 r.BB.foo:
