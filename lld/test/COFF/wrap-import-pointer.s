@@ -7,7 +7,7 @@
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # DEFINE: %{mc} = llvm-mc -filetype=obj
 # DEFINE: %{link} = lld-link -entry:main -subsystem:console -debug:symtab \
-# DEFINE:   -wrap:foo
+# DEFINE:   -wrap:foo -call-graph-profile-sort:none
 
 # RUN: %{mc} -triple=x86_64-windows-itanium x64.s -o x64.obj
 # RUN: %{mc} -triple=x86_64-windows-itanium foo.s -o foo-x64.obj

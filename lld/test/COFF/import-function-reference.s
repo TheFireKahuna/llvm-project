@@ -12,7 +12,8 @@
 ## references keep the thunk, except an x86-64 field before an immediate.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
-# DEFINE: %{link} = lld-link -dll -noentry -include:main -errorlimit:0
+# DEFINE: %{link} = lld-link -dll -noentry -include:main -errorlimit:0 \
+# DEFINE:   -call-graph-profile-sort:none
 # DEFINE: %{x64} = llvm-mc -filetype=obj -triple=x86_64-windows-itanium
 # DEFINE: %{a64} = llvm-mc -filetype=obj -triple=aarch64-windows-itanium
 # RUN: lld-link -machine:x64 -def:imp.def -out:imp.lib

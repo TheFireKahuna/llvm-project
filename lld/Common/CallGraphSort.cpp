@@ -213,9 +213,10 @@ static std::vector<uint64_t> cacheDirectedSort(ArrayRef<uint64_t> sizes,
       continue;
 
     callCounts.push_back({e.from, e.to, e.weight});
-    // Assume that the jump is at the middle of the input section. The profile
-    // data does not contain jump offsets.
-    callOffsets.push_back((sizes[e.from] + 1) / 2);
+    // Without the call's offset, as profile data has none, assume that the
+    // jump is at the middle of the input section.
+    callOffsets.push_back(e.offset == UINT64_MAX ? (sizes[e.from] + 1) / 2
+                                                 : e.offset);
     funcCounts[e.to] += e.weight;
   }
 

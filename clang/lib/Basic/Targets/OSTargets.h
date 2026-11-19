@@ -922,6 +922,10 @@ public:
     if (Triple.isX86_64())
       this->HasFloat128 = true;
   }
+
+  const char *getStaticInitSectionSpecifier() const override {
+    return ".text$startup";
+  }
 };
 
 // Windows target
@@ -939,6 +943,11 @@ public:
     this->WCharType = TargetInfo::UnsignedShort;
     this->WIntType = TargetInfo::UnsignedShort;
     this->UseMicrosoftManglingForC = true;
+  }
+
+  const char *getStaticInitSectionSpecifier() const override {
+    return this->getTriple().isWindowsItaniumEnvironment() ? ".text$startup"
+                                                           : nullptr;
   }
 };
 

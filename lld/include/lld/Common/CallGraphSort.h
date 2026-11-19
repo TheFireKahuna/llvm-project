@@ -16,11 +16,13 @@ namespace lld {
 // For --call-graph-profile-sort={none,hfsort,cdsort}.
 enum class CGProfileSortKind { None, Hfsort, Cdsort };
 
-// A call from node `from` to node `to`, taken `weight` times.
+// A call from node `from` to node `to`, taken `weight` times, at `offset` in
+// `from`, or UINT64_MAX where the caller does not know it.
 struct CallGraphEdge {
   uint64_t from;
   uint64_t to;
   uint64_t weight;
+  uint64_t offset = UINT64_MAX;
 };
 
 // Returns the nodes of a call graph in layout order. A node is an index into
