@@ -430,6 +430,27 @@ set(zos_wrapper_files
   zos_wrappers/variant.h
 )
 
+set(win32_itanium_wrapper_files
+  win32_itanium_wrappers/__winnt_declspec.h
+  win32_itanium_wrappers/complex.h
+  win32_itanium_wrappers/corecrt_stdio_config.h
+  win32_itanium_wrappers/excpt.h
+  win32_itanium_wrappers/math.h
+  win32_itanium_wrappers/new.h
+  win32_itanium_wrappers/ntdef.h
+  win32_itanium_wrappers/sal.h
+  win32_itanium_wrappers/setjmp.h
+  win32_itanium_wrappers/stdlib.h
+  win32_itanium_wrappers/vadefs.h
+  win32_itanium_wrappers/vcruntime.h
+  win32_itanium_wrappers/vcruntime_new.h
+  win32_itanium_wrappers/vcruntime_new_debug.h
+  win32_itanium_wrappers/vcruntime_startup.h
+  win32_itanium_wrappers/vcruntime_string.h
+  win32_itanium_wrappers/winnt.h
+  win32_itanium_wrappers/wrl/def.h
+)
+
 include(GetClangResourceDir)
 get_clang_resource_dir(output_dir PREFIX ${LLVM_LIBRARY_OUTPUT_INTDIR}/.. SUBDIR include)
 set(out_files)
@@ -480,7 +501,8 @@ endfunction(clang_generate_header)
 foreach( f ${files} ${cuda_wrapper_files} ${cuda_wrapper_bits_files}
            ${cuda_wrapper_utility_files} ${ppc_wrapper_files} ${openmp_wrapper_files}
            ${zos_wrapper_files} ${hlsl_files} ${llvm_libc_wrapper_files}
-           ${llvm_offload_wrapper_files} ${gpu_hip_wrapper_files})
+           ${llvm_offload_wrapper_files} ${gpu_hip_wrapper_files}
+           ${win32_itanium_wrapper_files})
   copy_header_to_output_dir(${CMAKE_CURRENT_SOURCE_DIR} ${f})
 endforeach( f )
 
@@ -620,7 +642,7 @@ add_header_target("opencl-resource-headers" ${opencl_files})
 add_header_target("llvm-libc-resource-headers" ${llvm_libc_wrapper_files})
 add_header_target("openmp-resource-headers" ${openmp_wrapper_files})
 add_header_target("llvm-offload-resource-headers" ${llvm_libc_wrapper_files})
-add_header_target("windows-resource-headers" ${windows_only_files})
+add_header_target("windows-resource-headers" "${windows_only_files};${win32_itanium_wrapper_files}")
 add_header_target("utility-resource-headers" ${utility_files})
 
 get_clang_resource_dir(header_install_dir SUBDIR include)
@@ -877,6 +899,20 @@ install(
   DESTINATION ${header_install_dir}
   EXCLUDE_FROM_ALL
   COMPONENT windows-resource-headers)
+
+# The Windows Itanium wrappers keep their subdirectories.
+foreach(f ${win32_itanium_wrapper_files})
+  get_filename_component(dir ${f} DIRECTORY)
+  install(
+    FILES ${f}
+    DESTINATION ${header_install_dir}/${dir}
+    COMPONENT clang-resource-headers)
+  install(
+    FILES ${f}
+    DESTINATION ${header_install_dir}/${dir}
+    EXCLUDE_FROM_ALL
+    COMPONENT windows-resource-headers)
+endforeach()
 #############################################################
 
 if (NOT LLVM_ENABLE_IDE)

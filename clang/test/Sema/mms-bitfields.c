@@ -1,9 +1,12 @@
 // RUN: %clang_cc1 -fms-layout-compatibility=microsoft -fsyntax-only -verify -triple x86_64-apple-darwin9 %s
 // RUN: %clang_cc1 -fms-layout-compatibility=microsoft -fsyntax-only -Wms-bitfield-padding -verify=checkms -triple x86_64-apple-darwin9 %s
+// RUN: %clang_cc1 -fsyntax-only -verify -triple x86_64-unknown-windows-itanium %s
+// RUN: %clang_cc1 -fsyntax-only -verify -triple aarch64-unknown-windows-itanium %s
 // expected-no-diagnostics
 
 // The -mms-bitfields commandline parameter should behave the same
-// as the ms_struct attribute.
+// as the ms_struct attribute. Windows Itanium, which shares C headers and
+// libraries with MSVC, defaults to it, as MinGW does.
 struct
 {
    int a : 1; // #a

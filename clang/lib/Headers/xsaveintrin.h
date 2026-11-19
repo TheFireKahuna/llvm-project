@@ -14,7 +14,7 @@
 #ifndef __XSAVEINTRIN_H
 #define __XSAVEINTRIN_H
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
 #define _XCR_XFEATURE_ENABLED_MASK 0
 #endif
 

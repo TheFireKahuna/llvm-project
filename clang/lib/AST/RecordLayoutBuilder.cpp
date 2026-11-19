@@ -3444,8 +3444,12 @@ void MicrosoftRecordLayoutBuilder::computeVtorDispSet(
 }
 
 bool ASTContext::defaultsToMsStruct() const {
+  // MinGW and Windows Itanium share C headers and libraries with MSVC.
+  const llvm::Triple &T = getTargetInfo().getTriple();
   return getTargetInfo().hasMicrosoftRecordLayout() ||
-         getTargetInfo().getTriple().isWindowsGNUEnvironment();
+         T.isWindowsGNUEnvironment() ||
+         (T.isGenericWindowsItaniumEnvironment() &&
+          !getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23));
 }
 
 const ASTRecordLayout &

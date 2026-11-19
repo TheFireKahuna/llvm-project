@@ -6905,9 +6905,19 @@ CodeGenModule::getLLVMLinkageForDeclarator(const DeclaratorDecl *D,
   if (D->hasAttr<WeakAttr>())
     return llvm::GlobalVariable::WeakAnyLinkage;
 
-  if (const auto *FD = D->getAsFunction())
+  if (const auto *FD = D->getAsFunction()) {
     if (FD->isMultiVersion() && Linkage == GVA_AvailableExternally)
       return llvm::GlobalVariable::LinkOnceAnyLinkage;
+    // On Windows Itanium a C99 inline definition is a weak definition, so
+    // that an external definition elsewhere wins and the UCRT's header
+    // functions, which have none, still link. It is ODR because C99 lets this
+    // unit's calls use either definition.
+    if (Linkage == GVA_AvailableExternally && !LangOpts.CPlusPlus &&
+        FD->isInlined() && !LangOpts.GNUInline &&
+        !FD->hasAttr<GNUInlineAttr>() &&
+        getTriple().isGenericWindowsItaniumEnvironment())
+      return llvm::GlobalVariable::WeakODRLinkage;
+  }
 
   // We are guaranteed to have a strong definition somewhere else,
   // so we can use available_externally linkage.

@@ -331,6 +331,11 @@ protected:
   /// Defaults to false.
   bool AvoidWeakIfComdat = false;
 
+  /// True if a weak_odr definition outside a comdat is declared with
+  /// MCSA_WeakDefinition rather than MCSA_Weak: a strong definition replaces
+  /// it, and with none the first copy serves. Defaults to false.
+  bool UseWeakDefinitionForWeakODR = false;
+
   /// This attribute, if not MCSA_Invalid, is used to declare a symbol as having
   /// hidden visibility.  Defaults to MCSA_Hidden.
   MCSymbolAttr HiddenVisibilityAttr = MCSA_Hidden;
@@ -636,6 +641,10 @@ public:
   }
 
   bool avoidWeakIfComdat() const { return AvoidWeakIfComdat; }
+
+  bool useWeakDefinitionForWeakODR() const {
+    return UseWeakDefinitionForWeakODR;
+  }
 
   MCSymbolAttr getHiddenVisibilityAttr() const { return HiddenVisibilityAttr; }
 

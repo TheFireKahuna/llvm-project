@@ -819,12 +819,25 @@ public:
     return isOSWindows() && getEnvironment() == Triple::NTPOSIX;
   }
 
-  /// Tests for the Itanium C++ ABI environments on Windows that link with
-  /// lld-link: Windows Itanium and NT-POSIX. The SCEI vendor's Windows Itanium
-  /// tests PlayStation's DLL handling and keeps that target's rules.
+  /// Tests for Windows Itanium as a target of its own, on x86-64 or AArch64,
+  /// which compiles against the UCRT and the Windows SDK and links with
+  /// libraries MSVC built. The SCEI vendor's Windows Itanium stands for
+  /// PlayStation and keeps its rules.
+  bool isGenericWindowsItaniumEnvironment() const {
+    return isWindowsItaniumEnvironment() &&
+           isWindowsItaniumOrNTPOSIXEnvironment();
+  }
+
+  /// Tests for the targets that link with lld-link's object model, in which
+  /// each image keeps its own copy of a vague-linkage definition and a data
+  /// object's extent is its section: generic Windows Itanium and NT-POSIX, on
+  /// x86-64 or AArch64 other than ARM64EC, in COFF objects.
   bool isWindowsItaniumOrNTPOSIXEnvironment() const {
-    return (isWindowsItaniumEnvironment() && getVendor() != Triple::SCEI) ||
-           isWindowsNTPOSIXEnvironment();
+    return ((isWindowsItaniumEnvironment() && getVendor() != Triple::SCEI) ||
+            isWindowsNTPOSIXEnvironment()) &&
+           (isX86_64() ||
+            (getArch() == Triple::aarch64 && !isWindowsArm64EC())) &&
+           isOSBinFormatCOFF();
   }
 
   bool isWindowsGNUEnvironment() const {

@@ -181,6 +181,11 @@ X86MCAsmInfoGNUCOFF::X86MCAsmInfoGNUCOFF(const Triple &Triple,
   // COMDATs. They link with lld-link, which handles them.
   if (Triple.isWindowsItaniumABIEnvironment())
     HasCOFFAssociativeComdats = true;
+  // Windows Itanium emits the C99 inline definitions of the UCRT's and the
+  // Windows SDK's headers as weak_odr. As weak definitions, link.exe accepts
+  // the same one in two objects.
+  if (Triple.isGenericWindowsItaniumEnvironment())
+    UseWeakDefinitionForWeakODR = true;
 
   AssemblerDialect = X86_MC::getCLOpts(Options).asm_syntax;
 

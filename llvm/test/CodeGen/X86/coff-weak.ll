@@ -1,20 +1,26 @@
 ; RUN: llc -mtriple=i686-windows-msvc -o - %s | FileCheck -check-prefix=X86 %s
 ; RUN: llc -mtriple=x86_64-windows-msvc -o - %s | FileCheck -check-prefix=X64 %s
+; RUN: llc -mtriple=x86_64-windows-itanium -o - %s | FileCheck -check-prefix=ITANIUM %s
+; RUN: llc -mtriple=x86_64-scei-windows-itanium -o - %s | FileCheck -check-prefix=X64 %s
 
 ; X86: .weak _foo
 ; X64: .weak foo
+; ITANIUM: .weak foo
 define weak void @foo() {
   ret void
 }
 
 ; X86: .weak _bar
 ; X64: .weak bar
+; Windows Itanium's C99 inline definitions.
+; ITANIUM: .weak_definition bar
 define weak_odr void @bar() {
   ret void
 }
 
 ; X86-NOT: .weak _bar_comdat
 ; X64-NOT: .weak bar_comdat
+; ITANIUM-NOT: .weak{{.*}} bar_comdat
 $bar_comdat = comdat any
 
 define weak_odr void @bar_comdat() comdat {
@@ -37,6 +43,7 @@ define linkonce void @baz_comdat() comdat {
 
 ; X86: .weak _quux
 ; X64: .weak quux
+; ITANIUM: .weak quux
 define linkonce_odr void @quux() {
   ret void
 }

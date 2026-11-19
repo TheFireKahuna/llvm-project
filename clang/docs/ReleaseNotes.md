@@ -171,6 +171,22 @@ features cannot lower the translation-unit ABI level;
   and as demanglers count them. A name that refers back to such a type, or to
   the function type without the qualifier, changes.
   `-fclang-abi-compat=23` restores the previous mangling.
+- `aarch64-windows-itanium` now uses the Itanium C++ ABI, as the other Windows
+  Itanium targets do, instead of the Microsoft C++ ABI.
+- The x86-64 and AArch64 `windows-itanium` targets now predefine the macros
+  the Windows SDK expects (`_WIN32_ITANIUM`, `WINVER` and `_WIN32_WINNT` for
+  Windows 10, `_AMD64_` or `_ARM64_`,
+  `_STDCALL_SUPPORTED`, `_FORCENAMELESSUNION`) with the MSVC environment's
+  defines, and no longer define `_MSC_VER`, `_MSVC_LANG` or the other macros
+  that identify the compiler as MSVC, even with `-fms-compatibility`.
+- On Windows Itanium, a pure virtual function's vtable slot now names
+  `_purecall`, which the C runtime defines in every image, and records lay
+  out bit-fields as MSVC does, as on MinGW. `-fclang-abi-compat=23` restores
+  `__cxa_pure_virtual` and GCC's layout. A C99 inline definition there is now
+  emitted as a weak external whose default is its body, so it links without an
+  external definition and yields to one. On Windows Itanium and NT-POSIX, an
+  exact `dynamic_cast` no longer assumes that a vague-linkage vtable, or a
+  template instantiation's, has one address in the program.
 
 ### AST Dumping Potentially Breaking Changes
 

@@ -16,7 +16,10 @@
  */
 #undef NULL
 
-#ifdef __cplusplus
+/* __is_identifier(wchar_t) is 0 only in C++, where wchar_t is a keyword. Some
+ * C library wrappers hide __cplusplus while they include a C library header
+ * that has C++ declarations the C++ library replaces. */
+#if defined(__cplusplus) || !__is_identifier(wchar_t)
 #if !defined(__MINGW32__) && !defined(_MSC_VER)
 #define NULL __null
 #else

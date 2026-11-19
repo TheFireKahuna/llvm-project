@@ -746,6 +746,10 @@ void AsmPrinter::emitLinkage(const GlobalValue *GV, MCSymbol *GVSym) const {
       // .globl _foo
       OutStreamer->emitSymbolAttribute(GVSym, MCSA_Global);
       //NOTE: linkonce is handled by the section the symbol was assigned to.
+    } else if (Linkage == GlobalValue::WeakODRLinkage &&
+               MAI.useWeakDefinitionForWeakODR()) {
+      // .weak_definition _foo
+      OutStreamer->emitSymbolAttribute(GVSym, MCSA_WeakDefinition);
     } else {
       // .weak _foo
       OutStreamer->emitSymbolAttribute(GVSym, MCSA_Weak);

@@ -649,11 +649,13 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
 
     // If we used a COMDAT key for the global ctor, the init function can be
     // discarded if the global ctor entry is discarded.
-    // FIXME: Do we need to restrict this to ELF and Wasm?
+    // FIXME: Do we need to restrict this to ELF, Wasm, Windows Itanium and
+    // NT-POSIX?
     llvm::Comdat *C = Addr->getComdat();
     if (COMDATKey && C &&
         (getTarget().getTriple().isOSBinFormatELF() ||
-         getTarget().getTriple().isOSBinFormatWasm())) {
+         getTarget().getTriple().isOSBinFormatWasm() ||
+         getTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
       Fn->setComdat(C);
     }
   } else {

@@ -287,6 +287,11 @@ AArch64MCAsmInfoGNUCOFF::AArch64MCAsmInfoGNUCOFF(const Triple &T,
   // COMDATs. They link with lld-link, which handles them.
   if (T.isWindowsItaniumABIEnvironment())
     HasCOFFAssociativeComdats = true;
+  // Windows Itanium emits the C99 inline definitions of the UCRT's and the
+  // Windows SDK's headers as weak_odr. As weak definitions, link.exe accepts
+  // the same one in two objects.
+  if (T.isGenericWindowsItaniumEnvironment())
+    UseWeakDefinitionForWeakODR = true;
 
   InternalSymbolPrefix = ".L";
 

@@ -29,7 +29,8 @@
  * Also fall back on AIX to allow additional definitions and
  * implementation-defined values.
  */
-#if (defined(__MINGW32__) || defined(_MSC_VER) || defined(_AIX)) &&            \
+#if (defined(__MINGW32__) || defined(_MSC_VER) || defined(_WIN32_ITANIUM) ||   \
+     defined(_AIX)) &&                                                         \
     __STDC_HOSTED__ && __has_include_next(<float.h>)
 
 #  include_next <float.h>

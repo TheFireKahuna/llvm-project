@@ -20,6 +20,11 @@
 // Disabled for a weak vtable on a target that may duplicate vtables (Apple
 // Mach-O), but kept for the key-function class:
 // RUN: %clang_cc1 -I%S %s -triple x86_64-apple-darwin10 -O1 -emit-llvm -std=c++11 -o - | FileCheck %s --check-prefixes=CHECK,DISABLED,KEY-ENABLED
+// Disabled for a weak vtable and for a template instantiation's on Windows
+// Itanium and NT-POSIX, whose images each keep their own copies, but kept for
+// the key-function class:
+// RUN: %clang_cc1 -I%S %s -triple x86_64-unknown-windows-itanium -O1 -emit-llvm -std=c++11 -o - | FileCheck %s --check-prefixes=CHECK,DISABLED,KEY-ENABLED,TEMPLATE-DISABLED
+// RUN: %clang_cc1 -I%S %s -triple aarch64-pc-windows-ntposix -O1 -emit-llvm -std=c++11 -o - | FileCheck %s --check-prefixes=CHECK,DISABLED,KEY-ENABLED,TEMPLATE-DISABLED
 
 struct A { virtual ~A(); };
 struct B final : A { };
@@ -57,4 +62,15 @@ WithKey *cast_withkey(A *a) {
   // KEY-ENABLED-NOT: call {{.*}} @__dynamic_cast
   // KEY-ENABLED: icmp eq ptr {{.*}}, {{.*}}@_ZTV7WithKey
   return dynamic_cast<WithKey*>(a);
+}
+
+// An image that does not see the explicit instantiation declaration
+// instantiates its own vtable.
+template <typename T> struct Templ final : A {};
+extern template struct Templ<int>;
+
+// CHECK-LABEL: @_Z10cast_templP1A
+Templ<int> *cast_templ(A *a) {
+  // TEMPLATE-DISABLED: call {{.*}} @__dynamic_cast
+  return dynamic_cast<Templ<int>*>(a);
 }

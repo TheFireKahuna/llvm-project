@@ -654,6 +654,10 @@ TargetInfo::getCallingConvKind(bool ClangABICompat4) const {
 }
 
 VTableUniquenessKind TargetInfo::getVTableUniqueness() const {
+  // PE never merges the vtables that each image emits, nor the template
+  // instantiations' vtables an image makes for itself.
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return VTableUniquenessKind::UniqueIfStrongLinkageAndNotTemplate;
   return VTableUniquenessKind::AlwaysUnique;
 }
 

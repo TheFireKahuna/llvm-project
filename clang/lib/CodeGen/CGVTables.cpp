@@ -822,8 +822,11 @@ void CodeGenVTables::addVTableComponent(ConstantArrayBuilder &builder,
     auto getSpecialVirtualFn = [&](StringRef name) -> llvm::Constant * {
       llvm::FunctionType *fnTy =
           llvm::FunctionType::get(CGM.VoidTy, /*isVarArg=*/false);
+      // Every image defines _purecall, so it is never imported.
       auto *F = cast<llvm::Function>(
-          CGM.CreateRuntimeFunction(fnTy, name).getCallee());
+          CGM.CreateRuntimeFunction(fnTy, name, llvm::AttributeList(),
+                                    /*Local=*/name == "_purecall")
+              .getCallee());
       F->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
 
       // The Microsoft ABI uses the same function name for pure and deleted
@@ -1220,8 +1223,8 @@ CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
 
 bool CodeGenModule::mayVTableBeDuplicated(
     llvm::GlobalValue::LinkageTypes Linkage) const {
-  return getTarget().getVTableUniqueness() ==
-             VTableUniquenessKind::UniqueIfStrongLinkage &&
+  return getTarget().getVTableUniqueness() !=
+             VTableUniquenessKind::AlwaysUnique &&
          llvm::GlobalValue::isWeakForLinker(Linkage);
 }
 

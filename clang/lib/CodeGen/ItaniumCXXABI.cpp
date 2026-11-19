@@ -216,6 +216,11 @@ public:
     if (!CGM.shouldEmitRTTI())
       return false;
 
+    if (CGM.getTarget().getVTableUniqueness() ==
+            VTableUniquenessKind::UniqueIfStrongLinkageAndNotTemplate &&
+        isTemplateInstantiation(RD->getTemplateSpecializationKind()))
+      return false;
+
     // If there's only one definition of the vtable in the program, it has a
     // unique address.
     if (!llvm::GlobalValue::isWeakForLinker(CGM.getVTableLinkage(RD)))
@@ -369,7 +374,14 @@ public:
     return Args.size() - 1;
   }
 
-  StringRef GetPureVirtualCallName() override { return "__cxa_pure_virtual"; }
+  StringRef GetPureVirtualCallName() override {
+    // Windows Itanium's C runtime defines _purecall, which applies the handler
+    // _set_purecall_handler installs, in every image.
+    if (CGM.getTriple().isGenericWindowsItaniumEnvironment() &&
+        !CGM.getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23))
+      return "_purecall";
+    return "__cxa_pure_virtual";
+  }
   StringRef GetDeletedVirtualCallName() override
     { return "__cxa_deleted_virtual"; }
 

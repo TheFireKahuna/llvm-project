@@ -7,7 +7,9 @@
  *===-----------------------------------------------------------------------===
  */
 
-#if !defined(__cplusplus) || (defined(_MSC_VER) && !_NATIVE_WCHAR_T_DEFINED)
+/* As in __stddef_null.h, C++ is also recognised by wchar_t being a keyword. */
+#if (!defined(__cplusplus) && __is_identifier(wchar_t)) ||                     \
+    (defined(_MSC_VER) && !_NATIVE_WCHAR_T_DEFINED)
 
 /*
  * When -fbuiltin-headers-in-system-modules is set this is a non-modular header

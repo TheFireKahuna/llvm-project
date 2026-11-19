@@ -3546,6 +3546,14 @@ TEST(TripleTest, NormalizeWindows) {
   EXPECT_FALSE(Triple("x86_64-scei-windows-itanium")
                    .isWindowsItaniumOrNTPOSIXEnvironment());
   EXPECT_FALSE(Triple("x86_64-scei-windows-itanium").hasDefaultDataSections());
+  for (StringRef Str :
+       {"i686-unknown-windows-itanium", "thumbv7-unknown-windows-itanium",
+        "arm64ec-unknown-windows-itanium", "i686-unknown-windows-ntposix",
+        "x86_64-unknown-windows-itanium-elf",
+        "aarch64-unknown-windows-ntposix-elf"}) {
+    EXPECT_FALSE(Triple(Str).isGenericWindowsItaniumEnvironment());
+    EXPECT_FALSE(Triple(Str).isWindowsItaniumOrNTPOSIXEnvironment());
+  }
   EXPECT_TRUE(
       Triple("x86_64-scei-windows-itanium").isWindowsItaniumABIEnvironment());
   EXPECT_FALSE(

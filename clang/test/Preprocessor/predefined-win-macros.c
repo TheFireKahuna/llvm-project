@@ -204,3 +204,31 @@
 // CHECK-MIPSEL-MINGW: #define _WIN32 1
 // CHECK-MIPSEL-MINGW: #define __mips 32
 // CHECK-MIPSEL-MINGW: #define __mips__ 1
+
+// Windows Itanium takes the MSVC environment's defines and those the Windows
+// SDK expects, but none that identify the compiler as MSVC, with or without
+// -fms-compatibility. As cl.exe, it leaves WIN32, WINNT and WIN64 to the SDK.
+// DEFINE: %{wi-not} = --implicit-check-not="#define _MSC_" --implicit-check-not="#define _MSVC_" \
+// DEFINE:   --implicit-check-not="#define WIN32" --implicit-check-not="#define __WIN32" \
+// DEFINE:   --implicit-check-not="#define WINNT" --implicit-check-not="#define __WINNT" \
+// DEFINE:   --implicit-check-not="#define WIN64" --implicit-check-not="#define __WIN64"
+// RUN: %clang_cc1 %s -x c++ -E -dM -triple x86_64-unknown-windows-itanium \
+// RUN:     -fms-extensions -fms-compatibility -fms-compatibility-version=19.33 \
+// RUN:     -o - | FileCheck -match-full-lines %s --check-prefixes=CHECK-WI,CHECK-WI-X64 %{wi-not}
+// RUN: %clang_cc1 %s -E -dM -triple aarch64-unknown-windows-itanium \
+// RUN:     -fms-extensions -fms-compatibility-version=19.33 \
+// RUN:     -o - | FileCheck -match-full-lines %s --check-prefixes=CHECK-WI,CHECK-WI-A64 %{wi-not}
+
+// CHECK-WI: #define WINVER 0x0A00
+// CHECK-WI-X64: #define _AMD64_ 1
+// CHECK-WI-A64: #define _ARM64_ 1
+// CHECK-WI: #define _FORCENAMELESSUNION 1
+// CHECK-WI: #define _MSC_EXTENSIONS 1
+// CHECK-WI-X64: #define _M_AMD64 100
+// CHECK-WI-A64: #define _M_ARM64 1
+// CHECK-WI-X64: #define _M_X64 100
+// CHECK-WI: #define _STDCALL_SUPPORTED 1
+// CHECK-WI: #define _WIN32 1
+// CHECK-WI: #define _WIN32_ITANIUM 1
+// CHECK-WI: #define _WIN32_WINNT 0x0A00
+// CHECK-WI: #define _WIN64 1

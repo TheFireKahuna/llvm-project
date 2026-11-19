@@ -1,12 +1,13 @@
 // DEFINE: %{cc} = %clang_cc1 -std=c++17 -emit-llvm -o - %s
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium | FileCheck %s --check-prefix=ITANIUM
 // RUN: %{cc} -triple x86_64-scei-windows-itanium | FileCheck %s --check-prefix=ITANIUM
+// RUN: %{cc} -triple aarch64-unknown-windows-itanium | FileCheck %s --check-prefix=ITANIUM
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium -fclang-abi-compat=23 | FileCheck %s --check-prefix=MSVC
 
-// With the Itanium C++ ABI on x86-64 Windows, a class that is non-trivial for
-// the purposes of calls is passed and returned indirectly, and the caller
-// destroys a parameter, as on other Itanium targets. MSVC's rules, which
-// -fclang-abi-compat=23 restores, decide by the copy constructor alone.
+// With the Itanium C++ ABI on Windows, a class that is non-trivial for the
+// purposes of calls is passed and returned indirectly, and the caller destroys
+// a parameter, as on other Itanium targets. On x86-64, -fclang-abi-compat=23
+// restores MSVC's rules, which decide by the copy constructor alone.
 
 // Trivial copy constructor, non-trivial destructor.
 struct A {
@@ -47,11 +48,11 @@ void pb(B) {}
 // MSVC-LABEL:    define dso_local void @_Z2pb1B(i32 %.coerce)
 
 void pc(C) {}
-// ITANIUM-LABEL: define dso_local void @_Z2pc1C(i32 %.coerce)
+// ITANIUM-LABEL: define dso_local void @_Z2pc1C(i{{32|64}} %.coerce)
 // MSVC-LABEL:    define dso_local void @_Z2pc1C(ptr {{.*}}%0)
 
 void pd(D) {}
-// ITANIUM-LABEL: define dso_local void @_Z2pd1D(i32 %.coerce)
+// ITANIUM-LABEL: define dso_local void @_Z2pd1D(i{{32|64}} %.coerce)
 // ITANIUM:         call void @_ZN1DD1Ev(
 // MSVC-LABEL:    define dso_local void @_Z2pd1D(ptr {{.*}}%0)
 
