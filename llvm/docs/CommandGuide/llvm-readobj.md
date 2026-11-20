@@ -345,6 +345,10 @@ Display the export table.
 Display the import table.
 :::
 
+:::{option} --coff-link-records
+Display the link records of the .llvm_link_records section.
+:::
+
 :::{option} --coff-load-config
 Display the load config.
 :::

@@ -351,6 +351,7 @@ ehcleanup:
 ; CHECK-NEXT:    .seh_endepilogue
 ; CHECK-NEXT:    retq # CLEANUPRET
 ; CHECK-NEXT:  .Lfunc_end6:
+; CHECK-NEXT:    .size saves, .Lfunc_end6-saves
 ; CHECK-NEXT:    .seh_endproc
 define void @saves() personality ptr @__gxx_personality_seh0 {
 entry:

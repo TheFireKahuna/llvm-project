@@ -156,8 +156,9 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
   auto eqSym = [&](Symbol *b1, Symbol *b2) {
     if (b1 == b2)
       return true;
-    auto *d1 = dyn_cast<DefinedRegular>(b1);
-    auto *d2 = dyn_cast<DefinedRegular>(b2);
+    // Only one is null where only one PAIR is a fork object's.
+    auto *d1 = dyn_cast_or_null<DefinedRegular>(b1);
+    auto *d2 = dyn_cast_or_null<DefinedRegular>(b2);
     if (!d1 || !d2)
       return false;
     if constexpr (constant)
@@ -168,7 +169,9 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
 
   auto eqReloc = [&](const coff_relocation &r1, const coff_relocation &r2) {
     if constexpr (constant)
-      if (r1.Type != r2.Type || r1.VirtualAddress != r2.VirtualAddress)
+      if (r1.Type != r2.Type || r1.VirtualAddress != r2.VirtualAddress ||
+          (r1.Type == COFF::IMAGE_REL_LLVM_ALIGN &&
+           r1.SymbolTableIndex != r2.SymbolTableIndex))
         return false;
     return eqSym(a->getRelocTarget(r1), b->getRelocTarget(r2));
   };

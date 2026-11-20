@@ -2512,8 +2512,10 @@ void AsmPrinter::emitFunctionBody() {
   }
 
   // Even though wasm supports .type and .size in general, function symbols
-  // are automatically sized.
-  bool EmitFunctionSize = MAI.hasDotTypeDotSizeDirective() && !TT.isWasm();
+  // are automatically sized. Windows Itanium and NT-POSIX objects state a
+  // function's size, and no other.
+  bool EmitFunctionSize = (MAI.hasDotTypeDotSizeDirective() && !TT.isWasm()) ||
+                          TT.isWindowsItaniumOrNTPOSIXEnvironment();
 
   // SPIR-V supports label instructions only inside a block, not after the
   // function body.

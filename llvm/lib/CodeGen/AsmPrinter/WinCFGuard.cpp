@@ -116,10 +116,14 @@ void WinCFGuard::endModule() {
   std::vector<const MCSymbol *> GFIDsEntries;
   std::vector<const MCSymbol *> GIATsEntries;
   std::vector<const MCSymbol *> SuppressedTargets;
+  // The writer of a Windows Itanium or NT-POSIX object fills .gfids and
+  // .giats from its relocations.
+  bool EmitTables =
+      !M->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
   for (const Function &F : *M) {
     if (!F.isDeclaration() && F.hasFnAttribute("guard_suppress"))
       SuppressedTargets.push_back(Asm->getSymbol(&F));
-    if (isPossibleIndirectCallTarget(&F)) {
+    if (EmitTables && isPossibleIndirectCallTarget(&F)) {
       // Code takes a dllimport function's address from its "__imp_" symbol,
       // which .giats lists. As in MSVC, .gfids lists the function, whose
       // symbol names its import thunk, only where static data holds it.
@@ -136,7 +140,8 @@ void WinCFGuard::endModule() {
   for (const GlobalAlias &GA : M->aliases()) {
     // Consider aliases to functions as possible call targets.
     const GlobalObject *Aliasee = GA.getAliaseeObject();
-    if (Aliasee && isa<Function>(Aliasee) && isPossibleIndirectCallTarget(&GA))
+    if (EmitTables && Aliasee && isa<Function>(Aliasee) &&
+        isPossibleIndirectCallTarget(&GA))
       GFIDsEntries.push_back(Asm->getSymbol(&GA));
   }
 

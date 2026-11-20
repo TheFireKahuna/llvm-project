@@ -13,6 +13,7 @@
 #ifndef LLVM_OBJECT_COFF_H
 #define LLVM_OBJECT_COFF_H
 
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/iterator_range.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Object/Binary.h"
@@ -1069,17 +1070,12 @@ public:
 
   StringRef getRelocationTypeName(uint16_t Type) const;
 
-  /// Returns true if the relocations in section \p SectionName may take the
-  /// address of the functions they name, which Control Flow Guard then lists
-  /// as indirect call targets for an object without .gfids$y. Unwind data and
-  /// debug info only describe the functions they name.
-  static bool isGuardCFAddressTakingSection(StringRef SectionName);
-
-  /// Returns true if a relocation of \p Type may take the address of the
-  /// function it names, as isGuardCFAddressTakingSection counts it. i386's
-  /// REL32 only branches; x86-64's also computes addresses. An LLVM type
-  /// states whether it does.
-  bool isGuardCFAddressTakingRelocation(uint16_t Type) const;
+  static bool isGuardCFAddressTakingSection(StringRef SectionName) {
+    return COFF::isGuardCFAddressTakingSection(SectionName);
+  }
+  bool isGuardCFAddressTakingRelocation(uint16_t Type) const {
+    return COFF::isGuardCFAddressTakingRelocation(getMachine(), Type);
+  }
 
 protected:
   void moveSymbolNext(DataRefImpl &Symb) const override;
@@ -1549,6 +1545,21 @@ class SectionStrippedError
 public:
   SectionStrippedError() { setErrorCode(object_error::section_stripped); }
 };
+
+/// Reads a link-record container, the contents of a .llvm_link_records
+/// section: sets \p Flags and calls \p Group with the kind and the payload of
+/// each group in turn. A container that is not well formed, and the first
+/// error \p Group returns, is the error.
+LLVM_ABI Error readCOFFLinkRecords(
+    StringRef Contents, uint64_t &Flags,
+    function_ref<Error(uint64_t Kind, StringRef Payload)> Group);
+
+/// Reads the link facts of a Symbols group, or of bitcode: calls \p Fact with
+/// the symbol index, the tag and the operands of each in turn.
+LLVM_ABI Error readCOFFLinkFacts(
+    StringRef Facts,
+    function_ref<Error(uint64_t Symbol, uint64_t Tag, StringRef Operands)>
+        Fact);
 
 } // end namespace object
 

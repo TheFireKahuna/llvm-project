@@ -43,6 +43,8 @@ define void @probe() uwtable {
 ; CHECK-LABEL: trailing:
 ; CHECK:       callq g
 ; CHECK-NEXT:  int3
+; CHECK-NEXT:  .Lfunc_end{{[0-9]+}}:
+; CHECK-NEXT:  .size trailing,
 ; CHECK-NEXT:  .seh_endproc
 declare void @g()
 define void @trailing() uwtable {

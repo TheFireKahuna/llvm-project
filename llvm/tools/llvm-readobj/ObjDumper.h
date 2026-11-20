@@ -150,6 +150,7 @@ public:
   virtual void printCOFFPseudoReloc() {}
   virtual void printCOFFDebugDirectory() { }
   virtual void printCOFFTLSDirectory() {}
+  virtual void printCOFFLinkRecords() {}
   virtual void printCOFFResources() {}
   virtual void printCOFFLoadConfig() { }
   virtual void printCodeViewDebugInfo() { }

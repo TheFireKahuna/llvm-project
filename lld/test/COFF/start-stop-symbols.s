@@ -35,6 +35,16 @@
 # MSVC-DAG: undefined symbol: __start_myset
 # MSVC-DAG: undefined symbol: _etext
 
+## A link with an object that LLVM made for Windows Itanium or NT-POSIX
+## defines them as a MinGW link does.
+# RUN: llvm-mc -triple=x86_64-windows-itanium main.s -filetype=obj \
+# RUN:   -o itanium.obj
+# RUN: lld-link -entry:main -out:itanium.exe itanium.obj
+# RUN: llvm-objdump -s -j myset itanium.exe \
+# RUN:   | FileCheck %s --check-prefix=ITANIUM
+# ITANIUM:      Contents of section myset:
+# ITANIUM-NEXT: 00000000 00000000 01000000 00000000
+
 ## A weak reference is bounded or defined as a plain one is, whatever its
 ## default, and keeps its zero default with nothing to bound or no such section.
 # RUN: lld-link -lldmingw -entry:main -out:weak.exe weak.obj

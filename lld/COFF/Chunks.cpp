@@ -598,7 +598,8 @@ const coff_relocation *SectionChunk::getPair(const coff_relocation &rel) const {
 }
 
 Symbol *SectionChunk::getRelocTarget(const coff_relocation &rel) const {
-  if (relocationNamesNoSymbol(rel.Type) || isPair(rel.Type))
+  if (relocationNamesNoSymbol(rel.Type) ||
+      (isPair(rel.Type) && !file->forkObject))
     return nullptr;
   return file->getSymbol(rel.SymbolTableIndex);
 }

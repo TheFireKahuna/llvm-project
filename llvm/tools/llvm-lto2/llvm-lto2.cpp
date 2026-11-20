@@ -576,6 +576,8 @@ static int dumpSymtab(int argc, char **argv) {
 
     if (TT.isOSBinFormatCOFF())
       outs() << "linker opts: " << Input->getCOFFLinkerOpts() << '\n';
+    if (!Input->getCOFFLinkFacts().empty())
+      outs() << "link facts: " << toHex(Input->getCOFFLinkFacts()) << '\n';
 
     if (TT.isOSBinFormatELF()) {
       outs() << "dependent libraries:";

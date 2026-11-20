@@ -14,7 +14,9 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Demangle/Demangle.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
@@ -273,6 +275,28 @@ void llvm::emitLinkerFlagsForGlobalCOFF(raw_ostream &OS, const GlobalValue *GV,
     if (NeedQuotes)
       OS << "\"";
   }
+}
+
+const ConstantInt *llvm::getFunctionTypePrefixMarker(const Function &F) {
+  const Module *M = F.getParent();
+  if (!F.hasMetadata(LLVMContext::MD_kcfi_type) ||
+      (M->getTargetTriple().isX86() && !M->getModuleFlag("kcfi")))
+    return nullptr;
+  return mdconst::extract_or_null<ConstantInt>(
+      M->getModuleFlag("function-type-prefix"));
+}
+
+void llvm::emitLinkFactsForGlobalCOFF(
+    const GlobalValue *GV, const Triple &TT,
+    function_ref<void(uint64_t Tag, ArrayRef<uint64_t> Operands)> Fact) {
+  if (!TT.isWindowsItaniumOrNTPOSIXEnvironment() ||
+      GV->isDeclarationForLinker())
+    return;
+
+  if (auto *F = dyn_cast<Function>(GV); F && getFunctionTypePrefixMarker(*F))
+    Fact(COFF::LinkFactTypePrefix,
+         {F->hasMetadata("kcfi_vfn_type") ? COFF::LinkFactVfnType
+                                          : COFF::LinkFactNoSecondWord});
 }
 
 void llvm::emitLinkerFlagsForUsedCOFF(raw_ostream &OS, const GlobalValue *GV,

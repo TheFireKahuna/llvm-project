@@ -90,6 +90,7 @@ def coff_debug_directory : FF<"coff-debug-directory", "Display debug directory">
 def coff_directives : FF<"coff-directives", "Display .drectve section">, Group<grp_coff>;
 def coff_exports : FF<"coff-exports", "Display export table">, Group<grp_coff>;
 def coff_imports : FF<"coff-imports", "Display import table">, Group<grp_coff>;
+def coff_link_records : FF<"coff-link-records", "Display link records">, Group<grp_coff>;
 def coff_load_config : FF<"coff-load-config", "Display load config">, Group<grp_coff>;
 def coff_pseudoreloc
     : FF<"coff-pseudoreloc",

@@ -12,6 +12,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/Comdat.h"
@@ -85,6 +86,9 @@ struct Builder {
 
   std::string COFFLinkerOpts;
   raw_string_ostream COFFLinkerOptsOS{COFFLinkerOpts};
+
+  std::string COFFLinkFacts;
+  raw_string_ostream COFFLinkFactsOS{COFFLinkFacts};
 
   std::vector<storage::Str> DependentLibraries;
 
@@ -295,6 +299,15 @@ Error Builder::addSymbol(const ModuleSymbolTable &Msymtab,
 
   if (TT.isOSBinFormatCOFF()) {
     emitLinkerFlagsForGlobalCOFF(COFFLinkerOptsOS, GV, TT, Mang);
+    // A function's facts are of its attachments, which a lazily read module
+    // holds only once the function is materialized.
+    if (TT.isWindowsItaniumOrNTPOSIXEnvironment())
+      if (Error E = GV->materialize())
+        return E;
+    emitLinkFactsForGlobalCOFF(
+        GV, TT, [&](uint64_t Tag, ArrayRef<uint64_t> Operands) {
+          COFF::encodeLinkFact(COFFLinkFactsOS, Syms.size() - 1, Tag, Operands);
+        });
 
     if ((Flags & object::BasicSymbolRef::SF_Weak) &&
         (Flags & object::BasicSymbolRef::SF_Indirect)) {
@@ -335,6 +348,7 @@ Error Builder::build(ArrayRef<Module *> IRMods) {
       return Err;
 
   setStr(Hdr.COFFLinkerOpts, Saver.save(COFFLinkerOpts));
+  setStr(Hdr.COFFLinkFacts, Saver.save(COFFLinkFacts));
 
   // We are about to fill in the header's range fields, so reserve space for it
   // and copy it in afterwards.

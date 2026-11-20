@@ -52,6 +52,9 @@ public:
   void emitCOFFSymbolType(int Type) override;
   void endCOFFSymbolDef() override;
   void emitCOFFSafeSEH(MCSymbol const *Symbol) override;
+  void emitELFSize(MCSymbol *Symbol, const MCExpr *Value) override;
+  void emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
+                        ArrayRef<const MCExpr *> Operands) override;
   void emitCOFFSymbolIndex(MCSymbol const *Symbol) override;
   void emitCOFFSectionIndex(MCSymbol const *Symbol) override;
   void emitCOFFSecRel32(MCSymbol const *Symbol, uint64_t Offset) override;

@@ -128,7 +128,8 @@ private:
   // [begin, end) for each module
   std::vector<std::pair<size_t, size_t>> ModuleSymIndices;
 
-  StringRef TargetTriple, SourceFileName, COFFLinkerOpts;
+  StringRef TargetTriple, SourceFileName, COFFLinkerOpts, COFFLinkFacts;
+  std::vector<int> COFFLinkFactSymbols;
   std::vector<StringRef> DependentLibraries;
   std::vector<std::pair<StringRef, Comdat::SelectionKind>> ComdatTable;
 
@@ -189,6 +190,14 @@ public:
 
   /// Returns linker options specified in the input file.
   StringRef getCOFFLinkerOpts() const { return COFFLinkerOpts; }
+
+  /// Returns the link facts of the symbols in the input file, which name a
+  /// symbol by its index in getCOFFLinkFactSymbols().
+  StringRef getCOFFLinkFacts() const { return COFFLinkFacts; }
+
+  /// Returns, for each symbol that a link fact can name, its index in
+  /// symbols(), or -1 for a symbol that symbols() leaves out.
+  ArrayRef<int> getCOFFLinkFactSymbols() const { return COFFLinkFactSymbols; }
 
   /// Returns dependent library specifiers from the input file.
   ArrayRef<StringRef> getDependentLibraries() const { return DependentLibraries; }

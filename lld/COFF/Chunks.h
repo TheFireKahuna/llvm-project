@@ -319,8 +319,8 @@ public:
   }
 
   // Returns the symbol a relocation refers to, or null for one that refers to
-  // nothing: ABSOLUTE, and a PAIR, whose symbol only offsets the relocation
-  // before it, so that it keeps nothing live and ICF ignores it.
+  // nothing: a type that names no symbol, and a PAIR outside a fork object,
+  // whose symbol then keeps nothing live and is ignored by ICF, as in link.exe.
   Symbol *getRelocTarget(const coff_relocation &rel) const;
 
   ArrayRef<coff_relocation> getRelocs() const {

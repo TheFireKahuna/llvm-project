@@ -7,8 +7,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Support/LEB128.h"
+#include "llvm/Support/raw_ostream.h"
 
 // Maximum offsets for different string table entry encodings.
 enum : unsigned { Max7DecimalOffset = 9999999U };
@@ -54,4 +57,61 @@ bool llvm::COFF::encodeSectionName(char *Out, uint64_t Offset) {
 
   // The offset is too large to be encoded.
   return false;
+}
+
+void llvm::COFF::encodeLinkFact(raw_ostream &OS, uint64_t Symbol, uint64_t Tag,
+                                ArrayRef<uint64_t> Operands) {
+  SmallString<16> Bytes;
+  raw_svector_ostream BytesOS(Bytes);
+  for (uint64_t Operand : Operands)
+    encodeULEB128(Operand, BytesOS);
+  encodeULEB128(Symbol, OS);
+  encodeULEB128(Tag, OS);
+  encodeULEB128(Bytes.size(), OS);
+  OS << Bytes;
+}
+
+bool llvm::COFF::isGuardCFAddressTakingSection(StringRef SectionName) {
+  return SectionName.split('$').first != ".pdata" &&
+         !SectionName.starts_with(".debug");
+}
+
+bool llvm::COFF::isGuardCFAddressTakingRelocation(uint16_t Machine,
+                                                  uint16_t Type) {
+  if (relocationNamesNoSymbol(Type))
+    return false;
+  switch (Machine) {
+  case IMAGE_FILE_MACHINE_I386:
+    return Type != IMAGE_REL_I386_REL32;
+  case IMAGE_FILE_MACHINE_AMD64:
+    if (Type == IMAGE_REL_AMD64_PAIR || Type == IMAGE_REL_AMD64_SSPAN32)
+      return false;
+    break;
+  case IMAGE_FILE_MACHINE_ARM64:
+    if (Type == IMAGE_REL_ARM64_PAIR || Type == IMAGE_REL_ARM64_BRANCH26 ||
+        Type == IMAGE_REL_ARM64_BRANCH19 || Type == IMAGE_REL_ARM64_BRANCH14)
+      return false;
+    break;
+  default:
+    return true;
+  }
+  // Of the LLVM types, a load of a pointer and a lea take an address. The
+  // types up to MEM_JUMP_P1 branch, call, also through a pointer, whose slot
+  // they name, or span two labels.
+  if (Type >= IMAGE_REL_LLVM_ADDR32NB_CALL &&
+      Type <= IMAGE_REL_LLVM_MEM_JUMP_P1)
+    return false;
+  switch (Type) {
+  case IMAGE_REL_LLVM_FUSED_CALL:
+  case IMAGE_REL_LLVM_FUSED_JUMP:
+  case IMAGE_REL_LLVM_FUSED_ACCESS:
+  case IMAGE_REL_LLVM_FUSED_INDEX:
+  case IMAGE_REL_LLVM_TPOFF32:
+  case IMAGE_REL_LLVM_TPOFF_HIGH12A:
+  case IMAGE_REL_LLVM_TPOFF_LOW12A:
+  case IMAGE_REL_LLVM_TPOFF_LOW12L:
+    return false;
+  default:
+    return true;
+  }
 }

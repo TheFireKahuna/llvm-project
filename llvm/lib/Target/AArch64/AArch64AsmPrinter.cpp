@@ -701,11 +701,10 @@ void AArch64AsmPrinter::LowerPATCHABLE_EVENT_CALL(const MachineInstr &MI,
 
 void AArch64AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   const Function &F = MF.getFunction();
-  const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type);
-  auto *Marker = mdconst::extract_or_null<ConstantInt>(
-      F.getParent()->getModuleFlag("function-type-prefix"));
-  if (!MD || !Marker)
+  const ConstantInt *Marker = getFunctionTypePrefixMarker(F);
+  if (!Marker)
     return AsmPrinter::emitKCFITypeId(MF);
+  const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type);
 
   // A function type prefix holds the bytes x86 emits: the pattern with the
   // marker, then the type, 12 bytes, after the second type of a function that

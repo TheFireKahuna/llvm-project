@@ -13,13 +13,17 @@
 #ifndef LLVM_IR_MANGLER_H
 #define LLVM_IR_MANGLER_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Compiler.h"
 
 namespace llvm {
 
+class ConstantInt;
 class DataLayout;
+class Function;
 class GlobalValue;
 template <typename T> class SmallVectorImpl;
 class Triple;
@@ -64,6 +68,18 @@ public:
 LLVM_ABI void emitLinkerFlagsForGlobalCOFF(raw_ostream &OS,
                                            const GlobalValue *GV,
                                            const Triple &TT, Mangler &Mangler);
+
+/// Returns the marker of the type prefix that \p F is emitted with, or null
+/// if it has none: the function-type-prefix flag of the module of a function
+/// with !kcfi_type, which x86 emits type data for only under the kcfi flag.
+LLVM_ABI const ConstantInt *getFunctionTypePrefixMarker(const Function &F);
+
+/// Calls \p Fact with the tag, a COFF::LinkFactTag, and the operands of each
+/// fact about \p GV that an object for \p TT states in its link records and
+/// bitcode in its symbol table.
+LLVM_ABI void emitLinkFactsForGlobalCOFF(
+    const GlobalValue *GV, const Triple &TT,
+    function_ref<void(uint64_t Tag, ArrayRef<uint64_t> Operands)> Fact);
 
 LLVM_ABI void emitLinkerFlagsForUsedCOFF(raw_ostream &OS, const GlobalValue *GV,
                                          const Triple &T, Mangler &M);

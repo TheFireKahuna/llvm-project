@@ -62,6 +62,7 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecRel32>(".secrel32");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSymIdx>(".symidx");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSafeSEH>(".safeseh");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(".link_fact");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecIdx>(".secidx");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkOnce>(".linkonce");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveRVA>(".rva");
@@ -71,6 +72,9 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveCGProfile>(".cg_profile");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecNum>(".secnum");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecOffset>(".secoffset");
+    // Only Windows Itanium and NT-POSIX objects state the size of a function;
+    // elsewhere the directive has no effect.
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveSize>(".size");
 
     // Win64 EH directives.
     addDirectiveHandler<&COFFAsmParser::parseSEHDirectiveStartProc>(
@@ -128,6 +132,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveSecRel32(StringRef, SMLoc);
   bool parseDirectiveSecIdx(StringRef, SMLoc);
   bool parseDirectiveSafeSEH(StringRef, SMLoc);
+  bool parseDirectiveLinkFact(StringRef, SMLoc);
   bool parseDirectiveSymIdx(StringRef, SMLoc);
   bool parseCOMDATType(COFF::COMDATType &Type);
   bool parseDirectiveLinkOnce(StringRef, SMLoc);
@@ -135,6 +140,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveCGProfile(StringRef, SMLoc);
   bool parseDirectiveSecNum(StringRef, SMLoc);
   bool parseDirectiveSecOffset(StringRef, SMLoc);
+  bool parseDirectiveSize(StringRef, SMLoc);
 
   // Win64 EH directives.
   bool parseSEHDirectiveStartProc(StringRef, SMLoc);
@@ -544,6 +550,24 @@ bool COFFAsmParser::parseDirectiveSafeSEH(StringRef, SMLoc) {
   return false;
 }
 
+/// ::= .link_fact symbol, tag [, operand]*
+bool COFFAsmParser::parseDirectiveLinkFact(StringRef, SMLoc) {
+  MCSymbol *Symbol;
+  int64_t Tag;
+  SmallVector<const MCExpr *, 2> Operands;
+  if (getParser().parseSymbol(Symbol))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma() || getParser().parseAbsoluteExpression(Tag))
+    return true;
+  while (parseOptionalToken(AsmToken::Comma))
+    if (getParser().parseExpression(Operands.emplace_back()))
+      return true;
+  if (parseEOL())
+    return true;
+  getStreamer().emitCOFFLinkFact(Symbol, Tag, Operands);
+  return false;
+}
+
 bool COFFAsmParser::parseDirectiveSecIdx(StringRef, SMLoc) {
   MCSymbol *Symbol;
   if (getParser().parseSymbol(Symbol))
@@ -554,6 +578,18 @@ bool COFFAsmParser::parseDirectiveSecIdx(StringRef, SMLoc) {
 
   Lex();
   getStreamer().emitCOFFSectionIndex(Symbol);
+  return false;
+}
+
+bool COFFAsmParser::parseDirectiveSize(StringRef, SMLoc) {
+  MCSymbol *Symbol;
+  const MCExpr *Size;
+  if (getParser().parseSymbol(Symbol))
+    return TokError("expected identifier in directive");
+  if (getParser().parseComma() || getParser().parseExpression(Size) ||
+      parseEOL())
+    return true;
+  getStreamer().emitELFSize(Symbol, Size);
   return false;
 }
 

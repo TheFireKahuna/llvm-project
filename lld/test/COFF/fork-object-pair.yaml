@@ -1,0 +1,145 @@
+# REQUIRES: x86, aarch64
+
+## In an object that @comp.id marks as LLVM's for Windows Itanium or NT-POSIX,
+## a PAIR's symbol B counts: sections whose Bs differ do not fold, and B's
+## section is live while the PAIR's is. In any other object ICF ignores B and
+## B keeps nothing live, as in link.exe, so the reference to the discarded b1
+## is an error. ALIGN's index is a number that ICF compares, ABSOLUTE's is
+## ignored, and neither is looked up.
+
+# RUN: yaml2obj -DM=AMD64 %s -o %t.x64.obj
+# RUN: yaml2obj -DM=ARM64 %s -o %t.a64.obj
+# RUN: yaml2obj -DM=AMD64 -DCOMPID=17104896 -DP=y %s -o %t.x64.foreign.obj
+# RUN: yaml2obj -DM=ARM64 -DCOMPID=17104896 -DP=y %s -o %t.a64.foreign.obj
+
+# RUN: lld-link /entry:f1 /subsystem:console /opt:ref,icf /verbose \
+# RUN:   /include:f2 /include:g1 /include:g2 /include:h1 /include:h2 \
+# RUN:   /out:%t.exe %t.x64.obj 2>&1 | FileCheck --check-prefix=FORK \
+# RUN:   --implicit-check-not=Removed --implicit-check-not="Discarded b" %s
+# RUN: lld-link /entry:f1 /subsystem:console /opt:ref,icf /verbose \
+# RUN:   /include:f2 /include:g1 /include:g2 /include:h1 /include:h2 \
+# RUN:   /out:%t.exe %t.a64.obj 2>&1 | FileCheck --check-prefix=FORK \
+# RUN:   --implicit-check-not=Removed --implicit-check-not="Discarded b" %s
+
+# FORK:      Selected h1
+# FORK-NEXT:   Removed h2
+
+# RUN: not lld-link /entry:yf1 /subsystem:console /opt:ref,icf /verbose \
+# RUN:   /include:yf2 /out:%t.exe %t.x64.foreign.obj 2>&1 | \
+# RUN:   FileCheck --check-prefix=FOREIGN %s
+# RUN: not lld-link /entry:yf1 /subsystem:console /opt:ref,icf /verbose \
+# RUN:   /include:yf2 /out:%t.exe %t.a64.foreign.obj 2>&1 | \
+# RUN:   FileCheck --check-prefix=FOREIGN %s
+
+# FOREIGN:      Selected yf1
+# FOREIGN-NEXT:   Removed yf2
+# FOREIGN-NEXT: Discarded yb1
+# FOREIGN-NEXT: Discarded yb2
+# FOREIGN:      error: relocation against symbol in discarded section: yb1
+
+## Sections of both kinds with equal bytes: those with a PAIR, which only one
+## of them counts, stay apart, k and yk with every other relocation equal.
+# RUN: lld-link /entry:f1 /subsystem:console /opt:noref,icf /verbose \
+# RUN:   /out:%t.exe %t.x64.obj %t.x64.foreign.obj 2>&1 | FileCheck \
+# RUN:   --check-prefix=MIXED --implicit-check-not="{{Removed (f1|f2|k|yk)$}}" %s
+# RUN: lld-link /entry:f1 /subsystem:console /opt:noref,icf /verbose \
+# RUN:   /out:%t.exe %t.a64.obj %t.a64.foreign.obj 2>&1 | FileCheck \
+# RUN:   --check-prefix=MIXED --implicit-check-not="{{Removed (f1|f2|k|yk)$}}" %s
+
+# MIXED-DAG: Removed yf2
+# MIXED-DAG: Removed yg1
+# MIXED-DAG: Removed yg2
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_[[M]]
+  Characteristics: []
+sections:
+  - Name:            .text$f
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     0000000000000000C3CCCCCC
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: '[[P=]]f1', Type: IMAGE_REL_LLVM_SSPAN64 }
+      - { VirtualAddress: 0, SymbolName: '[[P=]]b1', Type: IMAGE_REL_[[M]]_PAIR }
+  - Name:            .text$f
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     0000000000000000C3CCCCCC
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: '[[P=]]f2', Type: IMAGE_REL_LLVM_SSPAN64 }
+      - { VirtualAddress: 0, SymbolName: '[[P=]]b2', Type: IMAGE_REL_[[M]]_PAIR }
+  - Name:            .rdata$b
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     01000000
+  - Name:            .rdata$b
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     02000000
+  - Name:            .text$g
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     C3CCCCCC
+    Relocations:
+      - { VirtualAddress: 0, SymbolTableIndex: 305419896, Type: IMAGE_REL_LLVM_ALIGN }
+  - Name:            .text$g
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     C3CCCCCC
+    Relocations:
+      - { VirtualAddress: 0, SymbolTableIndex: 305419897, Type: IMAGE_REL_LLVM_ALIGN }
+  - Name:            .text$h
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     C3CCCCCC
+    Relocations:
+      - { VirtualAddress: 0, SymbolTableIndex: 305419896, Type: IMAGE_REL_[[M]]_ABSOLUTE }
+  - Name:            .text$h
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     C3CCCCCC
+    Relocations:
+      - { VirtualAddress: 0, SymbolTableIndex: 305419897, Type: IMAGE_REL_[[M]]_ABSOLUTE }
+  - Name:            .text$k
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     0000000000000000C3CCCCCC
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: '[[P=]]k', Type: IMAGE_REL_LLVM_SSPAN64 }
+      - { VirtualAddress: 0, SymbolName: abs, Type: IMAGE_REL_[[M]]_PAIR }
+  - Name:            .llvm_link_records
+    Characteristics: [ IMAGE_SCN_LNK_INFO ]
+    Alignment:       1
+    SectionData:     4C4C524301000100
+symbols:
+  - { Name: '@comp.id', Value: '[[COMPID=1280049152]]', SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: abs, Value: 1, SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: '.text$f', Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 12, NumberOfRelocations: 2, NumberOfLinenumbers: 0, CheckSum: 0, Number: 1, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]f1', Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.text$f', Value: 0, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 12, NumberOfRelocations: 2, NumberOfLinenumbers: 0, CheckSum: 0, Number: 2, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]f2', Value: 0, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.rdata$b', Value: 0, SectionNumber: 3, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 0, NumberOfLinenumbers: 0, CheckSum: 0, Number: 3, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]b1', Value: 0, SectionNumber: 3, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.rdata$b', Value: 0, SectionNumber: 4, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 0, NumberOfLinenumbers: 0, CheckSum: 0, Number: 4, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]b2', Value: 0, SectionNumber: 4, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.text$g', Value: 0, SectionNumber: 5, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 1, NumberOfLinenumbers: 0, CheckSum: 0, Number: 5, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]g1', Value: 0, SectionNumber: 5, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.text$g', Value: 0, SectionNumber: 6, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 1, NumberOfLinenumbers: 0, CheckSum: 0, Number: 6, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]g2', Value: 0, SectionNumber: 6, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.text$h', Value: 0, SectionNumber: 7, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 1, NumberOfLinenumbers: 0, CheckSum: 0, Number: 7, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]h1', Value: 0, SectionNumber: 7, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.text$h', Value: 0, SectionNumber: 8, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 1, NumberOfLinenumbers: 0, CheckSum: 0, Number: 8, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]h2', Value: 0, SectionNumber: 8, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.text$k', Value: 0, SectionNumber: 9, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 12, NumberOfRelocations: 2, NumberOfLinenumbers: 0, CheckSum: 0, Number: 9, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: '[[P=]]k', Value: 0, SectionNumber: 9, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+...

@@ -20,6 +20,10 @@ class MCSymbolCOFF : public MCSymbol {
   /// This corresponds to the e_type field of the COFF symbol.
   mutable uint16_t Type = 0;
 
+  /// An expression describing how to calculate the size of a symbol. If a
+  /// symbol has no size this field will be NULL.
+  const MCExpr *SymbolSize = nullptr;
+
   enum SymbolFlags : uint16_t {
     SF_ClassMask = 0x00FF,
     SF_ClassShift = 0,
@@ -32,6 +36,9 @@ class MCSymbolCOFF : public MCSymbol {
 public:
   MCSymbolCOFF(const MCSymbolTableEntry *Name, bool isTemporary)
       : MCSymbol(Name, isTemporary) {}
+
+  void setSize(const MCExpr *SS) { SymbolSize = SS; }
+  const MCExpr *getSize() const { return SymbolSize; }
 
   bool isExternal() const { return IsExternal; }
   void setExternal(bool Value) const { IsExternal = Value; }

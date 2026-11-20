@@ -151,6 +151,7 @@ static bool COFFDebugDirectory;
 static bool COFFDirectives;
 static bool COFFExports;
 static bool COFFImports;
+static bool COFFLinkRecords;
 static bool COFFLoadConfig;
 static bool COFFResources;
 static bool COFFTLSDirectory;
@@ -307,6 +308,7 @@ static void parseOptions(const opt::InputArgList &Args) {
   opts::COFFDirectives = Args.hasArg(OPT_coff_directives);
   opts::COFFExports = Args.hasArg(OPT_coff_exports);
   opts::COFFImports = Args.hasArg(OPT_coff_imports);
+  opts::COFFLinkRecords = Args.hasArg(OPT_coff_link_records);
   opts::COFFLoadConfig = Args.hasArg(OPT_coff_load_config);
   opts::COFFResources = Args.hasArg(OPT_coff_resources);
   opts::COFFTLSDirectory = Args.hasArg(OPT_coff_tls_directory);
@@ -501,6 +503,8 @@ static void dumpObject(ObjectFile &Obj, ScopedPrinter &Writer,
       Dumper->printCOFFDebugDirectory();
     if (opts::COFFTLSDirectory)
       Dumper->printCOFFTLSDirectory();
+    if (opts::COFFLinkRecords)
+      Dumper->printCOFFLinkRecords();
     if (opts::COFFResources)
       Dumper->printCOFFResources();
     if (opts::COFFLoadConfig)

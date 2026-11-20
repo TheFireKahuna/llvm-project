@@ -22,11 +22,15 @@
 #ifndef LLVM_BINARYFORMAT_COFF_H
 #define LLVM_BINARYFORMAT_COFF_H
 
+#include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/DataTypes.h"
 #include <cassert>
 
 namespace llvm {
+class raw_ostream;
+
 namespace COFF {
 
 // The maximum number of sections that a COFF object can have (inclusive).
@@ -495,6 +499,19 @@ inline bool relocationNamesNoSymbol(uint16_t Type) {
          Type == IMAGE_REL_LLVM_TLS_SCALE;
 }
 
+/// Returns true if the relocations in section \p SectionName may take the
+/// address of the functions they name, which Control Flow Guard then lists
+/// as indirect call targets. Unwind data and debug info only describe the
+/// functions they name.
+LLVM_ABI bool isGuardCFAddressTakingSection(StringRef SectionName);
+
+/// Returns true if a relocation of \p Type in an object for \p Machine may
+/// take the address of the function it names, as
+/// isGuardCFAddressTakingSection counts it. i386's REL32 and ARM64's branch
+/// types only branch; x86-64's REL32 also computes addresses. An LLVM type
+/// states whether it does.
+LLVM_ABI bool isGuardCFAddressTakingRelocation(uint16_t Machine, uint16_t Type);
+
 enum DynamicRelocationType : unsigned {
   IMAGE_DYNAMIC_RELOCATION_GUARD_RF_PROLOGUE = 1,
   IMAGE_DYNAMIC_RELOCATION_GUARD_RF_EPILOGUE = 2,
@@ -938,6 +955,50 @@ enum Feat00Flags : uint32_t {
   // Object was compiled with /kernel.
   Kernel = 0x40000000,
 };
+
+/// The value of the @comp.id symbol in an object that LLVM writes for Windows
+/// Itanium or NT-POSIX: the product in the high half, no build number.
+enum : uint32_t { LLVMCompId = 0x4C4C0000 };
+
+/// A .llvm_link_records section holds LinkRecordsMagic, a version and flags,
+/// then groups, each a kind, the size of its payload and the payload. Every
+/// number is a ULEB128. A reader skips a group whose kind it does not know,
+/// unless the kind is critical.
+static const char LinkRecordsMagic[] = {'L', 'L', 'R', 'C'};
+enum : uint64_t { LinkRecordsVersion = 1, LinkRecordCritical = 1 };
+
+enum LinkRecordKind : uint64_t {
+  // In an object.
+  LinkRecordSiteFacts = 0,
+  LinkRecordSymbols = 1,
+  LinkRecordSections = 2,
+  LinkRecordContracts = 3,
+  // In a member of an import library.
+  LinkRecordImages = 4,
+  LinkRecordOverrides = 6,
+  LinkRecordImageCode = 8,
+  LinkRecordScan = 10,
+};
+
+/// The payload of a Symbols group is link facts, each the index of a symbol,
+/// a tag, the size of its operands and the operands. A reader skips a fact
+/// whose tag it does not know, unless the tag is critical.
+enum LinkFactTag : uint64_t {
+  /// The function has a type prefix. The operand is what the prefix holds
+  /// before its marker, a LinkFactSecondWord.
+  LinkFactTypePrefix = 0,
+};
+
+enum LinkFactSecondWord : uint64_t {
+  LinkFactNoSecondWord = 0,
+  /// The type of the function as the target of a call through a pointer to
+  /// a virtual member function.
+  LinkFactVfnType = 1,
+};
+
+/// Writes a link fact whose operands are numbers.
+LLVM_ABI void encodeLinkFact(raw_ostream &OS, uint64_t Symbol, uint64_t Tag,
+                             ArrayRef<uint64_t> Operands);
 
 enum Arm64ECThunkType : uint8_t {
   GuestExit = 0,

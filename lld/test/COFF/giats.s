@@ -74,6 +74,14 @@
 
 # DATA: GuardAddressTakenIatEntryCount: 2
 
+# A Windows Itanium object lists import pointers by name, so a data import's
+# is not listed.
+# RUN: llvm-mc -triple x86_64-windows-itanium %s -filetype=obj -o %basename_t-fork.obj --defsym DATAIMP=1
+# RUN: lld-link %basename_t-fork.obj -guard:cf -guard:longjmp -entry:main -out:%basename_t-fork.exe %basename_t-exp.lib
+# RUN: llvm-readobj --coff-load-config %basename_t-fork.exe | FileCheck %s --check-prefix FORK
+
+# FORK: GuardAddressTakenIatEntryCount: 1
+
 
 # This assembly is reduced from C code like:
 # __declspec(noinline)

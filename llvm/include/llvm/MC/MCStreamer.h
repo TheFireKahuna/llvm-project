@@ -591,6 +591,11 @@ public:
 
   virtual void emitCOFFSafeSEH(MCSymbol const *Symbol);
 
+  /// Emits a link fact about \p Symbol: a COFF::LinkFactTag and its operands,
+  /// each of which is a symbol or absolute.
+  virtual void emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
+                                ArrayRef<const MCExpr *> Operands);
+
   /// Emits the symbol table index of a Symbol into the current section.
   virtual void emitCOFFSymbolIndex(MCSymbol const *Symbol);
 

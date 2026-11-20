@@ -60,6 +60,10 @@ public:
   }
 
   std::vector<ObjFile *> objFileInstances;
+  // True once a file with InputFile::forkObject is part of the link.
+  bool hasForkObject = false;
+  // The first file a link fact of which gives a function a type prefix.
+  InputFile *typePrefixFile = nullptr;
   // SECTION-class symbols that name a section another object defines.
   std::vector<DefinedRegular *> sectionSymbols;
   std::map<std::string, PDBInputFile *> pdbInputFileInstances;

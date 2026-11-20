@@ -1,0 +1,93 @@
+# REQUIRES: x86
+
+## The Symbols group of an object's link records holds link facts, each the
+## index of a symbol, a tag, the size of its operands and the operands. Bitcode
+## holds the same facts in its symbol table.
+
+# RUN: split-file %s %t.dir && cd %t.dir
+
+## A type prefix with a second type on main, symbol 1; a fact of the
+## non-critical tag 2, which is not assigned, with three bytes of operands; and
+## a fact of @comp.id, symbol 0, which is no symbol of the link.
+# RUN: yaml2obj -DSIZE=0E -DFACTS=01000101010203AABBCC00000100 obj.yaml \
+# RUN:   -o facts.obj
+# RUN: lld-link -entry:main -subsystem:console -out:facts.exe facts.obj \
+# RUN:   -failifmismatch:_WIN_ITANIUM_KCFI_PREFIX=00000010.0
+
+## The prefix key states the size of every patchable prefix of the image, so
+## a type prefix in an image no object of which carries the key is an error.
+# RUN: not lld-link -entry:main -subsystem:console -out:nokey.exe facts.obj \
+# RUN:   2>&1 | FileCheck --check-prefix=NOKEY %s
+# NOKEY: error: facts.obj: a function has a type prefix, and no object carries /failifmismatch:_WIN_ITANIUM_KCFI_PREFIX
+
+## A fact of the critical tag 3, which is not assigned.
+# RUN: yaml2obj -DSIZE=03 -DFACTS=010300 obj.yaml -o critical.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:critical.exe \
+# RUN:   critical.obj 2>&1 | FileCheck --check-prefix=CRITICAL %s
+# CRITICAL: error: critical.obj: .llvm_link_records: unknown critical tag 3
+
+## A fact of a symbol the object does not have, a type prefix with no
+## operand, operands longer than the group, a second word that is not
+## assigned, and a second Symbols group.
+# RUN: yaml2obj -DSIZE=04 -DFACTS=09000100 obj.yaml -o index.obj
+# RUN: yaml2obj -DSIZE=03 -DFACTS=010000 obj.yaml -o operands.obj
+# RUN: yaml2obj -DSIZE=04 -DFACTS=01000500 obj.yaml -o size.obj
+# RUN: yaml2obj -DSIZE=04 -DFACTS=01000102 obj.yaml -o range.obj
+# RUN: yaml2obj -DSIZE=00 -DFACTS=0100 obj.yaml -o two.obj
+# RUN: not lld-link -entry:main -subsystem:console -out:bad.exe index.obj \
+# RUN:   operands.obj size.obj range.obj two.obj 2>&1 \
+# RUN:   | FileCheck --check-prefix=BAD %s
+# BAD: error: index.obj: .llvm_link_records: fact of symbol 9, which the file does not have
+# BAD: error: operands.obj: .llvm_link_records: unable to decode LEB128 at offset 0x00000000: malformed uleb128, extends past end
+# BAD: error: size.obj: .llvm_link_records: unexpected end of data at offset 0x4 while reading [0x3, 0x8)
+# BAD: error: range.obj: .llvm_link_records: type prefix of symbol 1 is out of range
+# BAD: error: two.obj: .llvm_link_records: two Symbols groups
+
+## Bitcode with a fact, and the object LTO makes of it, link.
+# RUN: llvm-as bitcode.ll -o bitcode.bc
+# RUN: llvm-lto2 dump-symtab bitcode.bc | FileCheck --check-prefix=SYMTAB %s
+# RUN: lld-link -entry:main -subsystem:console -out:bitcode.exe bitcode.bc \
+# RUN:   -failifmismatch:_WIN_ITANIUM_KCFI_PREFIX=00000010.0
+# SYMTAB: link facts: 00000100
+
+#--- obj.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    SectionData:     C3CCCCCCCCCCCCCC
+  - Name:            .llvm_link_records
+    Characteristics: [ IMAGE_SCN_LNK_INFO ]
+    Alignment:       1
+    SectionData:     4C4C5243010001[[SIZE]][[FACTS]]
+symbols:
+  - Name:            '@comp.id'
+    Value:           1280049152
+    SectionNumber:   -1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+  - Name:            main
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_FUNCTION
+    StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+...
+
+#--- bitcode.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+define i32 @main() !kcfi_type !2 {
+  ret i32 0
+}
+
+!llvm.module.flags = !{!0, !1}
+!0 = !{i32 4, !"kcfi", i32 1}
+!1 = !{i32 1, !"function-type-prefix", i32 16}
+!2 = !{i32 12345678}

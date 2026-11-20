@@ -16,7 +16,7 @@ define void @use() {
   ret void
 }
 
-; CHECK:      version: 4
+; CHECK:      version: 5
 ; CHECK-NEXT: producer: producer
 ; CHECK-NEXT: target triple: x86_64-unknown-linux-gnu
 ; CHECK-NEXT: source filename: irsymtab-large-common.ll

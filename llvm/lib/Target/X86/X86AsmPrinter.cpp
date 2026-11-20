@@ -203,8 +203,7 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // Embed the type hash in the X86::MOV32ri instruction to avoid special
   // casing object file parsers. The instruction is 5 bytes long.
   const Module *M = F.getParent();
-  if (auto *Marker = mdconst::extract_or_null<ConstantInt>(
-          M->getModuleFlag("function-type-prefix"))) {
+  if (const ConstantInt *Marker = getFunctionTypePrefixMarker(F)) {
     // In a function type prefix a 7-byte nopl precedes the move, with the
     // marker as its displacement, so that the 8 bytes before the type are
     // fixed. A function that can fill a vtable slot carries a second type

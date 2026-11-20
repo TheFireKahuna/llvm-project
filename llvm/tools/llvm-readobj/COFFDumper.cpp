@@ -99,6 +99,7 @@ public:
   void printCOFFPseudoReloc() override;
   void printCOFFDebugDirectory() override;
   void printCOFFTLSDirectory() override;
+  void printCOFFLinkRecords() override;
   void printCOFFResources() override;
   void printCOFFLoadConfig() override;
   void printCodeViewDebugInfo() override;
@@ -2540,6 +2541,54 @@ void COFFDumper::printAddrsig() {
 
     W.printNumber("Sym", getSymbolName(SymIndex), SymIndex);
     Cur += Size;
+  }
+}
+
+constexpr EnumStringDef<COFF::LinkRecordKind> LinkRecordKindDefs[] = {
+    {{"SiteFacts"}, COFF::LinkRecordSiteFacts},
+    {{"Symbols"}, COFF::LinkRecordSymbols},
+    {{"Sections"}, COFF::LinkRecordSections},
+    {{"Contracts"}, COFF::LinkRecordContracts},
+    {{"Images"}, COFF::LinkRecordImages},
+    {{"Overrides"}, COFF::LinkRecordOverrides},
+    {{"ImageCode"}, COFF::LinkRecordImageCode},
+    {{"Scan"}, COFF::LinkRecordScan},
+};
+constexpr auto LinkRecordKinds = BUILD_ENUM_STRINGS(LinkRecordKindDefs);
+
+constexpr EnumStringDef<COFF::LinkFactTag> LinkFactTagDefs[] = {
+    {{"TypePrefix"}, COFF::LinkFactTypePrefix},
+};
+constexpr auto LinkFactTags = BUILD_ENUM_STRINGS(LinkFactTagDefs);
+
+void COFFDumper::printCOFFLinkRecords() {
+  for (SectionRef Sec : Obj->sections()) {
+    if (unwrapOrError(Obj->getFileName(), Sec.getName()) !=
+        ".llvm_link_records")
+      continue;
+    DictScope D(W, "LinkRecords");
+    uint64_t Flags;
+    if (Error E = readCOFFLinkRecords(
+            unwrapOrError(Obj->getFileName(), Sec.getContents()), Flags,
+            [&](uint64_t Kind, StringRef Payload) -> Error {
+              DictScope G(W, "Group");
+              W.printEnum("Kind", Kind, EnumStrings(LinkRecordKinds));
+              if (Kind != COFF::LinkRecordSymbols) {
+                W.printBinaryBlock("Payload", Payload);
+                return Error::success();
+              }
+              return readCOFFLinkFacts(
+                  Payload,
+                  [&](uint64_t Symbol, uint64_t Tag, StringRef Operands) {
+                    DictScope F(W, "Fact");
+                    W.printNumber("Symbol", getSymbolName(Symbol), Symbol);
+                    W.printEnum("Tag", Tag, EnumStrings(LinkFactTags));
+                    W.printBinaryBlock("Operands", Operands);
+                    return Error::success();
+                  });
+            }))
+      reportError(std::move(E), Obj->getFileName());
+    W.printHex("Flags", Flags);
   }
 }
 

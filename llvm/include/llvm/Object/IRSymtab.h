@@ -138,7 +138,7 @@ struct Header {
   /// when the format changes, but it does not need to be incremented if a
   /// change to LLVM would cause it to create a different symbol table.
   Word Version;
-  enum { kCurrentVersion = 4 };
+  enum { kCurrentVersion = 5 };
 
   /// The producer's version string (LLVM_VERSION_STRING " " LLVM_REVISION).
   /// Consumers should rebuild the symbol table from IR if the producer's
@@ -155,6 +155,11 @@ struct Header {
 
   /// COFF-specific: linker directives.
   Str COFFLinkerOpts;
+
+  /// COFF-specific: the link facts of the symbols, as the Symbols group of an
+  /// object's link records holds them, naming a symbol by its index in
+  /// Symbols.
+  Str COFFLinkFacts;
 
   /// Dependent Library Specifiers
   Range<Str> DependentLibraries;
@@ -301,6 +306,9 @@ public:
 
   /// COFF-specific: returns linker options specified in the input file.
   StringRef getCOFFLinkerOpts() const { return str(header().COFFLinkerOpts); }
+
+  /// COFF-specific: returns the link facts of the symbols in the input file.
+  StringRef getCOFFLinkFacts() const { return str(header().COFFLinkFacts); }
 
   /// Returns dependent library specifiers
   std::vector<StringRef> getDependentLibraries() const {

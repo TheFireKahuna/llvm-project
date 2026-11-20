@@ -20,6 +20,7 @@
 #include "llvm/Object/ObjectFile.h"
 #include "llvm/Object/WindowsMachineFlag.h"
 #include "llvm/Support/BinaryStreamReader.h"
+#include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -2669,46 +2670,45 @@ ResourceSectionRef::getContents(const coff_resource_data_entry &Entry) {
   }
 }
 
-bool COFFObjectFile::isGuardCFAddressTakingSection(StringRef SectionName) {
-  return SectionName.split('$').first != ".pdata" &&
-         !SectionName.starts_with(".debug");
+Error object::readCOFFLinkRecords(
+    StringRef Contents, uint64_t &Flags,
+    function_ref<Error(uint64_t Kind, StringRef Payload)> Group) {
+  DataExtractor Data(Contents, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor C(0);
+  StringRef Magic = Data.getBytes(C, sizeof(COFF::LinkRecordsMagic));
+  uint64_t Version = Data.getULEB128(C);
+  Flags = Data.getULEB128(C);
+  if (C && Magic != StringRef(COFF::LinkRecordsMagic,
+                              sizeof(COFF::LinkRecordsMagic)))
+    return createStringError(object_error::parse_failed, "bad magic");
+  if (C && Version != COFF::LinkRecordsVersion)
+    return createStringError(object_error::parse_failed,
+                             "unknown version " + Twine(Version));
+  while (C && !Data.eof(C)) {
+    uint64_t Kind = Data.getULEB128(C);
+    // The size is read against the bytes that remain, so a group cannot claim
+    // more than its container holds.
+    StringRef Payload = Data.getBytes(C, Data.getULEB128(C));
+    if (C)
+      if (Error E = Group(Kind, Payload))
+        return E;
+  }
+  return C.takeError();
 }
 
-bool COFFObjectFile::isGuardCFAddressTakingRelocation(uint16_t Type) const {
-  if (COFF::relocationNamesNoSymbol(Type))
-    return false;
-  switch (getMachine()) {
-  case COFF::IMAGE_FILE_MACHINE_I386:
-    return Type != COFF::IMAGE_REL_I386_REL32;
-  case COFF::IMAGE_FILE_MACHINE_AMD64:
-    if (Type == COFF::IMAGE_REL_AMD64_PAIR ||
-        Type == COFF::IMAGE_REL_AMD64_SSPAN32)
-      return false;
-    break;
-  case COFF::IMAGE_FILE_MACHINE_ARM64:
-    if (Type == COFF::IMAGE_REL_ARM64_PAIR)
-      return false;
-    break;
-  default:
-    return true;
+Error object::readCOFFLinkFacts(
+    StringRef Facts,
+    function_ref<Error(uint64_t Symbol, uint64_t Tag, StringRef Operands)>
+        Fact) {
+  DataExtractor Data(Facts, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor C(0);
+  while (C && !Data.eof(C)) {
+    uint64_t Symbol = Data.getULEB128(C);
+    uint64_t Tag = Data.getULEB128(C);
+    StringRef Operands = Data.getBytes(C, Data.getULEB128(C));
+    if (C)
+      if (Error E = Fact(Symbol, Tag, Operands))
+        return E;
   }
-  // Of the LLVM types, a load of a pointer and a lea take an address. The
-  // types up to MEM_JUMP_P1 branch, call, also through a pointer, whose slot
-  // they name, or span two labels.
-  if (Type >= COFF::IMAGE_REL_LLVM_ADDR32NB_CALL &&
-      Type <= COFF::IMAGE_REL_LLVM_MEM_JUMP_P1)
-    return false;
-  switch (Type) {
-  case COFF::IMAGE_REL_LLVM_FUSED_CALL:
-  case COFF::IMAGE_REL_LLVM_FUSED_JUMP:
-  case COFF::IMAGE_REL_LLVM_FUSED_ACCESS:
-  case COFF::IMAGE_REL_LLVM_FUSED_INDEX:
-  case COFF::IMAGE_REL_LLVM_TPOFF32:
-  case COFF::IMAGE_REL_LLVM_TPOFF_HIGH12A:
-  case COFF::IMAGE_REL_LLVM_TPOFF_LOW12A:
-  case COFF::IMAGE_REL_LLVM_TPOFF_LOW12L:
-    return false;
-  default:
-    return true;
-  }
+  return C.takeError();
 }

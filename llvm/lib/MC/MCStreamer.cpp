@@ -1265,6 +1265,9 @@ void MCStreamer::emitWinCFIUnwindVersion(uint8_t Version, SMLoc Loc) {
 
 void MCStreamer::emitCOFFSafeSEH(MCSymbol const *Symbol) {}
 
+void MCStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
+                                  ArrayRef<const MCExpr *> Operands) {}
+
 void MCStreamer::emitCOFFSymbolIndex(MCSymbol const *Symbol) {}
 
 void MCStreamer::emitCOFFSectionIndex(MCSymbol const *Symbol) {}

@@ -2816,11 +2816,14 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
 
     // The ABI says: "It is suggested that it be emitted in the same COMDAT
     // group as the associated data object." In practice, this doesn't work for
-    // non-ELF and non-Wasm object formats, so only do it for ELF and Wasm.
+    // non-ELF and non-Wasm object formats, so only do it for ELF and Wasm. On
+    // Windows Itanium and NT-POSIX a section in its variable's COMDAT is
+    // associative to the variable's section, for local variables too.
     llvm::Comdat *C = var->getComdat();
-    if (!D.isLocalVarDecl() && C &&
-        (CGM.getTarget().getTriple().isOSBinFormatELF() ||
-         CGM.getTarget().getTriple().isOSBinFormatWasm())) {
+    if (C && (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+              (!D.isLocalVarDecl() &&
+               (CGM.getTarget().getTriple().isOSBinFormatELF() ||
+                CGM.getTarget().getTriple().isOSBinFormatWasm())))) {
       guard->setComdat(C);
     } else if (CGM.supportsCOMDAT() && guard->isWeakForLinker()) {
       guard->setComdat(CGM.getModule().getOrInsertComdat(guard->getName()));
@@ -3355,8 +3358,14 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     } else if (VD->hasDefinition()) {
       InitIsInitFunc = true;
       llvm::Function *InitFuncToUse = InitFunc;
-      if (isTemplateInstantiation(VD->getTemplateSpecializationKind()))
+      if (isTemplateInstantiation(VD->getTemplateSpecializationKind())) {
         InitFuncToUse = UnorderedInits.lookup(VD->getCanonicalDecl());
+        // On Windows Itanium and NT-POSIX the variable's own initialization
+        // function is associative to the variable's section.
+        if (InitFuncToUse &&
+            CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+          InitFuncToUse->setComdat(Var->getComdat());
+      }
       if (InitFuncToUse)
         Init = llvm::GlobalAlias::create(Var->getLinkage(), InitFnName.str(),
                                          InitFuncToUse);

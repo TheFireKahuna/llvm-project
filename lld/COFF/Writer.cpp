@@ -2464,8 +2464,31 @@ void Writer::createGuardCFTables() {
     // that all code symbols and code imports with relocations are possibly
     // address-taken.
     if (file->hasGuardCF()) {
-      markSymbolsForRVATable(file, file->getGuardFidChunks(), addressTakenSyms);
+      // A Windows Itanium or NT-POSIX object lists each undefined symbol whose
+      // address it takes, since it cannot know which are functions: only one
+      // that a function defines is a call target.
+      if (file->forkObject) {
+        std::vector<Symbol *> syms;
+        getSymbolsFromSections(file, file->getGuardFidChunks(), syms);
+        for (Symbol *s : syms)
+          maybeAddAddressTakenFunction(addressTakenSyms, s);
+      } else {
+        markSymbolsForRVATable(file, file->getGuardFidChunks(),
+                               addressTakenSyms);
+      }
+      size_t first = giatsSymbols.size();
       getSymbolsFromSections(file, file->getGuardIATChunks(), giatsSymbols);
+      // A Windows Itanium or NT-POSIX object lists import pointers by name,
+      // so it may list a pointer to imported data, which is no call target.
+      if (file->forkObject)
+        giatsSymbols.erase(
+            std::remove_if(giatsSymbols.begin() + first, giatsSymbols.end(),
+                           [](Symbol *s) {
+                             auto *di = dyn_cast<DefinedImportData>(s);
+                             return di &&
+                                    di->file->hdr->getType() != IMPORT_CODE;
+                           }),
+            giatsSymbols.end());
       markSymbolsForRVATable(file, file->getGuardLJmpChunks(), longJmpTargets);
     } else {
       markSymbolsWithRelocations(file, guardSlots, addressTakenSyms,

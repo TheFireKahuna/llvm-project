@@ -110,6 +110,16 @@ private:
 public:
   // True if this is a lazy ObjFile or BitcodeFile.
   bool lazy = false;
+
+  // True if LLVM made this file for Windows Itanium or NT-POSIX: an object by
+  // its @comp.id symbol, bitcode by its triple.
+  bool forkObject = false;
+
+protected:
+  // Applies the link facts of an object's Symbols group, or of bitcode, to
+  // the symbols that they name by index, where a null symbol takes none. A
+  // fact that is not valid is the error, and then no fact is applied.
+  llvm::Error readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols);
 };
 
 // .lib or .a file.
@@ -206,6 +216,8 @@ public:
   llvm::pdb::DbiModuleDescriptorBuilder *moduleDBI = nullptr;
 
   const coff_section *addrsigSec = nullptr;
+
+  const coff_section *linkRecordsSec = nullptr;
 
   const coff_section *callgraphSec = nullptr;
 

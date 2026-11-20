@@ -30,6 +30,7 @@
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/COFFImportFile.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
@@ -287,6 +288,43 @@ ObjFile::createCOFFObject(COFFLinkerContext &ctx, MemoryBufferRef m) {
   return obj;
 }
 
+Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols) {
+  for (bool apply : {false, true})
+    if (Error e = readCOFFLinkFacts(
+            facts,
+            [&](uint64_t index, uint64_t tag, StringRef operands) -> Error {
+              if (index >= symbols.size())
+                return createStringError("fact of symbol " + Twine(index) +
+                                         ", which the file does not have");
+              Symbol *sym = symbols[index];
+              switch (tag) {
+              case LinkFactTypePrefix: {
+                DataExtractor data(operands, /*IsLittleEndian=*/true);
+                DataExtractor::Cursor c(0);
+                uint64_t secondWord = data.getULEB128(c);
+                if (!c)
+                  return c.takeError();
+                if (secondWord > LinkFactVfnType)
+                  return createStringError("type prefix of symbol " +
+                                           Twine(index) + " is out of range");
+                if (apply && sym) {
+                  sym->typePrefix = 1 + secondWord;
+                  if (!symtab.ctx.typePrefixFile)
+                    symtab.ctx.typePrefixFile = this;
+                }
+                return Error::success();
+              }
+              default:
+                if (tag & LinkRecordCritical)
+                  return createStringError("unknown critical tag " +
+                                           Twine(tag));
+                return Error::success();
+              }
+            }))
+      return e;
+  return Error::success();
+}
+
 ObjFile *ObjFile::create(COFFLinkerContext &ctx, COFFObjectFile *coffObj,
                          bool lazy) {
   return make<ObjFile>(ctx.getSymtab(MachineTypes(coffObj->getMachine())),
@@ -353,6 +391,40 @@ void ObjFile::parse() {
   initializeFlags();
   initializeDependencies();
   initializeECThunks();
+
+  // Link records name symbols by index, so they are read last. An object that
+  // LLVM made for these environments always has a Symbols group.
+  if (!linkRecordsSec && !forkObject)
+    return;
+  ArrayRef<uint8_t> contents;
+  if (linkRecordsSec)
+    cantFail(coffObj->getSectionContents(linkRecordsSec, contents));
+  uint64_t flags;
+  bool hasSymbols = false;
+  StringRef facts;
+  Error e = readCOFFLinkRecords(
+      toStringRef(contents), flags,
+      [&](uint64_t kind, StringRef payload) -> Error {
+        switch (kind) {
+        case LinkRecordSymbols:
+          if (hasSymbols)
+            return createStringError("two Symbols groups");
+          hasSymbols = true;
+          facts = payload;
+          return Error::success();
+        default:
+          if (kind & LinkRecordCritical)
+            return createStringError("unknown critical kind " + Twine(kind));
+          return Error::success();
+        }
+      });
+  if (!e && forkObject && !hasSymbols)
+    e = createStringError("no Symbols group");
+  // The facts are applied only where the whole container is valid.
+  if (!e)
+    e = readLinkFacts(facts, symbols);
+  if (e)
+    Err(symtab.ctx) << this << ": .llvm_link_records: " << std::move(e);
 }
 
 const coff_section *ObjFile::getSection(uint32_t i) {
@@ -403,6 +475,11 @@ SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
 
   if (name == ".llvm_addrsig") {
     addrsigSec = sec;
+    return nullptr;
+  }
+
+  if (name == ".llvm_link_records") {
+    linkRecordsSec = sec;
     return nullptr;
   }
 
@@ -903,6 +980,8 @@ std::optional<Symbol *> ObjFile::createDefined(
 
     if (name == "@feat.00")
       feat00Flags = sym.getValue();
+    else if (name == "@comp.id" && sym.getValue() == LLVMCompId)
+      forkObject = ctx.hasForkObject = true;
     // Skip special symbols.
     if (ignoredSymbolName(name))
       return nullptr;
@@ -1435,6 +1514,8 @@ BitcodeFile::~BitcodeFile() = default;
 
 void BitcodeFile::parse() {
   llvm::StringSaver &saver = lld::saver();
+  if (Triple(obj->getTargetTriple()).isWindowsItaniumOrNTPOSIXEnvironment())
+    forkObject = symtab.ctx.hasForkObject = true;
 
   std::vector<std::pair<Symbol *, bool>> comdat(obj->getComdatTable().size());
   for (size_t i = 0; i != obj->getComdatTable().size(); ++i)
@@ -1521,6 +1602,15 @@ void BitcodeFile::parse() {
     }
   }
   directives = saver.save(obj->getCOFFLinkerOpts());
+
+  // A link fact names a symbol by its index among all the symbols of the
+  // bitcode, of which obj->symbols() holds the ones that take part in the
+  // link.
+  std::vector<Symbol *> named;
+  for (int i : obj->getCOFFLinkFactSymbols())
+    named.push_back(i < 0 ? nullptr : symbols[i]);
+  if (Error e = readLinkFacts(obj->getCOFFLinkFacts(), named))
+    Err(symtab.ctx) << this << ": link facts: " << std::move(e);
 }
 
 void BitcodeFile::parseLazy() {

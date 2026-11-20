@@ -316,6 +316,8 @@ public:
   void emitCOFFSymbolType(int Type) override;
   void endCOFFSymbolDef() override;
   void emitCOFFSafeSEH(MCSymbol const *Symbol) override;
+  void emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
+                        ArrayRef<const MCExpr *> Operands) override;
   void emitCOFFSymbolIndex(MCSymbol const *Symbol) override;
   void emitCOFFSectionIndex(MCSymbol const *Symbol) override;
   void emitCOFFSecRel32(MCSymbol const *Symbol, uint64_t Offset) override;
@@ -988,6 +990,18 @@ void MCAsmStreamer::emitCOFFSafeSEH(MCSymbol const *Symbol) {
   EmitEOL();
 }
 
+void MCAsmStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
+                                     ArrayRef<const MCExpr *> Operands) {
+  OS << "\t.link_fact\t";
+  Symbol->print(OS, MAI);
+  OS << ", " << Tag;
+  for (const MCExpr *Operand : Operands) {
+    OS << ", ";
+    MAI->printExpr(OS, *Operand);
+  }
+  EmitEOL();
+}
+
 void MCAsmStreamer::emitCOFFSymbolIndex(MCSymbol const *Symbol) {
   OS << "\t.symidx\t";
   Symbol->print(OS, MAI);
@@ -1200,7 +1214,8 @@ void MCAsmStreamer::emitXCOFFCInfoSym(StringRef Name, StringRef Metadata) {
 }
 
 void MCAsmStreamer::emitELFSize(MCSymbol *Symbol, const MCExpr *Value) {
-  assert(MAI->hasDotTypeDotSizeDirective());
+  assert(MAI->hasDotTypeDotSizeDirective() ||
+         getContext().getTargetTriple().isOSBinFormatCOFF());
   OS << "\t.size\t";
   Symbol->print(OS, MAI);
   OS << ", ";

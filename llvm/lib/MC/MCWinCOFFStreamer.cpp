@@ -245,6 +245,11 @@ void MCWinCOFFStreamer::endCOFFSymbolDef() {
   CurSymbol = nullptr;
 }
 
+void MCWinCOFFStreamer::emitELFSize(MCSymbol *Symbol, const MCExpr *Value) {
+  if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    static_cast<MCSymbolCOFF *>(Symbol)->setSize(Value);
+}
+
 void MCWinCOFFStreamer::emitCOFFSafeSEH(MCSymbol const *Symbol) {
   // SafeSEH is a feature specific to 32-bit x86.  It does not exist (and is
   // unnecessary) on all platforms which use table-based exception dispatch.
@@ -269,6 +274,16 @@ void MCWinCOFFStreamer::emitCOFFSafeSEH(MCSymbol const *Symbol) {
   CSymbol->setType(COFF::IMAGE_SYM_DTYPE_FUNCTION
                    << COFF::SCT_COMPLEX_TYPE_SHIFT);
   popSection();
+}
+
+void MCWinCOFFStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
+                                         ArrayRef<const MCExpr *> Operands) {
+  // A fact names its symbols by their index in the symbol table.
+  getAssembler().registerSymbol(*Symbol);
+  for (const MCExpr *Operand : Operands)
+    visitUsedExpr(*Operand);
+  getWriter().LinkFacts.push_back(
+      {Symbol, Tag, {Operands.begin(), Operands.end()}});
 }
 
 void MCWinCOFFStreamer::emitCOFFSymbolIndex(MCSymbol const *Symbol) {
@@ -427,6 +442,21 @@ void MCWinCOFFStreamer::finishImpl() {
     // Register the section.
     switchSection(Asm.getContext().getCOFFSection(".llvm_addrsig",
                                                   COFF::IMAGE_SCN_LNK_REMOVE));
+  }
+  if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // An object for these environments carries link records, and names the
+    // symbol that only a linker which reads them defines.
+    switchSection(getContext().getObjectFileInfo()->getDrectveSection());
+    emitBytes(" /INCLUDE:__llvm_link_records_v1");
+    switchSection(Asm.getContext().getCOFFSection(".llvm_link_records",
+                                                  COFF::IMAGE_SCN_LNK_INFO));
+    // Register the tables of address-taken functions and import pointers,
+    // which the writer fills from the object's relocations.
+    const MCObjectFileInfo *OFI = getContext().getObjectFileInfo();
+    for (MCSection *Table : {OFI->getGFIDsSection(), OFI->getGIATsSection()}) {
+      switchSection(Table);
+      Table->ensureMinAlignment(Align(4));
+    }
   }
   if (!Asm.getWriter().getCGProfile().empty()) {
     for (auto &E : Asm.getWriter().getCGProfile()) {

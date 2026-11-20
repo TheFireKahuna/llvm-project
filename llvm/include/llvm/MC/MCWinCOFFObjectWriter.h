@@ -53,6 +53,14 @@ class WinCOFFObjectWriter final : public MCObjectWriter {
   bool IncrementalLinkerCompatible = false;
 
 public:
+  /// A fact that the Symbols group of the object's link records states.
+  struct LinkFact {
+    const MCSymbol *Symbol;
+    uint64_t Tag;
+    SmallVector<const MCExpr *, 2> Operands;
+  };
+  std::vector<LinkFact> LinkFacts;
+
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
                       raw_pwrite_stream &OS);
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,

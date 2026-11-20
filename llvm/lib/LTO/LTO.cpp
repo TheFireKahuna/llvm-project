@@ -635,6 +635,7 @@ Expected<std::unique_ptr<InputFile>> InputFile::create(MemoryBufferRef Object) {
   File->TargetTriple = FOrErr->TheReader.getTargetTriple();
   File->SourceFileName = FOrErr->TheReader.getSourceFileName();
   File->COFFLinkerOpts = FOrErr->TheReader.getCOFFLinkerOpts();
+  File->COFFLinkFacts = FOrErr->TheReader.getCOFFLinkFacts();
   File->DependentLibraries = FOrErr->TheReader.getDependentLibraries();
   File->ComdatTable = FOrErr->TheReader.getComdatTable();
   File->MbRef =
@@ -643,11 +644,16 @@ Expected<std::unique_ptr<InputFile>> InputFile::create(MemoryBufferRef Object) {
   for (unsigned I = 0; I != FOrErr->Mods.size(); ++I) {
     size_t Begin = File->Symbols.size();
     for (const irsymtab::Reader::SymbolRef &Sym :
-         FOrErr->TheReader.module_symbols(I))
+         FOrErr->TheReader.module_symbols(I)) {
       // Skip symbols that are irrelevant to LTO. Note that this condition needs
       // to match the one in Skip() in LTO::addRegularLTO().
-      if (Sym.isGlobal() && !Sym.isFormatSpecific())
+      bool Skip = !Sym.isGlobal() || Sym.isFormatSpecific();
+      if (!File->COFFLinkFacts.empty())
+        File->COFFLinkFactSymbols.push_back(Skip ? -1
+                                                 : int(File->Symbols.size()));
+      if (!Skip)
         File->Symbols.push_back(Sym);
+    }
     File->ModuleSymIndices.push_back({Begin, File->Symbols.size()});
   }
 

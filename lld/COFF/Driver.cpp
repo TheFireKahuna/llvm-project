@@ -2799,6 +2799,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     symtab.addSynthetic(symtab.mangle("__ImageBase"), nullptr);
+    // An object whose link records this linker must read names this symbol.
+    symtab.addAbsolute("__llvm_link_records_v1", 0);
     if (symtab.machine == I386) {
       symtab.addAbsolute("___safe_se_handler_table", 0);
       symtab.addAbsolute("___safe_se_handler_count", 0);
@@ -3009,8 +3011,16 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (isArm64EC(config->machine))
     createECExportThunks();
 
+  // The size of a type prefix's patchable part is the prefix key's, which
+  // some object of an image with a prefixed function carries.
+  if (ctx.typePrefixFile &&
+      !config->mustMatch.count("_WIN_ITANIUM_KCFI_PREFIX"))
+    Err(ctx) << ctx.typePrefixFile
+             << ": a function has a type prefix, and no object carries "
+                "/failifmismatch:_WIN_ITANIUM_KCFI_PREFIX";
+
   // Define the section bounds that GNU linkers define.
-  if (config->mingw)
+  if (config->mingw || ctx.hasForkObject)
     ctx.forEachSymtab(
         [](SymbolTable &symtab) { symtab.addStartStopSymbols(); });
 

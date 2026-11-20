@@ -2011,6 +2011,14 @@ void TargetLoweringObjectFileCOFF::emitLinkerDirectives(MCStreamer &Streamer,
       Streamer.emitBytes(Flags);
     }
     Flags.clear();
+    emitLinkFactsForGlobalCOFF(
+        &GV, getContext().getTargetTriple(),
+        [&](uint64_t Tag, ArrayRef<uint64_t> Operands) {
+          SmallVector<const MCExpr *, 2> Exprs;
+          for (uint64_t Operand : Operands)
+            Exprs.push_back(MCConstantExpr::create(Operand, getContext()));
+          Streamer.emitCOFFLinkFact(TM->getSymbol(&GV), Tag, Exprs);
+        });
   }
 
   // Emit /INCLUDE: flags for each used global as necessary.

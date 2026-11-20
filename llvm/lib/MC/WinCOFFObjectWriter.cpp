@@ -23,6 +23,7 @@
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCFixup.h"
+#include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSection.h"
 #include "llvm/MC/MCSectionCOFF.h"
@@ -43,6 +44,7 @@
 #include <cstring>
 #include <ctime>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -57,7 +59,12 @@ constexpr int OffsetLabelIntervalBits = 20;
 
 using name = SmallString<COFF::NameSize>;
 
-enum AuxiliaryType { ATWeakExternal, ATFile, ATSectionDefinition };
+enum AuxiliaryType {
+  ATWeakExternal,
+  ATFile,
+  ATSectionDefinition,
+  ATFunctionDefinition
+};
 
 struct AuxSymbol {
   AuxiliaryType AuxType;
@@ -478,6 +485,23 @@ void WinCOFFWriter::defineSymbol(const MCSymbolCOFF &MCSym) {
       Local->Data.StorageClass = IsExternal ? COFF::IMAGE_SYM_CLASS_EXTERNAL
                                             : COFF::IMAGE_SYM_CLASS_STATIC;
     }
+
+    // An external function defined in a section states its size in a function
+    // definition auxiliary symbol. On a static symbol an auxiliary symbol is a
+    // section definition.
+    if (SymbolCOFF.getSize() && Sec &&
+        Local->Data.StorageClass == COFF::IMAGE_SYM_CLASS_EXTERNAL &&
+        Local->Data.Type == COFF::IMAGE_SYM_DTYPE_FUNCTION
+                                << COFF::SCT_COMPLEX_TYPE_SHIFT) {
+      int64_t Size = 0;
+      if (!SymbolCOFF.getSize()->evaluateKnownAbsolute(Size, *Asm))
+        getContext().reportError(SymbolCOFF.getSize()->getLoc(),
+                                 "size expression must be absolute");
+      Local->Aux.resize(1);
+      Local->Aux[0] = {};
+      Local->Aux[0].AuxType = ATFunctionDefinition;
+      Local->Aux[0].Aux.FunctionDefinition.TotalSize = Size;
+    }
   }
 
   Sym->MC = &MCSym;
@@ -552,6 +576,12 @@ void WinCOFFWriter::WriteAuxiliarySymbols(
     const COFFSymbol::AuxiliarySymbols &S) {
   for (const AuxSymbol &i : S) {
     switch (i.AuxType) {
+    case ATFunctionDefinition:
+      W.write<uint32_t>(i.Aux.FunctionDefinition.TagIndex);
+      W.write<uint32_t>(i.Aux.FunctionDefinition.TotalSize);
+      W.OS.write_zeros((UseBigObj ? COFF::Symbol32Size : COFF::Symbol16Size) -
+                       2 * sizeof(uint32_t));
+      break;
     case ATWeakExternal:
       W.write<uint32_t>(i.Aux.WeakExternal.TagIndex);
       W.write<uint32_t>(i.Aux.WeakExternal.Characteristics);
@@ -770,11 +800,19 @@ void WinCOFFWriter::assignSectionNumbers() {
     ++I;
   };
 
+  // An object for Windows Itanium or NT-POSIX has .drectve as its first
+  // section.
+  bool DrectveFirst =
+      getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  for (const std::unique_ptr<COFFSection> &Section : Sections)
+    if (DrectveFirst && Section->Name == ".drectve")
+      Assign(*Section);
+
   // Although it is not explicitly requested by the Microsoft COFF spec,
   // we should avoid emitting forward associative section references,
   // because MSVC link.exe as of 2017 cannot handle that.
   for (const std::unique_ptr<COFFSection> &Section : Sections)
-    if (!isAssociative(*Section))
+    if (!isAssociative(*Section) && !Section->Number)
       Assign(*Section);
   for (const std::unique_ptr<COFFSection> &Section : Sections)
     if (isAssociative(*Section))
@@ -858,6 +896,20 @@ void WinCOFFWriter::reset() {
 }
 
 void WinCOFFWriter::executePostLayoutBinding() {
+  // @comp.id marks an object that LLVM wrote for Windows Itanium or NT-POSIX,
+  // whatever the object was written from. A definition of it in the assembly
+  // is this symbol and does not change it.
+  const MCSymbol *Mark = nullptr;
+  if (Mode != DwoOnly &&
+      getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    COFFSymbol *CompId = createSymbol("@comp.id");
+    CompId->Data.Value = COFF::LLVMCompId;
+    CompId->Data.SectionNumber = COFF::IMAGE_SYM_ABSOLUTE;
+    CompId->Data.StorageClass = COFF::IMAGE_SYM_CLASS_STATIC;
+    if ((Mark = getContext().lookupSymbol("@comp.id")))
+      SymbolMap[Mark] = CompId;
+  }
+
   // "Define" each section & symbol. This creates section & symbol
   // entries in the staging area.
   for (const auto &Section : *Asm) {
@@ -871,8 +923,23 @@ void WinCOFFWriter::executePostLayoutBinding() {
     for (const MCSymbol &Symbol : Asm->symbols()) {
       auto &Sym = static_cast<const MCSymbolCOFF &>(Symbol);
       // Define non-temporary or temporary static (private-linkage) symbols
-      if (!Sym.isTemporary() || Sym.getClass() == COFF::IMAGE_SYM_CLASS_STATIC)
+      if (&Symbol != Mark && (!Sym.isTemporary() ||
+                              Sym.getClass() == COFF::IMAGE_SYM_CLASS_STATIC))
         defineSymbol(Sym);
+    }
+
+    // Such an object lists the functions whose address it takes, which
+    // @feat.00 states. A definition of it in the assembly keeps its other
+    // bits.
+    if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+      COFFSymbol *Feat =
+          SymbolMap.lookup(getContext().lookupSymbol("@feat.00"));
+      if (!Feat) {
+        Feat = createSymbol("@feat.00");
+        Feat->Data.SectionNumber = COFF::IMAGE_SYM_ABSOLUTE;
+        Feat->Data.StorageClass = COFF::IMAGE_SYM_CLASS_STATIC;
+      }
+      Feat->Data.Value |= COFF::Feat00Flags::GuardCF;
     }
   }
 
@@ -1293,6 +1360,85 @@ uint64_t WinCOFFWriter::writeObject() {
     Sec->curFragList()->Tail->setVarContents(OS.str());
   }
 
+  // Create the contents of the .gfids$y and .giats$y sections: the index of
+  // each function, and of each import pointer, whose address a relocation of
+  // the object takes. An undefined symbol without a type may be a function,
+  // which the linker knows from its definition.
+  if (Mode != DwoOnly &&
+      getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    std::set<uint32_t> Taken[2];
+    for (const std::unique_ptr<COFFSection> &Section : Sections) {
+      if (!COFF::isGuardCFAddressTakingSection(Section->Name))
+        continue;
+      for (const COFFRelocation &R : Section->Relocations) {
+        if (!COFF::isGuardCFAddressTakingRelocation(Header.Machine,
+                                                    R.Data.Type))
+          continue;
+        auto *Sym = static_cast<const MCSymbolCOFF *>(R.Symb->MC);
+        bool IsImport = R.Symb->Name.starts_with("__imp_");
+        if (IsImport ||
+            (Sym && (Sym->getType()
+                         ? Sym->getType() == COFF::IMAGE_SYM_DTYPE_FUNCTION
+                                                 << COFF::SCT_COMPLEX_TYPE_SHIFT
+                         : Sym->isUndefined())))
+          Taken[IsImport].insert(R.Symb->getIndex());
+      }
+    }
+    const MCObjectFileInfo *OFI = getContext().getObjectFileInfo();
+    MCSection *Tables[] = {OFI->getGFIDsSection(), OFI->getGIATsSection()};
+    for (unsigned I = 0; I != 2; ++I) {
+      SmallString<0> Content;
+      raw_svector_ostream OS(Content);
+      for (uint32_t Index : Taken[I])
+        support::endian::write(OS, Index, W.Endian);
+      Tables[I]->curFragList()->Tail->setVarContents(OS.str());
+    }
+  }
+
+  // Create the contents of the .llvm_link_records section. A group is its
+  // kind, the size of its payload and the payload.
+  if (Mode != DwoOnly &&
+      getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    SmallString<0> Content;
+    raw_svector_ostream OS(Content);
+    OS.write(COFF::LinkRecordsMagic, sizeof(COFF::LinkRecordsMagic));
+    encodeULEB128(COFF::LinkRecordsVersion, OS);
+    encodeULEB128(0, OS); // Flags.
+    auto Group = [&](uint64_t Kind, StringRef Payload) {
+      encodeULEB128(Kind, OS);
+      encodeULEB128(Payload.size(), OS);
+      OS << Payload;
+    };
+
+    // A fact names a symbol by its index in the symbol table, and a temporary
+    // symbol by its section's, as .llvm_addrsig does. An operand that is not
+    // a symbol is a number.
+    SmallString<0> Facts;
+    raw_svector_ostream FactsOS(Facts);
+    auto Index = [&](const MCSymbol &S) {
+      return S.isTemporary() ? SectionMap[&S.getSection()]->Symbol->getIndex()
+                             : S.getIndex();
+    };
+    for (const WinCOFFObjectWriter::LinkFact &Fact : OWriter.LinkFacts) {
+      SmallVector<uint64_t, 2> Operands;
+      for (const MCExpr *Operand : Fact.Operands) {
+        int64_t Value = 0;
+        if (auto *Ref = dyn_cast<MCSymbolRefExpr>(Operand))
+          Value = Index(Ref->getSymbol());
+        else if (!Operand->evaluateAsAbsolute(Value, *Asm))
+          getContext().reportError(
+              Operand->getLoc(),
+              "operand of a link fact is neither a symbol nor absolute");
+        Operands.push_back(Value);
+      }
+      COFF::encodeLinkFact(FactsOS, Index(*Fact.Symbol), Fact.Tag, Operands);
+    }
+    Group(COFF::LinkRecordSymbols, Facts);
+    auto *Sec = getContext().getCOFFSection(".llvm_link_records",
+                                            COFF::IMAGE_SCN_LNK_INFO);
+    Sec->curFragList()->Tail->setVarContents(OS.str());
+  }
+
   // Create the contents of the .llvm.call-graph-profile section.
   if (Mode != DwoOnly && !OWriter.getCGProfile().empty()) {
     SmallString<0> Content;
@@ -1367,6 +1513,7 @@ int WinCOFFWriter::getSectionNumber(const MCSection &Section) const {
 
 void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
+  LinkFacts.clear();
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();

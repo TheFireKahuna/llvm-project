@@ -109,7 +109,8 @@ protected:
         writtenToSymtab(false), isUsedInRegularObj(false),
         pendingArchiveLoad(false), isGCRoot(false), isRuntimePseudoReloc(false),
         deferUndefined(false), canInline(true), isWeak(false), weakKind(Alias),
-        nameSize(n.size()), nameData(n.empty() ? nullptr : n.data()) {
+        typePrefix(0), nameSize(n.size()),
+        nameData(n.empty() ? nullptr : n.data()) {
     assert((!n.empty() || k <= LastDefinedCOFFKind) &&
            "If the name is empty, the Symbol must be a DefinedCOFF.");
   }
@@ -161,6 +162,10 @@ public:
   enum WeakKind { Alias, NoLibrary, Library, WeakDefinition, AntiDependency };
   unsigned weakKind : 3;
   bool isAntiDep() const { return weakKind == AntiDependency; }
+
+  // The type prefix that a link fact gives the function: 0 for none, or 1
+  // and the llvm::COFF::LinkFactSecondWord of the prefix.
+  unsigned typePrefix : 2;
 
 protected:
   // Symbol name length. Assume symbol lengths fit in a 32-bit integer.
