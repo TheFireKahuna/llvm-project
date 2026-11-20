@@ -331,7 +331,7 @@ static bool checkFunctionPtr(InterpState &S, const Pointer &Ptr,
   // dynamic initialization.  This means that we are permitted to
   // perform initialization with the address of the thunk.
   if (S.getLangOpts().CPlusPlus && !isForManglingOnly(ConstexprKind) &&
-      FD->hasAttr<DLLImportAttr>())
+      S.getASTContext().hasRuntimeDLLImportAddress(FD))
     // FIXME: Diagnostic!
     return false;
   return true;
@@ -399,7 +399,8 @@ static bool lval(InterpState &S, const ASTContext &Ctx, const Pointer &Ptr,
     // evaluating a value for use only in name mangling, and unless it's a
     // static local. For the latter case, we'd still need to evaluate the
     // constant expression in case we're inside a (inlined) function.
-    if (!isForManglingOnly(ConstexprKind) && VD->hasAttr<DLLImportAttr>() &&
+    if (!isForManglingOnly(ConstexprKind) &&
+        S.getASTContext().hasRuntimeDLLImportAddress(VD) &&
         !VD->isStaticLocal())
       return false;
 
@@ -644,7 +645,7 @@ bool EvaluationResult::checkMemberPointer(InterpState &S,
   }
 
   if (isForManglingOnly(ConstexprKind) || MD->isVirtual() ||
-      !MD->hasAttr<DLLImportAttr>()) {
+      !S.getASTContext().hasRuntimeDLLImportAddress(MD)) {
     return true;
   }
   return false;

@@ -3911,6 +3911,10 @@ public:
   /// which is treated as a definition for MSVC compatibility.
   bool isMSStaticDataMemberInlineDefinition(const VarDecl *VD) const;
 
+  /// Whether \p D is dllimport on a target where the address of a dllimport
+  /// entity is known only at run time, so no constant expression may name it.
+  bool hasRuntimeDLLImportAddress(const Decl *D) const;
+
   enum class InlineVariableDefinitionKind {
     /// Not an inline variable.
     None,

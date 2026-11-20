@@ -1832,6 +1832,13 @@ public:
   /// Clang backwards compatibility rather than GCC/Itanium ABI compatibility.
   virtual bool areDefaultedSMFStillPOD(const LangOptions&) const;
 
+  /// Whether the address of a dllimport entity is a constant: the linker has
+  /// the loader write it into the static data that holds it, so it need not be
+  /// read from the import address table at run time.
+  bool hasConstantDLLImportAddresses() const {
+    return getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  }
+
   /// Returns whether the target's ABI guarantees that a class's vtable has a
   /// unique address program-wide.
   virtual VTableUniquenessKind getVTableUniqueness() const;

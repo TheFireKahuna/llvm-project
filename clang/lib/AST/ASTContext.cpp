@@ -8886,6 +8886,11 @@ bool ASTContext::isMSStaticDataMemberInlineDefinition(const VarDecl *VD) const {
          !VD->getFirstDecl()->isOutOfLine() && VD->getFirstDecl()->hasInit();
 }
 
+bool ASTContext::hasRuntimeDLLImportAddress(const Decl *D) const {
+  return D->hasAttr<DLLImportAttr>() &&
+         !getTargetInfo().hasConstantDLLImportAddresses();
+}
+
 ASTContext::InlineVariableDefinitionKind
 ASTContext::getInlineVariableDefinitionKind(const VarDecl *VD) const {
   if (!VD->isInline())

@@ -4,7 +4,7 @@
 // RUN: %clang_cc1 -triple x86_64-mingw32         -fsyntax-only -fms-extensions -verify -std=c99 -DGNU %s
 // RUN: %clang_cc1 -triple aarch64-win32          -fsyntax-only -fms-extensions -verify -std=c99 -DMS %s
 // RUN: %clang_cc1 -triple i686-windows-itanium   -fsyntax-only -fms-extensions -verify -std=c99 -DWI %s
-// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify -std=c11 -DWI %s
+// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify -std=c11 -DWI -DCONSTANT_ADDRESS %s
 // RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fms-extensions -verify -std=c11 -DWI %s
 // RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fms-extensions -verify -std=c99 -DWI %s
 // RUN: %clang_cc1 -triple x86_64-sie-ps5         -fsyntax-only -fms-extensions -verify -std=c11 -DWI %s
@@ -37,8 +37,11 @@ __declspec(dllimport) int GlobalDecl;
 int **__attribute__((dllimport))* GlobalDeclChunkAttr;
 int GlobalDeclAttr __attribute__((dllimport));
 
-// Address of variables can't be used for initialization in C language modes.
+// Address of variables can't be used for initialization in C language modes,
+// unless the target makes it a constant.
+#ifndef CONSTANT_ADDRESS
 int *VarForInit = &GlobalDecl; // expected-error{{initializer element is not a compile-time constant}}
+#endif
 
 // Not allowed on definitions.
 __declspec(dllimport) extern int ExternGlobalInit = 1; // expected-error{{definition of dllimport data}}

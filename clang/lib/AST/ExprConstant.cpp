@@ -2372,8 +2372,8 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
       // evaluating a value for use only in name mangling, and unless it's a
       // static local. For the latter case, we'd still need to evaluate the
       // constant expression in case we're inside a (inlined) function.
-      if (!isForManglingOnly(Kind) && Var->hasAttr<DLLImportAttr>() &&
-          !Var->isStaticLocal())
+      if (!isForManglingOnly(Kind) &&
+          Info.Ctx.hasRuntimeDLLImportAddress(Var) && !Var->isStaticLocal())
         return false;
 
       // Address of a managed variable is never a constant expression.
@@ -2403,7 +2403,7 @@ static bool CheckLValueConstantExpression(EvalInfo &Info, SourceLocation Loc,
       // dynamic initialization.  This means that we are permitted to
       // perform initialization with the address of the thunk.
       if (Info.getLangOpts().CPlusPlus && !isForManglingOnly(Kind) &&
-          FD->hasAttr<DLLImportAttr>())
+          Info.Ctx.hasRuntimeDLLImportAddress(FD))
         // FIXME: Diagnostic!
         return false;
     }
@@ -2466,7 +2466,7 @@ static bool CheckMemberPointerConstantExpression(EvalInfo &Info,
     return false;
   }
   return isForManglingOnly(Kind) || FD->isVirtual() ||
-         !FD->hasAttr<DLLImportAttr>();
+         !Info.Ctx.hasRuntimeDLLImportAddress(FD);
 }
 
 /// Check that this core constant expression is of literal type, and if not,
