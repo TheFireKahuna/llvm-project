@@ -358,7 +358,6 @@ struct Configuration {
   bool writeCheckSum = false;
   bool prefetchInputs = false;
   EmitKind emit = EmitKind::Obj;
-  bool allowDuplicateWeak = false;
   BuildIDHash buildIDHash = BuildIDHash::None;
   llvm::StringRef optRemarksFilename;
   llvm::StringRef optRemarksPasses;

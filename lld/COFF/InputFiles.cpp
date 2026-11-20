@@ -72,38 +72,36 @@ const COFFSyncStream &coff::operator<<(const COFFSyncStream &s,
   return s << toString(f);
 }
 
-/// Checks that Source is compatible with being a weak alias to Target.
-/// If Source is Undefined and has no weak alias set, makes it a weak
-/// alias to Target.
-static void checkAndSetWeakAlias(SymbolTable &symtab, InputFile *f,
-                                 Symbol *source, Symbol *target,
-                                 bool isAntiDep) {
-  if (auto *u = dyn_cast<Undefined>(source)) {
-    if (u->weakAlias && u->weakAlias != target) {
-      // Ignore duplicated anti-dependency symbols.
-      if (isAntiDep)
-        return;
-      if (!u->isAntiDep) {
-        // Weak aliases as produced by GCC are named in the form
-        // .weak.<weaksymbol>.<othersymbol>, where <othersymbol> is the name
-        // of another symbol emitted near the weak symbol.
-        if (symtab.ctx.config.allowDuplicateWeak) {
-          auto isAbsZero = [](Symbol *sym) -> bool {
-            return isa<DefinedAbsolute>(sym) &&
-                   dyn_cast<DefinedAbsolute>(sym)->getVA() == 0;
-          };
-          // If the alias we had points at absolute zero, and we get another
-          // weak symbol which isn't absolute zero, prefer that one.
-          if (isAbsZero(u->weakAlias) && !isAbsZero(target)) {
-            u->setWeakAlias(target, isAntiDep);
-          }
-          return;
-        }
-        symtab.reportDuplicate(source, f);
-      }
-    }
-    u->setWeakAlias(target, isAntiDep);
-  }
+// Whether a weak alias's default is a definition, not a weak reference's
+// undefined or zero default.
+static bool isDefinition(Symbol *s) {
+  auto *abs = dyn_cast_or_null<DefinedAbsolute>(s);
+  return isa_and_nonnull<Defined>(s) && !(abs && abs->getVA() == 0);
+}
+
+// Makes Source, if undefined, a weak alias to Target. An anti-dependency
+// binds only an unaliased symbol and yields to any other alias; among the
+// others the first whose default is a definition wins, as ELF linkers choose
+// the first weak definition.
+static void addWeakAlias(Symbol *source, Symbol *target,
+                         Symbol::WeakKind kind = Symbol::Alias) {
+  auto *u = dyn_cast<Undefined>(source);
+  if (u && (!u->weakAlias || (kind != Symbol::AntiDependency &&
+                              (u->isAntiDep() || (!isDefinition(u->weakAlias) &&
+                                                  isDefinition(target))))))
+    u->setWeakAlias(target, kind);
+}
+
+// A strong reference drops a NOLIBRARY or LIBRARY weak alias.
+static void addStrongReference(Symbol *s) {
+  auto *u = dyn_cast<Undefined>(s);
+  if (u && (u->weakKind == Symbol::NoLibrary || u->weakKind == Symbol::Library))
+    u->setWeakAlias(nullptr);
+}
+
+// link.exe takes a weak external with a section number as a definition.
+static bool isDefinedWeakExternal(COFFSymbolRef sym) {
+  return sym.isWeakExternal() && sym.getSectionNumber() != IMAGE_SYM_UNDEFINED;
 }
 
 static bool ignoredSymbolName(StringRef name) {
@@ -303,8 +301,8 @@ void ObjFile::parseLazy() {
   uint32_t numSymbols = coffObj->getNumberOfSymbols();
   for (uint32_t i = 0; i < numSymbols; ++i) {
     COFFSymbolRef coffSym = check(coffObj->getSymbol(i));
-    if (coffSym.isUndefined() || !coffSym.isExternal() ||
-        coffSym.isWeakExternal())
+    if (coffSym.isUndefined() ||
+        !(coffSym.isExternal() || isDefinedWeakExternal(coffSym)))
       continue;
     StringRef name = check(coffObj->getSymbolName(coffSym));
     if (coffSym.isAbsolute() && ignoredSymbolName(name))
@@ -442,6 +440,12 @@ SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
     c = make<SectionChunk>(this, sec);
   if (def)
     c->checksum = def->CheckSum;
+  for (const coff_relocation &rel : c->getRelocs())
+    if (rel.SymbolTableIndex >= coffObj->getNumberOfSymbols() &&
+        !relocationNamesNoSymbol(rel.Type))
+      Err(symtab.ctx) << this << ": relocation in " << name
+                      << " has invalid symbol index "
+                      << Twine(rel.SymbolTableIndex);
 
   // CodeView sections are stored to a different vector because they are not
   // linked in the regular manner.
@@ -556,7 +560,7 @@ void ObjFile::maybeAssociateSEHForMingw(
 
 Symbol *ObjFile::createRegular(COFFSymbolRef sym) {
   SectionChunk *sc = sparseChunks[sym.getSectionNumber()];
-  if (sym.isExternal()) {
+  if (sym.isExternal() || isDefinedWeakExternal(sym)) {
     StringRef name = check(coffObj->getSymbolName(sym));
     if (sc)
       return symtab.addRegular(this, name, sym.getGeneric(), sc,
@@ -587,7 +591,8 @@ void ObjFile::initializeSymbols() {
   uint32_t numSymbols = coffObj->getNumberOfSymbols();
   symbols.resize(numSymbols);
 
-  SmallVector<std::pair<Symbol *, const coff_aux_weak_external *>, 8>
+  SmallVector<
+      std::tuple<Symbol *, const coff_aux_weak_external *, Symbol::WeakKind>, 8>
       weakAliases;
   std::vector<uint32_t> pendingIndexes;
   pendingIndexes.reserve(numSymbols);
@@ -602,8 +607,17 @@ void ObjFile::initializeSymbols() {
     bool prevailingComdat;
     if (coffSym.isUndefined()) {
       symbols[i] = createUndefined(coffSym, false);
-    } else if (coffSym.isWeakExternal()) {
+    } else if (coffSym.isWeakExternal() &&
+               coffSym.getSectionNumber() == IMAGE_SYM_UNDEFINED) {
       auto aux = coffSym.getAux<coff_aux_weak_external>();
+      if (aux->TagIndex >= numSymbols) {
+        Err(ctx) << this << ": weak external "
+                 << check(coffObj->getSymbolName(coffSym))
+                 << " has invalid symbol index " << Twine(aux->TagIndex);
+        symbols[i] = createUndefined(coffSym, false);
+        i += coffSym.getNumberOfAuxSymbols();
+        continue;
+      }
       bool overrideLazy = true;
 
       // On ARM64EC, external function calls emit a pair of weak-dependency
@@ -628,8 +642,40 @@ void ObjFile::initializeSymbols() {
           overrideLazy = false;
         }
       }
+
+      // Weak externals bind as link.exe binds them, except GNU as's weak
+      // definition (a NOLIBRARY one whose default is defined), which binds as
+      // an ELF weak definition does. An earlier strong reference drops a
+      // NOLIBRARY or LIBRARY default, and an ANTI_DEPENDENCY one sets none for
+      // a name an earlier file mentioned.
+      Symbol *prior = symtab.find(check(coffObj->getSymbolName(coffSym)));
+      auto *priorUndef = dyn_cast_or_null<Undefined>(prior);
+      bool sets = true;
+      Symbol::WeakKind kind = Symbol::Alias;
+      switch (aux->Characteristics) {
+      case IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY:
+        if (check(coffObj->getSymbol(aux->TagIndex)).getSectionNumber() > 0) {
+          kind = Symbol::WeakDefinition;
+          if (prior && prior->isLazy())
+            symtab.warnWeakDefinition(prior, prior->getFile(), this);
+          break;
+        }
+        kind = Symbol::NoLibrary;
+        sets = !priorUndef || priorUndef->weakAlias;
+        break;
+      case IMAGE_WEAK_EXTERN_SEARCH_LIBRARY:
+        kind = Symbol::Library;
+        overrideLazy = false;
+        sets = !priorUndef || priorUndef->weakAlias;
+        break;
+      case IMAGE_WEAK_EXTERN_ANTI_DEPENDENCY:
+        kind = Symbol::AntiDependency;
+        sets = !prior || prior->isLazy() || symtab.isEC();
+        break;
+      }
       symbols[i] = createUndefined(coffSym, overrideLazy);
-      weakAliases.emplace_back(symbols[i], aux);
+      if (sets)
+        weakAliases.emplace_back(symbols[i], aux, kind);
     } else if (std::optional<Symbol *> optSym =
                    createDefined(coffSym, comdatDefs, prevailingComdat)) {
       symbols[i] = *optSym;
@@ -666,13 +712,8 @@ void ObjFile::initializeSymbols() {
     symbols[i] = createRegular(sym);
   }
 
-  for (auto &kv : weakAliases) {
-    Symbol *sym = kv.first;
-    const coff_aux_weak_external *aux = kv.second;
-    checkAndSetWeakAlias(symtab, this, sym, symbols[aux->TagIndex],
-                         aux->Characteristics ==
-                             IMAGE_WEAK_EXTERN_ANTI_DEPENDENCY);
-  }
+  for (auto [sym, aux, kind] : weakAliases)
+    addWeakAlias(sym, symbols[aux->TagIndex], kind);
 
   // Free the memory used by sparseChunks now that symbol loading is finished.
   decltype(sparseChunks)().swap(sparseChunks);
@@ -681,6 +722,8 @@ void ObjFile::initializeSymbols() {
 Symbol *ObjFile::createUndefined(COFFSymbolRef sym, bool overrideLazy) {
   StringRef name = check(coffObj->getSymbolName(sym));
   Symbol *s = symtab.addUndefined(name, this, overrideLazy);
+  if (!sym.isWeakExternal())
+    addStrongReference(s);
 
   // Add an anti-dependency alias for undefined AMD64 symbols on the ARM64EC
   // target.
@@ -691,7 +734,7 @@ Symbol *ObjFile::createUndefined(COFFSymbolRef sym, bool overrideLazy) {
               getArm64ECMangledFunctionName(name)) {
         Symbol *m = symtab.addUndefined(saver().save(*mangledName), this,
                                         /*overrideLazy=*/false);
-        u->setWeakAlias(m, /*antiDep=*/true);
+        u->setWeakAlias(m, Symbol::AntiDependency);
       }
     }
   }
@@ -856,7 +899,7 @@ std::optional<Symbol *> ObjFile::createDefined(
     if (ignoredSymbolName(name))
       return nullptr;
 
-    if (sym.isExternal())
+    if (sym.isExternal() || isDefinedWeakExternal(sym))
       return symtab.addAbsolute(name, sym);
     return make<DefinedAbsolute>(ctx, name, sym);
   }
@@ -866,31 +909,15 @@ std::optional<Symbol *> ObjFile::createDefined(
     return nullptr;
 
   if (sym.isEmptySectionDeclaration()) {
-    // As there is no coff_section in the object file for these, make a
-    // new virtual one, with everything zeroed out (i.e. an empty section),
-    // with only the name and characteristics set.
-    StringRef name = getName();
-    auto *hdr = make<coff_section>();
-    memset(hdr, 0, sizeof(*hdr));
-    strncpy(hdr->Name, name.data(),
-            std::min(name.size(), (size_t)COFF::NameSize));
-    // The Value field in a section symbol may contain the characteristics,
-    // or it may be zero, where we make something up (that matches what is
-    // used in .idata sections in the regular object files in import libraries).
-    if (sym.getValue())
-      hdr->Characteristics = sym.getValue() | IMAGE_SCN_ALIGN_4BYTES;
-    else
-      hdr->Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA |
-                             IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE |
-                             IMAGE_SCN_ALIGN_4BYTES;
-    auto *sc = make<SectionChunk>(this, hdr);
-    chunks.push_back(sc);
-
+    // The symbol names the section of that name another object defines,
+    // which the driver binds once every object is read.
     auto *symGen = cloneSymbol(sym);
     // Ignore the Value offset of these symbols, as it may be a bitmask.
     symGen->Value = 0;
-    return make<DefinedRegular>(this, /*name=*/"", /*isCOMDAT=*/false,
-                                /*isExternal=*/false, symGen, sc);
+    auto *d = make<DefinedRegular>(this, /*name=*/"", /*isCOMDAT=*/false,
+                                   /*isExternal=*/false, symGen);
+    ctx.sectionSymbols.push_back(d);
+    return d;
   }
 
   if (llvm::COFF::isReservedSectionNumber(sectionNumber))
@@ -1406,19 +1433,21 @@ void BitcodeFile::parse() {
     // FIXME: Check nodeduplicate
     comdat[i] =
         symtab.addComdat(this, saver.save(obj->getComdatTable()[i].first));
+  auto getFakeSC = [&](const lto::InputFile::Symbol &objSym) {
+    return objSym.isExecutable() ? &symtab.ctx.ltoTextSectionChunk.chunk
+                                 : &symtab.ctx.ltoDataSectionChunk.chunk;
+  };
   for (const lto::InputFile::Symbol &objSym : obj->symbols()) {
     StringRef symName = saver.save(objSym.getName());
     int comdatIndex = objSym.getComdatIndex();
     Symbol *sym;
-    SectionChunk *fakeSC = nullptr;
-    if (objSym.isExecutable())
-      fakeSC = &symtab.ctx.ltoTextSectionChunk.chunk;
-    else
-      fakeSC = &symtab.ctx.ltoDataSectionChunk.chunk;
+    SectionChunk *fakeSC = getFakeSC(objSym);
     if (objSym.isUndefined()) {
       sym = symtab.addUndefined(symName, this, false);
       if (objSym.isWeak())
         sym->deferUndefined = true;
+      else
+        addStrongReference(sym);
       // If one LTO object file references (i.e. has an undefined reference to)
       // a symbol with an __imp_ prefix, the LTO compilation itself sees it
       // as unprefixed but with a dllimport attribute instead, and doesn't
@@ -1435,11 +1464,8 @@ void BitcodeFile::parse() {
     } else if (objSym.isCommon()) {
       sym = symtab.addCommon(this, symName, objSym.getCommonSize());
     } else if (objSym.isWeak() && objSym.isIndirect()) {
-      // Weak external.
+      // Weak external, whose alias is set once every symbol is read.
       sym = symtab.addUndefined(symName, this, true);
-      std::string fallback = std::string(objSym.getCOFFWeakExternalFallback());
-      Symbol *alias = symtab.addUndefined(saver.save(fallback));
-      checkAndSetWeakAlias(symtab, this, sym, alias, false);
     } else if (comdatIndex != -1) {
       if (symName == obj->getComdatTable()[comdatIndex].first) {
         sym = comdat[comdatIndex].first;
@@ -1457,6 +1483,21 @@ void BitcodeFile::parse() {
     symbols.push_back(sym);
     if (objSym.isUsed())
       symtab.ctx.config.gcroot.push_back(sym);
+  }
+
+  // An alias to a local symbol, which the symbol table does not list, is a
+  // weak definition. Any other is a weak external, which LTO does not link
+  // and whose references the link binds to its target, so the object that
+  // LTO generates defines the target.
+  for (auto [objSym, sym] : llvm::zip(obj->symbols(), symbols)) {
+    if (!objSym.isWeak() || !objSym.isIndirect())
+      continue;
+    if (Symbol *alias = symtab.find(objSym.getCOFFWeakExternalFallback())) {
+      addWeakAlias(sym, alias);
+      alias->isUsedInRegularObj = true;
+    } else if (isa<Undefined>(sym))
+      symtab.addRegular(this, sym->getName(), nullptr, getFakeSC(objSym), 0,
+                        true);
   }
   directives = saver.save(obj->getCOFFLinkerOpts());
 }

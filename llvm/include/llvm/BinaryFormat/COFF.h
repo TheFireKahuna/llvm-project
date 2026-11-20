@@ -374,7 +374,8 @@ enum RelocationTypeAMD64 : unsigned {
   IMAGE_REL_AMD64_TOKEN = 0x000D,
   IMAGE_REL_AMD64_SREL32 = 0x000E,
   IMAGE_REL_AMD64_PAIR = 0x000F,
-  IMAGE_REL_AMD64_SSPAN32 = 0x0010
+  IMAGE_REL_AMD64_SSPAN32 = 0x0010,
+  IMAGE_REL_AMD64_EHANDLER = 0x0011
 };
 
 enum RelocationTypesARM : unsigned {
@@ -416,6 +417,7 @@ enum RelocationTypesARM64 : unsigned {
   IMAGE_REL_ARM64_BRANCH19 = 0x000F,
   IMAGE_REL_ARM64_BRANCH14 = 0x0010,
   IMAGE_REL_ARM64_REL32 = 0x0011,
+  IMAGE_REL_ARM64_PAIR = 0x0012,
 };
 
 enum RelocationTypesMips : unsigned {
@@ -435,6 +437,10 @@ enum RelocationTypesMips : unsigned {
   IMAGE_REL_MIPS_REFWORDNB = 0x0022,
   IMAGE_REL_MIPS_PAIR = 0x0025,
 };
+
+/// Returns true for a relocation type whose SymbolTableIndex names no symbol
+/// and must not be resolved: ABSOLUTE, type 0 on every machine.
+inline bool relocationNamesNoSymbol(uint16_t Type) { return Type == 0; }
 
 enum DynamicRelocationType : unsigned {
   IMAGE_DYNAMIC_RELOCATION_GUARD_RF_PROLOGUE = 1,

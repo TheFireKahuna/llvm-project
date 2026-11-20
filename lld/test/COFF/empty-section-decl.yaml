@@ -1,19 +1,23 @@
 # REQUIRES: x86
 
-# RUN: yaml2obj %s -o %t.obj
-# RUN: lld-link -dll -out:%t.dll %t.obj -noentry -subsystem:console -lldmap:%t.map
+## A SECTION-class symbol without a section names the section of that name an
+## object of the same name defines, as the members of an import library do.
+
+# RUN: rm -rf %t.dir && mkdir -p %t.dir/a %t.dir/b
+# RUN: yaml2obj --docnum=1 %s -o %t.dir/a/x.obj
+# RUN: yaml2obj --docnum=2 -DDATA=02000000 %s -o %t.dir/b/x.obj
+# RUN: yaml2obj --docnum=2 -DDATA=03000000 %s -o %t.dir/y.obj
+# RUN: llvm-ar rcs %t.dir/x.lib %t.dir/b/x.obj %t.dir/a/x.obj
+# RUN: lld-link -dll -out:%t.dll %t.dir/y.obj -wholearchive:%t.dir/x.lib -noentry
 # RUN: llvm-objdump -s %t.dll | FileCheck %s
-# RUN: FileCheck %s --check-prefix=MAP < %t.map
+# RUN: not lld-link -dll -out:%t.dll %t.dir/y.obj %t.dir/a/x.obj -noentry 2>&1 \
+# RUN:   | FileCheck --check-prefix=ERR %s
 
 # CHECK:      Contents of section .itest:
-# CHECK-NEXT:  180001000 0c100000 0c100000 00000000 01000000
+# CHECK-NEXT:  180001000 10100000 14100000 00000000 03000000
+# CHECK-NEXT:  180001010 02000000 01000000
 
-# MAP: 00001000 0000000a     4         {{.*}}:(.itest$2)
-# MAP: 00001000 00000000     0                 .itest$2
-# MAP: 0000100c 00000000     4         {{.*}}:(.itest$4)
-# MAP: 0000100c 00000000     0                 .itest$4
-# MAP: 0000100c 00000004     2         {{.*}}:(.itest$6)
-# MAP: 0000100c 00000000     0                 .itest$6
+# ERR: error: {{.*}}x.obj: no object named like it defines section .itest$4
 
 --- !COFF
 header:
@@ -56,4 +60,16 @@ symbols:
     SimpleType:      IMAGE_SYM_TYPE_NULL
     ComplexType:     IMAGE_SYM_DTYPE_NULL
     StorageClass:    IMAGE_SYM_CLASS_SECTION
+...
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: [  ]
+sections:
+  - Name:            '.itest$4'
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       4
+    SectionData:     '[[DATA]]'
+symbols:
 ...

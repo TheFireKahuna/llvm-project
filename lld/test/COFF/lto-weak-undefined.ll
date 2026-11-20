@@ -13,6 +13,15 @@
 ; RUN: lld-link /entry:main %t.main.obj /out:%t-undef.exe
 ; RUN: lld-link /entry:main %t.main.obj %t.optional.obj /out:%t-def.exe
 
+;; A weak alias to a local symbol is a weak definition.
+; RUN: llvm-as %t.dir/alias.ll -o %t.alias.obj
+; RUN: lld-link /entry:main %t.main.obj %t.alias.obj /out:%t-alias.exe
+
+;; One to a global symbol is a weak external, whose target the object that LTO
+;; generates keeps for it.
+; RUN: llvm-as %t.dir/global.ll -o %t.global.obj
+; RUN: lld-link /entry:main %t.main.obj %t.global.obj /out:%t-global.exe
+
 ;--- main.ll
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-windows-msvc"
@@ -37,5 +46,25 @@ target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16
 target triple = "x86_64-pc-windows-msvc"
 
 define void @optionalFunc() {
+  ret void
+}
+
+;--- alias.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-pc-windows-msvc"
+
+@optionalFunc = weak alias void (), ptr @impl
+
+define internal void @impl() {
+  ret void
+}
+
+;--- global.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-pc-windows-msvc"
+
+@optionalFunc = weak alias void (), ptr @impl
+
+define void @impl() {
   ret void
 }

@@ -5,6 +5,9 @@
 # RUN: llvm-mc --filetype=obj -triple=x86_64-windows-msvc %t.dir/qux.s -o %t.qux.obj
 # RUN: lld-link %t.qux.obj %t.foo.obj -out:%t.dll -dll
 # RUN: lld-link %t.foo.obj %t.qux.obj -out:%t.dll -dll
+## The same holds for an __imp_ reference from bitcode.
+# RUN: llvm-as %t.dir/qux.ll -o %t.qux.bc.obj
+# RUN: lld-link %t.qux.bc.obj %t.foo.obj -out:%t.dll -dll
 #
 #--- foo.s
 .text
@@ -25,3 +28,13 @@ _DllMainCRTStartup:
   call *__imp_b(%rip)
   call *__imp_c(%rip)
   ret
+#--- qux.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-pc-windows-msvc"
+
+declare dllimport void @a()
+
+define void @_DllMainCRTStartup() {
+  call void @a()
+  ret void
+}

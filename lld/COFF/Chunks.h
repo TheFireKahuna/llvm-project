@@ -239,15 +239,15 @@ public:
                               std::random_access_iterator_tag, Symbol *> {
     friend SectionChunk;
 
-    ObjFile *file;
+    const SectionChunk *chunk;
 
-    symbol_iterator(ObjFile *file, const coff_relocation *i)
-        : symbol_iterator::iterator_adaptor_base(i), file(file) {}
+    symbol_iterator(const SectionChunk *chunk, const coff_relocation *i)
+        : symbol_iterator::iterator_adaptor_base(i), chunk(chunk) {}
 
   public:
     symbol_iterator() = default;
 
-    Symbol *operator*() const { return file->getSymbol(I->SymbolTableIndex); }
+    Symbol *operator*() const { return chunk->getRelocTarget(*I); }
   };
 
   SectionChunk(ObjFile *file, const coff_section *header, Kind k = SectionKind);
@@ -275,6 +275,8 @@ public:
   void getBaserels(std::vector<Baserel> *res);
   bool isCOMDAT() const;
   void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
+  bool isPair(uint16_t type) const;
+  const coff_relocation *getPair(const coff_relocation &rel) const;
   void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
@@ -311,9 +313,14 @@ public:
 
   // Allow iteration over the bodies of this chunk's relocated symbols.
   llvm::iterator_range<symbol_iterator> symbols() const {
-    return llvm::make_range(symbol_iterator(file, relocsData),
-                            symbol_iterator(file, relocsData + relocsSize));
+    return llvm::make_range(symbol_iterator(this, relocsData),
+                            symbol_iterator(this, relocsData + relocsSize));
   }
+
+  // Returns the symbol a relocation refers to, or null for one that refers to
+  // nothing: ABSOLUTE, and a PAIR, whose symbol only offsets the relocation
+  // before it, so that it keeps nothing live and ICF ignores it.
+  Symbol *getRelocTarget(const coff_relocation &rel) const;
 
   ArrayRef<coff_relocation> getRelocs() const {
     return llvm::ArrayRef(relocsData, relocsSize);

@@ -1,5 +1,7 @@
 REQUIRES: x86
 RUN: split-file %s %t.dir && cd %t.dir
+DEFINE: %{link} = lld-link -dll -noentry -out:o.dll
+DEFINE: %{dump} = llvm-readobj --hex-dump=.test o.dll | FileCheck %s
 
 RUN: llvm-mc -filetype=obj -triple=x86_64-windows antidep.s -o antidep.obj
 RUN: llvm-mc -filetype=obj -triple=x86_64-windows antidep2.s -o antidep2.obj
@@ -14,12 +16,6 @@ RUN: llvm-readobj --hex-dump=.test out1.dll | FileCheck --check-prefix=CHECK2 %s
 RUN: lld-link -dll -noentry -out:out2.dll weak.obj antidep.obj test.obj
 RUN: llvm-readobj --hex-dump=.test out2.dll | FileCheck --check-prefix=CHECK2 %s
 
-RUN: lld-link -dll -noentry -out:out3.dll antidep.obj weak.obj test.obj -lld-allow-duplicate-weak
-RUN: llvm-readobj --hex-dump=.test out3.dll | FileCheck --check-prefix=CHECK2 %s
-
-RUN: lld-link -dll -noentry -out:out4.dll weak.obj antidep.obj test.obj -lld-allow-duplicate-weak
-RUN: llvm-readobj --hex-dump=.test out4.dll | FileCheck --check-prefix=CHECK2 %s
-
 When an anti-dependency symbol is duplicated, the first definition takes precedence over subsequent ones.
 
 RUN: lld-link -dll -noentry -out:out5.dll antidep.obj antidep2.obj test.obj
@@ -28,8 +24,44 @@ RUN: llvm-readobj --hex-dump=.test out5.dll | FileCheck --check-prefix=CHECK1 %s
 RUN: lld-link -dll -noentry -out:out6.dll antidep2.obj antidep.obj test.obj
 RUN: llvm-readobj --hex-dump=.test out6.dll | FileCheck --check-prefix=CHECK2 %s
 
+An anti-dependency binds only a name no earlier file mentioned.
+
+RUN: not lld-link -dll -noentry -out:out7.dll test.obj antidep.obj 2>&1 | FileCheck --check-prefix=UNDEF %s
+
+UNDEF: error: undefined symbol: sym
+
+A strong reference to a NOLIBRARY or LIBRARY weak external drops its default
+in either order, and only LIBRARY loads an archive member that defines it.
+
+RUN: yaml2obj -DCH=IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY search.yaml -o nolib.obj
+RUN: yaml2obj -DCH=IMAGE_WEAK_EXTERN_SEARCH_LIBRARY search.yaml -o lib.obj
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows def.s -o def.obj
+RUN: llvm-lib -out:def.lib def.obj
+RUN: not lld-link -dll -noentry -out:out9.dll nolib.obj test.obj 2>&1 | FileCheck --check-prefix=UNDEF %s
+RUN: not lld-link -dll -noentry -out:out9.dll test.obj lib.obj 2>&1 | FileCheck --check-prefix=UNDEF %s
+RUN: %{link} lib.obj def.lib && %{dump} --check-prefix=CHECK3
+
+A weak external with a section number is a definition.
+
+RUN: yaml2obj -DCH=IMAGE_WEAK_EXTERN_SEARCH_ALIAS -DSEC=-1 -DVAL=3 search.yaml -o defined.obj
+RUN: %{link} test.obj defined.obj && %{dump} --check-prefix=CHECK3
+
+Among weak externals whose defaults are definitions the first wins, whatever
+their characteristics; one whose default is no definition, a weak reference,
+yields to one whose default is, in either order.
+
+RUN: yaml2obj -DCH=IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY -DDNAME=dflt3 -DDVAL=3 search.yaml -o nolib3.obj
+RUN: yaml2obj -DCH=IMAGE_WEAK_EXTERN_SEARCH_ALIAS -DDNAME=dflt3 -DDVAL=3 search.yaml -o alias3.obj
+RUN: yaml2obj -DCH=IMAGE_WEAK_EXTERN_SEARCH_ALIAS -DDNAME=null -DDVAL=0 search.yaml -o ref.obj
+RUN: %{link} nolib.obj nolib3.obj && %{dump} --check-prefix=CHECK2
+RUN: %{link} lib.obj alias3.obj && %{dump} --check-prefix=CHECK2
+RUN: %{link} alias3.obj nolib.obj && %{dump} --check-prefix=CHECK3
+RUN: %{link} ref.obj nolib.obj && %{dump} --check-prefix=CHECK2
+RUN: %{link} alias3.obj ref.obj && %{dump} --check-prefix=CHECK3
+
 CHECK1: 01000000
 CHECK2: 02000000
+CHECK3: 03000000
 
 #--- antidep.s
      .weak_anti_dep sym
@@ -42,6 +74,28 @@ CHECK2: 02000000
 #--- weak.s
      .weak sym
 .set sym,target2
+
+#--- def.s
+     .globl sym
+.set sym,3
+
+#--- search.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .test
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    SectionData:     '00000000'
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: sym, Type: IMAGE_REL_AMD64_ADDR32 }
+symbols:
+  - { Name: sym, Value: [[VAL=0]], SectionNumber: [[SEC=0]], SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL,
+      StorageClass: IMAGE_SYM_CLASS_WEAK_EXTERNAL, WeakExternal: { TagIndex: 2, Characteristics: [[CH]] } }
+  - { Name: [[DNAME=dflt]], Value: [[DVAL=2]], SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL,
+      StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+...
 
 #--- test.s
      .section .target,"dr"

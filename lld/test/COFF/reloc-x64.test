@@ -1,7 +1,13 @@
 # REQUIRES: x86
 # RUN: yaml2obj %s -o %t.obj
-# RUN: lld-link /out:%t.exe /entry:main %t.obj
+# RUN: lld-link /out:%t.exe /entry:main %t.obj 2>&1 | FileCheck --check-prefix=WARN %s
 # RUN: llvm-objdump -d %t.exe | FileCheck %s
+# RUN: yaml2obj --docnum=2 %s -o %t2.obj
+# RUN: not lld-link /out:%t2.exe /entry:main %t2.obj 2>&1 | FileCheck --check-prefix=INDEX %s
+
+# WARN: warning: {{.*}}.obj: ADDR32 relocation against foo is out of range
+# INDEX: error: {{.*}}2.obj: relocation in .text has invalid symbol index 4294967295
+# INDEX: error: {{.*}}2.obj: weak external weak has invalid symbol index 305419896
 
 # CHECK: .text:
 # CHECK: 1000: a1 03 20 00 40 00 00 00 00
@@ -15,6 +21,11 @@
 # CHECK: 1048: a1 b1 0f 00 00 00 00 00 00
 # CHECK: 1051: a1 02 00 00 00 00 00 00 00
 # CHECK: 105a: a1 03 00 00 00 00 00 00 00
+## ABSOLUTE, SREL32 and EHANDLER write nothing; SSPAN32 overwrites with foo - main.
+# CHECK: 1063: a1 dd cc bb aa 00 00 00 00
+# CHECK: 106c: a1 dd cc bb aa 00 00 00 00
+# CHECK: 1075: a1 dd cc bb aa 00 00 00 00
+# CHECK: 107e: a1 03 10 00 00 00 00 00 00
 
 --- !COFF
 header:
@@ -24,7 +35,7 @@ sections:
   - Name:            .text
     Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       4096
-    SectionData:     A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000
+    SectionData:     A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A10000000000000000A1DDCCBBAA00000000A1DDCCBBAA00000000A1DDCCBBAA00000000A1DDCCBBAA00000000
     Relocations:
       - VirtualAddress:  1
         SymbolName:      foo
@@ -59,6 +70,11 @@ sections:
       - VirtualAddress:  91
         SymbolName:      foo
         Type:            IMAGE_REL_AMD64_SECREL
+      - { VirtualAddress: 100, SymbolTableIndex: 305419896, Type: IMAGE_REL_AMD64_ABSOLUTE }
+      - { VirtualAddress: 109, SymbolName: foo, Type: IMAGE_REL_AMD64_SREL32 }
+      - { VirtualAddress: 118, SymbolName: foo, Type: IMAGE_REL_AMD64_EHANDLER }
+      - { VirtualAddress: 127, SymbolName: foo, Type: IMAGE_REL_AMD64_SSPAN32 }
+      - { VirtualAddress: 127, SymbolName: main, Type: IMAGE_REL_AMD64_PAIR }
   - Name:            .zzz
     Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
     Alignment:       4096
@@ -100,4 +116,20 @@ symbols:
     SimpleType:      IMAGE_SYM_TYPE_NULL
     ComplexType:     IMAGE_SYM_DTYPE_NULL
     StorageClass:    IMAGE_SYM_CLASS_EXTERNAL
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    SectionData:     00000000
+    Relocations:
+      - { VirtualAddress: 0, SymbolTableIndex: 4294967295, Type: IMAGE_REL_AMD64_REL32 }
+symbols:
+  - { Name: main, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL,
+      StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: weak, Value: 0, SectionNumber: 0, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL,
+      StorageClass: IMAGE_SYM_CLASS_WEAK_EXTERNAL, WeakExternal: { TagIndex: 305419896, Characteristics: IMAGE_WEAK_EXTERN_SEARCH_ALIAS } }
 ...

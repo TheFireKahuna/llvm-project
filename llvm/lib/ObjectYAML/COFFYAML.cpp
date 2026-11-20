@@ -181,6 +181,7 @@ void ScalarEnumerationTraits<COFF::RelocationTypeAMD64>::enumeration(
   ECase(IMAGE_REL_AMD64_SREL32);
   ECase(IMAGE_REL_AMD64_PAIR);
   ECase(IMAGE_REL_AMD64_SSPAN32);
+  ECase(IMAGE_REL_AMD64_EHANDLER);
 }
 
 void ScalarEnumerationTraits<COFF::RelocationTypesMips>::enumeration(
@@ -243,6 +244,7 @@ void ScalarEnumerationTraits<COFF::RelocationTypesARM64>::enumeration(
   ECase(IMAGE_REL_ARM64_BRANCH19);
   ECase(IMAGE_REL_ARM64_BRANCH14);
   ECase(IMAGE_REL_ARM64_REL32);
+  ECase(IMAGE_REL_ARM64_PAIR);
 }
 
 void ScalarEnumerationTraits<COFF::WindowsSubsystem>::enumeration(

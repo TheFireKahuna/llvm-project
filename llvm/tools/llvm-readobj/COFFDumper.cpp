@@ -1677,7 +1677,8 @@ void COFFDumper::printRelocation(const SectionRef &Section,
   Reloc.getTypeName(RelocName);
   symbol_iterator Symbol = Reloc.getSymbol();
   int64_t SymbolIndex = -1;
-  if (Symbol != Obj->symbol_end()) {
+  if (Symbol != Obj->symbol_end() &&
+      !COFF::relocationNamesNoSymbol(RelocType)) {
     Expected<StringRef> SymbolNameOrErr = Symbol->getName();
     if (!SymbolNameOrErr)
       reportError(SymbolNameOrErr.takeError(), Obj->getFileName());

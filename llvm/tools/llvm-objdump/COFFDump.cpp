@@ -636,6 +636,8 @@ Error objdump::getCOFFRelocationValueString(const COFFObjectFile *Obj,
                                             const RelocationRef &Rel,
                                             SmallVectorImpl<char> &Result) {
   symbol_iterator SymI = Rel.getSymbol();
+  if (SymI == Obj->symbol_end() || COFF::relocationNamesNoSymbol(Rel.getType()))
+    return Error::success();
   Expected<StringRef> SymNameOrErr = SymI->getName();
   if (!SymNameOrErr)
     return SymNameOrErr.takeError();

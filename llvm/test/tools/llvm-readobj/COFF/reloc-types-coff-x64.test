@@ -3,8 +3,13 @@
 
 # RUN: yaml2obj %s -o %t-coff-x86_64.o
 # RUN: llvm-readobj -r --expand-relocs %t-coff-x86_64.o | FileCheck %s
+# RUN: llvm-objdump -r %t-coff-x86_64.o | FileCheck %s --check-prefix=OBJDUMP
+
+## ABSOLUTE names no symbol.
+# OBJDUMP: 0000000000000004 IMAGE_REL_AMD64_ABSOLUTE {{$}}
 
 # CHECK: Type: IMAGE_REL_AMD64_ABSOLUTE (0)
+# CHECK-NEXT: Symbol: -
 # CHECK: Type: IMAGE_REL_AMD64_ADDR64 (1)
 # CHECK: Type: IMAGE_REL_AMD64_ADDR32 (2)
 # CHECK: Type: IMAGE_REL_AMD64_ADDR32NB (3)
@@ -21,6 +26,7 @@
 # CHECK: Type: IMAGE_REL_AMD64_SREL32 (14)
 # CHECK: Type: IMAGE_REL_AMD64_PAIR (15)
 # CHECK: Type: IMAGE_REL_AMD64_SSPAN32 (16)
+# CHECK: Type: IMAGE_REL_AMD64_EHANDLER (17)
 
 --- !COFF
 header:
@@ -66,6 +72,8 @@ sections:
         Type:           IMAGE_REL_AMD64_PAIR
       - VirtualAddress: 132
         Type:           IMAGE_REL_AMD64_SSPAN32
+      - VirtualAddress: 140
+        Type:           IMAGE_REL_AMD64_EHANDLER
 symbols:
   - Name:            .text
     Value:           0
@@ -75,7 +83,7 @@ symbols:
     StorageClass:    IMAGE_SYM_CLASS_STATIC
     SectionDefinition: 
       Length:          136
-      NumberOfRelocations: 17
+      NumberOfRelocations: 18
       NumberOfLinenumbers: 0
       CheckSum:        0
       Number:          1

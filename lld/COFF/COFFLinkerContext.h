@@ -60,6 +60,8 @@ public:
   }
 
   std::vector<ObjFile *> objFileInstances;
+  // SECTION-class symbols that name a section another object defines.
+  std::vector<DefinedRegular *> sectionSymbols;
   std::map<std::string, PDBInputFile *> pdbInputFileInstances;
   std::vector<ImportFile *> importFileInstances;
   std::int64_t consumedInputsSize = 0;

@@ -126,7 +126,7 @@ Symbol *Undefined::getWeakAlias() {
   DenseSet<Symbol *> weakChain;
   for (Symbol *a = weakAlias; a; a = cast<Undefined>(a)->weakAlias) {
     // Anti-dependency symbols can't be chained.
-    if (a->isAntiDep)
+    if (a->isAntiDep())
       break;
     if (!isa<Undefined>(a))
       return a;
@@ -147,7 +147,7 @@ bool Undefined::resolveWeakAlias() {
   // Symbols. For that reason we need to check which type of symbol we
   // are dealing with and copy the correct number of bytes.
   StringRef name = getName();
-  bool wasAntiDep = isAntiDep;
+  unsigned kind = weakKind;
   if (isa<DefinedRegular>(d))
     memcpy(this, d, sizeof(DefinedRegular));
   else if (isa<DefinedAbsolute>(d))
@@ -157,7 +157,7 @@ bool Undefined::resolveWeakAlias() {
 
   nameData = name.data();
   nameSize = name.size();
-  isAntiDep = wasAntiDep;
+  weakKind = kind;
   return true;
 }
 

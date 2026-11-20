@@ -2294,9 +2294,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   config->stdcallFixup =
       args.hasFlag(OPT_stdcall_fixup, OPT_stdcall_fixup_no, config->mingw);
   config->warnStdcallFixup = !args.hasArg(OPT_stdcall_fixup);
-  config->allowDuplicateWeak =
-      args.hasFlag(OPT_lld_allow_duplicate_weak,
-                   OPT_lld_allow_duplicate_weak_no, config->mingw);
 
   if (args.hasFlag(OPT_inferasanlibs, OPT_inferasanlibs_no, false))
     Warn(ctx) << "ignoring '/inferasanlibs', this flag is not supported";
@@ -2849,6 +2846,24 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   std::vector<Undefined *> aliases;
   ctx.forEachSymtab(
       [&](SymbolTable &symtab) { symtab.resolveRemainingUndefines(aliases); });
+
+  // Bind each SECTION-class symbol to the first section of its name in an
+  // object of its object's name, as the members of an import library are.
+  if (!ctx.sectionSymbols.empty()) {
+    DenseMap<std::pair<StringRef, StringRef>, SectionChunk *> sections;
+    for (ObjFile *file : ctx.objFileInstances)
+      for (Chunk *c : file->getChunks())
+        if (auto *sc = dyn_cast<SectionChunk>(c))
+          sections.try_emplace({file->getName(), sc->getSectionName()}, sc);
+    for (DefinedRegular *d : ctx.sectionSymbols) {
+      if (SectionChunk *sc =
+              sections.lookup({d->getFile()->getName(), d->getName()}))
+        d->data = &sc->repl;
+      else
+        Err(ctx) << d->getFile() << ": no object named like it defines section "
+                 << d->getName();
+    }
+  }
 
   if (errorCount())
     return;

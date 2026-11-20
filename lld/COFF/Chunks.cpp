@@ -142,6 +142,9 @@ void SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
     applySecIdx(off, os, file->symtab.ctx.outputSections.size());
     break;
   case IMAGE_REL_AMD64_SECREL:   applySecRel(this, off, os, s); break;
+  case IMAGE_REL_AMD64_SREL32:
+  case IMAGE_REL_AMD64_EHANDLER:
+    break;
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
           toString(file));
@@ -278,13 +281,17 @@ void applyArm64Imm(uint8_t *off, uint64_t imm, uint32_t rangeLimit) {
 // Even if larger loads/stores have a larger range, limit the
 // effective offset to 12 bit, since it is intended to be a
 // page offset.
-static void applyArm64Ldr(uint8_t *off, uint64_t imm) {
-  uint32_t orig = read32le(off);
-  uint32_t size = orig >> 30;
+static uint32_t getArm64LdrScale(uint32_t insn) {
+  uint32_t size = insn >> 30;
   // 0x04000000 indicates SIMD/FP registers
   // 0x00800000 indicates 128 bit
-  if ((orig & 0x4800000) == 0x4800000)
+  if ((insn & 0x4800000) == 0x4800000)
     size += 4;
+  return size;
+}
+
+static void applyArm64Ldr(uint8_t *off, uint64_t imm) {
+  uint32_t size = getArm64LdrScale(read32le(off));
   if ((imm & ((1 << size) - 1)) != 0)
     error("misaligned ldr/str offset");
   applyArm64Imm(off, imm >> size, size);
@@ -467,32 +474,128 @@ void SectionChunk::writeTo(uint8_t *buf) const {
   }
 }
 
+bool SectionChunk::isPair(uint16_t type) const {
+  switch (type) {
+  case IMAGE_REL_AMD64_PAIR:
+    return getArch() == Triple::x86_64;
+  case IMAGE_REL_ARM64_PAIR:
+    return getArch() == Triple::aarch64;
+  default:
+    return false;
+  }
+}
+
+// Returns the PAIR naming the second operand B of rel, whose value is then
+// A - B: x86-64 SSPAN32 and its PAIR at the same offset, or an ARM64 page
+// offset followed by a PAIR.
+const coff_relocation *SectionChunk::getPair(const coff_relocation &rel) const {
+  const coff_relocation *next = &rel + 1;
+  if (next == relocsData + relocsSize || !isPair(next->Type))
+    return nullptr;
+  if (next->Type == IMAGE_REL_AMD64_PAIR)
+    return rel.Type == IMAGE_REL_AMD64_SSPAN32 &&
+                   rel.VirtualAddress == next->VirtualAddress
+               ? next
+               : nullptr;
+  return rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12A ||
+                 rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L
+             ? next
+             : nullptr;
+}
+
+Symbol *SectionChunk::getRelocTarget(const coff_relocation &rel) const {
+  if (relocationNamesNoSymbol(rel.Type) || isPair(rel.Type))
+    return nullptr;
+  return file->getSymbol(rel.SymbolTableIndex);
+}
+
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
+  // ABSOLUTE writes nothing; a PAIR is applied with the relocation before it.
+  COFFLinkerContext &ctx = file->symtab.ctx;
+  if (relocationNamesNoSymbol(rel.Type))
+    return;
+  if (isPair(rel.Type)) {
+    if (&rel == relocsData || getPair(*(&rel - 1)) != &rel)
+      Err(ctx) << file << ": PAIR relocation in " << getSectionName()
+               << " follows no relocation it pairs with";
+    return;
+  }
+
+  // A symbol is discarded if it was discarded early, when it is null, or
+  // late, when its chunk has no output section, unless it is an absolute or
+  // synthetic symbol.
+  auto isDiscarded = [&](Defined *d) {
+    Chunk *c = d ? d->getChunk() : nullptr;
+    return !d || (!(c && ctx.getOutputSection(c)) && !isa<DefinedAbsolute>(d) &&
+                  !isa<DefinedSynthetic>(d));
+  };
   auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+  const coff_relocation *pair = getPair(rel);
+  auto *b =
+      pair ? dyn_cast_or_null<Defined>(file->getSymbol(pair->SymbolTableIndex))
+           : nullptr;
+  if (isDiscarded(sym)) {
+    maybeReportRelocationToDiscarded(this, sym, rel, ctx.config.mingw);
+    return;
+  }
+  if (pair && isDiscarded(b)) {
+    maybeReportRelocationToDiscarded(this, b, *pair, ctx.config.mingw);
+    return;
+  }
+  uint64_t s = sym->getRVA();
 
   // Get the output section of the symbol for this relocation.  The output
   // section is needed to compute SECREL and SECTION relocations used in debug
   // info.
-  Chunk *c = sym ? sym->getChunk() : nullptr;
-  COFFLinkerContext &ctx = file->symtab.ctx;
+  Chunk *c = sym->getChunk();
   OutputSection *os = c ? ctx.getOutputSection(c) : nullptr;
 
-  // Skip the relocation if it refers to a discarded section, and diagnose it
-  // as an error if appropriate. If a symbol was discarded early, it may be
-  // null. If it was discarded late, the output section will be null, unless
-  // it was an absolute or synthetic symbol.
-  if (!sym ||
-      (!os && !isa<DefinedAbsolute>(sym) && !isa<DefinedSynthetic>(sym))) {
-    maybeReportRelocationToDiscarded(this, sym, rel, ctx.config.mingw);
+  // A pair's value is A - B: it overwrites an x86-64 field, and is added to an
+  // ARM64 page offset's immediate, a byte offset that must stay in the page.
+  if (pair) {
+    int64_t v = s - b->getRVA();
+    if (rel.Type == IMAGE_REL_AMD64_SSPAN32) {
+      write32le(off, v);
+      return;
+    }
+    uint32_t insn = read32le(off);
+    uint32_t imm = (insn >> 10) & 0xfff;
+    uint32_t scale = 0;
+    if (rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
+      scale = getArm64LdrScale(insn);
+      v += SignExtend64<12>(imm << scale);
+    } else {
+      v += imm;
+    }
+    if (v & ((1 << scale) - 1) || !isUInt<12>(v))
+      Err(ctx) << file << ": "
+               << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+               << " relocation against " << toString(ctx, *sym)
+               << " with a PAIR against " << toString(ctx, *b)
+               << (isUInt<12>(v) ? " is misaligned" : " is out of range");
+    else
+      write32le(off, (insn & ~(0xfff << 10)) | (v >> scale) << 10);
     return;
   }
 
-  uint64_t s = sym->getRVA();
+  // ARM64's PC-relative page addresses cannot reach an absolute value, and an
+  // x86-64 32-bit address is sign-extended where it is used.
+  uint64_t imageBase = ctx.config.imageBase;
+  if (isa<DefinedAbsolute>(sym) && getArch() == Triple::aarch64 &&
+      (rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
+       rel.Type == IMAGE_REL_ARM64_REL21)) {
+    Err(ctx) << file << ": PC-relative relocation against absolute symbol "
+             << toString(ctx, *sym);
+    return;
+  }
+  if (getArch() == Triple::x86_64 && rel.Type == IMAGE_REL_AMD64_ADDR32 &&
+      !isUInt<31>(SignExtend64<32>(read32le(off)) + s + imageBase))
+    Warn(ctx) << file << ": ADDR32 relocation against " << toString(ctx, *sym)
+              << " is out of range";
 
   // Compute the RVA of the relocation for relative relocations.
   uint64_t p = rva + rel.VirtualAddress;
-  uint64_t imageBase = ctx.config.imageBase;
   switch (getArch()) {
   case Triple::x86_64:
     applyRelX64(off, rel.Type, os, s, p, imageBase);
@@ -525,7 +628,8 @@ void SectionChunk::sortRelocations() {
   MutableArrayRef<coff_relocation> newRelocs(
       bAlloc().Allocate<coff_relocation>(relocsSize), relocsSize);
   memcpy(newRelocs.data(), relocsData, relocsSize * sizeof(coff_relocation));
-  llvm::sort(newRelocs, cmpByVa);
+  // Keep a PAIR after the relocation it belongs to.
+  llvm::stable_sort(newRelocs, cmpByVa);
   setRelocs(newRelocs);
 }
 
@@ -720,8 +824,7 @@ static int getRuntimePseudoRelocSize(uint16_t type, Triple::ArchType arch) {
 void SectionChunk::getRuntimePseudoRelocs(
     std::vector<RuntimePseudoReloc> &res) {
   for (const coff_relocation &rel : getRelocs()) {
-    auto *target =
-        dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
+    auto *target = dyn_cast_or_null<Defined>(getRelocTarget(rel));
     if (!target || !target->isRuntimePseudoReloc)
       continue;
     // If the target doesn't have a chunk allocated, it may be a

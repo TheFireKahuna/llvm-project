@@ -121,6 +121,8 @@ public:
   Symbol *addAbsolute(StringRef n, uint64_t va);
 
   Symbol *addUndefined(StringRef name, InputFile *f, bool overrideLazy);
+  bool loadsLazy(Symbol *s, InputFile *f);
+  void warnWeakDefinition(Symbol *s, InputFile *lazy, InputFile *weak);
   void addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym);
   void addLazyObject(InputFile *f, StringRef n);
   void addLazyDLLSymbol(DLLFile *f, DLLFile::Symbol *sym, StringRef n);

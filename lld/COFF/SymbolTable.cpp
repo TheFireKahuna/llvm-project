@@ -437,7 +437,7 @@ void SymbolTable::reportUnresolvable() {
     StringRef name = undef->getName();
     if (name.starts_with("__imp_")) {
       Symbol *imp = find(name.substr(strlen("__imp_")));
-      if (Defined *def = dyn_cast_or_null<Defined>(imp)) {
+      if (Defined *def = imp ? imp->getDefined() : nullptr) {
         def->isUsedInRegularObj = true;
         continue;
       }
@@ -712,14 +712,14 @@ Symbol *SymbolTable::addGCRoot(StringRef name, bool aliasEC) {
       auto u = dyn_cast<Undefined>(b);
       if (u && !u->weakAlias) {
         Symbol *t = addUndefined(saver().save(*mangledName));
-        u->setWeakAlias(t, true);
+        u->setWeakAlias(t, Symbol::AntiDependency);
       }
     } else if (std::optional<std::string> demangledName =
                    getArm64ECDemangledFunctionName(name)) {
       Symbol *us = addUndefined(saver().save(*demangledName));
       auto u = dyn_cast<Undefined>(us);
       if (u && !u->weakAlias)
-        u->setWeakAlias(b, true);
+        u->setWeakAlias(b, Symbol::AntiDependency);
     }
   }
   return b;
@@ -757,11 +757,31 @@ bool checkLazyECPair(SymbolTable *symtab, StringRef name, InputFile *f) {
   if (sym->pendingArchiveLoad)
     return false;
   if (auto u = dyn_cast<Undefined>(sym))
-    return !u->weakAlias || u->isAntiDep;
+    return !u->weakAlias || u->isAntiDep();
   // If the symbol is lazy, allow it only if it originates from the same
   // archive.
   auto lazy = dyn_cast<T>(sym);
   return lazy && lazy->file == f;
+}
+
+// Returns whether the definition f offers for s is loaded. A weak alias keeps
+// it out, except a LIBRARY one and an ARM64EC anti-dependency.
+bool SymbolTable::loadsLazy(Symbol *s, InputFile *f) {
+  auto *u = dyn_cast<Undefined>(s);
+  if (!u || s->pendingArchiveLoad)
+    return false;
+  if (!u->weakAlias || u->isECAlias(machine) || u->weakKind == Symbol::Library)
+    return true;
+  if (u->weakKind == Symbol::WeakDefinition)
+    warnWeakDefinition(s, f, u->weakAlias->getFile());
+  return false;
+}
+
+// GNU ld loads an archive member that defines a weak definition's name.
+void SymbolTable::warnWeakDefinition(Symbol *s, InputFile *lazy,
+                                     InputFile *weak) {
+  Warn(ctx) << lazy << " defines " << toString(ctx, *s)
+            << ", whose weak definition in " << weak << " is used";
 }
 
 void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
@@ -773,8 +793,7 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
     replaceSymbol<LazyArchive>(s, f, sym);
     return;
   }
-  auto *u = dyn_cast<Undefined>(s);
-  if (!u || (u->weakAlias && !u->isECAlias(machine)) || s->pendingArchiveLoad)
+  if (!loadsLazy(s, f))
     return;
   s->pendingArchiveLoad = true;
   f->addMember(sym);
@@ -789,8 +808,7 @@ void SymbolTable::addLazyObject(InputFile *f, StringRef n) {
     replaceSymbol<LazyObject>(s, f, n);
     return;
   }
-  auto *u = dyn_cast<Undefined>(s);
-  if (!u || (u->weakAlias && !u->isECAlias(machine)) || s->pendingArchiveLoad)
+  if (!loadsLazy(s, f))
     return;
   s->pendingArchiveLoad = true;
   f->lazy = false;
@@ -804,8 +822,7 @@ void SymbolTable::addLazyDLLSymbol(DLLFile *f, DLLFile::Symbol *sym,
     replaceSymbol<LazyDLLSymbol>(s, f, sym, n);
     return;
   }
-  auto *u = dyn_cast<Undefined>(s);
-  if (!u || (u->weakAlias && !u->isECAlias(machine)) || s->pendingArchiveLoad)
+  if (!loadsLazy(s, f))
     return;
   s->pendingArchiveLoad = true;
   f->makeImport(sym);
@@ -1419,7 +1436,7 @@ void SymbolTable::resolveAlternateNames() {
         // On ARM64EC, anti-dependency aliases are treated as undefined
         // symbols unless a demangled symbol aliases a defined one, which
         // is part of the implementation.
-        if (!isEC() || !u->isAntiDep)
+        if (!isEC() || !u->isAntiDep())
           continue;
         if (!isa<Undefined>(u->weakAlias) &&
             !isArm64ECMangledFunctionName(u->getName()))
@@ -1433,7 +1450,7 @@ void SymbolTable::resolveAlternateNames() {
       if (!toSym)
         continue;
       auto toUndef = dyn_cast<Undefined>(toSym);
-      if (toUndef && (!toUndef->weakAlias || toUndef->isAntiDep))
+      if (toUndef && (!toUndef->weakAlias || toUndef->isAntiDep()))
         continue;
       toSym->isUsedInRegularObj = true;
       if (toSym->isLazy())

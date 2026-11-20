@@ -108,7 +108,7 @@ protected:
       : symbolKind(k), isExternal(true), isCOMDAT(false),
         writtenToSymtab(false), isUsedInRegularObj(false),
         pendingArchiveLoad(false), isGCRoot(false), isRuntimePseudoReloc(false),
-        deferUndefined(false), canInline(true), isWeak(false), isAntiDep(false),
+        deferUndefined(false), canInline(true), isWeak(false), weakKind(Alias),
         nameSize(n.size()), nameData(n.empty() ? nullptr : n.data()) {
     assert((!n.empty() || k <= LastDefinedCOFFKind) &&
            "If the name is empty, the Symbol must be a DefinedCOFF.");
@@ -153,8 +153,14 @@ public:
   // managing weak symbol overrides.
   unsigned isWeak : 1;
 
-  // True if the symbol is an anti-dependency.
-  unsigned isAntiDep : 1;
+  // How a weak alias binds. A strong reference to the symbol drops a
+  // NoLibrary or Library alias, and only a Library alias lets an archive
+  // member that defines the symbol be loaded. A WeakDefinition, GNU as's form
+  // of an ELF weak definition, binds as an Alias does. The kind outlives the
+  // alias's resolution, so that no alias chains through an anti-dependency.
+  enum WeakKind { Alias, NoLibrary, Library, WeakDefinition, AntiDependency };
+  unsigned weakKind : 3;
+  bool isAntiDep() const { return weakKind == AntiDependency; }
 
 protected:
   // Symbol name length. Assume symbol lengths fit in a 32-bit integer.
@@ -358,13 +364,13 @@ public:
     return dyn_cast_or_null<Defined>(getWeakAlias());
   }
 
-  void setWeakAlias(Symbol *sym, bool antiDep = false) {
+  void setWeakAlias(Symbol *sym, WeakKind kind = Alias) {
     weakAlias = sym;
-    isAntiDep = antiDep;
+    weakKind = kind;
   }
 
   bool isECAlias(MachineTypes machine) const {
-    return weakAlias && isAntiDep && isArm64EC(machine);
+    return weakAlias && isAntiDep() && isArm64EC(machine);
   }
 
   // If this symbol is external weak, replace this object with aliased symbol.
