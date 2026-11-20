@@ -402,6 +402,8 @@ void ObjFile::parse() {
   uint64_t flags;
   bool hasSymbols = false;
   StringRef facts;
+  SmallVector<SectionChunk *, 0> resizable;
+  std::vector<SwitchTable> tables;
   Error e = readCOFFLinkRecords(
       toStringRef(contents), flags,
       [&](uint64_t kind, StringRef payload) -> Error {
@@ -412,6 +414,84 @@ void ObjFile::parse() {
           hasSymbols = true;
           facts = payload;
           return Error::success();
+        case LinkRecordSections: {
+          // A count, then that many symbols, each of a code section the
+          // linker may resize. A section that is not part of the link has no
+          // chunk. Each symbol takes a byte or more, which bounds the count.
+          DataExtractor data(payload, /*IsLittleEndian=*/true);
+          DataExtractor::Cursor c(0);
+          uint64_t count = data.getULEB128(c);
+          if (c && count > payload.size() - c.tell())
+            return createStringError(Twine(count) +
+                                     " resizable sections, which the group "
+                                     "does not hold");
+          for (; c && count; --count) {
+            uint64_t index = data.getULEB128(c);
+            if (!c)
+              break;
+            if (index >= coffObj->getNumberOfSymbols())
+              return createStringError("resizable section " + Twine(index) +
+                                       ", which the file does not have");
+            COFFSymbolRef sym = check(coffObj->getSymbol(index));
+            int32_t number = sym.getSectionNumber();
+            if (!sym.isSectionDefinition() || number <= 0 ||
+                uint32_t(number) > coffObj->getNumberOfSections() ||
+                !(getSection(number)->Characteristics & IMAGE_SCN_CNT_CODE))
+              return createStringError("resizable section " + Twine(index) +
+                                       " is not a code section");
+            if (auto *d = dyn_cast_or_null<DefinedRegular>(symbols[index]))
+              resizable.push_back(d->getChunk());
+          }
+
+          // Then a count and that many dispatches through jump tables, each
+          // the symbols of its branch, table and base, the count and the type
+          // of the table's entries, the symbol of the load and flags. The
+          // branch and the load are in code and the table within its section.
+          // A dispatch of a type that is not known, or of a section that is
+          // not part of the link, is not kept.
+          for (count = c && !data.eof(c) ? data.getULEB128(c) : 0; c && count;
+               --count) {
+            uint64_t fields[7];
+            for (uint64_t &field : fields)
+              field = data.getULEB128(c);
+            if (!c)
+              break;
+            static const uint8_t widths[] = {1, 1, 2, 2, 4, 4, 8, 1, 2, 1, 2};
+            uint64_t width =
+                fields[4] < std::size(widths) ? widths[fields[4]] : 0;
+            DefinedRegular *places[4];
+            for (int i = 0; i != 4; ++i) {
+              uint64_t index = fields[i == 3 ? 5 : i];
+              bool inCode = i == 0 || i == 3;
+              if (index >= coffObj->getNumberOfSymbols())
+                return createStringError("switch table at symbol " +
+                                         Twine(index) +
+                                         ", which the file does not have");
+              COFFSymbolRef sym = check(coffObj->getSymbol(index));
+              int32_t number = sym.getSectionNumber();
+              if (number <= 0 ||
+                  uint32_t(number) > coffObj->getNumberOfSections() ||
+                  (inCode &&
+                   !(getSection(number)->Characteristics & IMAGE_SCN_CNT_CODE)))
+                return createStringError("switch table at symbol " +
+                                         Twine(index) + ", which is not in " +
+                                         (inCode ? "code" : "a section"));
+              uint32_t size = getSection(number)->SizeOfRawData;
+              if (i == 1 && width &&
+                  (!fields[3] || sym.getValue() > size ||
+                   fields[3] > (size - sym.getValue()) / width))
+                return createStringError("switch table of " + Twine(fields[3]) +
+                                         " entries at symbol " + Twine(index) +
+                                         ", which its section does not hold");
+              places[i] = dyn_cast_or_null<DefinedRegular>(symbols[index]);
+            }
+            if (width && !is_contained(places, nullptr))
+              tables.push_back({places[0], places[1], places[2], places[3],
+                                fields[3], uint8_t(fields[4]),
+                                uint8_t(fields[6] & SwitchTableRangeChecked)});
+          }
+          return c.takeError();
+        }
         default:
           if (kind & LinkRecordCritical)
             return createStringError("unknown critical kind " + Twine(kind));
@@ -423,8 +503,28 @@ void ObjFile::parse() {
   // The facts are applied only where the whole container is valid.
   if (!e)
     e = readLinkFacts(facts, symbols);
-  if (e)
+  if (e) {
     Err(symtab.ctx) << this << ": .llvm_link_records: " << std::move(e);
+    return;
+  }
+  for (SectionChunk *c : resizable)
+    c->resizable = true;
+  llvm::stable_sort(tables, [](const SwitchTable &a, const SwitchTable &b) {
+    return std::less<>()(a.branch->getChunk(), b.branch->getChunk());
+  });
+  switchTables = std::move(tables);
+}
+
+ArrayRef<SwitchTable> ObjFile::getSwitchTables(const SectionChunk *sc) const {
+  auto first = llvm::partition_point(switchTables, [&](const SwitchTable &t) {
+    return std::less<>()(t.branch->getChunk(), sc);
+  });
+  auto last =
+      std::find_if(first, switchTables.end(), [&](const SwitchTable &t) {
+        return t.branch->getChunk() != sc;
+      });
+  return ArrayRef(switchTables)
+      .slice(first - switchTables.begin(), last - first);
 }
 
 const coff_section *ObjFile::getSection(uint32_t i) {

@@ -18,4 +18,4 @@ attributes #0 = { noreturn nounwind uwtable "tune-cpu"="cortex-a53" }
 ; LINUX: .p2align 4
 
 ; WINDOWS-LABEL: b:
-; WINDOWS-NOT: .p2align
+; WINDOWS: .p2align 4

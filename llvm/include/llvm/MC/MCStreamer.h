@@ -596,6 +596,15 @@ public:
   virtual void emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
                                 ArrayRef<const MCExpr *> Operands);
 
+  /// States a dispatch through a jump table: the branch, the table of
+  /// \p Count entries of the codeview::JumpTableEntrySize \p Type, the label
+  /// that the entries are relative to, the instruction that loads the entry
+  /// and COFF::SwitchTableFlags.
+  virtual void emitCOFFSwitchTable(const MCSymbol *Branch,
+                                   const MCSymbol *Table, const MCSymbol *Base,
+                                   uint64_t Count, uint64_t Type,
+                                   const MCSymbol *Load, uint64_t Flags);
+
   /// Emits the symbol table index of a Symbol into the current section.
   virtual void emitCOFFSymbolIndex(MCSymbol const *Symbol);
 
@@ -1090,7 +1099,10 @@ public:
                                    SMLoc Loc = SMLoc());
   virtual void emitWinCFISetFrame(MCRegister Register, unsigned Offset,
                                   SMLoc Loc = SMLoc());
-  virtual void emitWinCFIAllocStack(unsigned Size, SMLoc Loc = SMLoc());
+  /// \p Large states an allocation of any size in the form that version 2's
+  /// unwinder never takes for a pop.
+  virtual void emitWinCFIAllocStack(unsigned Size, SMLoc Loc = SMLoc(),
+                                    bool Large = false);
   virtual void emitWinCFISaveReg(MCRegister Register, unsigned Offset,
                                  SMLoc Loc = SMLoc());
   virtual void emitWinCFISaveXMM(MCRegister Register, unsigned Offset,

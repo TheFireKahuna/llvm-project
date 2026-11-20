@@ -787,6 +787,21 @@ void AArch64MCCodeEmitter::encodeInstruction(const MCInst &MI,
   uint64_t Binary = getBinaryCodeForInstr(MI, Fixups, STI);
   support::endian::write<uint32_t>(CB, Binary, llvm::endianness::little);
   ++MCNumEmitted; // Keep track of the # of mi's emitted.
+
+  // On Windows Itanium and NT-POSIX the linker may delete an instruction of
+  // an adrp and the add or the load of the same address, where it binds the
+  // pair to one instruction or to none, and a b that no unwind frame covers.
+  // It may also insert instructions before such a pair. Each has one fixup.
+  if (!Fixups.empty() &&
+      STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    auto *SE = dyn_cast<MCSpecifierExpr>(Fixups.back().getValue());
+    unsigned FixupKind = Fixups.back().getKind();
+    if (FixupKind == AArch64::fixup_aarch64_pcrel_adrp_imm21 ||
+        FixupKind == AArch64::fixup_aarch64_pcrel_tail26 ||
+        (SE && (SE->getSpecifier() == AArch64::S_LO12 ||
+                SE->getSpecifier() == AArch64::S_FUSED_LO12)))
+      Fixups.back().setLinkerRelaxable();
+  }
 }
 
 unsigned

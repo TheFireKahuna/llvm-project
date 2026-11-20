@@ -142,6 +142,16 @@ private:
   llvm::DenseSet<uint64_t> seen;
 };
 
+// A dispatch through a jump table that an object states: its branch, the
+// table of count entries of an llvm::codeview::JumpTableEntrySize type, the
+// label that the entries are relative to, the instruction that loads the
+// entry and llvm::COFF::SwitchTableFlags.
+struct SwitchTable {
+  DefinedRegular *branch, *table, *base, *load;
+  uint64_t count;
+  uint8_t type, flags;
+};
+
 // .obj or .o file. This may be a member of an archive file.
 class ObjFile : public InputFile {
 public:
@@ -218,6 +228,11 @@ public:
   const coff_section *addrsigSec = nullptr;
 
   const coff_section *linkRecordsSec = nullptr;
+
+  // The dispatches through jump tables that the link records state and whose
+  // branches \p sc holds. Kept in the order of the sections of their branches.
+  ArrayRef<SwitchTable> getSwitchTables(const SectionChunk *sc) const;
+  std::vector<SwitchTable> switchTables;
 
   const coff_section *callgraphSec = nullptr;
 

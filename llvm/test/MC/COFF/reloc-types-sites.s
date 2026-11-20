@@ -47,6 +47,11 @@
 // CHECK-NEXT:   0xA3 IMAGE_REL_AMD64_REL32 g
 // CHECK-NEXT:   0xA7 IMAGE_REL_AMD64_ADDR64 h
 // CHECK-NEXT: }
+// CHECK:      Section ({{[0-9]+}}) .text$p {
+// CHECK-NEXT:   0x3 IMAGE_REL_LLVM_MEM_JUMP_P1 __imp_g
+// CHECK-NEXT:   0xB IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT:   0x12 IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT: }
 
   .text
   .globl f
@@ -82,3 +87,14 @@ f:
   callq g@PLT
   .long g - .
   .quad h
+
+// A jump's prefixes include a prefix-only instruction before it, and data
+// before it may be prefixes: one prefix is MEM_JUMP_P1, never MEM_JUMP_TAIL,
+// and more keep REL32.
+  .section .text$p,"xr"
+  ds
+  jmpq *__imp_g(%rip)
+  cs; ds
+  jmpq *__imp_g(%rip)
+  .byte 0x3e
+  jmpq *__imp_g(%rip)

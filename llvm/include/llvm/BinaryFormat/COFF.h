@@ -967,6 +967,10 @@ enum : uint32_t { LLVMCompId = 0x4C4C0000 };
 static const char LinkRecordsMagic[] = {'L', 'L', 'R', 'C'};
 enum : uint64_t { LinkRecordsVersion = 1, LinkRecordCritical = 1 };
 
+/// A flag of a .llvm_link_records section: the assembler checked the object's
+/// fused relocation types against its instructions.
+enum : uint64_t { LinkRecordsFusedChecked = 8 };
+
 enum LinkRecordKind : uint64_t {
   // In an object.
   LinkRecordSiteFacts = 0,
@@ -994,6 +998,17 @@ enum LinkFactSecondWord : uint64_t {
   /// The type of the function as the target of a call through a pointer to
   /// a virtual member function.
   LinkFactVfnType = 1,
+};
+
+/// In a Sections group, after the resizable sections, each dispatch through a
+/// jump table is the symbols of its branch, its table and the label that the
+/// entries are relative to, the number of entries, their
+/// codeview::JumpTableEntrySize, the symbol of the instruction that loads
+/// the entry and these flags.
+enum SwitchTableFlags : uint64_t {
+  /// The index is below the number of entries wherever the branch executes,
+  /// by a check that the compiler emitted.
+  SwitchTableRangeChecked = 1,
 };
 
 /// Writes a link fact whose operands are numbers.

@@ -67,10 +67,15 @@ define void @scope(ptr %p) personality ptr @__gxx_personality_seha0 {
 ;
 ; The store is at 0x19 and the funclet at 0x35. The scope table names the
 ; funclet and the scope's site at 0x18, and the call sites are 0 to 0x18, six
-; bytes from 0x18 and the rest from 0x1e.
+; bytes from 0x18 and the rest from 0x1e. The linker may resize the code, so
+; the tables' spans name labels.
 ; DIS-LABEL: <scope>:
 ; DIS:            18: nop
+; DIS-EMPTY:
+; DIS-NEXT:       <$L{{[0-9a-f]+}}>:
 ; DIS-NEXT:       19: movl $0x1, (%rsi)
+; DIS-EMPTY:
+; DIS-NEXT:       <$L{{[0-9a-f]+}}>:
 ; DIS-NEXT:       1f: leaq
 ; DIS:            35: leaq 0x2c(%rdx), %rcx
 ; DIS-NEXT:       39: jmp
@@ -223,6 +228,8 @@ define void @first(ptr %p) personality ptr @__gxx_personality_seha0 {
 ; CHECK-NEXT:    .uleb128 [[END]]-[[BEGIN]]
 ; DIS-LABEL: <first>:
 ; DIS-NEXT:       nop
+; DIS-EMPTY:
+; DIS-NEXT:       <$L{{[0-9a-f]+}}>:
 ; DIS-NEXT:       movl $0x1, (%rcx)
 entry:
   invoke void @llvm.seh.scope.begin() to label %in unwind label %cleanup

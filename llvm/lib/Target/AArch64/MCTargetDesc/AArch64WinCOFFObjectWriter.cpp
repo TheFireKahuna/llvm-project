@@ -72,6 +72,10 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
     case AArch64::S_SECREL:
       // Supported
       break;
+    case AArch64::S_FUSED:
+      if (Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+        break;
+      [[fallthrough]];
     default:
       Ctx.reportError(Fixup.getLoc(),
                       "relocation specifier " +
@@ -164,6 +168,9 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
       AArch64::Specifier Spec = A64E->getSpecifier();
       if (Spec == AArch64::S_SECREL_LO12)
         return COFF::IMAGE_REL_ARM64_SECREL_LOW12L;
+      // A load of a pointer whose register only fused sites read.
+      if (Spec == AArch64::S_FUSED_LO12)
+        return COFF::IMAGE_REL_LLVM_FUSED_READ;
     }
     return COFF::IMAGE_REL_ARM64_PAGEOFFSET_12L;
 

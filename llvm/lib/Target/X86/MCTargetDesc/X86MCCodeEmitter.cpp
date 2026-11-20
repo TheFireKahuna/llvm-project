@@ -620,7 +620,9 @@ void X86MCCodeEmitter::emitMemModRMByte(
             MI.getOperand(Op + X86::AddrSegmentReg).getReg())
           return X86::reloc_riprel_4byte;
         bool HasOffset = !isa<MCSymbolRefExpr>(Disp.getExpr());
-        unsigned NumPrefixes = CB.size() - StartByte - 2;
+        unsigned NumPrefixes = CB.size() - StartByte - 2 +
+                               (MI.getFlags() & X86::IP_AFTER_PREFIX ? 1 : 0) +
+                               (MI.getFlags() & X86::IP_AFTER_PREFIXES ? 2 : 0);
         switch (Opcode) {
         case X86::LEA16r:
         case X86::LEA64_32r:
@@ -2041,6 +2043,21 @@ void X86MCCodeEmitter::encodeInstruction(const MCInst &MI,
 
   if (CB.size() - StartByte > 15)
     Ctx.reportError(MI.getLoc(), "instruction length exceeds the limit of 15");
+
+  // On Windows Itanium and NT-POSIX the linker may change the size of a call
+  // or jump through a pointer that it binds and of a jump whose width the
+  // assembler chooses, and may delete a jmp that no unwind frame covers. Each
+  // has one fixup.
+  if (!Fixups.empty() && STI.hasFeature(X86::Is64Bit) &&
+      STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    unsigned FixupKind = Fixups.back().getKind();
+    if (Opcode == X86::JMP_1 || Opcode == X86::JCC_1 ||
+        FixupKind == X86::reloc_riprel_4byte_call ||
+        FixupKind == X86::reloc_riprel_4byte_jump ||
+        FixupKind == X86::reloc_riprel_4byte_jump_p1 ||
+        FixupKind == X86::reloc_tail_4byte_pcrel)
+      Fixups.back().setLinkerRelaxable();
+  }
 #ifndef NDEBUG
   // FIXME: Verify.
   if (/*!Desc.isVariadic() &&*/ CurOp != NumOps) {

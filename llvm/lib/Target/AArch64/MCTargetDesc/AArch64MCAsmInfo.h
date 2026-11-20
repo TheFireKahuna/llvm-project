@@ -83,6 +83,7 @@ enum {
   S_AUTHADDR     = 0x00b,
   S_GOT_AUTH     = 0x00c,
   S_TLSDESC_AUTH = 0x00d,
+  S_FUSED        = 0x00e,
   S_SymLocBits   = 0x00f,
 
   // Variants specifying which part of the final address calculation is
@@ -163,6 +164,7 @@ enum {
   S_TLSDESC_AUTH_PAGE = S_TLSDESC_AUTH | S_PAGE,
   S_SECREL_LO12       = S_SECREL       | S_PAGEOFF,
   S_SECREL_HI12       = S_SECREL       | S_HI12,
+  S_FUSED_LO12        = S_FUSED        | S_PAGEOFF | S_NC,
 
   // ELF relocation specifiers in data directives:
   S_PLT          = 0x400,

@@ -102,6 +102,11 @@ private:
   /// stack frame in bytes.
   unsigned CalleeSavedFrameSize = 0;
 
+  /// Where the frame register is pushed after every other callee-saved
+  /// register and points at its own saved value: the bytes below that slot
+  /// that hold the saved XMM registers, a multiple of 16.
+  std::optional<unsigned> FramePtrPushedLast;
+
   /// BytesToPopOnReturn - Number of bytes function pops on return (in addition
   /// to the space used by the return address).
   /// Used on windows platform for stdcall & fastcall name decoration
@@ -254,6 +259,13 @@ public:
 
   unsigned getCalleeSavedFrameSize() const { return CalleeSavedFrameSize; }
   void setCalleeSavedFrameSize(unsigned bytes) { CalleeSavedFrameSize = bytes; }
+
+  std::optional<unsigned> getFramePtrPushedLast() const {
+    return FramePtrPushedLast;
+  }
+  void setFramePtrPushedLast(unsigned XMMBytes) {
+    FramePtrPushedLast = XMMBytes;
+  }
 
   unsigned getBytesToPopOnReturn() const { return BytesToPopOnReturn; }
   void setBytesToPopOnReturn (unsigned bytes) { BytesToPopOnReturn = bytes;}

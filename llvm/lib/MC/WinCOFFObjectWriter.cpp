@@ -13,6 +13,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -859,6 +860,9 @@ void WinCOFFWriter::assignFileOffsets() {
       Offset += COFF::RelocationSize * Sec->Relocations.size();
 
       for (auto &Relocation : Sec->Relocations) {
+        // A relocation that names no symbol holds a number in its index.
+        if (!Relocation.Symb)
+          continue;
         assert(Relocation.Symb->getIndex() != -1);
         if (Header.Machine != COFF::IMAGE_FILE_MACHINE_R4000 ||
             Relocation.Data.Type != COFF::IMAGE_REL_MIPS_PAIR) {
@@ -955,6 +959,21 @@ void WinCOFFWriter::executePostLayoutBinding() {
 
 void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
                                      MCValue Target, uint64_t &FixedValue) {
+  // A fixup may state its relocation type, as .reloc does. A type that names
+  // no symbol holds a number in its index.
+  bool IsLiteral = mc::isRelocRelocation(Fixup.getKind());
+  uint16_t Literal = getCOFFRelocType(Fixup.getKind());
+  if (IsLiteral && COFF::relocationNamesNoSymbol(Literal)) {
+    COFFRelocation Reloc;
+    Reloc.Data.VirtualAddress = Asm->getFragmentOffset(F) + Fixup.getOffset();
+    Reloc.Data.SymbolTableIndex = Target.getConstant();
+    Reloc.Data.Type = Literal;
+    SectionMap[F.getParent()]->Relocations.push_back(Reloc);
+    return;
+  }
+  if (IsLiteral && !Target.getAddSym())
+    return getContext().reportError(Fixup.getLoc(),
+                                    "relocation must name a symbol");
   assert(Target.getAddSym() && "Relocation must reference a symbol!");
 
   const MCSymbol &A = *Target.getAddSym();
@@ -989,10 +1008,22 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     // Offset of the symbol in the section
     int64_t OffsetOfB = Asm->getSymbolOffset(*B);
 
+    // CodeView keeps its compact form, which the linker remaps where it
+    // resizes code: a distance in such code is as assembled.
+    if (MCSec->getName() == ".debug$S" && A.isInSection() &&
+        &A.getSection() == &B->getSection() &&
+        A.getSection().isLinkerRelaxable()) {
+      FixedValue = Asm->getSymbolOffset(A) - OffsetOfB + Target.getConstant();
+      return;
+    }
+
     // REL32 below writes A - B only when B lies in the field's section and
-    // the linker resizes nothing between B and the field. Otherwise A - B is
-    // a span.
-    if (&B->getSection() != MCSec ||
+    // the linker resizes nothing between B and the field. Otherwise, in a
+    // section the linker resizes that also holds A, and where the fixup
+    // states its type, A - B is a span.
+    if (IsLiteral || &B->getSection() != MCSec ||
+        (MCSec->isLinkerRelaxable() && A.isInSection() &&
+         &A.getSection() == MCSec) ||
         !Asm->getBackend().isPCRelFixupResolved(B, F))
       return recordSpan(F, Fixup, A, *B, Target.getConstant(), FixedValue);
 
@@ -1008,8 +1039,10 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
 
   Reloc.Data.SymbolTableIndex = 0;
   Reloc.Data.VirtualAddress = Asm->getFragmentOffset(F);
-  Reloc.Data.Type = OWriter.TargetObjectWriter->getRelocType(
-      getContext(), Target, Fixup, Target.getSubSym(), Asm->getBackend());
+  Reloc.Data.Type = IsLiteral ? Literal
+                              : OWriter.TargetObjectWriter->getRelocType(
+                                    getContext(), Target, Fixup,
+                                    Target.getSubSym(), Asm->getBackend());
 
   bool IsArm64SecRel12 = false;
   if (COFF::isAnyArm64(Header.Machine)) {
@@ -1041,9 +1074,15 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     }
     Reloc.Symb = getOrCreateSecRelSymbol(A, SecRelSymbolOffset);
     FixedValue = 0;
-  } else if (UseSectionSymbol && A.getSection().isLinkerRelaxable()) {
+  } else if (A.isInSection() && A.getSection().isLinkerRelaxable() &&
+             (UseSectionSymbol || IsLiteral ||
+              (Fixup.isPCRel() &&
+               OWriter.isSymbolRefDifferenceFullyResolvedImpl(A, F, false,
+                                                              true)))) {
     // The linker moves a label with the code it resizes; an offset from the
-    // section's start would not follow.
+    // section's start would not follow. A stated type marks a place for a
+    // point of this object, and a PC-relative field that the assembler
+    // resolved names one, which is a label whatever the symbol resolves to.
     Reloc.Symb = getOrCreateSecRelSymbol(A, Asm->getSymbolOffset(A));
   } else if (UseSectionSymbol && COFF::isAnyArm64(Header.Machine) &&
              Reloc.Data.Type == COFF::IMAGE_REL_ARM64_BRANCH26) {
@@ -1086,7 +1125,8 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   // The *_REL32 relocations are relative to the end of the relocation,
   // not to the start; AMD64's REL32_1 to REL32_5 to 1 to 5 bytes after it. So
   // are the PC-relative LLVM types, whose field has four bytes or, for JUMP8,
-  // one.
+  // one. An AMD64 fused read's field holds no addend, and what its fixup adds
+  // is written as it is.
   if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
       Reloc.Data.Type >= COFF::IMAGE_REL_AMD64_REL32 &&
       Reloc.Data.Type <= COFF::IMAGE_REL_AMD64_REL32_5)
@@ -1102,7 +1142,10 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
             Reloc.Data.Type == COFF::IMAGE_REL_ARM64_REL32) ||
            Reloc.Data.Type == COFF::IMAGE_REL_LLVM_REL32_CALL ||
            (Reloc.Data.Type >= COFF::IMAGE_REL_LLVM_BRANCH32 &&
-            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_LEA_OFFSET))
+            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_LEA_OFFSET) ||
+           (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
+            (Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ ||
+             Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ_REX2)))
     FixedValue += Reloc.Data.Type == COFF::IMAGE_REL_LLVM_JUMP8 ? 1 : 4;
 
   if (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT) {
@@ -1161,10 +1204,10 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   }
 }
 
-// Writes A + Constant - B as a span type naming A and PAIR naming B, at the
-// field. Both are local, as linkers resolve an external one to a thunk, and B
-// lies in A's section or in one associative to it, so that B lives while A
-// does.
+// Writes A + Constant - B as a span type, or the type the fixup states, naming
+// A and PAIR naming B, at the field. Both are local, as linkers resolve an
+// external one to a thunk, and B lies in A's section or in one associative to
+// it, so that B lives while A does.
 void WinCOFFWriter::recordSpan(const MCFragment &F, const MCFixup &Fixup,
                                const MCSymbol &A, const MCSymbol &B,
                                int64_t Constant, uint64_t &FixedValue) {
@@ -1172,8 +1215,10 @@ void WinCOFFWriter::recordSpan(const MCFragment &F, const MCFixup &Fixup,
   // every width on AArch64, are types of Windows Itanium and NT-POSIX objects.
   bool IsAMD64 = Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64;
   unsigned Type = COFF::IMAGE_REL_AMD64_ABSOLUTE;
-  if (IsAMD64 &&
-      Asm->getBackend().getFixupKindInfo(Fixup.getKind()).TargetSize == 32)
+  if (mc::isRelocRelocation(Fixup.getKind()))
+    Type = getCOFFRelocType(Fixup.getKind());
+  else if (IsAMD64 &&
+           Asm->getBackend().getFixupKindInfo(Fixup.getKind()).TargetSize == 32)
     Type = COFF::IMAGE_REL_AMD64_SSPAN32;
   else if ((IsAMD64 || Header.Machine == COFF::IMAGE_FILE_MACHINE_ARM64) &&
            getContext()
@@ -1206,8 +1251,14 @@ void WinCOFFWriter::recordSpan(const MCFragment &F, const MCFixup &Fixup,
   if (Type == COFF::IMAGE_REL_AMD64_ABSOLUTE || Fixup.isPCRel())
     return getContext().reportError(
         Fixup.getLoc(), "Cannot represent a difference across sections");
-  if (!A.isInSection() || static_cast<const MCSymbolCOFF &>(A).isExternal() ||
-      static_cast<const MCSymbolCOFF &>(B).isExternal())
+  // The assembler resolved a difference within the field's section to points
+  // of this object, which labels mark where a symbol is external.
+  auto IsExternal = [](const MCSymbol &S) {
+    return static_cast<const MCSymbolCOFF &>(S).isExternal();
+  };
+  if (!A.isInSection() ||
+      ((IsExternal(A) || IsExternal(B)) &&
+       (&A.getSection() != F.getParent() || &B.getSection() != F.getParent())))
     return getContext().reportError(
         Fixup.getLoc(), "cross-section difference needs local symbols");
   auto *BSec = static_cast<const MCSectionCOFF *>(&B.getSection());
@@ -1234,7 +1285,7 @@ void WinCOFFWriter::recordSpan(const MCFragment &F, const MCFixup &Fixup,
         "cross-section difference puts its labels outside their sections");
   auto Label = [&](const MCSymbol &S, uint64_t Offset) {
     COFFSymbol *Sym = SymbolMap.lookup(&S);
-    Sym = Sym && Offset == Asm->getSymbolOffset(S)
+    Sym = Sym && Offset == Asm->getSymbolOffset(S) && !IsExternal(S)
               ? Sym
               : getOrCreateSecRelSymbol(S, Offset);
     ++Sym->Relocations;
@@ -1268,6 +1319,26 @@ uint64_t WinCOFFWriter::writeObject() {
   setWeakDefaultNames();
   if (Mode != DwoOnly)
     createFileSymbols();
+
+  // The link records name the four places of a dispatch through a jump table
+  // by symbols of this object: a label, where a place has no symbol or one
+  // that another object may define.
+  SmallVector<COFFSymbol *, 0> SwitchLabels;
+  if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    for (const WinCOFFObjectWriter::SwitchTable &Table : OWriter.SwitchTables)
+      for (const MCSymbol *S : Table.Symbols) {
+        if (!S->isInSection() || !SectionMap.contains(&S->getSection())) {
+          getContext().reportError(SMLoc(),
+                                   "switch table names '" + S->getName() +
+                                       "', which this object does not define");
+          return 0;
+        }
+        COFFSymbol *Sym = SymbolMap.lookup(S);
+        SwitchLabels.push_back(
+            Sym && !static_cast<const MCSymbolCOFF *>(S)->isExternal()
+                ? Sym
+                : getOrCreateSecRelSymbol(*S, Asm->getSymbolOffset(*S)));
+      }
 
   for (auto &Symbol : Symbols) {
     // Update section number & offset for symbols that have them.
@@ -1370,9 +1441,19 @@ uint64_t WinCOFFWriter::writeObject() {
     for (const std::unique_ptr<COFFSection> &Section : Sections) {
       if (!COFF::isGuardCFAddressTakingSection(Section->Name))
         continue;
+      // On ARM64 the load of an import pointer follows an adrp of its page,
+      // which takes no address where the section's loads of the pointer are
+      // fused reads.
+      SmallPtrSet<const COFFSymbol *, 8> FusedRead;
+      for (const COFFRelocation &R : Section->Relocations)
+        if (R.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ)
+          FusedRead.insert(R.Symb);
       for (const COFFRelocation &R : Section->Relocations) {
         if (!COFF::isGuardCFAddressTakingRelocation(Header.Machine,
-                                                    R.Data.Type))
+                                                    R.Data.Type) ||
+            (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARM64 &&
+             R.Data.Type == COFF::IMAGE_REL_ARM64_PAGEBASE_REL21 &&
+             FusedRead.contains(R.Symb)))
           continue;
         auto *Sym = static_cast<const MCSymbolCOFF *>(R.Symb->MC);
         bool IsImport = R.Symb->Name.starts_with("__imp_");
@@ -1403,7 +1484,7 @@ uint64_t WinCOFFWriter::writeObject() {
     raw_svector_ostream OS(Content);
     OS.write(COFF::LinkRecordsMagic, sizeof(COFF::LinkRecordsMagic));
     encodeULEB128(COFF::LinkRecordsVersion, OS);
-    encodeULEB128(0, OS); // Flags.
+    encodeULEB128(OWriter.LinkRecordsFlags, OS);
     auto Group = [&](uint64_t Kind, StringRef Payload) {
       encodeULEB128(Kind, OS);
       encodeULEB128(Payload.size(), OS);
@@ -1434,6 +1515,35 @@ uint64_t WinCOFFWriter::writeObject() {
       COFF::encodeLinkFact(FactsOS, Index(*Fact.Symbol), Fact.Tag, Operands);
     }
     Group(COFF::LinkRecordSymbols, Facts);
+
+    // The Sections group counts and lists, by its symbol's index, each section
+    // the linker may resize.
+    SmallVector<uint32_t, 0> Resizable;
+    for (const std::unique_ptr<COFFSection> &Section : Sections)
+      if (Section->MCSection->isLinkerRelaxable())
+        Resizable.push_back(Section->Symbol->getIndex());
+    // The dispatches through jump tables follow, counted: for each the
+    // labels of its branch, table and base, the count and the type of the
+    // entries, the label of the load and the flags.
+    if (!Resizable.empty() || !SwitchLabels.empty()) {
+      SmallString<0> Payload;
+      raw_svector_ostream PayloadOS(Payload);
+      encodeULEB128(Resizable.size(), PayloadOS);
+      for (uint32_t Index : Resizable)
+        encodeULEB128(Index, PayloadOS);
+      encodeULEB128(SwitchLabels.size() / 4, PayloadOS);
+      COFFSymbol **Label = SwitchLabels.begin();
+      for (const WinCOFFObjectWriter::SwitchTable &Table :
+           OWriter.SwitchTables) {
+        for (int I = 0; I != 3; ++I)
+          encodeULEB128((*Label++)->getIndex(), PayloadOS);
+        encodeULEB128(Table.Count, PayloadOS);
+        encodeULEB128(Table.Type, PayloadOS);
+        encodeULEB128((*Label++)->getIndex(), PayloadOS);
+        encodeULEB128(Table.Flags, PayloadOS);
+      }
+      Group(COFF::LinkRecordSections, Payload);
+    }
     auto *Sec = getContext().getCOFFSection(".llvm_link_records",
                                             COFF::IMAGE_SCN_LNK_INFO);
     Sec->curFragList()->Tail->setVarContents(OS.str());
@@ -1514,6 +1624,9 @@ int WinCOFFWriter::getSectionNumber(const MCSection &Section) const {
 void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
   LinkFacts.clear();
+  FixedSizeSections.clear();
+  SwitchTables.clear();
+  LinkRecordsFlags = 0;
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();
@@ -1543,6 +1656,42 @@ bool WinCOFFObjectWriter::isSymbolRefDifferenceFullyResolvedImpl(
 }
 
 void WinCOFFObjectWriter::executePostLayoutBinding() {
+  // The linker may resize a section with an instruction it may resize in
+  // which every value that depends on the layout is a relocation or CodeView.
+  // Padding before a branch without an ALIGN relocation is not, nor is
+  // alignment without one, an .org or a fill of computed length after the
+  // first such instruction, nor a section with a value that depends on its
+  // layout and no relocation. An AArch64 alignment of at most an instruction
+  // keeps its padding when the linker resizes code. Any other section is no
+  // longer linker-relaxable, so that the assembler resolves what it can in it
+  // and its padding is no ALIGN relocation.
+  bool IsArm64 = COFF::isAnyArm64(TargetObjectWriter->getMachine());
+  for (MCSection &MCSec : *Asm) {
+    int64_t Count;
+    if (!MCSec.isLinkerRelaxable() ||
+        (!FixedSizeSections.contains(&MCSec) &&
+         none_of(MCSec, [&](const MCFragment &F) {
+           if (auto *BF = dyn_cast<MCBoundaryAlignFragment>(&F))
+             return BF->getLastFragment() && !F.isLinkerRelaxable();
+           if (F.getLayoutOrder() <= MCSec.firstLinkerRelaxable())
+             return false;
+           return (F.getKind() == MCFragment::FT_Align &&
+                   !F.isLinkerRelaxable() &&
+                   !(IsArm64 && F.getAlignment() <= Align(4))) ||
+                  F.getKind() == MCFragment::FT_PrefAlign ||
+                  F.getKind() == MCFragment::FT_Org ||
+                  (F.getKind() == MCFragment::FT_Fill &&
+                   !static_cast<const MCFillFragment &>(F)
+                        .getNumValues()
+                        .evaluateAsAbsolute(Count));
+         })))
+      continue;
+    MCSec.setFirstLinkerRelaxable(-1u);
+    for (MCFragment &F : MCSec)
+      if (F.getKind() == MCFragment::FT_Align ||
+          F.getKind() == MCFragment::FT_BoundaryAlign)
+        F.clearVarFixups();
+  }
   ObjWriter->executePostLayoutBinding();
   if (DwoWriter)
     DwoWriter->executePostLayoutBinding();

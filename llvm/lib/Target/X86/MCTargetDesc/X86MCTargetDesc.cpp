@@ -121,6 +121,60 @@ bool X86_MC::is64BitMemOperand(const MCInst &MI, unsigned Op) {
 }
 #endif
 
+uint8_t X86_MC::determinePaddingPrefix(const MCInst &Inst,
+                                       const MCInstrInfo &MCII,
+                                       const MCSubtargetInfo &STI) {
+  assert((STI.hasFeature(X86::Is32Bit) || STI.hasFeature(X86::Is64Bit)) &&
+         "Prefixes can be added only in 32-bit or 64-bit mode.");
+  const MCInstrDesc &Desc = MCII.get(Inst.getOpcode());
+  uint64_t TSFlags = Desc.TSFlags;
+
+  // Determine where the memory operand starts, if present.
+  int MemoryOperand = X86II::getMemoryOperandIdx(Desc);
+
+  MCRegister SegmentReg;
+  if (MemoryOperand >= 0) {
+    // Check for explicit segment override on memory operand.
+    SegmentReg = Inst.getOperand(MemoryOperand + X86::AddrSegmentReg).getReg();
+  }
+
+  switch (TSFlags & X86II::FormMask) {
+  default:
+    break;
+  case X86II::RawFrmDstSrc: {
+    // Check segment override opcode prefix as needed (not for %ds).
+    if (Inst.getOperand(2).getReg() != X86::DS)
+      SegmentReg = Inst.getOperand(2).getReg();
+    break;
+  }
+  case X86II::RawFrmSrc: {
+    // Check segment override opcode prefix as needed (not for %ds).
+    if (Inst.getOperand(1).getReg() != X86::DS)
+      SegmentReg = Inst.getOperand(1).getReg();
+    break;
+  }
+  case X86II::RawFrmMemOffs: {
+    // Check segment override opcode prefix as needed.
+    SegmentReg = Inst.getOperand(1).getReg();
+    break;
+  }
+  }
+
+  if (SegmentReg)
+    return X86::getSegmentOverridePrefixForReg(SegmentReg);
+
+  if (STI.hasFeature(X86::Is64Bit))
+    return X86::CS_Encoding;
+
+  if (MemoryOperand >= 0) {
+    unsigned BaseRegNum = MemoryOperand + X86::AddrBaseReg;
+    MCRegister BaseReg = Inst.getOperand(BaseRegNum).getReg();
+    if (BaseReg == X86::ESP || BaseReg == X86::EBP)
+      return X86::SS_Encoding;
+  }
+  return X86::DS_Encoding;
+}
+
 bool X86_MC::needsAddressSizeOverride(const MCInst &MI,
                                       const MCSubtargetInfo &STI,
                                       int MemoryOperand, uint64_t TSFlags) {

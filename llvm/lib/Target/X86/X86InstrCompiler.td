@@ -241,7 +241,7 @@ let isPseudo = 1, isMeta = 1, isNotDuplicable = 1, SchedRW = [WriteSystem] in {
                             "#SEH_SaveReg $reg, $dst", []>;
   def SEH_SaveXMM : I<0, Pseudo, (outs), (ins i32imm:$reg, i32imm:$dst),
                             "#SEH_SaveXMM $reg, $dst", []>;
-  def SEH_StackAlloc : I<0, Pseudo, (outs), (ins i32imm:$size),
+  def SEH_StackAlloc : I<0, Pseudo, (outs), (ins i32imm:$size, variable_ops),
                             "#SEH_StackAlloc $size", []>;
   def SEH_StackAlign : I<0, Pseudo, (outs), (ins i32imm:$align),
                             "#SEH_StackAlign $align", []>;

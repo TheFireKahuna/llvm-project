@@ -22,9 +22,11 @@
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCFixup.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCObjectFileInfo.h"
 #include "llvm/MC/MCObjectStreamer.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSymbolCOFF.h"
 #include "llvm/MC/MCTargetOptions.h"
@@ -286,6 +288,13 @@ void MCWinCOFFStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
       {Symbol, Tag, {Operands.begin(), Operands.end()}});
 }
 
+void MCWinCOFFStreamer::emitCOFFSwitchTable(
+    const MCSymbol *Branch, const MCSymbol *Table, const MCSymbol *Base,
+    uint64_t Count, uint64_t Type, const MCSymbol *Load, uint64_t Flags) {
+  getWriter().SwitchTables.push_back(
+      {{Branch, Table, Base, Load}, Count, Type, Flags});
+}
+
 void MCWinCOFFStreamer::emitCOFFSymbolIndex(MCSymbol const *Symbol) {
   MCSection *Sec = getCurrentSectionOnly();
   Sec->ensureMinAlignment(Align(4));
@@ -435,7 +444,92 @@ void MCWinCOFFStreamer::finalizeCGProfileEntry(const MCSymbolRefExpr *&SRE) {
     static_cast<const MCSymbolCOFF *>(S)->setExternal(true);
 }
 
+void MCWinCOFFStreamer::reportMisplacedFusedSite() {
+  getContext().reportError(
+      FusedSite.Loc, Twine("fused ") + (FusedSite.IsJump ? "jump" : "call") +
+                         " does not name a pointer at a " +
+                         FusedForms[FusedSite.IsJump]);
+}
+
+void MCWinCOFFStreamer::emitRelocDirective(const MCExpr &Offset, StringRef Name,
+                                           const MCExpr *Expr, SMLoc Loc) {
+  MCObjectStreamer::emitRelocDirective(Offset, Name, Expr, Loc);
+  bool IsJump = Name == "IMAGE_REL_LLVM_FUSED_JUMP";
+  if (!MCII || (!IsJump && Name != "IMAGE_REL_LLVM_FUSED_CALL"))
+    return;
+  if (FusedSite.Offset)
+    reportMisplacedFusedSite();
+  auto *Pointer = dyn_cast_or_null<MCSymbolRefExpr>(Expr);
+  FusedSite = {&Offset, Pointer ? &Pointer->getSymbol() : nullptr, Loc, IsJump,
+               false};
+}
+
+// The linker rewrites a fused site as its type says, so each is checked
+// against the instructions the run shows; what wrote a register before the
+// run began rests on whoever states the type.
+MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst,
+                                        const MCSymbol *Read, bool IsSite,
+                                        bool IsPad) {
+  const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
+  MCSymbol *Marker = nullptr;
+  if (RunSection != getCurrentSection())
+    RunWrites.clear();
+  RunSection = getCurrentSection();
+  // A fused call or jump begins at its marker and goes through a register
+  // that a fused read of the marker's pointer last wrote.
+  if (FusedSite.Offset) {
+    MCValue Site;
+    bool Here = FusedSite.Placed ||
+                (FusedSite.Pointer &&
+                 FusedSite.Offset->evaluateAsRelocatable(Site, nullptr) &&
+                 Site.getAddSym() && !Site.getSubSym() &&
+                 Site.getAddSym()->getFragment() == getCurrentFragment() &&
+                 Site.getAddSym()->getOffset() + Site.getConstant() ==
+                     getCurFragSize());
+    if (Here && !FusedSite.Placed && !Site.getConstant())
+      Marker = const_cast<MCSymbol *>(Site.getAddSym());
+    if (Here && IsPad) {
+      FusedSite.Placed = true;
+    } else {
+      if (!Here || !IsSite)
+        reportMisplacedFusedSite();
+      else if (MCRegister Reg = Inst.getOperand(0).getReg();
+               any_of(MRI.regunits(Reg), [&](MCRegUnit Unit) {
+                 auto Write = RunWrites.find(static_cast<unsigned>(Unit));
+                 return Write != RunWrites.end() &&
+                        Write->second != FusedSite.Pointer;
+               }))
+        getContext().reportError(
+            FusedSite.Loc,
+            Twine("fused ") + (FusedSite.IsJump ? "jump" : "call") + " reads " +
+                MRI.getName(Reg) + ", which no fused read of '" +
+                FusedSite.Pointer->getName() + "' last wrote");
+      FusedSite.Offset = nullptr;
+      getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
+    }
+  }
+  if (Read)
+    getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
+  const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
+  auto Write = [&](MCRegister Reg, const MCSymbol *Pointer) {
+    for (MCRegUnit Unit : MRI.regunits(Reg))
+      RunWrites[static_cast<unsigned>(Unit)] = Pointer;
+  };
+  if (Desc.isCall() || Desc.isBarrier() || Desc.isTrap())
+    RunWrites.clear();
+  else {
+    for (unsigned I = 0, E = Desc.getNumDefs(); I != E; ++I)
+      if (Inst.getOperand(I).isReg() && Inst.getOperand(I).getReg())
+        Write(Inst.getOperand(I).getReg(), Read);
+    for (MCPhysReg Reg : Desc.implicit_defs())
+      Write(Reg, nullptr);
+  }
+  return Marker;
+}
+
 void MCWinCOFFStreamer::finishImpl() {
+  if (FusedSite.Offset)
+    reportMisplacedFusedSite();
   getContext().getCVContext().finish();
   MCAssembler &Asm = getAssembler();
   if (Asm.getWriter().getEmitAddrsigSection()) {

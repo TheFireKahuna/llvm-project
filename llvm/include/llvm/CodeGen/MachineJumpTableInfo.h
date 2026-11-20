@@ -41,6 +41,10 @@ struct MachineJumpTableEntry {
   /// block(s) that reference it.
   MachineFunctionDataHotness Hotness;
 
+  /// Whether the dispatch through the table follows a check that its index
+  /// is below the number of entries.
+  bool RangeChecked = false;
+
   LLVM_ABI explicit MachineJumpTableEntry(
       const std::vector<MachineBasicBlock *> &M);
 };
@@ -118,6 +122,10 @@ public:
   // updated.
   LLVM_ABI bool updateJumpTableEntryHotness(size_t JTI,
                                             MachineFunctionDataHotness Hotness);
+
+  /// Records that the dispatch through table \p JTI follows a check of its
+  /// index.
+  void setRangeChecked(size_t JTI) { JumpTables[JTI].RangeChecked = true; }
 
   /// RemoveJumpTable - Mark the specific index as being dead.  This will
   /// prevent it from being emitted.

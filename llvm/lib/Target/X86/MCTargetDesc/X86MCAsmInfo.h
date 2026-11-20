@@ -105,6 +105,8 @@ enum {
   S_TPOFF,
   // On COFF, a PC-relative data field through which a function is only called.
   S_COFF_REL32_CALL,
+  // On COFF, the load of a pointer whose register only fused sites read.
+  S_COFF_FUSED,
 };
 } // namespace X86
 } // namespace llvm

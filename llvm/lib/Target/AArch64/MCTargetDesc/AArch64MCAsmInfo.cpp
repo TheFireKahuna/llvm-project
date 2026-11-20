@@ -103,6 +103,7 @@ StringRef AArch64::getSpecifierName(AArch64::Specifier S) {
   case AArch64::S_TLSDESC_AUTH_PAGE:   return ":tlsdesc_auth:";
   case AArch64::S_SECREL_LO12:         return ":secrel_lo12:";
   case AArch64::S_SECREL_HI12:         return ":secrel_hi12:";
+  case AArch64::S_FUSED_LO12:          return ":fused_lo12:";
   case AArch64::S_GOT_AUTH:            return ":got_auth:";
   case AArch64::S_GOT_AUTH_PAGE:       return ":got_auth:";
   case AArch64::S_GOT_AUTH_LO12:       return ":got_auth_lo12:";

@@ -9,6 +9,8 @@
 #ifndef LLVM_MC_MCWINCOFFOBJECTWRITER_H
 #define LLVM_MC_MCWINCOFFOBJECTWRITER_H
 
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include <memory>
 
@@ -19,6 +21,21 @@ class MCContext;
 class MCFixup;
 class MCValue;
 class raw_pwrite_stream;
+
+/// The fixup kind that states COFF relocation type \p Type, as .reloc does.
+/// A machine's own types take the first literal kinds. The types from 0x8000
+/// up take the last 256, which no ELF type of x86-64 or AArch64 reaches, so
+/// that code shared with ELF never takes one of its kinds for one of them.
+constexpr MCFixupKind getCOFFRelocFixupKind(unsigned Type) {
+  return (Type >> 15 ? FK_NONE - 0x100 : FirstLiteralRelocationKind) +
+         (Type & 0xFF);
+}
+
+/// The COFF relocation type a literal fixup kind states.
+constexpr unsigned getCOFFRelocType(MCFixupKind Kind) {
+  return Kind >= FK_NONE - 0x100 ? 0x8000 | (Kind - (FK_NONE - 0x100))
+                                 : Kind - FirstLiteralRelocationKind;
+}
 
 class MCWinCOFFObjectTargetWriter : public MCObjectTargetWriter {
   virtual void anchor();
@@ -60,6 +77,21 @@ public:
     SmallVector<const MCExpr *, 2> Operands;
   };
   std::vector<LinkFact> LinkFacts;
+  /// The flags of the object's link records.
+  uint64_t LinkRecordsFlags = 0;
+
+  /// A dispatch through a jump table that the Sections group of the object's
+  /// link records states: its branch, table, base and load, and the count and
+  /// type of the table's entries.
+  struct SwitchTable {
+    const MCSymbol *Symbols[4];
+    uint64_t Count, Type, Flags;
+  };
+  std::vector<SwitchTable> SwitchTables;
+
+  /// Sections with a value that depends on their layout and that no
+  /// relocation states. The link records do not list them as resizable.
+  SmallPtrSet<const MCSection *, 0> FixedSizeSections;
 
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
                       raw_pwrite_stream &OS);

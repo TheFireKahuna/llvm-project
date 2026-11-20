@@ -33,6 +33,7 @@ class MCRegister;
 class MCRegisterInfo;
 class MCStreamer;
 class MCSubtargetInfo;
+class MCSymbol;
 class MCTargetOptions;
 class MCTargetStreamer;
 class Target;
@@ -84,6 +85,18 @@ bool is32BitMemOperand(const MCInst &MI, unsigned Op);
 bool is64BitMemOperand(const MCInst &MI, unsigned Op);
 #endif
 
+/// X86 can reduce the bytes of NOP by padding instructions with prefixes to
+/// get a better peformance in some cases. Here, we determine which prefix is
+/// the most suitable.
+///
+/// If the instruction has a segment override prefix, use the existing one.
+/// If the target is 64-bit, use the CS.
+/// If the target is 32-bit,
+///   - If the instruction has a ESP/EBP base register, use SS.
+///   - Otherwise use DS.
+uint8_t determinePaddingPrefix(const MCInst &Inst, const MCInstrInfo &MCII,
+                               const MCSubtargetInfo &STI);
+
 /// Returns true if this instruction needs an Address-Size override prefix.
 bool needsAddressSizeOverride(const MCInst &MI, const MCSubtargetInfo &STI,
                               int MemoryOperand, uint64_t TSFlags);
@@ -93,8 +106,22 @@ bool needsAddressSizeOverride(const MCInst &MI, const MCSubtargetInfo &STI,
 MCSubtargetInfo *createX86MCSubtargetInfo(const Triple &TT, StringRef CPU,
                                           StringRef FS);
 
+/// The place of an instruction in a fused call or jump, the marked
+/// instructions that the linker rewrites as one.
+enum FusedSitePart : unsigned {
+  FSP_None = 0,
+  FSP_Inside = 1,
+  FSP_First = 2,
+  FSP_Last = 4,
+};
+
+/// Emits \p Inst. A fused site is one unit to padding: what keeps its call or
+/// jmp within a boundary goes before \p Marker, the label that states the
+/// site at its first instruction, which moves past it, and no padding
+/// lengthens an instruction of the site.
 void emitInstruction(MCObjectStreamer &, const MCInst &Inst,
-                     const MCSubtargetInfo &STI);
+                     const MCSubtargetInfo &STI, unsigned Part = FSP_None,
+                     MCSymbol *Marker = nullptr);
 
 void emitPrefix(MCCodeEmitter &MCE, const MCInst &MI, SmallVectorImpl<char> &CB,
                 const MCSubtargetInfo &STI);

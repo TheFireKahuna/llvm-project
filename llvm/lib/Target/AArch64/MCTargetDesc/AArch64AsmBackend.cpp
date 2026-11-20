@@ -11,6 +11,7 @@
 #include "MCTargetDesc/AArch64MCAsmInfo.h"
 #include "MCTargetDesc/AArch64MCTargetDesc.h"
 #include "Utils/AArch64BaseInfo.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/MachO.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
@@ -21,6 +22,7 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCTargetOptions.h"
 #include "llvm/MC/MCValue.h"
+#include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
@@ -359,6 +361,14 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
 
 std::optional<MCFixupKind>
 AArch64AsmBackend::getFixupKind(StringRef Name) const {
+  // A Windows Itanium or NT-POSIX object marks a call or a jump through a
+  // register that holds an import pointer.
+  if (TheTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    if (Name == "IMAGE_REL_LLVM_FUSED_CALL")
+      return getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_FUSED_CALL);
+    if (Name == "IMAGE_REL_LLVM_FUSED_JUMP")
+      return getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_FUSED_JUMP);
+  }
   if (!TheTriple.isOSBinFormatELF())
     return std::nullopt;
 
@@ -418,6 +428,21 @@ unsigned AArch64AsmBackend::getFixupKindContainereSizeInBytes(unsigned Kind) con
   }
 }
 
+// Whether COFF has a relocation type for a PC-relative field of the kind.
+static bool hasCOFFPCRelType(MCFixupKind Kind) {
+  switch (Kind) {
+  case AArch64::fixup_aarch64_pcrel_adr_imm21:
+  case AArch64::fixup_aarch64_pcrel_branch14:
+  case AArch64::fixup_aarch64_pcrel_branch19:
+  case AArch64::fixup_aarch64_pcrel_branch26:
+  case AArch64::fixup_aarch64_pcrel_call26:
+  case AArch64::fixup_aarch64_pcrel_tail26:
+    return true;
+  default:
+    return false;
+  }
+}
+
 static bool shouldForceRelocation(const MCFixup &Fixup) {
   // The ADRP instruction adds some multiple of 0x1000 to the current PC &
   // ~0xfff. This means that the required offset to reach a symbol can vary by
@@ -439,8 +464,62 @@ void AArch64AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
                                    uint64_t Value, bool IsResolved) {
   if (shouldForceRelocation(Fixup))
     IsResolved = false;
-  maybeAddReloc(F, Fixup, Target, Value, IsResolved);
   MCFixupKind Kind = Fixup.getKind();
+  // The linker may change a distance the assembler resolved across code that
+  // it resizes, so a PC-relative field keeps its relocation.
+  if (IsResolved && Fixup.isPCRel() && hasCOFFPCRelType(Kind) &&
+      !isPCRelFixupResolved(Target.getAddSym(), F))
+    IsResolved = false;
+  bool IsWordSpan8 =
+      Kind == getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_USPAN8_W);
+  bool IsWordSpan16 =
+      Kind == getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_USPAN16_W);
+  bool IsWordSpan18 =
+      Kind == getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_SSPAN_WORDS18);
+  if (!IsResolved && Target.getSubSym() &&
+      TheTriple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+      Kind >= AArch64::fixup_aarch64_add_imm12 &&
+      Kind <= AArch64::fixup_aarch64_ldst_imm12_scale16) {
+    // An immediate that is a distance the linker may change has the page
+    // offset type of its instruction and a PAIR, which add the distance to
+    // the constant the field holds: an unsigned one for an add and a signed
+    // number of bytes for a load or store.
+    bool IsAdd = Kind == AArch64::fixup_aarch64_add_imm12;
+    uint64_t Unused;
+    Asm->getWriter().recordRelocation(
+        F,
+        MCFixup::create(Fixup.getOffset(), Fixup.getValue(),
+                        getCOFFRelocFixupKind(
+                            IsAdd ? COFF::IMAGE_REL_ARM64_PAGEOFFSET_12A
+                                  : COFF::IMAGE_REL_ARM64_PAGEOFFSET_12L)),
+        MCValue::get(Target.getAddSym(), Target.getSubSym()), Unused);
+    Value = Target.getConstant();
+    if (IsAdd ? !isUInt<12>(Value) : !isInt<12>(Target.getConstant()))
+      getContext().reportError(Fixup.getLoc(), "fixup value out of range");
+  } else if (!Target.isAbsolute() ||
+             (!IsWordSpan8 && !IsWordSpan16 && !IsWordSpan18)) {
+    // A distance in instructions that the assembler folded has no relocation.
+    maybeAddReloc(F, Fixup, Target, Value, IsResolved);
+  }
+  // The entry of a compressed jump table holds its distance in instructions
+  // as assembled, and so do the low 18 bits of an unwind record's word.
+  if (IsWordSpan8 || IsWordSpan16 || IsWordSpan18) {
+    if (Target.getAddSym() && !Target.getSubSym())
+      getContext().reportError(Fixup.getLoc(),
+                               "expected relocatable expression");
+    else if (!isUIntN(IsWordSpan8    ? 10
+                      : IsWordSpan16 ? 18
+                                     : 20,
+                      Value) ||
+             Value & 3)
+      getContext().reportError(Fixup.getLoc(), "fixup value out of range");
+    Data[0] = Value >> 2;
+    if (!IsWordSpan8)
+      Data[1] = Value >> 10;
+    if (IsWordSpan18)
+      Data[2] = (Data[2] & 0xfc) | ((Value >> 18) & 3);
+    return;
+  }
   // An FT_LEB fragment's contents hold its value already.
   if (mc::isRelocation(Kind) || Kind == FK_Data_leb128)
     return;
@@ -824,6 +903,60 @@ public:
       return {false, false};
     F.setVarFixups({MCFixup::create(0, &F.getLEBValue(), FK_Data_leb128)});
     return {true, false};
+  }
+
+  // A PC-relative field that the assembler resolves across an instruction the
+  // linker may resize, and that COFF has no relocation type for, keeps its
+  // section's size. The object writer decides which sections the linker may
+  // resize once layout is done, before it records a relocation.
+  bool finishLayout() const override {
+    auto &Writer = static_cast<WinCOFFObjectWriter &>(Asm->getWriter());
+    for (MCSection &Sec : *Asm) {
+      if (!Sec.isLinkerRelaxable())
+        continue;
+      for (const MCFragment &F : Sec)
+        for (const MCFixup &Fixup :
+             concat<const MCFixup>(F.getFixups(), F.getVarFixups())) {
+          MCValue Target;
+          if (!Fixup.isPCRel() || hasCOFFPCRelType(Fixup.getKind()) ||
+              shouldForceRelocation(Fixup) ||
+              !Fixup.getValue()->evaluateAsRelocatable(Target, Asm))
+            continue;
+          const MCSymbol *A = Target.getAddSym();
+          if (A && !Target.getSubSym() && !A->isUndefined() &&
+              !A->isAbsolute() &&
+              Writer.isSymbolRefDifferenceFullyResolvedImpl(*A, F, false,
+                                                            true) &&
+              !Asm->getBackend().isPCRelFixupResolved(A, F))
+            Writer.FixedSizeSections.insert(&Sec);
+        }
+    }
+    return false;
+  }
+
+  // In a section the linker resizes, alignment after the first instruction it
+  // may resize is the linker's to redo: an ALIGN relocation at the padding
+  // packs the alignment, the four bytes of the one no-operation and the most
+  // bytes to skip, 0 for any number, into its index.
+  bool relaxAlign(MCFragment &F, unsigned &Size) override {
+    if (F.getLayoutOrder() <= F.getParent()->firstLinkerRelaxable() ||
+        F.getAlignment() <= Align(4))
+      return false;
+    unsigned MaxSkip = F.getAlignMaxBytesToEmit() < F.getAlignment().value()
+                           ? F.getAlignMaxBytesToEmit()
+                           : 0;
+    if (!isUInt<12>(MaxSkip) || Size % 4)
+      return false;
+    if (Size > F.getAlignMaxBytesToEmit())
+      Size = 0;
+    // The fixup's offset is from the start of the padding.
+    F.setVarFixups({MCFixup::create(
+        0,
+        MCConstantExpr::create(Log2(F.getAlignment()) | 4 << 5 | MaxSkip << 9,
+                               getContext()),
+        getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_ALIGN))});
+    F.setLinkerRelaxable();
+    return true;
   }
 
   std::unique_ptr<MCObjectTargetWriter>

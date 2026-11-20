@@ -40,6 +40,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineInstrBundleIterator.h"
+#include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
@@ -3133,6 +3134,7 @@ void SelectionDAGBuilder::visitJumpTableHeader(SwitchCG::JumpTable &JT,
     // Emit the range check for the jump table, and branch to the default block
     // for the switch statement if the value being switched on exceeds the
     // largest case in the switch.
+    FuncInfo.MF->getJumpTableInfo()->setRangeChecked(JT.JTI);
     SDValue CMP = DAG.getSetCC(
         dl, TLI.getSetCCResultType(DAG.getDataLayout(), *DAG.getContext(),
                                    Sub.getValueType()),

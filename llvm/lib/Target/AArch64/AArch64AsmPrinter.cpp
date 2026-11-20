@@ -26,6 +26,7 @@
 #include "TargetInfo/AArch64TargetInfo.h"
 #include "Utils/AArch64BaseInfo.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -362,6 +363,7 @@ private:
 
   void PrintDebugValueComment(const MachineInstr *MI, raw_ostream &OS);
 
+  void emitFunctionBodyStart() override;
   void emitFunctionBodyEnd() override;
   void emitBasicBlockEnd(const MachineBasicBlock &MBB) override;
   void emitGlobalAlias(const Module &M, const GlobalAlias &GA) override;
@@ -408,6 +410,7 @@ private:
   /// call optimization and, if so, records it to be emitted in the import call
   /// section.
   void recordIfImportCall(const MachineInstr *BranchInst);
+  void emitFusedSite(const MachineInstr *MI);
 };
 
 } // end anonymous namespace
@@ -1281,6 +1284,24 @@ void AArch64AsmPrinter::emitBasicBlockEnd(const MachineBasicBlock &MBB) {
   AsmPrinter::emitBasicBlockEnd(MBB);
 }
 
+void AArch64AsmPrinter::emitFunctionBodyStart() {
+  // A call or a tail call through an import pointer is a blr or a br of the
+  // register that an ldr of the pointer wrote.
+  findFusedSites(
+      [](const MachineInstr &Load) {
+        if (Load.getOpcode() != AArch64::LDRXui)
+          return false;
+        const MachineOperand &Pointer = Load.getOperand(2);
+        return ((Pointer.isGlobal() &&
+                 (Pointer.getTargetFlags() & AArch64II::MO_DLLIMPORT)) ||
+                (Pointer.isSymbol() &&
+                 (Pointer.getTargetFlags() & AArch64II::MO_GOT))) &&
+               !Pointer.getOffset();
+      },
+      {AArch64::BLR, AArch64::TCRETURNri, AArch64::TCRETURNrix16x17,
+       AArch64::TCRETURNrix17, AArch64::TCRETURNrinotx16});
+}
+
 void AArch64AsmPrinter::emitFunctionBodyEnd() {
   if (!AArch64FI->getLOHRelated().empty())
     emitLOHs();
@@ -1703,6 +1724,8 @@ void AArch64AsmPrinter::LowerJumpTableDest(llvm::MCStreamer &OutStreamer,
   Register EntryReg = MI.getOperand(3).getReg();
   int JTIdx = MI.getOperand(4).getIndex();
   int Size = AArch64FI->getJumpTableEntrySize(JTIdx);
+
+  emitJumpTableLoadLabel(JTIdx);
 
   // This has to be first because the compression pass based its reachability
   // calculations on the start of the JumpTableDest instruction.
@@ -3852,6 +3875,7 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
     emitPtrauthTailCallHardening(MI);
 
     recordIfImportCall(MI);
+    emitFusedSite(MI);
     MCInst TmpInst;
     TmpInst.setOpcode(AArch64::BR);
     TmpInst.addOperand(MCOperand::createReg(MI->getOperand(0).getReg()));
@@ -4249,6 +4273,7 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
   case AArch64::BLR:
   case AArch64::BR: {
     recordIfImportCall(MI);
+    emitFusedSite(MI);
     MCInst TmpInst;
     MCInstLowering.Lower(MI, TmpInst);
     EmitToStreamer(*OutStreamer, TmpInst);
@@ -4308,7 +4333,22 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
   // Finally, do the automated lowerings for everything else.
   MCInst TmpInst;
   MCInstLowering.Lower(MI, TmpInst);
+  // A fused read states so in the type of its relocation.
+  if (FusedSites.contains(MI))
+    TmpInst.getOperand(2) = MCOperand::createExpr(MCSpecifierExpr::create(
+        cast<MCSpecifierExpr>(TmpInst.getOperand(2).getExpr())->getSubExpr(),
+        AArch64::S_FUSED_LO12, OutContext));
   EmitToStreamer(*OutStreamer, TmpInst);
+}
+
+void AArch64AsmPrinter::emitFusedSite(const MachineInstr *MI) {
+  const MachineInstr *Load = FusedSites.lookup(MI);
+  if (!Load)
+    return;
+  const MachineOperand &Pointer = Load->getOperand(2);
+  AsmPrinter::emitFusedSite(
+      MI, Pointer.isGlobal() ? MCInstLowering.GetGlobalAddressSymbol(Pointer)
+                             : MCInstLowering.GetExternalSymbolSymbol(Pointer));
 }
 
 void AArch64AsmPrinter::recordIfImportCall(

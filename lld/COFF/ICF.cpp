@@ -178,12 +178,23 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
   if (!llvm::equal(a->getRelocs(), b->getRelocs(), eqReloc))
     return false;
 
+  auto eqSwitch = [&](const SwitchTable &s1, const SwitchTable &s2) {
+    if constexpr (constant)
+      if (s1.count != s2.count || s1.type != s2.type || s1.flags != s2.flags)
+        return false;
+    return eqSym(s1.branch, s2.branch) && eqSym(s1.table, s2.table) &&
+           eqSym(s1.base, s2.base) && eqSym(s1.load, s2.load);
+  };
+  if (!llvm::equal(a->file->getSwitchTables(a), b->file->getSwitchTables(b),
+                   eqSwitch))
+    return false;
+
   if constexpr (constant) {
     return a->getOutputCharacteristics() == b->getOutputCharacteristics() &&
            a->getSectionName() == b->getSectionName() &&
            a->header->SizeOfRawData == b->header->SizeOfRawData &&
            a->checksum == b->checksum && a->getContents() == b->getContents() &&
-           a->getMachine() == b->getMachine() &&
+           a->getMachine() == b->getMachine() && a->resizable == b->resizable &&
            suppressed.contains(a) == suppressed.contains(b) &&
            assocEquals(a, b);
   } else {

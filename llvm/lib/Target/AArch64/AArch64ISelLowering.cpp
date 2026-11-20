@@ -1172,11 +1172,7 @@ AArch64TargetLowering::AArch64TargetLowering(const TargetMachine &TM,
   setMinFunctionAlignment(Align(4));
   // Set preferred alignments.
 
-  // Don't align loops on Windows and UEFI. The SEH unwind info generation
-  // needs to know the exact length of functions before the alignments have
-  // been expanded.
-  if (!Subtarget->isTargetWindowsOrUEFI())
-    setPrefLoopAlignment(STI.getPrefLoopAlignment());
+  setPrefLoopAlignment(STI.getPrefLoopAlignment());
   setMaxBytesForAlignment(STI.getMaxBytesForLoopAlignment());
   setPrefFunctionAlignment(STI.getPrefFunctionAlignment());
 

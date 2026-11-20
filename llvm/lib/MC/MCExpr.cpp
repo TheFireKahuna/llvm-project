@@ -349,10 +349,11 @@ static void attemptToFoldSymbolOffsetDifference(const MCAssembler *Asm,
     // Track whether B is before a relaxable instruction/alignment and whether A
     // is after a relaxable instruction/alignment. If SA and SB are separated by
     // a linker-relaxable instruction/alignment, the difference cannot be
-    // resolved as it may be changed by the linker.
+    // resolved as it may be changed by the linker. An expression in a set
+    // takes the difference as assembled, as it does once layout is available.
     bool BBeforeRelax = false, AAfterRelax = false;
     for (auto F = FB; F; F = F->getNext()) {
-      if (F && F->isLinkerRelaxable()) {
+      if (!InSet && F && F->isLinkerRelaxable()) {
         if (&*F != FB || SBOffset != F->getSize())
           BBeforeRelax = true;
         if (&*F != FA || SAOffset == F->getSize())

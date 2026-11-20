@@ -63,6 +63,8 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSymIdx>(".symidx");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSafeSEH>(".safeseh");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(".link_fact");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveSwitchTable>(
+        ".switch_table");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecIdx>(".secidx");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkOnce>(".linkonce");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveRVA>(".rva");
@@ -133,6 +135,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveSecIdx(StringRef, SMLoc);
   bool parseDirectiveSafeSEH(StringRef, SMLoc);
   bool parseDirectiveLinkFact(StringRef, SMLoc);
+  bool parseDirectiveSwitchTable(StringRef, SMLoc);
   bool parseDirectiveSymIdx(StringRef, SMLoc);
   bool parseCOMDATType(COFF::COMDATType &Type);
   bool parseDirectiveLinkOnce(StringRef, SMLoc);
@@ -568,6 +571,23 @@ bool COFFAsmParser::parseDirectiveLinkFact(StringRef, SMLoc) {
   return false;
 }
 
+/// ::= .switch_table branch, table, base, count, type, load, flags
+bool COFFAsmParser::parseDirectiveSwitchTable(StringRef, SMLoc) {
+  MCSymbol *Branch, *Table, *Base, *Load;
+  int64_t Count, Type, Flags;
+  if (getParser().parseSymbol(Branch) || getParser().parseComma() ||
+      getParser().parseSymbol(Table) || getParser().parseComma() ||
+      getParser().parseSymbol(Base) || getParser().parseComma() ||
+      getParser().parseAbsoluteExpression(Count) || getParser().parseComma() ||
+      getParser().parseAbsoluteExpression(Type) || getParser().parseComma() ||
+      getParser().parseSymbol(Load) || getParser().parseComma() ||
+      getParser().parseAbsoluteExpression(Flags) || parseEOL())
+    return true;
+  getStreamer().emitCOFFSwitchTable(Branch, Table, Base, Count, Type, Load,
+                                    Flags);
+  return false;
+}
+
 bool COFFAsmParser::parseDirectiveSecIdx(StringRef, SMLoc) {
   MCSymbol *Symbol;
   if (getParser().parseSymbol(Symbol))
@@ -746,11 +766,20 @@ bool COFFAsmParser::parseSEHDirectiveAllocStack(StringRef, SMLoc Loc) {
   if (getParser().parseAbsoluteExpression(Size))
     return true;
 
+  // ", large" asks for the large form of an allocation the small one holds.
+  bool Large = false;
+  if (parseOptionalToken(AsmToken::Comma)) {
+    StringRef Form;
+    if (getParser().parseIdentifier(Form) || Form != "large")
+      return TokError("expected 'large'");
+    Large = true;
+  }
+
   if (getLexer().isNot(AsmToken::EndOfStatement))
     return TokError("unexpected token in directive");
 
   Lex();
-  getStreamer().emitWinCFIAllocStack(Size, Loc);
+  getStreamer().emitWinCFIAllocStack(Size, Loc, Large);
   return false;
 }
 

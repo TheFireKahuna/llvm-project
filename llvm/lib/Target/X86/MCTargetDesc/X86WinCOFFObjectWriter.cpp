@@ -69,7 +69,9 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
   if (Spec && Spec != X86::S_PLT && Spec != X86::S_COFF_SECREL &&
       Spec != MCSymbolRefExpr::VK_COFF_IMGREL32 &&
       Spec != MCSymbolRefExpr::VK_COFF_IMGREL32_CALL &&
-      !(Spec == X86::S_COFF_REL32_CALL && FixupKind == FK_Data_4)) {
+      !(Spec == X86::S_COFF_REL32_CALL && FixupKind == FK_Data_4) &&
+      !(Spec == X86::S_COFF_FUSED && Is64Bit &&
+        Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
     Ctx.reportError(Fixup.getLoc(),
                     "relocation specifier @" +
                         Ctx.getAsmInfo().getSpecifierName(Spec) +
@@ -81,6 +83,17 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
     // form of the instruction, or that a data field's target is only called.
     bool HasSiteTypes =
         Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+    // A fused read is the load of a pointer that MEM_LOAD or MEM_LOAD_REX2
+    // would state.
+    if (Spec == X86::S_COFF_FUSED) {
+      if (FixupKind == X86::reloc_riprel_4byte_movq_load)
+        return COFF::IMAGE_REL_LLVM_FUSED_READ;
+      if (FixupKind == X86::reloc_riprel_4byte_movq_load_rex2)
+        return COFF::IMAGE_REL_LLVM_FUSED_READ_REX2;
+      Ctx.reportError(Fixup.getLoc(),
+                      "fused read is not a 64-bit mov of a pointer");
+      return COFF::IMAGE_REL_AMD64_ABSOLUTE;
+    }
     switch (FixupKind) {
     case X86::reloc_riprel_4byte_imm1:
       return COFF::IMAGE_REL_AMD64_REL32_1;

@@ -1,0 +1,223 @@
+# REQUIRES: x86
+
+## A container of link records, in an object that @comp.id marks as LLVM's for
+## Windows Itanium or NT-POSIX: "LLRC", version 1, flags, then groups, each a
+## kind, a size and a payload. The linker defines the symbol that .drectve
+## names, and the section does not reach the image.
+
+# RUN: rm -rf %t && split-file %s %t && cd %t
+# DEFINE: %{link} = lld-link -entry:a -subsystem:console -out:out.exe
+# DEFINE: %{icf} = %{link} -opt:noref,icf -verbose
+
+## A Symbols group and a Sections group listing a, b and c; flags the linker
+## does not know and a group of the non-critical kind 20.
+# RUN: yaml2obj obj.yaml -o base.obj
+# RUN: %{link} base.obj
+# RUN: llvm-readobj --sections out.exe | FileCheck --check-prefix=REMOVED %s
+# RUN: yaml2obj -DDATA=4C4C52430180011402AABB0100 obj.yaml -o skip.obj
+# RUN: %{link} skip.obj
+# REMOVED-NOT: .llvm_link_records
+
+## A group of the critical kind 11, which is not assigned, and the records of
+## an archive member that is not loaded, which are not read.
+# RUN: yaml2obj -DDATA=4C4C5243010001000201000B00 obj.yaml -o critical.obj
+# RUN: not %{link} critical.obj 2>&1 | FileCheck --check-prefix=CRITICAL %s
+# RUN: llvm-lib critical.obj -out:critical.lib
+# RUN: %{link} base.obj critical.lib
+# CRITICAL: error: critical.obj: .llvm_link_records: unknown critical kind 11
+
+## Version 2, a wrong magic, a group longer than the section, a section that
+## ends in the magic, and a marked object with no Symbols group, which an
+## object of another producer need not have.
+# RUN: yaml2obj -DDATA=4C4C524302000100 obj.yaml -o version.obj
+# RUN: yaml2obj -DDATA=4C4C524201000100 obj.yaml -o magic.obj
+# RUN: yaml2obj -DDATA=4C4C5243010001000203AA obj.yaml -o size.obj
+# RUN: yaml2obj -DDATA=4C4C52 obj.yaml -o short.obj
+# RUN: yaml2obj -DDATA=4C4C52430100 obj.yaml -o nosymbols.obj
+# RUN: not %{link} version.obj magic.obj size.obj short.obj nosymbols.obj 2>&1 \
+# RUN:   | FileCheck --check-prefix=MALFORMED %s
+# RUN: yaml2obj -DDATA=4C4C52430100 -DCOMPID=17104896 obj.yaml -o foreign.obj
+# RUN: %{link} foreign.obj
+# MALFORMED: error: version.obj: .llvm_link_records: unknown version 2
+# MALFORMED: error: magic.obj: .llvm_link_records: bad magic
+# MALFORMED: error: size.obj: .llvm_link_records: unexpected end of data at offset 0xb while reading [0xa, 0xd)
+# MALFORMED: error: short.obj: .llvm_link_records: unexpected end of data at offset 0x3 while reading [0x0, 0x4)
+# MALFORMED: error: nosymbols.obj: .llvm_link_records: no Symbols group
+
+## The Sections group counts and then lists, by its symbol's index, each code
+## section that the linker may resize. ICF folds two sections only where both
+## are listed or neither is: here a and b, of a, b and c with equal bytes. A
+## section that another object's copy replaces has no part in the link.
+# RUN: %{icf} base.obj 2>&1 | FileCheck --check-prefix=SOME --implicit-check-not="Removed c" %s
+# RUN: yaml2obj -DDATA=4C4C524301000100020403010407 obj.yaml -o all.obj
+# RUN: %{icf} all.obj 2>&1 | FileCheck --check-prefix=ALL %s
+# RUN: llvm-readobj --coff-link-records all.obj | FileCheck --check-prefix=DUMP %s
+# RUN: %{link} base.obj all.obj
+# SOME:      Selected a
+# SOME-NEXT:   Removed b
+# ALL:      Selected a
+# ALL-NEXT:   Removed b
+# ALL-NEXT:   Removed c
+# DUMP:      Kind: Sections (0x2)
+# DUMP-NEXT: ResizableSection: .text$f (1)
+# DUMP-NEXT: ResizableSection: .text$f (4)
+# DUMP-NEXT: ResizableSection: .text$f (7)
+# DUMP-NEXT: }
+
+## An index that the symbol table does not have, the symbols of a function, of
+## a data section and of the second half of a section's symbol, a number that
+## does not end, and a count of more sections than the group has bytes.
+# RUN: yaml2obj -DDATA=4C4C5243010001000203020163 obj.yaml -o range.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010002020103 obj.yaml -o function.obj
+# RUN: yaml2obj -DDATA=4C4C5243010001000202010A obj.yaml -o data.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010002020102 obj.yaml -o aux.obj
+# RUN: yaml2obj -DDATA=4C4C5243010001000203020181 obj.yaml -o leb.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010002020301 obj.yaml -o count.obj
+# RUN: not %{link} range.obj function.obj data.obj aux.obj leb.obj count.obj \
+# RUN:   2>&1 | FileCheck --check-prefix=ERR %s
+# ERR: error: range.obj: .llvm_link_records: resizable section 99, which the file does not have
+# ERR: error: function.obj: .llvm_link_records: resizable section 3 is not a code section
+# ERR: error: data.obj: .llvm_link_records: resizable section 10 is not a code section
+# ERR: error: aux.obj: .llvm_link_records: resizable section 2 is not a code section
+# ERR: error: leb.obj: .llvm_link_records: unable to decode LEB128 at offset 0x00000002: malformed uleb128, extends past end
+# ERR: error: count.obj: .llvm_link_records: 3 resizable sections, which the group does not hold
+
+## After the sections the group counts and states the dispatches through jump
+## tables: the symbols of the branch, of the table and of what its entries are
+## relative to, the number of entries and their type, the symbol of the
+## instruction that loads the entry and flags, of which one is known. ICF
+## folds two sections only where their dispatches agree: c's has other flags,
+## then another type, then a type that is not known, with which it is not
+## kept, and then agrees. A dispatch of a replaced section is not kept.
+# RUN: yaml2obj -DDATA=4C4C52430100010002180003030A0A010403FF01060A0A01040601090A0A01040900 obj.yaml -o flags.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010002180003030A0A010403FF01060A0A01040601090A0A01050901 obj.yaml -o type.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010002180003030A0A010403FF01060A0A01040601090A0A01630901 obj.yaml -o unknown.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010002180003030A0A010403FF01060A0A01040601090A0A01040901 obj.yaml -o same.obj
+# RUN: %{icf} flags.obj 2>&1 | FileCheck --check-prefix=SOME --implicit-check-not="Removed c" %s
+# RUN: %{icf} type.obj 2>&1 | FileCheck --check-prefix=SOME --implicit-check-not="Removed c" %s
+# RUN: %{icf} unknown.obj 2>&1 | FileCheck --check-prefix=SOME --implicit-check-not="Removed c" %s
+# RUN: %{icf} same.obj 2>&1 | FileCheck --check-prefix=ALL %s
+# RUN: %{link} same.obj flags.obj
+# RUN: llvm-readobj --coff-link-records flags.obj | FileCheck --check-prefix=TABLES %s
+# TABLES:      Kind: Sections (0x2)
+# TABLES-NEXT: SwitchTable {
+# TABLES-NEXT:   Branch: a (3)
+# TABLES-NEXT:   Table: .data (10)
+# TABLES-NEXT:   Base: .data (10)
+# TABLES-NEXT:   Count: 1
+# TABLES-NEXT:   Type: Int32 (0x4)
+# TABLES-NEXT:   Load: a (3)
+# TABLES-NEXT:   Flags: 255
+# TABLES-NEXT: }
+
+## A branch that the symbol table does not have, a branch in data, a table
+## that its section does not hold, and a dispatch that does not end.
+# RUN: yaml2obj -DDATA=4C4C5243010001000209000163030301040300 obj.yaml -o t1.obj
+# RUN: yaml2obj -DDATA=4C4C524301000100020900010A0A0A01040300 obj.yaml -o t2.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010002090001030A0A02040300 obj.yaml -o t3.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010002080001030A0A010403 obj.yaml -o t4.obj
+# RUN: not %{link} t1.obj t2.obj t3.obj t4.obj 2>&1 | FileCheck --check-prefix=TERR %s
+# TERR: error: t1.obj: .llvm_link_records: switch table at symbol 99, which the file does not have
+# TERR: error: t2.obj: .llvm_link_records: switch table at symbol 10, which is not in code
+# TERR: error: t3.obj: .llvm_link_records: switch table of 2 entries at symbol 10, which its section does not hold
+# TERR: error: t4.obj: .llvm_link_records: unable to decode LEB128 at offset 0x00000008: malformed uleb128, extends past end
+
+## The Symbols group holds link facts, each the index of a symbol, a tag, the
+## size of its operands and the operands: a type prefix with a second type on
+## a, a fact of the non-critical tag 2 with three bytes of operands, and a
+## fact of @comp.id, which is no symbol of the link. The prefix key states the
+## size of every patchable prefix of the image, so a type prefix in an image
+## no object of which carries the key is an error.
+# DEFINE: %{key} = -failifmismatch:_WIN_ITANIUM_KCFI_PREFIX=00000010.0
+# RUN: yaml2obj -DDATA=4C4C52430100010E03000101030203AABBCC00000100 obj.yaml -o facts.obj
+# RUN: %{link} facts.obj %{key}
+# RUN: not %{link} facts.obj 2>&1 | FileCheck --check-prefix=NOKEY %s
+# NOKEY: error: facts.obj: a function has a type prefix, and no object carries /failifmismatch:_WIN_ITANIUM_KCFI_PREFIX
+
+## A fact of the critical tag 3, a fact of a symbol the object does not have,
+## a type prefix with no operand, operands longer than the group, a second
+## word that is not assigned, and a second Symbols group.
+# RUN: yaml2obj -DDATA=4C4C524301000103030300 obj.yaml -o tag.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010463000100 obj.yaml -o index.obj
+# RUN: yaml2obj -DDATA=4C4C524301000103030000 obj.yaml -o operands.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010403000500 obj.yaml -o fsize.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010403000102 obj.yaml -o prefix.obj
+# RUN: yaml2obj -DDATA=4C4C5243010001000100 obj.yaml -o two.obj
+# RUN: not %{link} tag.obj index.obj operands.obj fsize.obj prefix.obj two.obj \
+# RUN:   2>&1 | FileCheck --check-prefix=BAD %s
+# BAD: error: tag.obj: .llvm_link_records: unknown critical tag 3
+# BAD: error: index.obj: .llvm_link_records: fact of symbol 99, which the file does not have
+# BAD: error: operands.obj: .llvm_link_records: unable to decode LEB128 at offset 0x00000000: malformed uleb128, extends past end
+# BAD: error: fsize.obj: .llvm_link_records: unexpected end of data at offset 0x4 while reading [0x3, 0x8)
+# BAD: error: prefix.obj: .llvm_link_records: type prefix of symbol 3 is out of range
+# BAD: error: two.obj: .llvm_link_records: two Symbols groups
+
+## Bitcode with a fact, and the object LTO makes of it, link.
+# RUN: llvm-as bitcode.ll -o bitcode.bc
+# RUN: llvm-lto2 dump-symtab bitcode.bc | FileCheck --check-prefix=SYMTAB %s
+# RUN: lld-link -entry:main -subsystem:console -out:bitcode.exe bitcode.bc %{key}
+# SYMTAB: link facts: 00000100
+
+## The fact of another producer's bitcode, whose symbol table the linker
+## rebuilds, reaches the link.
+# RUN: env LLVM_OVERRIDE_PRODUCER=other llvm-as bitcode.ll -o other.bc
+# RUN: not lld-link -entry:main -subsystem:console -out:other.exe other.bc 2>&1 \
+# RUN:   | FileCheck --check-prefix=OTHER %s
+# OTHER: error: other.bc: a function has a type prefix, and no object carries /failifmismatch:_WIN_ITANIUM_KCFI_PREFIX
+
+#--- obj.yaml
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text$f
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     C3CCCCCC
+  - Name:            .text$f
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     C3CCCCCC
+  - Name:            .text$f
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     C3CCCCCC
+  - Name:            .data
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       4
+    SectionData:     '01000000'
+  - Name:            .llvm_link_records
+    Characteristics: [ IMAGE_SCN_LNK_INFO ]
+    Alignment:       1
+    SectionData:     '[[DATA=4C4C5243010001000203020104]]'
+  - Name:            .drectve
+    Characteristics: [ IMAGE_SCN_LNK_INFO, IMAGE_SCN_LNK_REMOVE ]
+    Alignment:       1
+    SectionData:     202F494E434C5544453A5F5F6C6C766D5F6C696E6B5F7265636F7264735F7631
+symbols:
+  - { Name: '@comp.id', Value: '[[COMPID=1280049152]]', SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: '.text$f', Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 0, NumberOfLinenumbers: 0, CheckSum: 0, Number: 1, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: a, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.text$f', Value: 0, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 0, NumberOfLinenumbers: 0, CheckSum: 0, Number: 2, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: b, Value: 0, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: '.text$f', Value: 0, SectionNumber: 3, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 0, NumberOfLinenumbers: 0, CheckSum: 0, Number: 3, Selection: IMAGE_COMDAT_SELECT_ANY } }
+  - { Name: c, Value: 0, SectionNumber: 3, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: .data, Value: 0, SectionNumber: 4, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
+      SectionDefinition: { Length: 4, NumberOfRelocations: 0, NumberOfLinenumbers: 0, CheckSum: 0, Number: 4, Selection: 0 } }
+
+#--- bitcode.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+define i32 @main() !kcfi_type !2 {
+  ret i32 0
+}
+
+!llvm.module.flags = !{!0, !1}
+!0 = !{i32 4, !"kcfi", i32 1}
+!1 = !{i32 1, !"function-type-prefix", i32 16}
+!2 = !{i32 12345678}

@@ -1813,7 +1813,8 @@ void X86AsmPrinter::EmitSEHInstruction(const MachineInstr *MI) {
     break;
 
   case X86::SEH_StackAlloc:
-    OutStreamer->emitWinCFIAllocStack(MI->getOperand(0).getImm());
+    OutStreamer->emitWinCFIAllocStack(MI->getOperand(0).getImm(), SMLoc(),
+                                      /*Large=*/MI->getNumOperands() > 1);
     break;
 
   case X86::SEH_SetFrame:
@@ -2663,6 +2664,17 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
     }
     break;
 
+  case X86::JTLOAD64: {
+    // The load of a jump table's entry, at a label that the object states.
+    emitJumpTableLoadLabel(MI->getOperand(X86::AddrNumOperands + 1).getImm());
+    MCInst Load;
+    MCInstLowering.Lower(MI, Load);
+    Load.setOpcode(X86::MOVSX64rm32);
+    Load.erase(Load.end() - 1);
+    EmitAndCountInstruction(Load);
+    return;
+  }
+
   case X86::CALL64m:
     if (EnableImportCallOptimization && isCallToCFGuardFunction(MI)) {
       emitLabelAndRecordForImportCallOptimization(
@@ -2700,8 +2712,33 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
   MCInst TmpInst;
   MCInstLowering.Lower(MI, TmpInst);
 
+  // A fused read states so in the type of its relocation. A fused call has
+  // the CS overrides that make it six bytes, and a fused jump the int3 that
+  // make it seven, so that the linker may write a direct one over it.
+  unsigned Int3s = 0;
+  if (const MachineInstr *Load = FusedSites.lookup(MI)) {
+    const MCSymbol *Pointer = MCInstLowering.GetSymbolFromOperand(
+        Load->getOperand(1 + X86::AddrDisp));
+    if (MI == Load) {
+      TmpInst.getOperand(1 + X86::AddrDisp) = MCOperand::createExpr(
+          MCSymbolRefExpr::create(Pointer, X86::S_COFF_FUSED, OutContext));
+    } else {
+      unsigned Reg = getSubtarget().getRegisterInfo()->getEncodingValue(
+          MI->getOperand(0).getReg());
+      SMShadowTracker.emitShadowPadding(*OutStreamer, getSubtargetInfo());
+      emitFusedSite(MI, Pointer);
+      if (IsTailJump)
+        Int3s = 4 - (Reg >= 16);
+      else
+        for (unsigned I = 2 + (Reg >= 8) + (Reg >= 16); I != 6; ++I)
+          EmitAndCountInstruction(MCInstBuilder(X86::CS_PREFIX));
+    }
+  }
+
   if (MI->isCall()) {
     emitCallInstruction(TmpInst);
+    for (; Int3s; --Int3s)
+      EmitAndCountInstruction(MCInstBuilder(X86::INT3));
     // Since tail calls transfer control without leaving a stack frame, there is
     // never a need for NOP padding tail calls.
     if (!IsTailJump)

@@ -7,16 +7,24 @@
 //===----------------------------------------------------------------------===//
 
 #include "AArch64WinCOFFStreamer.h"
+#include "AArch64MCAsmInfo.h"
 #include "AArch64MCTargetDesc.h"
+#include "TargetInfo/AArch64TargetInfo.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCWin64EH.h"
+#include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
+#include "llvm/MC/TargetRegistry.h"
 
 using namespace llvm;
 
@@ -29,9 +37,16 @@ public:
   AArch64WinCOFFStreamer(MCContext &C, std::unique_ptr<MCAsmBackend> AB,
                          std::unique_ptr<MCCodeEmitter> CE,
                          std::unique_ptr<MCObjectWriter> OW)
-      : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {}
+      : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {
+    if (C.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+      MCII.reset(getTheAArch64leTarget().createMCInstrInfo());
+      FusedForms[0] = "blr";
+      FusedForms[1] = "br";
+    }
+  }
 
   void emitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI) override;
+  void emitValueImpl(const MCExpr *Value, unsigned Size, SMLoc Loc) override;
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables() override;
   void emitWindowsUnwindTables(WinEH::FrameInfo *Frame) override;
@@ -40,6 +55,29 @@ public:
 
 void AArch64WinCOFFStreamer::emitInstruction(const MCInst &Inst,
                                              const MCSubtargetInfo &STI) {
+  // A section that holds an instruction is aligned as one, wherever the
+  // linker lays it.
+  getCurrentSectionOnly()->ensureMinAlignment(Align(4));
+  if (MCII) {
+    // A fused read is a 64-bit ldr of a pointer.
+    const MCSymbol *Read = nullptr;
+    for (const MCOperand &MO : Inst) {
+      auto *SE =
+          MO.isExpr() ? dyn_cast<MCSpecifierExpr>(MO.getExpr()) : nullptr;
+      if (!SE || SE->getSpecifier() != AArch64::S_FUSED_LO12)
+        continue;
+      auto *Pointer = dyn_cast<MCSymbolRefExpr>(SE->getSubExpr());
+      if (Inst.getOpcode() == AArch64::LDRXui && Pointer)
+        Read = &Pointer->getSymbol();
+      else
+        getContext().reportError(Inst.getLoc(),
+                                 "fused read is not a 64-bit ldr of a pointer");
+    }
+    checkFused(Inst, Read,
+               Inst.getOpcode() ==
+                   (FusedSite.IsJump ? AArch64::BR : AArch64::BLR));
+  }
+
   // On Windows Itanium and NT-POSIX the relocation type of a b states whether
   // the linker may delete it, which it may where no unwind frame covers it.
   if (Inst.getOpcode() == AArch64::B && !getCurrentWinFrameInfo() &&
@@ -49,6 +87,31 @@ void AArch64WinCOFFStreamer::emitInstruction(const MCInst &Inst,
     return MCWinCOFFStreamer::emitInstruction(Tail, STI);
   }
   MCWinCOFFStreamer::emitInstruction(Inst, STI);
+}
+
+void AArch64WinCOFFStreamer::emitValueImpl(const MCExpr *Value, unsigned Size,
+                                           SMLoc Loc) {
+  // The entry of a compressed jump table is a distance in instructions, in
+  // one or two bytes. On Windows Itanium and NT-POSIX one that the assembler
+  // cannot fold, as across an instruction the linker may resize, is a
+  // relocation that states the distance and the shift. The distance is not
+  // negative, so either shift states it; the assembler parses the arithmetic
+  // one.
+  auto *Shift = dyn_cast<MCBinaryExpr>(Value);
+  auto *By = Shift ? dyn_cast<MCConstantExpr>(Shift->getRHS()) : nullptr;
+  int64_t Folded;
+  if (MCII && Size <= 2 && By && By->getValue() == 2 &&
+      (Shift->getOpcode() == MCBinaryExpr::LShr ||
+       Shift->getOpcode() == MCBinaryExpr::AShr) &&
+      !Value->evaluateAsAbsolute(Folded, getAssemblerPtr())) {
+    visitUsedExpr(*Value);
+    ensureHeadroom(Size);
+    addFixup(Shift->getLHS(),
+             getCOFFRelocFixupKind(Size == 1 ? COFF::IMAGE_REL_LLVM_USPAN8_W
+                                             : COFF::IMAGE_REL_LLVM_USPAN16_W));
+    return appendContents(Size, 0);
+  }
+  MCWinCOFFStreamer::emitValueImpl(Value, Size, Loc);
 }
 
 void AArch64WinCOFFStreamer::emitWinEHHandlerData(SMLoc Loc) {

@@ -395,6 +395,11 @@ public:
   // ICF. This is set by the driver using address-significance tables.
   bool keepUnique = false;
 
+  // Whether the object states that the linker may change the size of this
+  // section: every value that depends on its layout is then a relocation or
+  // CodeView.
+  bool resizable = false;
+
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;
 

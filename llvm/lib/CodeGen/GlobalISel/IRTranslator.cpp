@@ -36,6 +36,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
+#include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineMemOperand.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/MachineOperand.h"
@@ -1675,6 +1676,7 @@ bool IRTranslatorImpl::emitJumpTableHeader(SwitchCG::JumpTable &JT,
   // Emit the range check for the jump table, and branch to the default block
   // for the switch statement if the value being switched on exceeds the
   // largest case in the switch.
+  MF->getJumpTableInfo()->setRangeChecked(JT.JTI);
   auto Cst = getOrCreateVReg(
       *ConstantInt::get(SValue.getType(), JTH.Last - JTH.First));
   auto Cmp = MIB.buildICmp(CmpInst::ICMP_UGT, LLT::integer(1), Sub, Cst);

@@ -868,7 +868,8 @@ public:
              AArch64::S_TPREL_LO12, AArch64::S_TPREL_LO12_NC,
              AArch64::S_GOTTPREL_LO12_NC, AArch64::S_TLSDESC_LO12,
              AArch64::S_TLSDESC_AUTH_LO12, AArch64::S_SECREL_LO12,
-             AArch64::S_SECREL_HI12, AArch64::S_GOT_PAGE_LO15},
+             AArch64::S_SECREL_HI12, AArch64::S_GOT_PAGE_LO15,
+             AArch64::S_FUSED_LO12},
             ELFSpec)) {
       // Note that we don't range-check the addend. It's adjusted modulo page
       // size when converted, so there is no "out of range" condition when using
@@ -4483,6 +4484,7 @@ bool AArch64AsmParser::parseSymbolicImmVal(const MCExpr *&ImmVal) {
                   .Case("tlsdesc_auth", AArch64::S_TLSDESC_AUTH_PAGE)
                   .Case("secrel_lo12", AArch64::S_SECREL_LO12)
                   .Case("secrel_hi12", AArch64::S_SECREL_HI12)
+                  .Case("fused_lo12", AArch64::S_FUSED_LO12)
                   .Default(AArch64::S_INVALID);
 
     if (RefKind == AArch64::S_INVALID)

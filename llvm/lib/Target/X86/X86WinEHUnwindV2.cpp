@@ -46,6 +46,10 @@ struct FrameInfo {
   unsigned ApproximatePrologCodeCount;
   unsigned ApproximateInstructionCount;
   SmallVector<EpilogInfo> EpilogInfos;
+  // The prologue's SEH_PushReg of the frame register, where `leave` restores
+  // it, and its SEH_SetFrame.
+  MachineInstr *LeavePush;
+  MachineInstr *SetFrame;
 };
 
 class X86WinEHUnwindV2Legacy : public MachineFunctionPass {
@@ -113,6 +117,9 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
 
   // Prolog information.
   SmallVector<int64_t> PushedRegs;
+  SmallVector<MachineInstr *> Pushes;
+  MachineInstr *SetFrame = nullptr;
+  bool UsesLeave = false, PopsFrameReg = false;
   bool HasStackAlloc = false;
   bool HasSetFrame = false;
   unsigned ApproximatePrologCodeCount = 0;
@@ -167,6 +174,7 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
           llvm_unreachable("SEH_PushReg outside of prolog");
         ApproximatePrologCodeCount++;
         PushedRegs.push_back(MI.getOperand(0).getImm());
+        Pushes.push_back(&MI);
         break;
 
       case X86::SEH_StackAlloc:
@@ -182,6 +190,7 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
           llvm_unreachable("SEH_SetFrame outside of prolog");
         ApproximatePrologCodeCount++;
         HasSetFrame = true;
+        SetFrame = &MI;
         break;
 
       case X86::SEH_SaveReg:
@@ -301,6 +310,8 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
             // After the stack pointer has been adjusted, the epilog must
             // POP each register in reverse order of the PUSHes in the prolog.
             PoppedRegCount++;
+            PopsFrameReg |=
+                HasSetFrame && SetFrame->getOperand(0).getImm() == Reg.id();
             if (HasStackAlloc != HasStackDealloc)
               return rejectCurrentFunctionInternalError(
                   MF, Mode,
@@ -322,16 +333,27 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
             // SEH_BeginEpilogue (as that contains the instruction to adjust the
             // stack pointer) but from the first POP instruction (if there is
             // one).
-            if (!UnwindV2StartLocation) {
-              assert(PoppedRegCount == 1);
+            if (!UnwindV2StartLocation)
               UnwindV2StartLocation = &MI;
-            }
           }
         } else if (State == FunctionState::FinishedEpilog)
           // Unexpected instruction after the epilog.
           return rejectCurrentFunctionInternalError(
               MF, Mode, "Registers are being popped after the epilog");
         break;
+
+      case X86::LEAVE64:
+        // `leave` releases the frame and restores the frame register, pushed
+        // last, before the epilog pops the others.
+        if (State == FunctionState::InEpilog && HasSetFrame &&
+            !PoppedRegCount && !HasStackDealloc && !PushedRegs.empty() &&
+            PushedRegs.back() == SetFrame->getOperand(0).getImm()) {
+          HasStackDealloc = HasStackAlloc;
+          PoppedRegCount = 1;
+          UsesLeave = true;
+          break;
+        }
+        [[fallthrough]];
 
       default:
         if (MI.isTerminator()) {
@@ -352,8 +374,13 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
     }
   }
 
-  return FrameInfo{ApproximatePrologCodeCount, ApproximateInstructionCount,
-                   EpilogInfos};
+  // The unwinder replays a push code as a pop, which `leave` is not.
+  if (UsesLeave && PopsFrameReg)
+    return rejectCurrentFunctionInternalError(
+        MF, Mode, "The frame register is restored by both pop and leave");
+  return FrameInfo{ApproximatePrologCodeCount + 3 * UsesLeave,
+                   ApproximateInstructionCount, EpilogInfos,
+                   UsesLeave ? Pushes.back() : nullptr, SetFrame};
 }
 
 bool runX86WinEHUnwindV2(MachineFunction &MF) {
@@ -394,6 +421,26 @@ bool runX86WinEHUnwindV2(MachineFunction &MF) {
 
   const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
   for (auto &FI : FrameInfos) {
+    // In an epilogue the unwinder replays the prologue's push codes as pops,
+    // of which `leave` is none. The frame register's push is then an
+    // allocation and a save at its slot, which lies at the frame register's
+    // offset. The allocation has the large form: the unwinder takes a small
+    // one of eight bytes for a pop where it follows the push codes it
+    // replays, or where, with no push code, it is the prologue's first code and
+    // one of exactly two allocations. The save is recorded before the
+    // instruction that sets the frame register: the unwinder undoes the later
+    // code first, and reads the frame register to undo its setting.
+    if (MachineInstr *Push = FI.LeavePush) {
+      BuildMI(*FI.SetFrame->getParent(), std::prev(FI.SetFrame->getIterator()),
+              DebugLoc(), TII->get(X86::SEH_SaveReg))
+          .addImm(Push->getOperand(0).getImm())
+          .addImm(FI.SetFrame->getOperand(1).getImm())
+          .setMIFlag(MachineInstr::FrameSetup);
+      Push->setDesc(TII->get(X86::SEH_StackAlloc));
+      Push->getOperand(0).setImm(8);
+      Push->addOperand(MachineOperand::CreateImm(/*Large=*/1));
+    }
+
     // Walk the list of epilogs backwards and add new SEH pseudo instructions:
     // * SEH_UnwindV2Start at the start of each epilog.
     // * If the current instruction is too far away from where the last unwind

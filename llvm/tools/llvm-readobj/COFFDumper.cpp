@@ -28,6 +28,7 @@
 #include "llvm/DebugInfo/CodeView/DebugInlineeLinesSubsection.h"
 #include "llvm/DebugInfo/CodeView/DebugLinesSubsection.h"
 #include "llvm/DebugInfo/CodeView/DebugStringTableSubsection.h"
+#include "llvm/DebugInfo/CodeView/EnumTables.h"
 #include "llvm/DebugInfo/CodeView/Formatters.h"
 #include "llvm/DebugInfo/CodeView/LazyRandomTypeCollection.h"
 #include "llvm/DebugInfo/CodeView/Line.h"
@@ -49,6 +50,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ConvertUTF.h"
+#include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/ScopedPrinter.h"
@@ -2573,6 +2575,35 @@ void COFFDumper::printCOFFLinkRecords() {
             [&](uint64_t Kind, StringRef Payload) -> Error {
               DictScope G(W, "Group");
               W.printEnum("Kind", Kind, EnumStrings(LinkRecordKinds));
+              if (Kind == COFF::LinkRecordSections) {
+                DataExtractor Data(Payload, /*IsLittleEndian=*/true);
+                DataExtractor::Cursor C(0);
+                for (uint64_t Count = Data.getULEB128(C); C && Count; --Count) {
+                  uint64_t Section = Data.getULEB128(C);
+                  if (C)
+                    W.printNumber("ResizableSection", getSymbolName(Section),
+                                  Section);
+                }
+                for (uint64_t Count = C && !Data.eof(C) ? Data.getULEB128(C)
+                                                        : 0;
+                     C && Count; --Count) {
+                  DictScope S(W, "SwitchTable");
+                  uint64_t Fields[7];
+                  for (uint64_t &Field : Fields)
+                    Field = Data.getULEB128(C);
+                  if (!C)
+                    break;
+                  W.printNumber("Branch", getSymbolName(Fields[0]), Fields[0]);
+                  W.printNumber("Table", getSymbolName(Fields[1]), Fields[1]);
+                  W.printNumber("Base", getSymbolName(Fields[2]), Fields[2]);
+                  W.printNumber("Count", Fields[3]);
+                  W.printEnum("Type", uint16_t(Fields[4]),
+                              getJumpTableEntrySizeNames());
+                  W.printNumber("Load", getSymbolName(Fields[5]), Fields[5]);
+                  W.printNumber("Flags", Fields[6]);
+                }
+                return C.takeError();
+              }
               if (Kind != COFF::LinkRecordSymbols) {
                 W.printBinaryBlock("Payload", Payload);
                 return Error::success();

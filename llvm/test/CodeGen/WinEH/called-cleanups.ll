@@ -63,7 +63,7 @@ declare ptr @llvm.eh.exceptionpointer.p0(token)
 ;
 ; Unoptimized code keeps a frame pointer, which its funclets are entered with.
 ; O0-LABEL: cleanup:
-; O0:         leaq 48(%rsp), %rbp
+; O0:         movq %rsp, %rbp
 ; O0:       "?dtor$2@?0?cleanup@4HA":
 ; O0-NEXT:  .LBB0_2:
 ; O0-NEXT:    leaq -4(%rbp), %rcx
@@ -259,7 +259,7 @@ body:
 ; frame, where the function adjusts the stack around each of its own, so its
 ; unwind record holds at every call.
 ; CHECK-LABEL: frame_pointer:
-; CHECK:         .seh_setframe %rbp, 16
+; CHECK:         .seh_setframe %rbp, 0
 ; CHECK:       "?dtor$2@?0?frame_pointer@4HA":
 ; CHECK:       .LBB4_2:
 ; CHECK-NEXT:    subq $40, %rsp

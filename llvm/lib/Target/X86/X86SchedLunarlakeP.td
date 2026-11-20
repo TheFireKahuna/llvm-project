@@ -1590,7 +1590,7 @@ def LNLPWriteResGroupX153 : SchedWriteRes<[LNLPPort20_21_22]> {
 }
 def : InstRW<[LNLPWriteResGroupX153], (instregex "^MOVSX(16|32|64)rm(16|32)$",
                                                 "^MOVSX(32|64)rm8$")>;
-def : InstRW<[LNLPWriteResGroupX153], (instrs MOVSX32rm8_NOREX)>;
+def : InstRW<[LNLPWriteResGroupX153], (instrs MOVSX32rm8_NOREX, JTLOAD64)>;
 def LNLPWriteResGroupX154 : SchedWriteRes<[LNLPPort01_03_05, LNLPPort20_21_22]> {
   let Latency = 6;
   let NumMicroOps = 2;

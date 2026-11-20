@@ -1569,7 +1569,7 @@ def ADLPWriteResGroup153 : SchedWriteRes<[ADLPPort02_03_10]> {
 }
 def : InstRW<[ADLPWriteResGroup153], (instregex "^MOVSX(16|32|64)rm(16|32)$",
                                                 "^MOVSX(32|64)rm8$")>;
-def : InstRW<[ADLPWriteResGroup153], (instrs MOVSX32rm8_NOREX)>;
+def : InstRW<[ADLPWriteResGroup153], (instrs MOVSX32rm8_NOREX, JTLOAD64)>;
 
 def ADLPWriteResGroup154 : SchedWriteRes<[ADLPPort01_05_11, ADLPPort02_03_10]> {
   let Latency = 6;

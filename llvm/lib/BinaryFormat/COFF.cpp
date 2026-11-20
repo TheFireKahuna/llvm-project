@@ -97,13 +97,16 @@ bool llvm::COFF::isGuardCFAddressTakingRelocation(uint16_t Machine,
   }
   // Of the LLVM types, a load of a pointer and a lea take an address. The
   // types up to MEM_JUMP_P1 branch, call, also through a pointer, whose slot
-  // they name, or span two labels.
+  // they name, or span two labels. Only fused sites read the register of a
+  // fused read.
   if (Type >= IMAGE_REL_LLVM_ADDR32NB_CALL &&
       Type <= IMAGE_REL_LLVM_MEM_JUMP_P1)
     return false;
   switch (Type) {
   case IMAGE_REL_LLVM_FUSED_CALL:
   case IMAGE_REL_LLVM_FUSED_JUMP:
+  case IMAGE_REL_LLVM_FUSED_READ:
+  case IMAGE_REL_LLVM_FUSED_READ_REX2:
   case IMAGE_REL_LLVM_FUSED_ACCESS:
   case IMAGE_REL_LLVM_FUSED_INDEX:
   case IMAGE_REL_LLVM_TPOFF32:

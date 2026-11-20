@@ -285,7 +285,14 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
     setOperationAction(ISD::UREM, VT, Expand);
   }
 
-  setOperationAction(ISD::BR_JT            , MVT::Other, Expand);
+  // On Windows Itanium and NT-POSIX an object states the load of a jump
+  // table's entry, which is therefore an instruction of its own kind.
+  setOperationAction(
+      ISD::BR_JT, MVT::Other,
+      Subtarget.is64Bit() &&
+              TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()
+          ? Custom
+          : Expand);
   setOperationAction(ISD::BRCOND           , MVT::Other, Custom);
   for (auto VT : { MVT::f32, MVT::f64, MVT::f80, MVT::f128,
                    MVT::i8,  MVT::i16, MVT::i32, MVT::i64 }) {
@@ -34965,6 +34972,7 @@ SDValue X86TargetLowering::LowerOperation(SDValue Op, SelectionDAG &DAG) const {
   case ISD::SELECT:             return LowerSELECT(Op, DAG);
   case ISD::COND_LOOP:
   case ISD::BRCOND:             return LowerConditionalBranch(Op, DAG);
+  case ISD::BR_JT:              return LowerBR_JT(Op, DAG);
   case ISD::JumpTable:          return LowerJumpTable(Op, DAG);
   case ISD::VASTART:            return LowerVASTART(Op, DAG);
   case ISD::VAARG:              return LowerVAARG(Op, DAG);
@@ -64528,6 +64536,31 @@ bool X86TargetLowering::isTypeDesirableForOp(unsigned Opc, EVT VT) const {
 
   // Any legal type not explicitly accounted for above here is desirable.
   return true;
+}
+
+// Expands a dispatch through a table of 32-bit distances from the table as
+// LegalizeDAG does, with the load of the entry as X86ISD::JT_LOAD.
+SDValue X86TargetLowering::LowerBR_JT(SDValue Op, SelectionDAG &DAG) const {
+  SDLoc dl(Op);
+  SDValue Table = Op.getOperand(1);
+  SDValue Index = Op.getOperand(2);
+  int JTI = cast<JumpTableSDNode>(Table)->getIndex();
+  MachineFunction &MF = DAG.getMachineFunction();
+  if (MF.getJumpTableInfo()->getEntryKind() !=
+      MachineJumpTableInfo::EK_LabelDifference32)
+    return SDValue();
+  Index = DAG.getNode(ISD::SHL, dl, MVT::i64, Index,
+                      DAG.getConstant(2, dl, MVT::i64));
+  SDValue Load = DAG.getMemIntrinsicNode(
+      X86ISD::JT_LOAD, dl, DAG.getVTList(MVT::i64, MVT::Other),
+      {Op.getOperand(0), DAG.getMemBasePlusOffset(Table, Index, dl),
+       DAG.getTargetConstant(JTI, dl, MVT::i32)},
+      MVT::i32, MachinePointerInfo::getJumpTable(MF), std::nullopt,
+      MachineMemOperand::MOLoad);
+  return expandIndirectJTBranch(
+      dl, Load.getValue(1),
+      DAG.getMemBasePlusOffset(getPICJumpTableRelocBase(Table, DAG), Load, dl),
+      JTI, DAG);
 }
 
 SDValue X86TargetLowering::expandIndirectJTBranch(const SDLoc &dl,

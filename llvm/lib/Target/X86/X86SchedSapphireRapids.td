@@ -1888,7 +1888,7 @@ def SPRWriteResGroup162 : SchedWriteRes<[SPRPort02_03_10]> {
 }
 def : InstRW<[SPRWriteResGroup162], (instregex "^MOVSX(16|32|64)rm(16|32)$",
                                                "^MOVSX(32|64)rm8$")>;
-def : InstRW<[SPRWriteResGroup162], (instrs MOVSX32rm8_NOREX)>;
+def : InstRW<[SPRWriteResGroup162], (instrs MOVSX32rm8_NOREX, JTLOAD64)>;
 
 def SPRWriteResGroup163 : SchedWriteRes<[SPRPort01_05_11, SPRPort02_03_10]> {
   let Latency = 6;

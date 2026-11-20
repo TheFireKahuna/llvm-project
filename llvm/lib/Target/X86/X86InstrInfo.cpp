@@ -378,6 +378,7 @@ bool X86InstrInfo::isDataInvariantLoad(MachineInstr &MI) {
   case X86::MOVSX32rm8_NOREX:
   case X86::MOVSX64rm16:
   case X86::MOVSX64rm32:
+  case X86::JTLOAD64:
   case X86::MOVSX64rm8:
   case X86::MOVZX16rm8:
   case X86::MOVZX32rm16:

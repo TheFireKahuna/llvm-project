@@ -25,6 +25,7 @@ add_llvm_unittest(MCTests
   StringTableBuilderTest.cpp
   TargetRegistry.cpp
   MCDisassemblerTest.cpp
+  WinCOFFRelocFixupKindTest.cpp
   WODRoundTripTest.cpp
   )
 

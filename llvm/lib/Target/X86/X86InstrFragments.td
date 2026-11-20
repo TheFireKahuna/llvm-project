@@ -254,6 +254,12 @@ def X86vastart_save_xmm_regs :
                         SDT_X86VASTART_SAVE_XMM_REGS,
                         [SDNPHasChain, SDNPMayStore, SDNPMemOperand, SDNPVariadic]>;
 
+// The load of an entry of the jump table that its last operand names.
+def X86jtload : SDNode<"X86ISD::JT_LOAD",
+                       SDTypeProfile<1, 2, [SDTCisVT<0, i64>, SDTCisPtrTy<1>,
+                                            SDTCisVT<2, i32>]>,
+                       [SDNPHasChain, SDNPMayLoad, SDNPMemOperand]>;
+
 // These instructions grab the address of the next argument
 // from a va_list. (reads and modifies the va_list in memory)
 def X86vaarg64 :

@@ -51,6 +51,13 @@ class MCStreamer;
 class MCSymbol;
 class MachineFunction;
 
+/// Calls \p Callback with each branch through a jump table of \p MF and the
+/// index of its table.
+void forEachJumpTableBranch(
+    const MachineFunction *MF, bool isThumb,
+    const std::function<void(const MachineJumpTableInfo &, const MachineInstr &,
+                             int64_t)> &Callback);
+
 /// Collects and handles line tables information in a CodeView format.
 class LLVM_LIBRARY_VISIBILITY CodeViewDebug : public DebugHandlerBase {
 public:

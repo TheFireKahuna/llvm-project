@@ -1408,7 +1408,29 @@ void X86FrameLowering::emitStackProbeCall(
   }
 }
 
-static unsigned calculateSetFPREG(uint64_t SPAdjust) {
+// Returns whether MF's unwind data is version 2's where X86WinEHUnwindV2
+// accepts the function.
+static bool wantsWinX64UnwindV2(const MachineFunction &MF) {
+  std::optional<unsigned> Force =
+      MF.getSubtarget<X86Subtarget>().getCLOpts().wineh_unwindv2_force_mode;
+  WinX64EHUnwindMode Mode =
+      Force ? static_cast<WinX64EHUnwindMode>(*Force)
+            : MF.getFunction().getParent()->getWinX64EHUnwindMode();
+  return Mode == WinX64EHUnwindMode::V2BestEffort ||
+         Mode == WinX64EHUnwindMode::V2Required;
+}
+
+// Returns the frame register's offset from the stack pointer where the
+// prologue sets it, SPAdjust bytes below the pushes being allocated in all.
+static unsigned calculateSetFPREG(const MachineFunction &MF,
+                                  uint64_t SPAdjust) {
+  // Where the frame register is pushed last, it is set before the allocation:
+  // the saved XMM registers lie between it and that offset, from which the
+  // unwind data addresses them, and one allocation reaches both where it can.
+  if (std::optional<unsigned> XMMBytes =
+          MF.getInfo<X86MachineFunctionInfo>()->getFramePtrPushedLast())
+    return *XMMBytes && SPAdjust <= 240 && SPAdjust % 16 == 0 ? SPAdjust
+                                                              : *XMMBytes;
   // Win64 ABI has a less restrictive limitation of 240; 128 works equally well
   // and might require smaller successive adjustments.
   const uint64_t Win64MaxSEHOffset = 128;
@@ -1772,6 +1794,11 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   // A called cleanup is entered with its function's frame pointer, and sets
   // its own only where the function realigns its stack.
   bool HasFP = hasFP(MF) && !(IsCalledCleanup && !TRI->hasStackRealignment(MF));
+  // The frame register pushed last is set at its saved value; a funclet keeps
+  // its own order.
+  std::optional<unsigned> PushedLast;
+  if (!IsFunclet)
+    PushedLast = X86FI->getFramePtrPushedLast();
   bool IsWin64Prologue = MF.usesWindowsUnwindInfo();
   bool NeedsWin64CFI = IsWin64Prologue && Fn.needsUnwindTableEntry();
   // FIXME: Emit FPO data for EH funclets.
@@ -1974,6 +2001,20 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
     MBB.addLiveIn(Establisher);
   }
 
+  auto EmitPushFramePtr = [&]() {
+    auto EmitSEHPushFramePtr = [&]() {
+      BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_PushReg))
+          .addImm(FramePtr)
+          .setMIFlag(MachineInstr::FrameSetup);
+    };
+    EmitSEHBefore(EmitSEHPushFramePtr);
+    BuildMI(MBB, MBBI, DL,
+            TII.get(getPUSHOpcode(MF.getSubtarget<X86Subtarget>())))
+        .addReg(MachineFramePtr, RegState::Kill)
+        .setMIFlag(MachineInstr::FrameSetup);
+    EmitSEHAfter(EmitSEHPushFramePtr);
+  };
+
   if (HasFP) {
     assert(MF.getRegInfo().isReserved(MachineFramePtr) && "FP reserved");
 
@@ -1992,17 +2033,8 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
     }
 
     // Save EBP/RBP into the appropriate stack slot.
-    auto EmitSEHPushFramePtr = [&]() {
-      BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_PushReg))
-          .addImm(FramePtr)
-          .setMIFlag(MachineInstr::FrameSetup);
-    };
-    EmitSEHBefore(EmitSEHPushFramePtr);
-    BuildMI(MBB, MBBI, DL,
-            TII.get(getPUSHOpcode(MF.getSubtarget<X86Subtarget>())))
-        .addReg(MachineFramePtr, RegState::Kill)
-        .setMIFlag(MachineInstr::FrameSetup);
-    EmitSEHAfter(EmitSEHPushFramePtr);
+    if (!PushedLast)
+      EmitPushFramePtr();
 
     if (NeedsDwarfCFI && !ArgBaseReg.isValid()) {
       // Mark the place where EBP/RBP was saved.
@@ -2215,6 +2247,45 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
     });
   }
 
+  // The frame register pushed last is set before the allocation, at its saved
+  // value or above the saved XMM registers. The allocation reaches at least
+  // that far, which a frame with nothing else below them would not, and grows
+  // there by a multiple of the stack's alignment, which it keeps.
+  int SEHFrameOffset = 0;
+  if (PushedLast) {
+    EmitPushFramePtr();
+    SEHFrameOffset = calculateSetFPREG(MF, NumBytes);
+    if (SEHFrameOffset) {
+      if (NumBytes < uint64_t(SEHFrameOffset)) {
+        uint64_t Growth =
+            alignTo(SEHFrameOffset - NumBytes, getStackAlign().value());
+        StackSize += Growth;
+        MFI.setStackSize(StackSize);
+        NumBytes += Growth;
+      }
+      emitSPUpdate(MBB, MBBI, DL, -SEHFrameOffset, /*InEpilogue=*/false);
+      EmitSEHAfter([&]() {
+        BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_StackAlloc))
+            .addImm(SEHFrameOffset)
+            .setMIFlag(MachineInstr::FrameSetup);
+      });
+      NumBytes -= SEHFrameOffset;
+      addRegOffset(BuildMI(MBB, MBBI, DL, TII.get(X86::LEA64r), FramePtr),
+                   StackPtr, false, SEHFrameOffset)
+          .setMIFlag(MachineInstr::FrameSetup);
+    } else {
+      BuildMI(MBB, MBBI, DL, TII.get(X86::MOV64rr), FramePtr)
+          .addReg(StackPtr)
+          .setMIFlag(MachineInstr::FrameSetup);
+    }
+    EmitSEHAfter([&]() {
+      BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_SetFrame))
+          .addImm(FramePtr)
+          .addImm(SEHFrameOffset)
+          .setMIFlag(MachineInstr::FrameSetup);
+    });
+  }
+
   // Realign stack after we pushed callee-saved registers (so that we'll be
   // able to calculate their offsets from the frame pointer).
   // Don't do this for Win64, it needs to realign the stack after the prologue.
@@ -2319,7 +2390,6 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   if (NumBytes)
     EmitSEHAfter(EmitSEHStackAlloc);
 
-  int SEHFrameOffset = 0;
   Register SPOrEstablisher;
   if (IsFunclet) {
     if (IsClrFunclet) {
@@ -2354,7 +2424,8 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
     // Set RBP to a small fixed offset from RSP. In the funclet case, we base
     // this calculation on the incoming establisher, which holds the value of
     // RSP from the parent frame at the end of the prologue.
-    SEHFrameOffset = calculateSetFPREG(ParentFrameNumBytes);
+    if (!PushedLast)
+      SEHFrameOffset = calculateSetFPREG(MF, ParentFrameNumBytes);
 
     // If this is not a funclet, emit the CFI describing our frame pointer.
     if (NeedsWinCFI && !IsFunclet) {
@@ -2368,7 +2439,9 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
           MF.getWinEHFuncInfo()->SEHSetFrameOffset = SEHFrameOffset;
       }
     }
+  }
 
+  if (IsWin64Prologue && HasFP && !PushedLast) {
     auto EmitSEHSetFrame = [&]() {
       BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_SetFrame))
           .addImm(FramePtr)
@@ -2769,11 +2842,14 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
 
   unsigned SEHFrameOffset = 0;
   if (IsWin64Prologue && HasFP)
-    SEHFrameOffset = calculateSetFPREG(SEHStackAllocAmt);
+    SEHFrameOffset = calculateSetFPREG(MF, SEHStackAllocAmt);
+  // The frame register pushed last is restored before the other pops; a
+  // funclet returns from its own frame.
+  bool PushedLast = !IsFunclet && X86FI->getFramePtrPushedLast();
 
   // AfterPop is the position to insert .cfi_restore.
   MachineBasicBlock::iterator AfterPop = MBBI;
-  if (HasFP) {
+  if (HasFP && !PushedLast) {
     if (X86FI->hasSwiftAsyncContext()) {
       // Discard the context.
       int64_t Offset = mergeSPAdd(MBB, MBBI, 16, true);
@@ -2903,8 +2979,24 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   // slot before popping them off! Same applies for the case, when stack was
   // realigned. Don't do this if this was a funclet epilogue, since the funclets
   // will not do realignment or dynamic stack allocation.
-  if (((TRI->hasStackRealignment(MF)) || MFI.hasVarSizedObjects()) &&
-      !IsFunclet) {
+  if (PushedLast) {
+    // `leave` releases the frame at once, so that its address is a body
+    // address with the frame whole. With nothing to release `pop` is as short,
+    // and replayed by version 2 unwind data, but under version 1 the linker
+    // deletes no jump after it.
+    if (NumBytes || MFI.hasVarSizedObjects() || TRI->hasStackRealignment(MF) ||
+        (!CSSize && Terminator != MBB.end() &&
+         Terminator->getOpcode() == X86::TCRETURNdi64 &&
+         !wantsWinX64UnwindV2(MF)))
+      MBBI = BuildMI(MBB, MBBI, DL, TII.get(X86::LEAVE64))
+                 .setMIFlag(MachineInstr::FrameDestroy)
+                 ->getIterator();
+    else
+      MBBI = BuildMI(MBB, MBBI, DL, TII.get(getPOPOpcode(STI)), FramePtr)
+                 .setMIFlag(MachineInstr::FrameDestroy)
+                 ->getIterator();
+  } else if (((TRI->hasStackRealignment(MF)) || MFI.hasVarSizedObjects()) &&
+             !IsFunclet) {
     if (TRI->hasStackRealignment(MF))
       MBBI = FirstCSPop;
     uint64_t LEAAmount =
@@ -3068,7 +3160,7 @@ StackOffset X86FrameLowering::getFrameIndexReference(const MachineFunction &MF,
       FrameSize += SlotSize;
     uint64_t NumBytes = FrameSize - CSSize;
 
-    uint64_t SEHFrameOffset = calculateSetFPREG(NumBytes);
+    uint64_t SEHFrameOffset = calculateSetFPREG(MF, NumBytes);
     if (FI && FI == X86FI->getFAIndex())
       return StackOffset::getFixed(hasFP(MF) ? -SEHFrameOffset : 0);
 
@@ -3076,9 +3168,14 @@ StackOffset X86FrameLowering::getFrameIndexReference(const MachineFunction &MF,
     // pointer followed by return address and the location required by the
     // restricted Win64 prologue.
     // Add FPDelta to all offsets below that go through the frame pointer.
-    FPDelta = FrameSize - SEHFrameOffset;
-    assert((!MFI.hasCalls() || (FPDelta % 16) == 0) &&
-           "FPDelta isn't aligned per the Win64 ABI!");
+    // Pushed last, the frame register lies below the other pushes.
+    if (X86FI->getFramePtrPushedLast()) {
+      FPDelta = CSSize;
+    } else {
+      FPDelta = FrameSize - SEHFrameOffset;
+      assert((!MFI.hasCalls() || (FPDelta % 16) == 0) &&
+             "FPDelta isn't aligned per the Win64 ABI!");
+    }
   }
 
   if (FrameReg == TRI->getFramePtr()) {
@@ -3248,11 +3345,55 @@ bool X86FrameLowering::assignCalleeSavedSpillSlots(
     }
   }
 
+  auto IsGPR = [](MCRegister Reg) {
+    return X86::GR64RegClass.contains(Reg) || X86::GR32RegClass.contains(Reg);
+  };
+  // On Windows Itanium and NT-POSIX the frame register is pushed after every
+  // other callee-saved register and set at its own saved value, so that
+  // `leave` releases the frame. The unwind data addresses the saved XMM
+  // registers within 240 bytes below it, and what the frame register itself
+  // addresses must lie within an 8-bit displacement below it; elsewhere a
+  // frame register set further down reaches more of the frame. Set before the
+  // allocation, it leaves the establisher frame above the stack pointer, from
+  // which funclets other than a called cleanup in an unaligned frame find the
+  // frame.
+  bool Realigned = TRI->hasStackRealignment(MF);
+  std::optional<int> FPLastSlot;
+  if (hasFP(MF) && MF.usesWindowsUnwindInfo() &&
+      MF.getTarget().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !STI.hasPush2Pop2() && !STI.hasPPX() && !requireWinX64UnwindV3(MF) &&
+      !X86FI->getRestoreBasePointer() &&
+      (!MF.hasEHFunclets() ||
+       (usesCalledCleanups(MF.getFunction()) && !Realigned))) {
+    Register FPReg = TRI->getFrameRegister(MF);
+    unsigned NumGPRs = count_if(CSI, [&](const CalleeSavedInfo &I) {
+      return IsGPR(I.getReg()) && !TRI->regsOverlap(I.getReg(), FPReg);
+    });
+    int Slot = SpillSlotOffset - SlotSize * (NumGPRs + 1), XMMEnd = Slot;
+    for (const CalleeSavedInfo &I : llvm::reverse(CSI)) {
+      if (IsGPR(I.getReg()))
+        continue;
+      const TargetRegisterClass *RC =
+          getCalleeSavedSpillRC(I.getReg(), STI, *TRI);
+      XMMEnd =
+          -alignTo(-XMMEnd, TRI->getSpillAlign(*RC)) - TRI->getSpillSize(*RC);
+    }
+    uint64_t Reach = Slot - XMMEnd;
+    for (int I = 0, E = MFI.getObjectIndexEnd(); I != E && !Realigned; ++I)
+      if (!MFI.isDeadObjectIndex(I) && !MFI.isVariableSizedObjectIndex(I))
+        Reach = alignTo(Reach, MFI.getObjectAlign(I)) + MFI.getObjectSize(I);
+    if (alignTo(Slot - XMMEnd, 16) <= 240 && (Realigned || Reach <= 128))
+      FPLastSlot = Slot;
+  }
+
   bool IsFPRemovedFromCSI = false;
   if (hasFP(MF)) {
-    // emitPrologue always spills frame register the first thing.
-    SpillSlotOffset -= SlotSize;
-    MFI.CreateFixedSpillStackObject(SlotSize, SpillSlotOffset);
+    // emitPrologue spills the frame register the first thing, or after the
+    // other callee-saved registers.
+    if (!FPLastSlot) {
+      SpillSlotOffset -= SlotSize;
+      MFI.CreateFixedSpillStackObject(SlotSize, SpillSlotOffset);
+    }
 
     // The async context lives directly before the frame pointer, and we
     // allocate a second slot to preserve stack alignment.
@@ -3318,6 +3459,12 @@ bool X86FrameLowering::assignCalleeSavedSpillSlots(
     I.setFrameIdx(SlotIndex);
   }
 
+  if (FPLastSlot) {
+    SpillSlotOffset -= SlotSize;
+    assert(SpillSlotOffset == *FPLastSlot && "frame register's slot moved");
+    MFI.CreateFixedSpillStackObject(SlotSize, SpillSlotOffset);
+  }
+
   // Adjust the offset of spill slot as we know the accurate callee saved frame
   // size.
   if (X86FI->getRestoreBasePointer()) {
@@ -3360,6 +3507,8 @@ bool X86FrameLowering::assignCalleeSavedSpillSlots(
       XMMCalleeSavedFrameSize += Size;
     }
   }
+  if (FPLastSlot)
+    X86FI->setFramePtrPushedLast(alignTo(*FPLastSlot - SpillSlotOffset, 16));
 
   return true;
 }

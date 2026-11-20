@@ -130,6 +130,25 @@ void X86AsmPrinter::emitFunctionBodyStart() {
         MF->getInfo<X86MachineFunctionInfo>()->getArgumentStackSize());
   }
 
+  // A call or a tail call through an import pointer is a call or a jmp of the
+  // register that a mov of the pointer wrote. Import call optimization has
+  // its own forms of both, and a load that is hardened against load value
+  // injection stays.
+  findFusedSites(
+      [&](const MachineInstr &Load) {
+        if (Load.getOpcode() != X86::MOV64rm || EnableImportCallOptimization ||
+            Subtarget->useLVILoadHardening())
+          return false;
+        const MachineOperand &Pointer = Load.getOperand(1 + X86::AddrDisp);
+        return Load.getOperand(1 + X86::AddrBaseReg).getReg() == X86::RIP &&
+               !Load.getOperand(1 + X86::AddrSegmentReg).getReg() &&
+               (Pointer.isGlobal() || Pointer.isSymbol()) &&
+               (Pointer.getTargetFlags() == X86II::MO_DLLIMPORT ||
+                Pointer.getTargetFlags() == X86II::MO_COFFSTUB) &&
+               !Pointer.getOffset();
+      },
+      {X86::CALL64r, X86::TAILJMPr64_REX});
+
   // An exception table that covers every instruction has each call site a
   // byte early, for a search by the address before the frame's own. A site
   // that begins the function has a NOP ahead of it to be that byte: one with

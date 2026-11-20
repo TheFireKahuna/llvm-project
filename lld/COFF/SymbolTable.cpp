@@ -79,7 +79,8 @@ static void forceLazy(Symbol *s) {
 
 // Returns the symbol in SC whose value is <= Addr that is closest to Addr.
 // This is generally the global variable or function whose definition contains
-// Addr.
+// Addr. In an object LLVM made for Windows Itanium or NT-POSIX a label marks a
+// point within one and names nothing.
 static Symbol *getSymbol(SectionChunk *sc, uint32_t addr) {
   DefinedRegular *candidate = nullptr;
 
@@ -87,6 +88,8 @@ static Symbol *getSymbol(SectionChunk *sc, uint32_t addr) {
     auto *d = dyn_cast_or_null<DefinedRegular>(s);
     if (!d || !d->data || d->file != sc->file || d->getChunk() != sc ||
         d->getValue() > addr ||
+        (sc->file->forkObject &&
+         d->getCOFFSymbol().getStorageClass() == IMAGE_SYM_CLASS_LABEL) ||
         (candidate && d->getValue() < candidate->getValue()))
       continue;
 

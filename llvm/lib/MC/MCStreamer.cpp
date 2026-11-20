@@ -1068,7 +1068,7 @@ void MCStreamer::emitWinCFISetFrame(MCRegister Register, unsigned Offset,
   }
 }
 
-void MCStreamer::emitWinCFIAllocStack(unsigned Size, SMLoc Loc) {
+void MCStreamer::emitWinCFIAllocStack(unsigned Size, SMLoc Loc, bool Large) {
   WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
   if (!CurFrame)
     return;
@@ -1082,6 +1082,8 @@ void MCStreamer::emitWinCFIAllocStack(unsigned Size, SMLoc Loc) {
   MCSymbol *Label = emitCFILabel();
 
   WinEH::Instruction Inst = Win64EH::Instruction::Alloc(Label, Size);
+  if (Large)
+    Inst.Operation = Win64EH::UOP_AllocLarge;
   if (CurrentWinEpilog) {
     if (CurFrame->Version < 3)
       return getContext().reportError(
@@ -1267,6 +1269,12 @@ void MCStreamer::emitCOFFSafeSEH(MCSymbol const *Symbol) {}
 
 void MCStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
                                   ArrayRef<const MCExpr *> Operands) {}
+
+void MCStreamer::emitCOFFSwitchTable(const MCSymbol *Branch,
+                                     const MCSymbol *Table,
+                                     const MCSymbol *Base, uint64_t Count,
+                                     uint64_t Type, const MCSymbol *Load,
+                                     uint64_t Flags) {}
 
 void MCStreamer::emitCOFFSymbolIndex(MCSymbol const *Symbol) {}
 

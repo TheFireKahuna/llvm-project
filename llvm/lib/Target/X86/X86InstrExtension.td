@@ -161,6 +161,16 @@ def MOVSX64rm32: RI<0x63, MRMSrcMem, (outs GR64:$dst), (ins i32mem:$src),
                     [(set GR64:$dst, (sextloadi64i32 addr:$src))]>,
                     Sched<[WriteLoad]>, Requires<[In64BitMode]>;
 
+// JTLOAD64 is the MOVSX64rm32 that loads an entry of jump table $jti. It
+// stays one instruction until it is emitted, so the object can state it. It
+// has the form, the encoding and the scheduling of MOVSX64rm32, and wherever
+// that opcode is named this one is too, so that it is that load to every pass.
+let isCodeGenOnly = 1 in
+def JTLOAD64 : RI<0x63, MRMSrcMem, (outs GR64:$dst),
+                  (ins i32mem:$src, i32imm:$jti), "#JTLOAD64 $dst, $src, $jti",
+                  [(set GR64:$dst, (X86jtload addr:$src, timm:$jti))]>,
+               Sched<[WriteLoad]>, Requires<[In64BitMode]>;
+
 // These instructions exist as a consequence of operand size prefix having
 // control of the destination size, but not the input size. Only support them
 // for the disassembler.

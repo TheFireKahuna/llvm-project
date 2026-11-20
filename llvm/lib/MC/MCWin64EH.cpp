@@ -8,6 +8,7 @@
 
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -15,6 +16,7 @@
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCValue.h"
+#include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Win64EH.h"
 
@@ -31,13 +33,17 @@ class MCUnwindV2EpilogTargetExpr final : public MCTargetExpr {
   const MCSymbol *UnwindV2Start;
   const MCSymbol *EpilogEnd;
   uint8_t EpilogSize;
+  // Whether this is the distance as a difference of labels, which a
+  // relocation states, or the field's contents as assembled.
+  bool IsSpan;
   SMLoc Loc;
 
   MCUnwindV2EpilogTargetExpr(const WinEH::FrameInfo &FrameInfo,
                              const WinEH::FrameInfo::Epilog &Epilog,
-                             uint8_t EpilogSize_)
+                             uint8_t EpilogSize_, bool IsSpan)
       : FrameInfo(FrameInfo), UnwindV2Start(Epilog.UnwindV2Start),
-        EpilogEnd(Epilog.End), EpilogSize(EpilogSize_), Loc(Epilog.Loc) {
+        EpilogEnd(Epilog.End), EpilogSize(EpilogSize_), IsSpan(IsSpan),
+        Loc(Epilog.Loc) {
     assert(UnwindV2Start && "Epilog must have a start");
     assert(EpilogEnd && "Epilog must have an end");
   }
@@ -46,8 +52,9 @@ public:
   static MCUnwindV2EpilogTargetExpr *
   create(const WinEH::FrameInfo &FrameInfo,
          const WinEH::FrameInfo::Epilog &Epilog, uint8_t EpilogSize_,
-         MCContext &Ctx) {
-    return new (Ctx) MCUnwindV2EpilogTargetExpr(FrameInfo, Epilog, EpilogSize_);
+         MCContext &Ctx, bool IsSpan = false) {
+    return new (Ctx)
+        MCUnwindV2EpilogTargetExpr(FrameInfo, Epilog, EpilogSize_, IsSpan);
   }
 
   void printImpl(raw_ostream &OS, const MCAsmInfo *MAI) const override {
@@ -301,9 +308,10 @@ GetOptionalAbsDifference(const MCAssembler &Assembler, const MCSymbol *LHS,
                               MCSymbolRefExpr::create(RHS, Context), Context);
   // It should normally be possible to calculate the length of a function
   // at this point, but it might not be possible in the presence of certain
-  // unusual constructs, like an inline asm with an alignment directive.
+  // unusual constructs, like an inline asm with an alignment directive. The
+  // distance is as assembled, also across code that a linker may resize.
   int64_t value;
-  if (!Diff->evaluateAsAbsolute(value, Assembler))
+  if (!Diff->evaluateKnownAbsolute(value, Assembler))
     return std::nullopt;
   return value;
 }
@@ -879,7 +887,12 @@ static void EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info) {
     return;
 
   // V3 has a completely different binary layout; dispatch to separate emitter.
+  // It locates an epilogue by its distance from the function's end, which no
+  // relocation states, so a linker must not resize the section.
   if (info->Version == 3) {
+    static_cast<WinCOFFObjectWriter &>(
+        static_cast<MCObjectStreamer &>(streamer).getAssembler().getWriter())
+        .FixedSizeSections.insert(info->TextSection);
     EmitUnwindInfoV3(streamer, info);
     return;
   }
@@ -1012,24 +1025,35 @@ static void EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info) {
     // size byte + flags byte + 2 per epilog (for the distance).
     OS->ensureHeadroom(2 + info->EpilogMap.size() * 2);
 
-    bool IsLast = true;
-    for (const auto &Epilog : llvm::reverse(info->EpilogMap)) {
-      if (IsLast) {
-        IsLast = false;
-        uint8_t Flags = LastEpilogIsAtEnd ? 0x01 : 0;
-        OS->emitInt8(EpilogSize);
-        OS->emitInt8((Flags << 4) | Win64EH::UOP_Epilog);
+    uint8_t Flags = LastEpilogIsAtEnd ? 0x01 : 0;
+    OS->emitInt8(EpilogSize);
+    OS->emitInt8((Flags << 4) | Win64EH::UOP_Epilog);
 
-        if (LastEpilogIsAtEnd)
-          continue;
-      }
+    // The epilogs are listed from the last, which the size and flags describe,
+    // to the first. On Windows Itanium and NT-POSIX each distance is also a
+    // relocation, and the last epilog's comes last instead: a linker that
+    // deletes the jump after an epilog of that jump alone leaves the distance
+    // zero, which ends the list.
+    bool IsFork =
+        context.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+    for (size_t I = 0, N = info->EpilogMap.size(); I != N; ++I) {
+      size_t Index = (2 * N - 1 - IsFork - I) % N;
+      if (LastEpilogIsAtEnd && Index == N - 1)
+        continue;
+      const WinEH::FrameInfo::Epilog &Epilog =
+          info->EpilogMap.begin()[Index].second;
 
       // Each epilog is emitted as a fixup, since we can't measure the distance
       // between the start of the epilog and the end of the function until
       // layout has been completed.
-      auto *MCE = MCUnwindV2EpilogTargetExpr::create(*info, Epilog.second,
-                                                     EpilogSize, context);
-      OS->addFixup(MCE, FK_Data_2);
+      OS->addFixup(MCUnwindV2EpilogTargetExpr::create(*info, Epilog, EpilogSize,
+                                                      context),
+                   FK_Data_2);
+      if (IsFork)
+        OS->addFixup(
+            MCUnwindV2EpilogTargetExpr::create(*info, Epilog, EpilogSize,
+                                               context, /*IsSpan=*/true),
+            getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_SSPAN_EPILOGV2));
       OS->appendContents(2, 0);
     }
   }
@@ -1066,6 +1090,11 @@ static void EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info) {
 
 bool MCUnwindV2EpilogTargetExpr::evaluateAsRelocatableImpl(
     MCValue &Res, const MCAssembler *Asm) const {
+  if (IsSpan) {
+    Res = MCValue::get(FrameInfo.End, UnwindV2Start);
+    return true;
+  }
+
   // Calculate the offset to this epilog, and validate it's within the allowed
   // range.
   auto Offset = GetOptionalAbsDifference(*Asm, FrameInfo.End, UnwindV2Start);
@@ -1075,7 +1104,7 @@ bool MCUnwindV2EpilogTargetExpr::evaluateAsRelocatableImpl(
                  FrameInfo.Function->getName());
     return false;
   }
-  assert(*Offset > 0);
+  assert(*Offset >= 0);
   constexpr uint16_t MaxEpilogOffset = 0x0fff;
   if (*Offset > MaxEpilogOffset) {
     Asm->getContext().reportError(
@@ -1178,13 +1207,50 @@ static std::optional<int64_t> GetOptionalAbsDifference(MCStreamer &Streamer,
   return GetOptionalAbsDifference(OS->getAssembler(), LHS, RHS);
 }
 
-static int64_t GetAbsDifference(MCStreamer &Streamer, const MCSymbol *LHS,
-                                const MCSymbol *RHS) {
-  std::optional<int64_t> MaybeDiff =
-      GetOptionalAbsDifference(Streamer, LHS, RHS);
-  if (!MaybeDiff)
-    report_fatal_error("Failed to evaluate function length in SEH unwind info");
-  return *MaybeDiff;
+// The least and the most bytes from \p From to \p To, a later symbol of its
+// section. Before layout the padding of an alignment between them is not
+// known, and counts as none and as the most it can be.
+static bool ARM64DistanceBounds(MCStreamer &Streamer, const MCSymbol *From,
+                                const MCSymbol *To, int64_t &Min,
+                                int64_t &Max) {
+  if (std::optional<int64_t> Known =
+          GetOptionalAbsDifference(Streamer, To, From)) {
+    Min = Max = *Known;
+    return true;
+  }
+  const MCFragment *F = From->getFragment(), *Last = To->getFragment();
+  if (!F || !Last || F->getParent() != Last->getParent() ||
+      F->getLayoutOrder() > Last->getLayoutOrder())
+    return false;
+  Min = Max = int64_t(To->getOffset()) - int64_t(From->getOffset());
+  for (; F != Last; F = F->getNext()) {
+    int64_t Count;
+    Min += F->getFixedSize();
+    Max += F->getFixedSize();
+    if (F->getKind() == MCFragment::FT_Align) {
+      Max += std::min<uint64_t>(F->getAlignment().value() - 1,
+                                F->getAlignMaxBytesToEmit());
+    } else if (auto *FF = dyn_cast<MCFillFragment>(F);
+               FF && FF->getNumValues().evaluateAsAbsolute(Count)) {
+      Min += Count * FF->getValueSize();
+      Max += Count * FF->getValueSize();
+    } else if (F->getKind() != MCFragment::FT_Data) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Whether the linker may change the distance from \p From to \p To: an
+// instruction that it may resize lies between them.
+static bool ARM64MayResize(MCStreamer &Streamer, const MCSymbol *From,
+                           const MCSymbol *To) {
+  int64_t Unused;
+  return From->getSection().isLinkerRelaxable() &&
+         !GetSubDivExpr(Streamer, To, From, 1)
+              ->evaluateAsAbsolute(
+                  Unused,
+                  static_cast<MCObjectStreamer &>(Streamer).getAssembler());
 }
 
 static uint32_t ARM64CountOfInstructions(ArrayRef<WinEH::Instruction> Insns,
@@ -1691,7 +1757,7 @@ static int getARM64OffsetInProlog(ArrayRef<WinEH::Instruction> Prolog,
 static int checkARM64PackedEpilog(MCStreamer &streamer, WinEH::FrameInfo *info,
                                   WinEH::FrameInfo::Segment *Seg,
                                   ArrayRef<WinEH::Instruction> Prolog,
-                                  int PrologCodeBytes) {
+                                  int PrologCodeBytes, bool Known) {
   // Can only pack if there's one single epilog
   if (Seg->Epilogs.size() != 1)
     return -1;
@@ -1701,10 +1767,16 @@ static int checkARM64PackedEpilog(MCStreamer &streamer, WinEH::FrameInfo *info,
       info->EpilogMap[Sym].Instructions;
 
   // Check that the epilog actually is at the very end of the function,
-  // otherwise it can't be packed.
-  uint32_t DistanceFromEnd =
-      (uint32_t)(Seg->Offset + Seg->Length - Seg->Epilogs.begin()->second);
-  if (DistanceFromEnd / 4 != Epilog.size())
+  // otherwise it can't be packed. Where layout decides the function's length,
+  // only the distance from the epilog to the function's end is known.
+  std::optional<int64_t> DistanceFromEnd =
+      Seg->Offset + Seg->Length - Seg->Epilogs.begin()->second;
+  if (!Known)
+    DistanceFromEnd =
+        Seg == &info->Segments.back()
+            ? GetOptionalAbsDifference(streamer, info->FuncletOrFuncEnd, Sym)
+            : std::nullopt;
+  if (!DistanceFromEnd || uint32_t(*DistanceFromEnd) / 4 != Epilog.size())
     return -1;
 
   int RetVal = -1;
@@ -2090,9 +2162,12 @@ static void ARM64ProcessEpilogs(WinEH::FrameInfo *info,
   }
 }
 
-static void ARM64FindSegmentsInFunction(MCStreamer &streamer,
+// Split a function into the segments its length needs. \p MinLength and
+// \p MaxLength differ where layout decides the length; an epilog's offset is
+// then the least its start can be, and its end the most.
+static bool ARM64FindSegmentsInFunction(MCStreamer &streamer,
                                         WinEH::FrameInfo *info,
-                                        int64_t RawFuncLength) {
+                                        int64_t MinLength, int64_t MaxLength) {
   if (info->PrologEnd)
     checkARM64Instructions(streamer, info->Instructions, info->Begin,
                            info->PrologEnd, info->Function->getName(), true);
@@ -2106,74 +2181,72 @@ static void ARM64FindSegmentsInFunction(MCStreamer &streamer,
   for (auto &I : info->EpilogMap) {
     MCSymbol *Start = I.first;
     auto &Instrs = I.second.Instructions;
-    int64_t Offset = GetAbsDifference(streamer, Start, info->Begin);
+    int64_t Offset, MaxOffset;
+    if (!ARM64DistanceBounds(streamer, info->Begin, Start, Offset, MaxOffset))
+      return false;
     checkARM64Instructions(streamer, Instrs, Start, I.second.End,
                            info->Function->getName(), false);
-    assert((Epilogs.size() == 0 || Offset >= Epilogs.back().End) &&
+    assert((Epilogs.size() == 0 || Offset >= Epilogs.back().Offset) &&
            "Epilogs should be monotonically ordered");
     Epilogs.push_back(
         {Start, Offset,
-         Offset + (int64_t)ARM64CountOfInstructions(Instrs, false) * 4});
+         MaxOffset + (int64_t)ARM64CountOfInstructions(Instrs, false) * 4});
   }
 
   unsigned E = 0;
   int64_t SegLimit = 0xFFFFC;
   int64_t SegOffset = 0;
 
-  if (RawFuncLength > SegLimit) {
+  while (MaxLength - SegOffset > SegLimit) {
+    // Try divide the function into segments, requirements:
+    // 1. Segment length <= 0xFFFFC;
+    // 2. Each Prologue or Epilogue must be fully within a segment.
+    int64_t SegEnd = SegOffset + SegLimit;
+    unsigned First = E;
 
-    int64_t RemainingLength = RawFuncLength;
+    // Epilogs within current segment.
+    while (E < Epilogs.size() && Epilogs[E].End < SegEnd)
+      ++E;
 
-    while (RemainingLength > SegLimit) {
-      // Try divide the function into segments, requirements:
-      // 1. Segment length <= 0xFFFFC;
-      // 2. Each Prologue or Epilogue must be fully within a segment.
-      int64_t SegLength = SegLimit;
-      int64_t SegEnd = SegOffset + SegLength;
-      // Keep record on symbols and offsets of epilogs in this segment.
-      MapVector<MCSymbol *, int64_t> EpilogsInSegment;
-
-      while (E < Epilogs.size() && Epilogs[E].End < SegEnd) {
-        // Epilogs within current segment.
-        EpilogsInSegment[Epilogs[E].Start] = Epilogs[E].Offset;
-        ++E;
-      }
-
-      // At this point, we have:
-      // 1. Put all epilogs in segments already. No action needed here; or
-      // 2. Found an epilog that will cross segments boundry. We need to
-      //    move back current segment's end boundry, so the epilog is entirely
-      //    in the next segment; or
-      // 3. Left at least one epilog that is entirely after this segment.
-      //    It'll be handled by the next iteration, or the last segment.
-      if (E < Epilogs.size() && Epilogs[E].Offset <= SegEnd)
-        // Move back current Segment's end boundry.
-        SegLength = Epilogs[E].Offset - SegOffset;
-
-      auto Seg = WinEH::FrameInfo::Segment(
-          SegOffset, SegLength, /* HasProlog */!SegOffset);
-      Seg.Epilogs = std::move(EpilogsInSegment);
-      info->Segments.push_back(Seg);
-
-      SegOffset += SegLength;
-      RemainingLength -= SegLength;
+    // At this point, we have:
+    // 1. Put all epilogs in segments already. No action needed here; or
+    // 2. Found an epilog that may cross the segment's boundary. We need to
+    //    move back current segment's end boundary, so the epilog is entirely
+    //    in the next segment, and with it each earlier one that may then
+    //    reach past the boundary; or
+    // 3. Left at least one epilog that is entirely after this segment.
+    //    It'll be handled by the next iteration, or the last segment.
+    if (E < Epilogs.size() && Epilogs[E].Offset <= SegEnd) {
+      SegEnd = Epilogs[E].Offset;
+      for (; E > First && Epilogs[E - 1].End > SegEnd; --E)
+        SegEnd = Epilogs[E - 1].Offset;
     }
+    if (SegEnd <= SegOffset || SegEnd >= MinLength)
+      return false;
+
+    auto Seg = WinEH::FrameInfo::Segment(SegOffset, SegEnd - SegOffset,
+                                         /* HasProlog */ !SegOffset);
+    for (; First < E; ++First)
+      Seg.Epilogs[Epilogs[First].Start] = Epilogs[First].Offset;
+    info->Segments.push_back(Seg);
+
+    SegOffset = SegEnd;
   }
 
-  // Add the last segment when RawFuncLength > 0xFFFFC,
-  // or the only segment otherwise.
-  auto LastSeg =
-      WinEH::FrameInfo::Segment(SegOffset, RawFuncLength - SegOffset,
-                                /* HasProlog */!SegOffset);
+  // Add the last segment when the function is longer than 0xFFFFC, or the
+  // only segment otherwise.
+  auto LastSeg = WinEH::FrameInfo::Segment(SegOffset, MaxLength - SegOffset,
+                                           /* HasProlog */ !SegOffset);
   for (; E < Epilogs.size(); ++E)
     LastSeg.Epilogs[Epilogs[E].Start] = Epilogs[E].Offset;
   info->Segments.push_back(LastSeg);
+  return true;
 }
 
 static void ARM64EmitUnwindInfoForSegment(MCStreamer &streamer,
                                           WinEH::FrameInfo *info,
                                           WinEH::FrameInfo::Segment &Seg,
-                                          bool TryPacked = true) {
+                                          bool TryPacked, bool Known) {
   MCContext &context = streamer.getContext();
   MCSymbol *Label = context.createTempSymbol();
 
@@ -2199,18 +2272,21 @@ static void ARM64EmitUnwindInfoForSegment(MCStreamer &streamer,
   uint32_t SegLength = (uint32_t)Seg.Length / 4;
   uint32_t PrologCodeBytes = ARM64CountOfUnwindCodes(Prolog);
 
-  int PackedEpilogOffset = HasEpilogs
-                               ? checkARM64PackedEpilog(streamer, info, &Seg,
-                                                        Prolog, PrologCodeBytes)
-                               : -1;
+  int PackedEpilogOffset =
+      HasEpilogs ? checkARM64PackedEpilog(streamer, info, &Seg, Prolog,
+                                          PrologCodeBytes, Known)
+                 : -1;
 
   // TODO:
   // 1. Enable packed unwind info (.pdata only) for multi-segment functions.
   // 2. Emit packed unwind info (.pdata only) for segments that have neithor
   //    prolog nor epilog.
-  if (info->Segments.size() == 1 && PackedEpilogOffset >= 0 &&
+  // The packed format has no relocation for the length of a function that the
+  // linker may resize, and holds a length that must be known here.
+  if (Known && info->Segments.size() == 1 && PackedEpilogOffset >= 0 &&
       uint32_t(PackedEpilogOffset) < PrologCodeBytes &&
-      !info->HandlesExceptions && SegLength <= 0x7ff && TryPacked) {
+      !info->HandlesExceptions && SegLength <= 0x7ff && TryPacked &&
+      !ARM64MayResize(streamer, info->Begin, info->FuncletOrFuncEnd)) {
     // Matching prolog/epilog and no exception handlers; check if the
     // prolog matches the patterns that can be described by the packed
     // format.
@@ -2255,8 +2331,35 @@ static void ARM64EmitUnwindInfoForSegment(MCStreamer &streamer,
     row1 |= 1 << 20;
   if (PackedEpilogOffset >= 0) // E
     row1 |= 1 << 21;
-  row1 |= SegLength & 0x3FFFF;
-  streamer.emitInt32(row1);
+  // The low 18 bits of a word count the instructions from the segment's
+  // start to a point. Where the linker may resize one of them, a relocation
+  // states the distance, and the word holds it as assembled. Where only
+  // layout decides the distance, the word is an expression.
+  auto EmitWords = [&](uint32_t Word, uint32_t Count, const MCSymbol *To) {
+    if (info->Segments.size() == 1 &&
+        ARM64MayResize(streamer, info->Begin, To)) {
+      auto &OS = static_cast<MCObjectStreamer &>(streamer);
+      OS.ensureHeadroom(4);
+      OS.addFixup(GetSubDivExpr(streamer, To, info->Begin, 1),
+                  getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_SSPAN_WORDS18));
+    } else if (!Known) {
+      const MCExpr *Bytes = MCBinaryExpr::createSub(
+          GetSubDivExpr(streamer, To, info->Begin, 1),
+          MCConstantExpr::create(Seg.Offset, context), context);
+      streamer.emitValue(
+          MCBinaryExpr::createAdd(
+              MCBinaryExpr::createDiv(Bytes, MCConstantExpr::create(4, context),
+                                      context),
+              MCConstantExpr::create(Word, context), context),
+          4);
+      return;
+    }
+    streamer.emitInt32(Word | (Known ? Count : 0));
+  };
+  if (&Seg == &info->Segments.back())
+    EmitWords(row1, SegLength & 0x3FFFF, info->FuncletOrFuncEnd);
+  else
+    streamer.emitInt32(row1 | SegLength);
 
   // Extended Code Words, Extended Epilog Count
   if (ExtensionWord) {
@@ -2281,9 +2384,7 @@ static void ARM64EmitUnwindInfoForSegment(MCStreamer &streamer,
       uint32_t EpilogOffset = (uint32_t)(Seg.Epilogs[EpilogStart] - Seg.Offset);
       if (EpilogOffset)
         EpilogOffset /= 4;
-      uint32_t row3 = EpilogOffset;
-      row3 |= (EpilogIndex & 0x3FF) << 22;
-      streamer.emitInt32(row3);
+      EmitWords((EpilogIndex & 0x3FF) << 22, EpilogOffset, EpilogStart);
     }
   }
 
@@ -2350,48 +2451,42 @@ static void ARM64EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info,
   for (auto &I : info->EpilogMap)
     simplifyARM64Opcodes(I.second.Instructions, true);
 
-  int64_t RawFuncLength;
-  if (!info->FuncletOrFuncEnd) {
+  if (!info->FuncletOrFuncEnd)
     report_fatal_error("FuncletOrFuncEnd not set");
-  } else {
-    // FIXME: GetAbsDifference tries to compute the length of the function
-    // immediately, before the whole file is emitted, but in general
-    // that's impossible: the size in bytes of certain assembler directives
-    // like .align and .fill is not known until the whole file is parsed and
-    // relaxations are applied. Currently, GetAbsDifference fails with a fatal
-    // error in that case. (We mostly don't hit this because inline assembly
-    // specifying those directives is rare, and we don't normally try to
-    // align loops on AArch64.)
-    //
-    // There are two potential approaches to delaying the computation. One,
-    // we could emit something like ".word (endfunc-beginfunc)/4+0x10800000",
-    // as long as we have some conservative estimate we could use to prove
-    // that we don't need to split the unwind data. Emitting the constant
-    // is straightforward, but there's no existing code for estimating the
-    // size of the function.
-    //
-    // The other approach would be to use a dedicated, relaxable fragment,
-    // which could grow to accommodate splitting the unwind data if
-    // necessary. This is more straightforward, since it automatically works
-    // without any new infrastructure, and it's consistent with how we handle
-    // relaxation in other contexts.  But it would require some refactoring
-    // to move parts of the pdata/xdata emission into the implementation of
-    // a fragment. We could probably continue to encode the unwind codes
-    // here, but we'd have to emit the pdata, the xdata header, and the
-    // epilogue scopes later, since they depend on whether the we need to
-    // split the unwind data.
-    //
-    // If this is fixed, remove code in AArch64ISelLowering.cpp that
-    // disables loop alignment on Windows.
-    RawFuncLength = GetAbsDifference(streamer, info->FuncletOrFuncEnd,
-                                     info->Begin);
-  }
 
-  ARM64FindSegmentsInFunction(streamer, info, RawFuncLength);
+  // The function's length is not known here where it holds an alignment,
+  // whose padding layout decides. Its bounds decide the segments, and layout
+  // gives the length and each epilog's offset their values.
+  int64_t MinLength, MaxLength;
+  if (!ARM64DistanceBounds(streamer, info->Begin, info->FuncletOrFuncEnd,
+                           MinLength, MaxLength) ||
+      !ARM64FindSegmentsInFunction(streamer, info, MinLength, MaxLength)) {
+    streamer.getContext().reportError(
+        SMLoc(), "cannot divide the unwind info of " +
+                     info->Function->getName() +
+                     ": its length is not known until layout");
+    info->Segments.clear();
+    return;
+  }
+  bool Known = MinLength == MaxLength;
+
+  // An unwind code stands for one instruction of its prologue or epilogue, and
+  // a segment begins at an offset that no relocation states, so the linker
+  // must not resize a section where it could change either.
+  if ((info->Segments.size() > 1 &&
+       ARM64MayResize(streamer, info->Begin, info->FuncletOrFuncEnd)) ||
+      (info->PrologEnd &&
+       ARM64MayResize(streamer, info->Begin, info->PrologEnd)) ||
+      any_of(info->EpilogMap, [&](const auto &I) {
+        return I.second.End && ARM64MayResize(streamer, I.first, I.second.End);
+      }))
+    static_cast<WinCOFFObjectWriter &>(
+        static_cast<MCObjectStreamer &>(streamer).getAssembler().getWriter())
+        .FixedSizeSections.insert(info->TextSection);
 
   info->PrologCodeBytes = ARM64CountOfUnwindCodes(info->Instructions);
   for (auto &S : info->Segments)
-    ARM64EmitUnwindInfoForSegment(streamer, info, S, TryPacked);
+    ARM64EmitUnwindInfoForSegment(streamer, info, S, TryPacked, Known);
 
   // Clear prolog instructions after unwind info is emitted for all segments.
   info->Instructions.clear();

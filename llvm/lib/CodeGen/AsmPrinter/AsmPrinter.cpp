@@ -2096,6 +2096,21 @@ void AsmPrinter::emitFunctionBody() {
     }
   }
 
+  // An object for Windows Itanium or NT-POSIX states each dispatch through a
+  // jump table, whose branch therefore has a label.
+  SmallVector<std::pair<int, const MachineInstr *>, 0> JumpTableBranches;
+  JumpTableLoads.clear();
+  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    forEachJumpTableBranch(
+        MF, /*isThumb=*/false,
+        [&](const MachineJumpTableInfo &, const MachineInstr &Branch,
+            int64_t JTI) {
+          if (!Branch.getPreInstrSymbol())
+            const_cast<MachineInstr &>(Branch).setPreInstrSymbol(
+                *MF, OutContext.createTempSymbol());
+          JumpTableBranches.push_back({JTI, &Branch});
+        });
+
   // Print out code for the function.
   bool HasAnyRealCode = false;
   int NumInstsInFunction = 0;
@@ -2558,6 +2573,46 @@ void AsmPrinter::emitFunctionBody() {
 
   // Print out jump tables referenced by the function.
   emitJumpTableInfo();
+
+  // State the dispatches through each table, a branch with a load. Where
+  // code was duplicated or shared a table may have several of either, and
+  // each is stated at least once. The branch through a table of addresses is
+  // also its load.
+  for (int JTI = 0; !JumpTableBranches.empty() &&
+                    JTI != int(MF->getJumpTableInfo()->getJumpTables().size());
+       ++JTI) {
+    const MachineJumpTableInfo &MJTI = *MF->getJumpTableInfo();
+    bool IsPointer =
+        MJTI.getEntryKind() == MachineJumpTableInfo::EK_BlockAddress;
+    SmallVector<const MachineInstr *, 1> Branches;
+    SmallVector<MCSymbol *, 1> Loads;
+    for (auto [Index, Branch] : JumpTableBranches)
+      if (Index == JTI) {
+        Branches.push_back(Branch);
+        if (IsPointer && Branch->mayLoad())
+          Loads.push_back(Branch->getPreInstrSymbol());
+      }
+    for (auto [Index, Load] : JumpTableLoads)
+      if (Index == JTI)
+        Loads.push_back(Load);
+    if (Branches.empty() || Loads.empty())
+      continue;
+    for (size_t I = 0, E = std::max(Branches.size(), Loads.size()); I != E;
+         ++I) {
+      const MachineInstr *Branch = Branches[std::min(I, Branches.size() - 1)];
+      const MCSymbol *Base = GetJTISymbol(JTI);
+      auto EntrySize = codeview::JumpTableEntrySize::Pointer;
+      if (!IsPointer)
+        std::tie(Base, std::ignore, std::ignore, EntrySize) =
+            getCodeViewJumpTableInfo(JTI, Branch, Branch->getPreInstrSymbol());
+      OutStreamer->emitCOFFSwitchTable(
+          Branch->getPreInstrSymbol(), GetJTISymbol(JTI), Base,
+          MJTI.getJumpTables()[JTI].MBBs.size(), uint64_t(EntrySize),
+          Loads[std::min(I, Loads.size() - 1)],
+          MJTI.getJumpTables()[JTI].RangeChecked ? COFF::SwitchTableRangeChecked
+                                                 : 0);
+    }
+  }
 
   // Emit post-function debug and/or EH information.
   for (auto &Handler : Handlers)
@@ -5273,6 +5328,113 @@ dwarf::FormParams AsmPrinter::getDwarfFormParams() const {
 unsigned int AsmPrinter::getUnitLengthFieldByteSize() const {
   return dwarf::getUnitLengthFieldByteSize(
       OutStreamer->getContext().getDwarfFormat());
+}
+
+void AsmPrinter::emitJumpTableLoadLabel(int JTI) {
+  if (!TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return;
+  JumpTableLoads.push_back({JTI, OutContext.createTempSymbol()});
+  OutStreamer->emitLabel(JumpTableLoads.back().second);
+}
+
+void AsmPrinter::findFusedSites(
+    function_ref<bool(const MachineInstr &)> IsPointerLoad,
+    ArrayRef<unsigned> SiteOpcodes) {
+  // The linker may make a call or a tail call through an import pointer
+  // direct and drop the pointer's load, where the object states that only
+  // such sites read the load's register, in the load's section, and that the
+  // load alone reaches each. Every path counts: the register holds a value
+  // until an instruction writes it, which an epilogue before a tail call may,
+  // and an exception may leave a block at any of its instructions. The caller
+  // of an outlined function reads the registers it wrote, and a call to one
+  // names the registers it reads only where liveness is tracked.
+  FusedSites.clear();
+  if (!TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+      MF->isOutlined() || !MF->getProperties().hasTracksLiveness())
+    return;
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  for (const MachineBasicBlock &MBB : *MF)
+    for (const MachineInstr &Load : MBB) {
+      if (!IsPointerLoad(Load))
+        continue;
+      Register Reg = Load.getOperand(0).getReg();
+      SmallVector<const MachineInstr *, 4> Sites;
+      SmallVector<const MachineBasicBlock *, 8> Work;
+      SmallPtrSet<const MachineBasicBlock *, 8> Seen;
+      bool Fused = true;
+      // The instructions that read what the load wrote are calls and tail
+      // calls through it.
+      const MachineBasicBlock *Block = &MBB;
+      for (MachineBasicBlock::const_iterator I = std::next(Load.getIterator());;
+           I = Block->begin()) {
+        bool Written = false;
+        for (; I != Block->end() && !Written; ++I) {
+          if (I->isDebugInstr())
+            continue;
+          if (I->readsRegister(Reg, TRI)) {
+            Fused &= is_contained(SiteOpcodes, I->getOpcode()) &&
+                     I->getOperand(0).getReg() == Reg &&
+                     none_of(drop_begin(I->operands()),
+                             [&](const MachineOperand &MO) {
+                               return MO.isReg() && MO.readsReg() &&
+                                      MO.getReg() &&
+                                      TRI->regsOverlap(MO.getReg(), Reg);
+                             }) &&
+                     Block->getSectionID() == MBB.getSectionID();
+            Sites.push_back(&*I);
+          }
+          Written = I->modifiesRegister(Reg, TRI);
+        }
+        for (const MachineBasicBlock *Succ : Block->successors())
+          if ((!Written || Succ->isEHPad()) && Seen.insert(Succ).second)
+            Work.push_back(Succ);
+        if (!Fused || Work.empty())
+          break;
+        Block = Work.pop_back_val();
+      }
+      // The instruction that last wrote the register is the load, on every
+      // path to each site.
+      for (const MachineInstr *Site : Sites) {
+        if (!Fused)
+          break;
+        Seen.clear();
+        Block = Site->getParent();
+        for (MachineBasicBlock::const_reverse_iterator I =
+                 std::next(Site->getReverseIterator());
+             ; I = Block->rbegin()) {
+          while (I != Block->rend() && !I->modifiesRegister(Reg, TRI))
+            ++I;
+          if (I != Block->rend())
+            Fused = &*I == &Load;
+          else if (Block->pred_empty() || Block->isEHPad())
+            Fused = false;
+          else
+            for (const MachineBasicBlock *Pred : Block->predecessors())
+              if (Seen.insert(Pred).second)
+                Work.push_back(Pred);
+          if (!Fused || Work.empty())
+            break;
+          Block = Work.pop_back_val();
+        }
+      }
+      if (!Fused || Sites.empty())
+        continue;
+      FusedSites[&Load] = &Load;
+      for (const MachineInstr *Site : Sites)
+        FusedSites[Site] = &Load;
+    }
+}
+
+// A fused call or jump has no relocation of its own, so one marks it.
+void AsmPrinter::emitFusedSite(const MachineInstr *MI,
+                               const MCSymbol *Pointer) {
+  MCSymbol *Dot = OutContext.createTempSymbol();
+  OutStreamer->emitLabel(Dot);
+  OutStreamer->emitRelocDirective(*MCSymbolRefExpr::create(Dot, OutContext),
+                                  MI->isReturn() ? "IMAGE_REL_LLVM_FUSED_JUMP"
+                                                 : "IMAGE_REL_LLVM_FUSED_CALL",
+                                  MCSymbolRefExpr::create(Pointer, OutContext),
+                                  SMLoc());
 }
 
 std::tuple<const MCSymbol *, uint64_t, const MCSymbol *,

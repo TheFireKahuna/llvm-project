@@ -318,6 +318,9 @@ public:
   void emitCOFFSafeSEH(MCSymbol const *Symbol) override;
   void emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
                         ArrayRef<const MCExpr *> Operands) override;
+  void emitCOFFSwitchTable(const MCSymbol *Branch, const MCSymbol *Table,
+                           const MCSymbol *Base, uint64_t Count, uint64_t Type,
+                           const MCSymbol *Load, uint64_t Flags) override;
   void emitCOFFSymbolIndex(MCSymbol const *Symbol) override;
   void emitCOFFSectionIndex(MCSymbol const *Symbol) override;
   void emitCOFFSecRel32(MCSymbol const *Symbol, uint64_t Offset) override;
@@ -530,7 +533,7 @@ public:
                            SMLoc Loc) override;
   void emitWinCFISetFrame(MCRegister Register, unsigned Offset,
                           SMLoc Loc) override;
-  void emitWinCFIAllocStack(unsigned Size, SMLoc Loc) override;
+  void emitWinCFIAllocStack(unsigned Size, SMLoc Loc, bool Large) override;
   void emitWinCFISaveReg(MCRegister Register, unsigned Offset,
                          SMLoc Loc) override;
   void emitWinCFISaveXMM(MCRegister Register, unsigned Offset,
@@ -999,6 +1002,22 @@ void MCAsmStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
     OS << ", ";
     MAI->printExpr(OS, *Operand);
   }
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFSwitchTable(const MCSymbol *Branch,
+                                        const MCSymbol *Table,
+                                        const MCSymbol *Base, uint64_t Count,
+                                        uint64_t Type, const MCSymbol *Load,
+                                        uint64_t Flags) {
+  OS << "\t.switch_table\t";
+  for (const MCSymbol *Symbol : {Branch, Table, Base}) {
+    Symbol->print(OS, MAI);
+    OS << ", ";
+  }
+  OS << Count << ", " << Type << ", ";
+  Load->print(OS, MAI);
+  OS << ", " << Flags;
   EmitEOL();
 }
 
@@ -2558,10 +2577,10 @@ void MCAsmStreamer::emitWinCFISetFrame(MCRegister Register, unsigned Offset,
   EmitEOL();
 }
 
-void MCAsmStreamer::emitWinCFIAllocStack(unsigned Size, SMLoc Loc) {
-  MCStreamer::emitWinCFIAllocStack(Size, Loc);
+void MCAsmStreamer::emitWinCFIAllocStack(unsigned Size, SMLoc Loc, bool Large) {
+  MCStreamer::emitWinCFIAllocStack(Size, Loc, Large);
 
-  OS << "\t.seh_stackalloc " << Size;
+  OS << "\t.seh_stackalloc " << Size << (Large ? ", large" : "");
   EmitEOL();
 }
 

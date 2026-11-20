@@ -12,18 +12,19 @@
 // RUN: llvm-objdump -t %t.none.o > %t.none.txt
 // RUN: llvm-readobj -x '.gfids$y' -x '.giats$y' %t.none.o >> %t.none.txt
 // RUN: FileCheck %s --input-file=%t.none.txt --check-prefix=NONE
-// RUN: llvm-mc -triple x86_64-pc-windows-msvc -filetype=obj -defsym=X64=1 %s \
-// RUN:   -o %t.m.o
+// RUN: llvm-mc -triple x86_64-pc-windows-msvc -filetype=obj -defsym=X64=1 \
+// RUN:   -defsym=MSVC=1 %s -o %t.m.o
 // RUN: llvm-readobj --sections --symbols %t.m.o | FileCheck %s \
 // RUN:   --check-prefix=MSVC --implicit-check-not='.g{{[fi]}}' \
 // RUN:   --implicit-check-not=@feat.00
 
 // An object for Windows Itanium or NT-POSIX lists in .gfids$y each function,
 // and in .giats$y each import pointer, whose address one of its relocations
-// takes, and sets bit 0x800 of @feat.00. A call, a branch, a field through
-// which a function is only called and unwind data take no address. A symbol
-// that has a type other than a function's is not listed; an undefined one
-// without a type is, as it may be a function.
+// takes, and sets bit 0x800 of @feat.00. A call or a jump, also through an
+// import pointer, a branch, a field through which a function is only called
+// and unwind data take no address. A symbol that has a type other than a
+// function's is not listed; an undefined one without a type is, as it may be
+// a function.
 
 // CHECK-DAG: [{{ *}}[[#%d,CODE:]]]{{.*}} in_code{{$}}
 // CHECK-DAG: [{{ *}}[[#%d,DATA:]]]{{.*}} in_data{{$}}
@@ -75,6 +76,16 @@ called:
   leaq object(%rip), %rax
   movq __imp_taken(%rip), %rax
   callq *__imp_called(%rip)
+.ifndef MSVC
+  movq __imp_called@FUSED(%rip), %rax
+  .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_called
+  cs; cs; cs; cs
+  callq *%rax
+  movq __imp_jumped@FUSED(%rip), %rax
+  .reloc ., IMAGE_REL_LLVM_FUSED_JUMP, __imp_jumped
+  rex64 jmpq *%rax
+  int3; int3; int3; int3
+.endif
 .else
   bl called
   b called
@@ -85,6 +96,14 @@ called:
   adrp x0, object
   adrp x0, __imp_taken
   ldr x0, [x0, :lo12:__imp_taken]
+  adrp x8, __imp_called
+  ldr x8, [x8, :fused_lo12:__imp_called]
+  .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_called
+  blr x8
+  adrp x16, __imp_jumped
+  ldr x16, [x16, :fused_lo12:__imp_jumped]
+  .reloc ., IMAGE_REL_LLVM_FUSED_JUMP, __imp_jumped
+  br x16
 .endif
 
   .data

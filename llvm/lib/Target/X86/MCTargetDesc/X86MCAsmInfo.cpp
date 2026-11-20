@@ -22,6 +22,7 @@ constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> AtSpecifierDefs[] = {
     {{"ABS8"}, X86::S_ABS8},
     {{"DTPOFF"}, X86::S_DTPOFF},
     {{"DTPREL"}, X86::S_DTPREL},
+    {{"FUSED"}, X86::S_COFF_FUSED},
     {{"GOT"}, X86::S_GOT},
     {{"GOTENT"}, X86::S_GOTENT},
     {{"GOTNTPOFF"}, X86::S_GOTNTPOFF},

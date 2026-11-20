@@ -68,6 +68,10 @@ enum IPREFIXES {
   IP_HAS_REX_W = 1U << 14,
   // Not a prefix: a jmp that no Windows unwind frame covers.
   IP_TAIL_JUMP = 1U << 15,
+  // A jmp through memory after one prefix-only instruction, or after more, or
+  // after bytes that may be prefixes.
+  IP_AFTER_PREFIX = 1U << 16,
+  IP_AFTER_PREFIXES = 1U << 17,
 };
 
 enum OperandType : unsigned {

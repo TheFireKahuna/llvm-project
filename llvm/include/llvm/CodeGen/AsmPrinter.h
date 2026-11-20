@@ -251,6 +251,14 @@ private:
 protected:
   MCSymbol *CurrentFnBegin = nullptr;
 
+  /// The labels at the loads of jump table entries that the current function
+  /// has emitted, each with the index of its table.
+  SmallVector<std::pair<int, MCSymbol *>, 0> JumpTableLoads;
+
+  /// The current function's fused reads, calls and jumps, each with its read:
+  /// the load of the pointer it goes through.
+  DenseMap<const MachineInstr *, const MachineInstr *> FusedSites;
+
   /// For dso_local functions, the current $local alias for the function.
   MCSymbol *CurrentFnBeginLocal = nullptr;
 
@@ -898,6 +906,23 @@ public:
 
   /// Recursively emit Dwarf DIE tree.
   void emitDwarfDIE(const DIE &Die) const;
+
+  /// Emits a label at the instruction that follows, which loads an entry of
+  /// jump table \p JTI, where the object states its dispatches: on Windows
+  /// Itanium and NT-POSIX.
+  void emitJumpTableLoadLabel(int JTI);
+
+  /// Finds the current function's fused sites, where the object states them:
+  /// on Windows Itanium and NT-POSIX. \p IsPointerLoad says whether an
+  /// instruction loads an import pointer into the register of its first
+  /// operand, and \p SiteOpcodes are the calls and tail calls through the
+  /// register of theirs.
+  void findFusedSites(function_ref<bool(const MachineInstr &)> IsPointerLoad,
+                      ArrayRef<unsigned> SiteOpcodes);
+
+  /// Emits the relocation that marks the instruction that follows, the fused
+  /// call or tail call \p MI, and names \p Pointer.
+  void emitFusedSite(const MachineInstr *MI, const MCSymbol *Pointer);
 
   //===------------------------------------------------------------------===//
   // CodeView Helper Routines

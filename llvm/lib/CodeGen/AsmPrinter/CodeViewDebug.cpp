@@ -3507,7 +3507,7 @@ void CodeViewDebug::emitDebugInfoForGlobal(const CVGlobalVariable &CVGV) {
   }
 }
 
-void forEachJumpTableBranch(
+void llvm::forEachJumpTableBranch(
     const MachineFunction *MF, bool isThumb,
     const std::function<void(const MachineJumpTableInfo &, const MachineInstr &,
                              int64_t)> &Callback) {

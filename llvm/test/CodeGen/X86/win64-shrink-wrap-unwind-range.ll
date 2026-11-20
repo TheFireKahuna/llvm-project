@@ -6,10 +6,12 @@
 ; RUN:   | llvm-readobj --unwind - | FileCheck %s --check-prefix=A64UNWIND %}
 
 ; Under Windows unwind info a shrink-wrapped function's unwind range is its
-; personality is given, and the handler lies within the range. AArch64 unwind
-; info records each epilogue's extent, so an epilogue that would fall out of the
-; range into a return ends in its own copy of it. The object RUN lines have MC
-; check each prologue's codes against its instructions.
+; personality is given, and the handler lies within the range. The linker may
+; resize the code, so the range starts at a label, and its prologue's codes
+; count from there. AArch64 unwind info records each epilogue's extent, so an
+; epilogue that would fall out of the range into a return ends in its own copy
+; of it. The object RUN lines have MC check each prologue's codes against its
+; instructions.
 
 declare void @may_throw()
 declare void @use(ptr)
@@ -169,8 +171,8 @@ work:
 ; A64-NEXT:    mov w8, w0
 ; A64UNWIND:      Function: straight (
 ; A64UNWIND:        Prologue [
-; A64UNWIND-NEXT:     str lr, [sp, #-16]!
-; A64UNWIND-NEXT:     end
+; A64UNWIND-NEXT:     0xd561 ; str x30, [sp, #-16]!
+; A64UNWIND-NEXT:     0xe4 ; end
 declare void @t0()
 declare void @t1()
 declare void @t2()
