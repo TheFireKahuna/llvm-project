@@ -26,6 +26,7 @@
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/BinaryFormat/ELF.h"
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/LTO/LTO.h"
@@ -592,7 +593,8 @@ void LinkerDriver::parseDirectives(InputFile *file) {
         exp.extName = saver().save("_" + exp.extName);
     }
     exp.source = ExportSource::Directives;
-    file->symtab.exports.push_back(exp);
+    if (admitExport(file->symtab, exp, file))
+      file->symtab.exports.push_back(exp);
   }
 
   // Handle /include: in bulk.
@@ -1603,6 +1605,142 @@ static void ltoValidateAllVtablesHaveTypeInfos(COFFLinkerContext &ctx,
       ctx, args::getStrings(args, OPT_lto_known_safe_vtables));
 }
 
+// Reads the version scripts, which are ELF's, read by its parser. COFF takes
+// the version of a name from them as each export is stated, where ELF gives
+// each pattern's version to the symbols it finds once all are known.
+void LinkerDriver::readVersionScripts(const opt::InputArgList &args) {
+  for (auto *arg : args.filtered(OPT_version_script)) {
+    if (versionDefinitions.empty()) {
+      versionDefinitions.push_back({"local", ELF::VER_NDX_LOCAL, {}, {}});
+      versionDefinitions.push_back({"global", ELF::VER_NDX_GLOBAL, {}, {}});
+    }
+    StringRef path = arg->getValue();
+    std::unique_ptr<MemoryBuffer> mb =
+        CHECK(MemoryBuffer::getFile(path), "could not open " + path);
+    VersionScriptParser(ctx, takeBuffer(std::move(mb)),
+                        /*isUnderSysroot=*/false, versionDefinitions)
+        .readVersionScript();
+  }
+
+  auto versionName = [&](uint16_t id) -> std::string {
+    if (id == ELF::VER_NDX_LOCAL)
+      return "VER_NDX_LOCAL";
+    if (id == ELF::VER_NDX_GLOBAL)
+      return "VER_NDX_GLOBAL";
+    return ("version '" + versionDefinitions[id].name + "'").str();
+  };
+  // A name keeps the first version given to it, the globals of a node before
+  // its locals.
+  uint32_t order = 0;
+  for (const VersionDefinition &v : versionDefinitions) {
+    for (bool isLocal : {false, true}) {
+      uint16_t id = isLocal ? uint16_t(ELF::VER_NDX_LOCAL) : v.id;
+      for (const SymbolVersion &pat :
+           isLocal ? v.localPatterns : v.nonLocalPatterns) {
+        if (pat.hasWildcard)
+          continue;
+        auto [it, inserted] = scriptNames[pat.isExternCpp].try_emplace(
+            CachedHashStringRef(pat.name), ScriptName{order++, id});
+        if (!inserted && it->second.id != id)
+          Warn(ctx) << "attempt to reassign symbol '" << pat.name << "' of "
+                    << versionName(it->second.id) << " to " << versionName(id);
+      }
+    }
+  }
+  if (!versionDefinitions.empty())
+    scriptWildcards = VersionPatternMatcher(ctx, versionDefinitions);
+}
+
+// Returns the pattern with no wildcard that gives a symbol its version, the
+// earlier of the plain one and the extern "C++" one.
+LinkerDriver::ScriptName *LinkerDriver::findScriptName(StringRef name) {
+  // A script names symbols as the source does.
+  if (ctx.config.machine == I386)
+    name.consume_front("_");
+  ScriptName *found = nullptr;
+  for (bool isExternCpp : {false, true}) {
+    auto &names = scriptNames[isExternCpp];
+    if (names.empty())
+      continue;
+    std::string demangled;
+    if (isExternCpp)
+      name = demangled = demangleForVersion(name);
+    auto it = names.find(CachedHashStringRef(name));
+    if (it != names.end() && (!found || it->second.order < found->order))
+      found = &it->second;
+  }
+  return found;
+}
+
+uint16_t LinkerDriver::versionOf(StringRef name) {
+  if (versionDefinitions.empty())
+    return ELF::VER_NDX_GLOBAL;
+  if (ScriptName *n = findScriptName(name))
+    return n->id;
+  if (ctx.config.machine == I386)
+    name.consume_front("_");
+  return scriptWildcards.match(name).value_or(ELF::VER_NDX_GLOBAL);
+}
+
+bool LinkerDriver::isLocalByVersionScript(StringRef name) {
+  return versionOf(name) == ELF::VER_NDX_LOCAL;
+}
+
+// An archive is named by its file name, as ld.lld matches it, or without the
+// extension, as GNU ld also does for a PE image.
+bool LinkerDriver::isExcludedLib(const InputFile *file) {
+  if (excludedLibs.empty() || !file || file->parentName.empty())
+    return false;
+  StringRef lib = sys::path::filename(file->parentName);
+  return excludedLibs.contains("ALL") || excludedLibs.contains(lib) ||
+         excludedLibs.contains(lib.substr(0, lib.rfind('.')));
+}
+
+// A version node of a script makes the export the default version of its
+// name, as a definition named f@@V is: exported under the version, which the
+// import library imports for the plain name, and privately under the plain
+// name. The version in a symbol's own name comes first, as on ELF.
+bool LinkerDriver::admitExport(SymbolTable &symtab, Export &e,
+                               const InputFile *file) {
+  uint16_t version = versionOf(e.name);
+  if (version == ELF::VER_NDX_LOCAL || isExcludedLib(file))
+    return false;
+  if (version == ELF::VER_NDX_GLOBAL || !e.exportAs.empty() ||
+      e.name.contains('@'))
+    return true;
+  symtab.exports.push_back(e);
+  symtab.exports.back().isPrivate = true;
+  e.exportAs = saver().save(e.name + "@" + versionDefinitions[version].name);
+  return true;
+}
+
+// A script cannot export what no object and no option does, as ELF's global:
+// can; a name it gives for that is reported.
+void LinkerDriver::checkVersionScripts() {
+  if (versionDefinitions.empty())
+    return;
+  ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
+    for (const Export &e : symtab.exports) {
+      // A definition of f@V is what a node V says of f.
+      auto [name, version] = e.name.split('@');
+      if (ScriptName *n = findScriptName(name);
+          n && (version.empty() ||
+                versionDefinitions[n->id].name == version.ltrim('@')))
+        n->exported = true;
+    }
+  });
+  for (const VersionDefinition &v : versionDefinitions)
+    for (const SymbolVersion &pat : v.nonLocalPatterns)
+      if (!pat.hasWildcard)
+        if (const ScriptName &n = scriptNames[pat.isExternCpp]
+                                      .find(CachedHashStringRef(pat.name))
+                                      ->second;
+            n.id == v.id && !n.exported)
+          Warn(ctx) << "version script assignment of '" << v.name
+                    << "' to symbol '" << pat.name
+                    << "' failed: symbol not exported";
+}
+
 // In MinGW, if no symbols are chosen to be exported, then all symbols are
 // automatically exported by default. This behavior can be forced by the
 // -export-all-symbols option, so that it happens even when exports are
@@ -1640,11 +1778,6 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
       if (!exporter.shouldExport(def))
         return;
 
-      if (!def->isGCRoot) {
-        def->isGCRoot = true;
-        ctx.config.gcroot.push_back(def);
-      }
-
       Export e;
       e.name = def->getName();
       e.sym = def;
@@ -1652,6 +1785,13 @@ void LinkerDriver::maybeExportMinGWSymbols(const opt::InputArgList &args) {
       if (Chunk *c = def->getChunk())
         if (!(c->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE))
           e.data = true;
+      if (!admitExport(symtab, e, def->getFile()))
+        return;
+
+      if (!def->isGCRoot) {
+        def->isGCRoot = true;
+        ctx.config.gcroot.push_back(def);
+      }
       s->isUsedInRegularObj = true;
       symtab.exports.push_back(e);
     });
@@ -2490,6 +2630,15 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     return false;
   };
 
+  // Objects' directives state exports as the objects are read.
+  readVersionScripts(args);
+  for (auto *arg : args.filtered(OPT_exclude_libs)) {
+    for (StringRef libs = arg->getValue(), lib; !libs.empty();) {
+      std::tie(lib, libs) = getToken(libs, ",:");
+      excludedLibs.insert(lib);
+    }
+  }
+
   // Create a list of input files. These can be given as OPT_INPUT options
   // and OPT_wholearchive_file options, and we also need to track OPT_start_lib
   // and OPT_end_lib.
@@ -3155,6 +3304,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (config->dll || !ctx.symtab.exports.empty() ||
       (ctx.config.machine == ARM64X && !ctx.hybridSymtab->exports.empty())) {
     llvm::TimeTraceScope timeScope("Create .lib exports");
+    checkVersionScripts();
     ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.fixupExports(); });
     if (!config->noimplib && (!config->mingw || !config->implib.empty()))
       createImportLibrary(/*asLib=*/false);

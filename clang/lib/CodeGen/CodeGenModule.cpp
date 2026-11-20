@@ -3676,6 +3676,30 @@ void CodeGenModule::SetCommonAttributes(GlobalDecl GD, llvm::GlobalValue *GV) {
   if (D && D->hasAttr<UsedAttr>())
     addUsedOrCompilerUsedGlobal(GV);
 
+  // A symver attribute gives a definition a versioned name. COFF has no
+  // symbol versions, so the name is an alias of the definition; on ELF it is
+  // .symver's, whose renaming of the definition no alias states.
+  if (D && D->hasAttr<SymverAttr>() && !GV->isDeclarationForLinker()) {
+    if (!getTriple().isOSBinFormatCOFF())
+      addCompilerUsedGlobal(GV);
+    for (const auto *A : D->specific_attrs<SymverAttr>()) {
+      StringRef Name = A->getVersion();
+      if (!getTriple().isOSBinFormatCOFF()) {
+        getModule().appendModuleInlineAsm(
+            (".symver " + GV->getName() + ", " + Name).str());
+      } else if (getModule().getNamedValue(Name)) {
+        Diags.Report(A->getLocation(), diag::err_duplicate_mangled_name)
+            << Name;
+      } else {
+        auto *Alias = llvm::GlobalAlias::create(
+            GV->getValueType(), GV->getAddressSpace(),
+            llvm::GlobalValue::ExternalLinkage, Name, GV, &getModule());
+        Alias->setVisibility(GV->getVisibility());
+        Alias->setDSOLocal(GV->isDSOLocal());
+      }
+    }
+  }
+
   if (const auto *VD = dyn_cast_if_present<VarDecl>(D);
       VD &&
       ((CodeGenOpts.KeepPersistentStorageVariables &&

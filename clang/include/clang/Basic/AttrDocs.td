@@ -95,6 +95,25 @@ documentation for further information.
   }];
 }
 
+def SymverDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+The ``symver`` attribute gives the definition of a function or variable a
+versioned name, as the assembler directive ``.symver`` does: ``"name@version"``
+for a version that the definition provides, and ``"name@@version"`` for the
+default version, which a reference to plain ``name`` binds. A definition may
+carry several.
+
+On ELF the name is a symbol version. COFF has none: the name is an alias of the
+definition there, which a linker exports as ``name@version``.
+
+.. code-block:: c
+
+  __attribute__((symver("foo@V1"))) int foo_v1(void) { return 1; }
+  __attribute__((symver("foo@@V2"))) int foo_v2(void) { return 2; }
+  }];
+}
+
 def RetainDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{

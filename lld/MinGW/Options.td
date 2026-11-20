@@ -80,6 +80,10 @@ def enable_stdcall_fixup: F<"enable-stdcall-fixup">,
 defm entry: Eq<"entry", "Name of entry point symbol">, MetaVarName<"<entry>">;
 def exclude_all_symbols: F<"exclude-all-symbols">,
     HelpText<"Don't automatically export any symbols">;
+defm version_script: Eq<"version-script", "Read a version script">;
+defm exclude_libs: Eq<"exclude-libs",
+    "Exclude static libraries from automatic export">,
+    MetaVarName<"<lib[,lib,...]|ALL>">;
 defm exclude_symbols: Eq<"exclude-symbols",
     "Exclude symbols from automatic export">, MetaVarName<"<symbol[,symbol,...]>">;
 def export_all_symbols: F<"export-all-symbols">,

@@ -13,6 +13,9 @@
 #include "SymbolTable.h"
 #include "lld/Common/LLVM.h"
 #include "lld/Common/Reproduce.h"
+#include "lld/Common/VersionScript.h"
+#include "llvm/ADT/CachedHashString.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Object/Archive.h"
@@ -103,6 +106,21 @@ public:
   void enqueuePDB(StringRef Path) { enqueuePath(Path, false); }
 
   MemoryBufferRef takeBuffer(std::unique_ptr<MemoryBuffer> mb);
+
+  // The version that the version scripts give a symbol, by ELF's precedence:
+  // VER_NDX_LOCAL, the index of a version node, or VER_NDX_GLOBAL, which is
+  // also the answer for a name that no script has.
+  uint16_t versionOf(StringRef name);
+  // Whether a version script keeps a symbol out of the image's interface: no
+  // object's directive and no export-all exports it.
+  bool isLocalByVersionScript(StringRef name);
+  // Whether --exclude-libs keeps what a file defines out of the image's
+  // interface: the file is a member of an archive the option names, or of any
+  // archive under ALL.
+  bool isExcludedLib(const InputFile *file);
+  // Decides an export that file states, by directive or under export-all:
+  // false where the image's interface leaves it out.
+  bool admitExport(SymbolTable &symtab, Export &e, const InputFile *file);
 
   void enqueuePath(StringRef path, bool lazy,
                    InputOpt inputOpt = InputOpt::None);
@@ -214,6 +232,28 @@ private:
   std::vector<MemoryBufferRef> resourceManifests;
 
   llvm::DenseSet<StringRef> excludedSymbols;
+  // The archives that --exclude-libs names.
+  llvm::DenseSet<StringRef> excludedLibs;
+
+  void readVersionScripts(const llvm::opt::InputArgList &args);
+  void checkVersionScripts();
+
+  // A version script's pattern with no wildcard: its place among them in
+  // ELF's order of assignment, its version, and whether an export has its
+  // name.
+  struct ScriptName {
+    uint32_t order;
+    uint16_t id;
+    bool exported = false;
+  };
+  ScriptName *findScriptName(StringRef name);
+
+  // The version nodes of the version scripts, behind VER_NDX_LOCAL and
+  // VER_NDX_GLOBAL; empty where the link has no script.
+  SmallVector<VersionDefinition, 0> versionDefinitions;
+  // Their patterns with no wildcard, plain and extern "C++".
+  llvm::DenseMap<llvm::CachedHashStringRef, ScriptName> scriptNames[2];
+  VersionPatternMatcher scriptWildcards;
 
   COFFLinkerContext &ctx;
 

@@ -1,0 +1,149 @@
+# REQUIRES: x86, aarch64
+
+## A fork object's f@V defines and exports version V of f; f@@V, the default,
+## exports as f@V (imported for f) and privately as f; a version-script node
+## does likewise. Decorated names and foreign objects' names are no versions.
+
+# RUN: rm -rf %t && split-file %s %t && cd %t
+
+# DEFINE: %{a} = x64
+# DEFINE: %{t} = x86_64
+# DEFINE: %{llc} = llc -filetype=obj -mtriple=%{t}-windows-itanium
+# DEFINE: %{link} = lld-link -machine:%{a} -dll -noentry
+# DEFINE: %{run} = %{llc} ver.ll -o ver.obj && %{llc} use.ll -o use.obj && \
+# DEFINE:   %{llc} plain.ll -o plain.obj && %{llc} second.ll -o second.obj && \
+# DEFINE:   %{llc} node.ll -o node.obj && \
+# DEFINE:   llvm-mc -filetype=obj -triple=%{t}-windows-msvc foreign.s \
+# DEFINE:     -o foreign.obj && \
+# DEFINE:   %{link} ver.obj foreign.obj -out:ver.dll -implib:ver.lib && \
+# DEFINE:   llvm-readobj --coff-exports ver.dll | \
+# DEFINE:     FileCheck --implicit-check-not=Name: %s && \
+# DEFINE:   llvm-readobj ver.lib | FileCheck --check-prefix=LIB %s && \
+# DEFINE:   %{link} use.obj ver.lib -out:use.dll && \
+# DEFINE:   llvm-readobj --coff-imports use.dll | FileCheck --check-prefix=USE %s && \
+# DEFINE:   %{link} node.obj -out:node.dll -implib:node.lib \
+# DEFINE:     -version-script:node.map 2>&1 | count 0 && \
+# DEFINE:   llvm-readobj --coff-exports node.dll | \
+# DEFINE:     FileCheck --check-prefix=NODE --implicit-check-not=Name: %s && \
+# DEFINE:   llvm-readobj node.lib | FileCheck --check-prefix=NODELIB %s && \
+# DEFINE:   not %{link} ver.obj plain.obj -out:bad.dll 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=PLAIN %s && \
+# DEFINE:   not %{link} ver.obj second.obj -out:bad.dll 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=SECOND %s
+
+# RUN: %{run}
+# REDEFINE: %{a} = arm64
+# REDEFINE: %{t} = aarch64
+# RUN: %{run}
+
+# CHECK:      Name: f{{$}}
+# CHECK-NEXT: RVA: 0x[[#%x,V2:]]
+# CHECK:      Name: f@V1
+# CHECK-NEXT: RVA: 0x[[#%x,V1:]]
+# CHECK:      Name: f@V2
+# CHECK-NEXT: RVA: 0x[[#V2]]
+# CHECK:      Name: v{{$}}
+# CHECK-NEXT: RVA: 0x[[#%x,V:]]
+# CHECK:      Name: v@V2
+# CHECK-NEXT: RVA: 0x[[#V]]
+
+## The import library has no member for a private name.
+# LIB:      Name type: name
+# LIB-NEXT: Export name: f@V1
+# LIB-NEXT: Symbol: __imp_f@V1
+# LIB-NEXT: Symbol: f@V1
+# LIB:      Type: code
+# LIB-NEXT: Name type: export as
+# LIB-NEXT: Export name: f@V2
+# LIB-NEXT: Symbol: __imp_f
+# LIB-NEXT: Symbol: f
+# LIB:      Type: data
+# LIB-NEXT: Name type: export as
+# LIB-NEXT: Export name: v@V2
+# LIB-NEXT: Symbol: __imp_v
+# LIB-NOT:  Symbol:
+
+# USE:      Name: ver.dll
+# USE:      Symbol: f@V2 (
+# USE-NOT:  Symbol:
+
+# NODE:      Name: m{{$}}
+# NODE:      Name: n{{$}}
+# NODE-NEXT: RVA: 0x[[#%x,N:]]
+# NODE:      Name: n@V3
+# NODE-NEXT: RVA: 0x[[#N]]
+
+# NODELIB-DAG: Export name: m
+# NODELIB-DAG: Export name: n@V3
+# NODELIB-NOT: Export name:
+
+# PLAIN:      error: duplicate symbol: f
+# PLAIN-NEXT: >>> defined at plain.obj
+# PLAIN-NEXT: >>> defined at ver.obj
+
+# SECOND: error: duplicate default version of f: f@@V2 and f@@V3
+
+#--- ver.ll
+@data = global i32 2
+@"f@V1" = alias i32 (), ptr @f_v1
+@"f@@V2" = hidden alias i32 (), ptr @f_v2
+@"v@@V2" = alias i32, ptr @data
+
+@"g@@16" = alias i32 (), ptr @f_v1
+@"g@8" = alias i32 (), ptr @f_v1
+@"?h@@YAXXZ" = alias i32 (), ptr @f_v1
+@"@i@V1" = alias i32 (), ptr @f_v1
+@"j@V1@V2" = alias i32 (), ptr @f_v1
+
+define internal i32 @f_v1() {
+  ret i32 1
+}
+
+define i32 @f_v2() {
+  ret i32 2
+}
+
+declare i32 @f()
+
+define i32 @in_image() {
+  %r = call i32 @f()
+  ret i32 %r
+}
+
+#--- use.ll
+declare dllimport i32 @f()
+
+define i32 @use() {
+  %r = call i32 @f()
+  ret i32 %r
+}
+
+#--- plain.ll
+define i32 @f() {
+  ret i32 0
+}
+
+#--- second.ll
+@"f@@V3" = alias i32 (), ptr @f_v3
+
+define i32 @f_v3() {
+  ret i32 3
+}
+
+#--- node.ll
+define dllexport void @m() {
+  ret void
+}
+
+define dllexport void @n() {
+  ret void
+}
+
+#--- node.map
+V3 { global: n; };
+
+#--- foreign.s
+.globl "k@V1", "k@@V2"
+"k@V1":
+"k@@V2":
+  ret

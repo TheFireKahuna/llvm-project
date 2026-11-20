@@ -16,6 +16,13 @@ using namespace llvm;
 using namespace llvm::ELF;
 using namespace lld;
 
+void VersionScriptParser::readVersionScript() {
+  readVersionScriptCommand();
+  StringRef tok = peek();
+  if (tok.size())
+    setError("EOF expected, but got " + tok);
+}
+
 void VersionScriptParser::readVersionScriptCommand() {
   SaveAndRestore saved(lexState, State::VersionNode);
   if (consume("{")) {

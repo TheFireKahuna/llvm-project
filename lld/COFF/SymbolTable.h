@@ -212,6 +212,9 @@ public:
   bool hadExplicitExports;
   // Definitions whose names state an export, until addNamedExports reads them.
   std::vector<Symbol *> namedExports;
+  // Each default version, f@@V, with f, until f is seen to have a definition
+  // of its own.
+  std::vector<std::pair<StringRef, DefinedRegular *>> defaultVersions;
 
   Chunk *edataStart = nullptr;
   Chunk *edataEnd = nullptr;

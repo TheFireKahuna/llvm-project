@@ -642,9 +642,32 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
   return Marker;
 }
 
+// COFF has no symbol versions: the versioned name is an external alias of
+// the symbol, which a linker may export under it. "@@@" is the default
+// version of a symbol the object defines, "@@".
+void MCWinCOFFStreamer::emitELFSymverDirective(const MCSymbol *OriginalSym,
+                                               StringRef Name, bool) {
+  size_t Default = Name.find("@@@");
+  MCSymbol *Alias = getContext().getOrCreateSymbol(
+      Default == StringRef::npos
+          ? Twine(Name)
+          : Name.take_front(Default) + Name.substr(Default + 1));
+  emitAssignment(Alias, MCSymbolRefExpr::create(OriginalSym, getContext()));
+  emitSymbolAttribute(Alias, MCSA_Global);
+  Symvers.push_back(OriginalSym);
+}
+
 void MCWinCOFFStreamer::finishImpl() {
   if (FusedSite.Offset)
     reportMisplacedFusedSite();
+  // An alias of an undefined symbol would be an undefined symbol of the
+  // versioned name, which nothing defines.
+  for (const MCSymbol *Sym : Symvers)
+    if (Sym->isUndefined())
+      getContext().reportError(
+          SMLoc(), ".symver of '" + Sym->getName() +
+                       "', which this object does not define: a COFF "
+                       "reference cannot name a version");
   getContext().getCVContext().finish();
   MCAssembler &Asm = getAssembler();
   if (Asm.getWriter().getEmitAddrsigSection()) {

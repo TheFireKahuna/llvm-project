@@ -43,6 +43,7 @@ public:
     RunWrites.clear();
     MovingSections.clear();
     FusedSite.Offset = nullptr;
+    Symvers.clear();
     MCObjectStreamer::reset();
   }
 
@@ -78,6 +79,8 @@ public:
   void emitLocalCommonSymbol(MCSymbol *Symbol, uint64_t Size,
                              Align ByteAlignment) override;
   void emitWeakReference(MCSymbol *Alias, const MCSymbol *Symbol) override;
+  void emitELFSymverDirective(const MCSymbol *OriginalSym, StringRef Name,
+                              bool KeepOriginalSym) override;
   void emitIdent(StringRef IdentString) override;
   void emitRelocDirective(const MCExpr &Offset, StringRef Name,
                           const MCExpr *Expr, SMLoc Loc = {}) override;
@@ -98,6 +101,10 @@ public:
 
 protected:
   MCSymbol *CurSymbol;
+
+  /// The symbols that .symver gave a versioned name, which the object has to
+  /// define.
+  SmallVector<const MCSymbol *, 0> Symvers;
 
   /// A Windows Itanium or NT-POSIX object's fused relocation types are checked
   /// against its instructions, whose descriptions these are, with what the

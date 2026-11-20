@@ -63,6 +63,7 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSymIdx>(".symidx");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSafeSEH>(".safeseh");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(".link_fact");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveSymver>(".symver");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSwitchTable>(
         ".switch_table");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSecIdx>(".secidx");
@@ -135,6 +136,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveSecIdx(StringRef, SMLoc);
   bool parseDirectiveSafeSEH(StringRef, SMLoc);
   bool parseDirectiveLinkFact(StringRef, SMLoc);
+  bool parseDirectiveSymver(StringRef, SMLoc);
   bool parseDirectiveSwitchTable(StringRef, SMLoc);
   bool parseDirectiveSymIdx(StringRef, SMLoc);
   bool parseCOMDATType(COFF::COMDATType &Type);
@@ -568,6 +570,33 @@ bool COFFAsmParser::parseDirectiveLinkFact(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkFact(Symbol, Tag, Operands);
+  return false;
+}
+
+/// ::= .symver symbol, name@version
+bool COFFAsmParser::parseDirectiveSymver(StringRef, SMLoc) {
+  MCSymbol *Original;
+  StringRef Name;
+  if (getParser().parseSymbol(Original))
+    return TokError("expected identifier");
+  if (getLexer().isNot(AsmToken::Comma))
+    return TokError("expected a comma");
+  // Where '@' starts a comment, it is still part of this name.
+  const bool AllowAtInIdentifier = getLexer().getAllowAtInIdentifier();
+  getLexer().setAllowAtInIdentifier(true);
+  Lex();
+  getLexer().setAllowAtInIdentifier(AllowAtInIdentifier);
+  if (getParser().parseIdentifier(Name))
+    return TokError("expected identifier");
+  if (!Name.contains('@'))
+    return TokError("expected a '@' in the name");
+  if (getLexer().is(AsmToken::Comma))
+    return TokError("'remove' is not supported: a COFF object's versioned "
+                    "name is an alias of the symbol");
+  if (parseEOL())
+    return true;
+  getStreamer().emitELFSymverDirective(Original, Name,
+                                       /*KeepOriginalSym=*/true);
   return false;
 }
 

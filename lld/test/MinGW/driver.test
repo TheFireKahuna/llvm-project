@@ -374,6 +374,12 @@ RUN: ld.lld -### -m i386pep foo.o -exclude-symbols sym1,sym2 --exclude-symbols s
 RUN: ld.lld -### -m i386pep foo.o -exclude-symbols=sym1,sym2 --exclude-symbols=sym3 2>&1 | FileCheck -check-prefix EXCLUDE_SYMBOLS %s
 EXCLUDE_SYMBOLS: -exclude-symbols:sym1,sym2 -exclude-symbols:sym3
 
+RUN: ld.lld -### -m i386pep foo.o --version-script a.map -version-script=b.map 2>&1 | FileCheck -check-prefix VERSION_SCRIPT %s
+VERSION_SCRIPT: -version-script:a.map -version-script:b.map
+
+RUN: ld.lld -### -m i386pep foo.o --exclude-libs ALL -exclude-libs=liba.a,libb.a 2>&1 | FileCheck -check-prefix EXCLUDE_LIBS %s
+EXCLUDE_LIBS: -exclude-libs:ALL -exclude-libs:liba.a,libb.a
+
 RUN: ld.lld -### -m i386pep foo.o 2>&1 | FileCheck -check-prefix DEMANGLE %s
 RUN: ld.lld -### -m i386pep foo.o -demangle 2>&1 | FileCheck -check-prefix DEMANGLE %s
 RUN: ld.lld -### -m i386pep foo.o --demangle 2>&1 | FileCheck -check-prefix DEMANGLE %s

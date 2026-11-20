@@ -3799,6 +3799,9 @@ def err_tls_var_aligned_over_maximum : Error<
 def err_only_annotate_after_access_spec : Error<
   "access specifier can only have annotation attributes">;
 
+def err_attribute_symver_name : Error<
+  "'symver' attribute requires a name of the form 'name@version' or "
+  "'name@@version'">;
 def err_attribute_section_invalid_for_target : Error<
   "argument to %select{'code_seg'|'section'}1 attribute is not valid for this target: %0">;
 def err_pragma_section_invalid_for_target : Error<

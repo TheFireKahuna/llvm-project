@@ -44,6 +44,8 @@ public:
       : ScriptLexer(ctx, mb, isUnderSysroot),
         versionDefinitions(versionDefinitions) {}
 
+  // Reads a file that holds nothing but version nodes.
+  void readVersionScript();
   void readVersionScriptCommand();
   std::pair<SmallVector<SymbolVersion, 0>, SmallVector<SymbolVersion, 0>>
   readSymbols();

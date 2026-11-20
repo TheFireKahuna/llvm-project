@@ -1276,8 +1276,9 @@ Symbol *SymbolTable::addRegular(InputFile *f, StringRef n,
   else if (!isWeak)
     reportDuplicate(s, f, c, sectionOffset);
   // Only an object for Windows Itanium or NT-POSIX states an export in the
-  // name of a definition, X$so<K> or X$ap<K> for an address inside X.
-  if (f->forkObject && n.contains('$'))
+  // name of a definition: X$so<K> or X$ap<K> for an address inside X, and
+  // f@V or f@@V for a version of f.
+  if (f->forkObject && n.find_first_of("$@") != StringRef::npos)
     namedExports.push_back(s);
   return s;
 }
@@ -1705,21 +1706,70 @@ void SymbolTable::fixupExports() {
   });
 }
 
+// Exports what the names of the definitions added since the last call state.
+//
+// A definition f@V is version V of f and is exported under that name. f@@V is
+// the default version: it is exported as f@V, the import library offers it as
+// f, importing f@V, so that an importer keeps the version it was linked with,
+// and f names it in the export table, privately, and in the image. PE binds
+// each by name, so the two are ordinary exports.
+//
 // An export of X that the command line or a module-definition file states
 // names no address inside X, where one that an object's directives state
-// comes with the directives of X$so<K> and X$ap<K>. The interior names the
-// objects define since the last call are exported with each such X: under its
-// export name, as data, and as private as it is.
+// comes with the directives of X$so<K> and X$ap<K>. Those interior names are
+// exported with each such X: under its export name, as data, and as private
+// as it is.
 void SymbolTable::addNamedExports() {
   DenseMap<StringRef, SmallVector<Symbol *, 2>> interiors;
   for (Symbol *s : namedExports) {
-    auto [base, offset] = s->getName().rsplit('$');
-    if (isa<DefinedRegular>(s) && !base.empty() &&
+    auto *d = dyn_cast<DefinedRegular>(s);
+    if (!d)
+      continue;
+    StringRef name = s->getName();
+    if (name.contains('@')) {
+      // A decorated name is no version: one of digits is a size in bytes.
+      auto [plain, version] = name.split('@');
+      bool isDefault = version.consume_front("@");
+      if (plain.empty() || plain.starts_with("?") || version.empty() ||
+          version.contains('@') || all_of(version, isDigit))
+        continue;
+      Export e;
+      e.name = name;
+      e.sym = addGCRoot(name);
+      e.data =
+          !(d->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE);
+      e.source = ExportSource::Directives;
+      if (isDefault) {
+        e.extName = plain;
+        e.isPrivate = true;
+        exports.push_back(e);
+        e.isPrivate = false;
+        e.exportAs = saver().save(plain + "@" + version);
+        auto it = alternateNames.try_emplace(plain, name).first;
+        if (it->second != name)
+          Err(ctx) << "duplicate default version of " << plain << ": "
+                   << it->second << " and " << name;
+        defaultVersions.emplace_back(plain, d);
+      }
+      exports.push_back(e);
+      continue;
+    }
+    auto [base, offset] = name.rsplit('$');
+    if (!base.empty() &&
         (offset.consume_front("so") || offset.consume_front("ap")) &&
         !offset.empty() && all_of(offset, isDigit))
       interiors[base].push_back(s);
   }
   namedExports.clear();
+  // A default version is what its plain name binds in the image, as on ELF,
+  // where another definition of that name is a duplicate.
+  llvm::erase_if(defaultVersions, [&](auto &version) {
+    auto *plain = dyn_cast_or_null<Defined>(find(version.first));
+    if (plain)
+      reportDuplicate(plain, version.second->getFile(),
+                      version.second->getChunk(), version.second->getValue());
+    return plain != nullptr;
+  });
   if (interiors.empty())
     return;
   for (size_t i = 0, end = exports.size(); i != end; ++i) {

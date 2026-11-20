@@ -533,6 +533,10 @@ bool link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
     add("-wrap:" + StringRef(a->getValue()));
   for (auto *a : args.filtered(OPT_exclude_symbols))
     add("-exclude-symbols:" + StringRef(a->getValue()));
+  for (auto *a : args.filtered(OPT_version_script))
+    add("-version-script:" + StringRef(a->getValue()));
+  for (auto *a : args.filtered(OPT_exclude_libs))
+    add("-exclude-libs:" + StringRef(a->getValue()));
 
   std::vector<StringRef> searchPaths;
   for (auto *a : args.filtered(OPT_L)) {

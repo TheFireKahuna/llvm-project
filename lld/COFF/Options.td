@@ -272,6 +272,11 @@ defm runtime_pseudo_reloc : B_priv<"runtime-pseudo-reloc">;
 def end_lib : F<"end-lib">,
   HelpText<"End group of objects treated as if they were in a library">;
 def exclude_all_symbols : F<"exclude-all-symbols">;
+def exclude_libs : P<"exclude-libs",
+    "Keep the exports that the members of static libraries state out of the image">,
+    MetaVarName<"<lib[,lib,...]|ALL>">;
+def : Separate<["--", "-"], "exclude-libs">, Alias<exclude_libs>;
+def : Joined<["--", "-"], "exclude-libs=">, Alias<exclude_libs>;
 def export_all_symbols : F<"export-all-symbols">;
 defm demangle : B<"demangle",
     "Demangle symbols in output (default)",
@@ -295,6 +300,10 @@ def : Joined<["--", "-"], "rpath=">, Alias<rpath>;
 def start_lib : F<"start-lib">,
   HelpText<"Start group of objects treated as if they were in a library">;
 defm stdcall_fixup : B_priv<"stdcall-fixup">;
+def version_script : P<"version-script",
+    "Narrow the exports that objects state with a GNU version script">;
+def : Separate<["--", "-"], "version-script">, Alias<version_script>;
+def : Joined<["--", "-"], "version-script=">, Alias<version_script>;
 def thinlto_emit_imports_files :
     F<"thinlto-emit-imports-files">,
     HelpText<"Emit .imports files with -thinlto-index-only">;

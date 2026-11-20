@@ -63,7 +63,7 @@ public:
         ctx(ctx) {}
 
   void readLinkerScript();
-  void readVersionScript();
+  using VersionScriptParser::readVersionScript;
   void readDynamicList();
   void readDefsym();
 
@@ -203,13 +203,6 @@ void ScriptParser::readDynamicList() {
 
   for (SymbolVersion v : globals)
     ctx.arg.dynamicList.push_back(v);
-}
-
-void ScriptParser::readVersionScript() {
-  readVersionScriptCommand();
-  StringRef tok = peek();
-  if (tok.size())
-    setError("EOF expected, but got " + tok);
 }
 
 void ScriptParser::readVersion() {
