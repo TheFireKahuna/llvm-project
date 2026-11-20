@@ -1836,6 +1836,14 @@ MCSection *TargetLoweringObjectFileCOFF::SelectSectionForGlobal(
   else
     EmitUniquedSection = TM.getDataSections();
 
+  // A local global in llvm.used, which /INCLUDE cannot name, takes a section
+  // of its own without COMDAT, which the linker keeps as ELF's SHF_GNU_RETAIN
+  // keeps one.
+  if (!GO->hasComdat() && Used.count(GO))
+    return getContext().getCOFFSection(getCOFFSectionNameForUniqueGlobal(Kind),
+                                       getCOFFSectionFlags(Kind, TM), "", 0,
+                                       NextUniqueID++);
+
   if ((EmitUniquedSection && !Kind.isCommon()) || GO->hasComdat()) {
     SmallString<256> Name = getCOFFSectionNameForUniqueGlobal(Kind);
 
@@ -2068,6 +2076,15 @@ void TargetLoweringObjectFileCOFF::initialize(MCContext &Ctx,
     StaticDtorSection = Ctx.getCOFFSection(
         ".dtors", COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
                       COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_MEM_WRITE);
+  }
+
+  Used.clear();
+  if (T.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    SmallVector<GlobalValue *, 4> Vec;
+    collectUsedGlobalVariables(M, Vec, false);
+    for (GlobalValue *GV : Vec)
+      if (auto *GO = dyn_cast<GlobalObject>(GV); GO && GO->hasLocalLinkage())
+        Used.insert(GO);
   }
 }
 

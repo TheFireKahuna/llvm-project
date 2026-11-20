@@ -190,6 +190,9 @@ public:
 
 class LLVM_ABI TargetLoweringObjectFileCOFF : public TargetLoweringObjectFile {
   mutable unsigned NextUniqueID = 0;
+  // On Windows Itanium and NT-POSIX, the local globals in llvm.used, which
+  // take sections the linker keeps.
+  SmallPtrSet<GlobalObject *, 2> Used;
 
 public:
   ~TargetLoweringObjectFileCOFF() override = default;

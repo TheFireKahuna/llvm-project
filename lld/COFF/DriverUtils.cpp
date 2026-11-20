@@ -30,6 +30,7 @@
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Support/Regex.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/WindowsManifest/WindowsManifestMerger.h"
 #include <memory>
@@ -529,6 +530,11 @@ LinkerDriver::createManifestXmlWithInternalMt(StringRef defaultXml) {
       Fatal(ctx) << "internal manifest tool failed on file " << filename << ": "
                  << toString(std::move(e));
   }
+  for (MemoryBufferRef manifest : resourceManifests)
+    if (auto e = merger.merge(manifest))
+      Fatal(ctx) << "internal manifest tool failed on "
+                 << manifest.getBufferIdentifier() << ": "
+                 << toString(std::move(e));
 
   return std::string(merger.getMergedManifest()->getBuffer());
 }
@@ -560,6 +566,13 @@ LinkerDriver::createManifestXmlWithExternalMt(StringRef defaultXml) {
       if (auto mbOrErr = MemoryBuffer::getFile(filename))
         takeBuffer(std::move(*mbOrErr));
   }
+  std::vector<TemporaryFile> resourceFiles;
+  for (MemoryBufferRef manifest : resourceManifests) {
+    resourceFiles.emplace_back(ctx, "resource", "manifest",
+                               manifest.getBuffer());
+    e.add("/manifest");
+    e.add(resourceFiles.back().path);
+  }
   e.add("/nologo");
   e.add("/out:" + StringRef(user.path));
   e.run();
@@ -572,7 +585,7 @@ LinkerDriver::createManifestXmlWithExternalMt(StringRef defaultXml) {
 
 std::string LinkerDriver::createManifestXml() {
   std::string defaultXml = createDefaultXml();
-  if (ctx.config.manifestInput.empty())
+  if (ctx.config.manifestInput.empty() && resourceManifests.empty())
     return defaultXml;
 
   if (windows_manifest::isAvailable())
@@ -625,9 +638,61 @@ static void writeResEntryHeader(char *&buf, size_t manifestSize,
   buf += sizeof(object::WinResHeaderSuffix);
 }
 
+// Takes out of the .res inputs the manifests under the ID of the one the
+// linker embeds, to merge into it, keeping their other resources.
+void LinkerDriver::takeManifestResources() {
+  for (MemoryBufferRef &mb : resources) {
+    auto rf = check(object::WindowsResource::createWindowsResource(mb));
+    // A .res with no entry has none to take; converting the resources reports
+    // one that is not valid.
+    Expected<object::ResourceEntryRef> head = rf->getHeadEntry();
+    if (!head) {
+      consumeError(head.takeError());
+      continue;
+    }
+    const char *start = mb.getBufferStart();
+    // Each entry runs to the alignment after its data.
+    size_t entryStart =
+        object::WIN_RES_MAGIC_SIZE + object::WIN_RES_NULL_ENTRY_SIZE;
+    std::string kept(start, entryStart);
+    size_t taken = resourceManifests.size();
+    object::ResourceEntryRef entry = *head;
+    for (bool end = false; !end;) {
+      ArrayRef<uint8_t> data = entry.getData();
+      size_t entryEnd =
+          alignTo(reinterpret_cast<const char *>(data.end()) - start,
+                  object::WIN_RES_DATA_ALIGNMENT);
+      if (!entry.checkTypeString() && entry.getTypeID() == RT_MANIFEST &&
+          !entry.checkNameString() &&
+          entry.getNameID() == ctx.config.manifestID)
+        resourceManifests.emplace_back(toStringRef(data),
+                                       mb.getBufferIdentifier());
+      else
+        kept.append(start + entryStart, entryEnd - entryStart);
+      entryStart = entryEnd;
+      if (Error e = entry.moveNext(end))
+        Fatal(ctx) << mb.getBufferIdentifier() << ": "
+                   << toString(std::move(e));
+    }
+    if (resourceManifests.size() != taken)
+      mb = MemoryBufferRef(saver().save(kept), mb.getBufferIdentifier());
+  }
+}
+
 // Create a resource file containing a manifest XML.
 std::unique_ptr<MemoryBuffer> LinkerDriver::createManifestRes() {
   std::string manifest = createManifestXml();
+
+  // A Windows Itanium executable whose manifest a .res input gives runs on
+  // the segment heap still, which wincrt's start-up requires.
+  if (!resourceManifests.empty() && ctx.isTlsModel("pe") &&
+      !Regex("<([[:alnum:]_]+:)?heapType[^>]*>[[:space:]]*SegmentHeap"
+             "[[:space:]]*<")
+           .match(manifest))
+    Err(ctx) << resourceManifests[0].getBufferIdentifier()
+             << ": the manifest of a Windows Itanium executable selects the "
+                "segment heap; pass /manifestinput: with wincrt's "
+                "segment_heap.manifest";
 
   std::unique_ptr<WritableMemoryBuffer> res =
       createMemoryBufferForManifestRes(manifest.size());

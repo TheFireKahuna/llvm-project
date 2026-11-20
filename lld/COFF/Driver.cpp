@@ -2328,11 +2328,6 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   for (auto *arg : args.filtered(OPT_manifestinput))
     config->manifestInput.push_back(arg->getValue());
 
-  if (!config->manifestInput.empty() &&
-      config->manifest != Configuration::Embed) {
-    Fatal(ctx) << "/manifestinput: requires /manifest:embed";
-  }
-
   // Handle /thinlto-distributor:<path>
   config->dtltoDistributor = args.getLastArgValue(OPT_thinlto_distributor);
 
@@ -3161,15 +3156,31 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     }
   });
 
+  // An executable that holds an object for Windows Itanium or NT-POSIX embeds
+  // its manifest, so that neither .local redirection nor a loose manifest
+  // changes what the loader binds, and a .res manifest merges into it.
+  bool forkExe = ctx.hasForkObject && !config->dll;
+  if (forkExe && config->manifest == Configuration::No)
+    Err(ctx) << "/manifest:no: an executable that holds an object for Windows "
+                "Itanium or NT-POSIX embeds its manifest; remove /manifest:no";
+  if (forkExe && config->manifest == Configuration::Default)
+    config->manifest = Configuration::Embed;
+  if (!config->manifestInput.empty() &&
+      config->manifest != Configuration::Embed)
+    Fatal(ctx) << "/manifestinput: requires /manifest:embed";
+
   // Windows specific -- Create an embedded or side-by-side manifest.
   // /manifestdependency: enables /manifest unless an explicit /manifest:no is
   // also passed.
-  if (config->manifest == Configuration::Embed)
+  if (config->manifest == Configuration::Embed) {
+    if (forkExe)
+      takeManifestResources();
     addBuffer(createManifestRes(), InputOpt::None, false);
-  else if (config->manifest == Configuration::SideBySide ||
-           (config->manifest == Configuration::Default &&
-            !config->manifestDependencies.empty()))
+  } else if (config->manifest == Configuration::SideBySide ||
+             (config->manifest == Configuration::Default &&
+              !config->manifestDependencies.empty())) {
     createSideBySideManifest();
+  }
 
   // Handle /order. We want to do this at this moment because we
   // need a complete list of comdat sections to warn on nonexistent

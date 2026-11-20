@@ -1,0 +1,71 @@
+# REQUIRES: libxml2, x86, aarch64
+
+## A fork executable embeds its manifest (by default; /manifest:no is an error)
+## and merges a .res manifest into it, keeping a Windows Itanium executable on
+## the segment heap; DLLs and executables without fork objects are unchanged.
+
+# RUN: rm -rf %t && mkdir %t && cd %t
+# DEFINE: %{t} = x86_64
+# DEFINE: %{in} = %S/Inputs
+# DEFINE: %{exe} = lld-link -entry:main -subsystem:console -out:a.exe
+# DEFINE: %{rsrc} = llvm-readobj --coff-resources
+# DEFINE: %{heap} = -manifestinput:%{in}/segment-heap.manifest
+# DEFINE: %{run} = echo '.globl main; main: ret' > main.s && \
+# DEFINE:   llvm-mc -filetype=obj -triple=%{t}-windows-itanium main.s \
+# DEFINE:     -o wi.obj && \
+# DEFINE:   llvm-mc -filetype=obj -triple=%{t}-windows-ntposix main.s \
+# DEFINE:     -o ntposix.obj && \
+# DEFINE:   llvm-mc -filetype=obj -triple=%{t}-windows-msvc main.s \
+# DEFINE:     -o msvc.obj && %{exe} wi.obj && \
+# DEFINE:   %{rsrc} a.exe | FileCheck --check-prefix=EMBED %s && \
+# DEFINE:   %{exe} ntposix.obj && \
+# DEFINE:   %{rsrc} a.exe | FileCheck --check-prefix=EMBED %s && \
+# DEFINE:   not %{exe} wi.obj -manifest:no 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=NO %s && \
+# DEFINE:   %{exe} wi.obj %{heap} %{in}/manifest-xml.res && \
+# DEFINE:   %{rsrc} a.exe | FileCheck --check-prefix=MERGE %s && \
+# DEFINE:   llvm-objcopy --dump-section=.rsrc=rsrc.bin a.exe && \
+# DEFINE:   FileCheck --check-prefix=XML %s < rsrc.bin && \
+# DEFINE:   env LLD_IN_TEST=1 not %{exe} wi.obj %{heap} \
+# DEFINE:     %{in}/manifest-ntheap.res 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=CONFLICT %s && \
+# DEFINE:   not %{exe} wi.obj %{in}/manifest-xml.res 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=HEAP %s && \
+# DEFINE:   %{exe} ntposix.obj %{in}/manifest-ntheap.res && \
+# DEFINE:   lld-link -dll -noentry -out:a.dll wi.obj && \
+# DEFINE:   %{rsrc} a.dll | FileCheck --check-prefix=NONE %s && \
+# DEFINE:   %{exe} msvc.obj && \
+# DEFINE:   %{rsrc} a.exe | FileCheck --check-prefix=NONE %s && \
+# DEFINE:   not %{exe} msvc.obj -manifest:embed %{in}/manifest-xml.res 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=DUP %s
+
+# RUN: %{run}
+# REDEFINE: %{t} = aarch64
+# RUN: %{run}
+
+# EMBED:      Total Number of Resources: 1
+# EMBED:      Type: MANIFEST (ID 24) [
+# EMBED:        Name: (ID 1) [
+
+# NO: error: /manifest:no: an executable that holds an object for Windows Itanium or NT-POSIX embeds its manifest; remove /manifest:no
+
+# MERGE:      Total Number of Resources: 2
+# MERGE:      Type: RCDATA (ID 10) [
+# MERGE:        0000: 6B657074 {{.*}}|kept|
+# MERGE:      Type: MANIFEST (ID 24) [
+# MERGE-NEXT:   Table Offset:
+# MERGE-NEXT:   Number of String Entries: 0
+# MERGE-NEXT:   Number of ID Entries: 1
+# MERGE-NEXT:   Name: (ID 1) [
+
+# XML:      <trustInfo
+# XML:      SegmentHeap</heapType>
+# XML-NEXT: UTF-8</activeCodePage>
+
+# CONFLICT: error: internal manifest tool failed on {{.*}}manifest-ntheap.res: conflicting values for heapType
+
+# HEAP: error: {{.*}}manifest-xml.res: the manifest of a Windows Itanium executable selects the segment heap; pass /manifestinput: with wincrt's segment_heap.manifest
+
+# NONE-NOT: Type: MANIFEST
+
+# DUP: error: duplicate resource: type MANIFEST (ID 24)/name ID 1/language 1033
