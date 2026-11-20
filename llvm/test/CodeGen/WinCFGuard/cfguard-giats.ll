@@ -1,5 +1,11 @@
+; REQUIRES: aarch64-registered-target
 ; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | FileCheck %s
 ; RUN: llc < %s -mtriple=x86_64-w64-windows-gnu | FileCheck %s
+; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc | FileCheck %s
+; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc -filetype=obj | llvm-nm - \
+; RUN:   | FileCheck %s --check-prefix=NM
+; RUN: llc < %s -mtriple=aarch64-pc-windows-msvc -filetype=obj | llvm-nm - \
+; RUN:   | FileCheck %s --check-prefix=NM
 ; Control Flow Guard is currently only available on Windows
 
 declare dllimport i32 @target_func1()
@@ -13,7 +19,7 @@ define i32 @func_cf_giats1() {
 entry:
   ; Since it is a dllimport, target_func1 will be represented as "__imp_target_func1" when it is
   ; stored in the function pointer. Therefore, the .giats section must contain "__imp_target_func1".
-  ; Unlike MSVC, we also have "target_func1" in the .gfids section, since this is not a security risk.
+  ; As in MSVC, "target_func1", which names the import thunk, is not in the .gfids section.
   %func_ptr = alloca ptr, align 8
   store ptr @target_func1, ptr %func_ptr, align 8
   %0 = load ptr, ptr %func_ptr, align 8
@@ -32,7 +38,6 @@ entry:
 }
 
 ; CHECK-LABEL: .section .gfids$y,"dr"
-; CHECK-NEXT:  .symidx target_func1
 ; CHECK-NEXT:  .symidx target_func2
 ; CHECK-NEXT:  .symidx target_func3
 ; CHECK-NOT:   .symidx
@@ -40,6 +45,8 @@ entry:
 ; CHECK-NEXT:  .symidx __imp_target_func1
 ; CHECK-NEXT:  .symidx __imp_target_func3
 ; CHECK-NOT:   .symidx
+
+; NM-NOT: {{ target_func1$}}
 
 !llvm.module.flags = !{!0}
 !0 = !{i32 2, !"cfguard", i32 2}

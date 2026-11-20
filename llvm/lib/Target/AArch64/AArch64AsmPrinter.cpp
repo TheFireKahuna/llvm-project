@@ -56,6 +56,7 @@
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstBuilder.h"
+#include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCStreamer.h"
@@ -68,6 +69,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/Transforms/CFGuard.h"
 #include "llvm/Transforms/Instrumentation/HWAddressSanitizer.h"
 #include <cassert>
 #include <cstdint>
@@ -158,6 +160,7 @@ public:
   void LowerKCFI_CHECK(const MachineInstr &MI);
   void LowerHWASAN_CHECK_MEMACCESS(const MachineInstr &MI);
   void emitHwasanMemaccessSymbols(Module &M);
+  void emitGuardTailCallThunk(Module &M);
 
   void emitSled(const MachineInstr &MI, SledKind Kind);
 
@@ -1038,8 +1041,70 @@ static void emitAuthenticatedPointer(MCStreamer &OutStreamer,
   OutStreamer.emitValue(StubAuthPtrRef, /*size=*/8);
 }
 
+// Emits the thunk the CFGuard pass sends an indirect musttail call to, with
+// the target in x9 as its CFGuardTarget operand: it saves the frame record,
+// checks the target in x15, which the check preserves with the argument
+// registers and x8, and branches to it, the stack arguments above its record.
+void AArch64AsmPrinter::emitGuardTailCallThunk(Module &M) {
+  const Function *F = M.getFunction(GuardTailCallThunkName);
+  if (!F || !F->isDeclaration() || F->use_empty())
+    return;
+  MCSymbol *Sym = getSymbol(F);
+  OutStreamer->switchSection(OutContext.getCOFFSection(
+      ".text",
+      COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
+          COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_LNK_COMDAT,
+      Sym->getName(), COFF::IMAGE_COMDAT_SELECT_ANY));
+  emitAlignment(Align(4));
+  OutStreamer->emitSymbolAttribute(Sym, MCSA_Global);
+  OutStreamer->emitLabel(Sym);
+  auto &TS =
+      static_cast<AArch64TargetStreamer &>(*OutStreamer->getTargetStreamer());
+  OutStreamer->emitWinCFIStartProc(Sym);
+  EmitToStreamer(MCInstBuilder(AArch64::STPXpre)
+                     .addReg(AArch64::SP)
+                     .addReg(AArch64::FP)
+                     .addReg(AArch64::LR)
+                     .addReg(AArch64::SP)
+                     .addImm(-2));
+  TS.emitARM64WinCFISaveFPLRX(16);
+  EmitToStreamer(MCInstBuilder(AArch64::ADDXri)
+                     .addReg(AArch64::FP)
+                     .addReg(AArch64::SP)
+                     .addImm(0)
+                     .addImm(0));
+  TS.emitARM64WinCFISetFP();
+  TS.emitARM64WinCFIPrologEnd();
+  emitMovXReg(AArch64::X15, AArch64::X9);
+  const MCExpr *Check = MCSymbolRefExpr::create(
+      OutContext.getOrCreateSymbol("__guard_check_icall_fptr"), OutContext);
+  EmitToStreamer(MCInstBuilder(AArch64::ADRP)
+                     .addReg(AArch64::X16)
+                     .addExpr(MCSpecifierExpr::create(
+                         Check, AArch64::S_ABS_PAGE, OutContext)));
+  EmitToStreamer(MCInstBuilder(AArch64::LDRXui)
+                     .addReg(AArch64::X16)
+                     .addReg(AArch64::X16)
+                     .addExpr(MCSpecifierExpr::create(Check, AArch64::S_LO12,
+                                                      OutContext)));
+  EmitToStreamer(MCInstBuilder(AArch64::BLR).addReg(AArch64::X16));
+  TS.emitARM64WinCFIEpilogStart();
+  EmitToStreamer(MCInstBuilder(AArch64::LDPXpost)
+                     .addReg(AArch64::SP)
+                     .addReg(AArch64::FP)
+                     .addReg(AArch64::LR)
+                     .addReg(AArch64::SP)
+                     .addImm(2));
+  TS.emitARM64WinCFISaveFPLRX(16);
+  TS.emitARM64WinCFIEpilogEnd();
+  EmitToStreamer(MCInstBuilder(AArch64::BR).addReg(AArch64::X15));
+  OutStreamer->emitWinCFIEndProc();
+}
+
 void AArch64AsmPrinter::emitEndOfAsmFile(Module &M) {
   emitHwasanMemaccessSymbols(M);
+  if (TM.getTargetTriple().isOSBinFormatCOFF())
+    emitGuardTailCallThunk(M);
 
   const Triple &TT = M.getTargetTriple();
   if (TT.isOSBinFormatMachO()) {

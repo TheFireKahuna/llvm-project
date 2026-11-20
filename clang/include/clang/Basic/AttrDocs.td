@@ -7963,6 +7963,10 @@ can compromise the security of CFG, the programmer must be very careful using
 the directive. Typically, this usage is limited to very small functions that
 only call one function.
 
+`__declspec(guard(suppress))` keeps a function out of the valid indirect call
+targets even if its address is taken: the linker lists it in the image's table
+of call targets marked as not valid.
+
 Control Flow Guard documentation is available here:
 <https://docs.microsoft.com/en-us/windows/win32/secbp/pe-metadata>
 }];

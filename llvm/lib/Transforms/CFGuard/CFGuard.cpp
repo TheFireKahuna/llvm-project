@@ -126,19 +126,24 @@ public:
   ///   callq  *__guard_dispatch_icall_fptr(%rip)
   /// \endcode
   ///
+  /// An indirect musttail call on AArch64 under the check mechanism instead
+  /// becomes a call of GuardTailCallThunkName with the same bundle.
+  ///
   /// \param CB indirect call to instrument.
-  void insertCFGuardDispatch(CallBase *CB);
+  /// \param Dispatch the function the call goes to instead.
+  void insertCFGuardDispatch(CallBase *CB, Value *Dispatch);
 
   bool doInitialization(Module &M);
   bool runOnFunction(Function &F);
 
 private:
+  Constant *getGuardFnGlobal(Module &M, StringRef Name);
+
   // Only add checks if the module has them enabled.
   ControlFlowGuardMode CFGuardModuleFlag = ControlFlowGuardMode::Disabled;
   Mechanism GuardMechanism = Mechanism::Check;
   FunctionType *GuardFnType = nullptr;
   PointerType *GuardFnPtrType = nullptr;
-  Constant *GuardFnGlobal = nullptr;
 };
 
 class CFGuard : public FunctionPass {
@@ -172,7 +177,9 @@ void CFGuardImpl::insertCFGuardCheck(CallBase *CB) {
     Bundles.push_back(OperandBundleDef(*Bundle));
 
   // Load the global symbol as a pointer to the check function.
-  LoadInst *GuardCheckLoad = B.CreateLoad(GuardFnPtrType, GuardFnGlobal);
+  LoadInst *GuardCheckLoad =
+      B.CreateLoad(GuardFnPtrType,
+                   getGuardFnGlobal(*CB->getModule(), GuardCheckFunctionName));
 
   // Create new call instruction. The CFGuard check should always be a call,
   // even if the original CallBase is an Invoke or CallBr instruction.
@@ -184,18 +191,13 @@ void CFGuardImpl::insertCFGuardCheck(CallBase *CB) {
   GuardCheck->setCallingConv(CallingConv::CFGuard_Check);
 }
 
-void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
+void CFGuardImpl::insertCFGuardDispatch(CallBase *CB, Value *Dispatch) {
   assert(CB->getModule()->getTargetTriple().isOSWindows() &&
          "Only applicable for Windows targets");
   assert(CB->isIndirectCall() &&
          "Control Flow Guard checks can only be added to indirect calls");
 
-  IRBuilder<> B(CB);
   Value *CalledOperand = CB->getCalledOperand();
-  Type *CalledOperandType = CalledOperand->getType();
-
-  // Load the global as a pointer to a function of the same type.
-  LoadInst *GuardDispatchLoad = B.CreateLoad(CalledOperandType, GuardFnGlobal);
 
   // Add the original call target as a cfguardtarget operand bundle.
   SmallVector<llvm::OperandBundleDef, 1> Bundles;
@@ -208,7 +210,7 @@ void CFGuardImpl::insertCFGuardDispatch(CallBase *CB) {
   CallBase *NewCB = CallBase::Create(CB, Bundles, CB->getIterator());
 
   // Change the target of the call to be the guard dispatch function.
-  NewCB->setCalledOperand(GuardDispatchLoad);
+  NewCB->setCalledOperand(Dispatch);
 
   // Replace the original call/invoke with the new instruction.
   CB->replaceAllUsesWith(NewCB);
@@ -251,19 +253,50 @@ bool CFGuardImpl::doInitialization(Module &M) {
       FunctionType::get(Type::getVoidTy(M.getContext()),
                         {PointerType::getUnqual(M.getContext())}, false);
   GuardFnPtrType = PointerType::get(M.getContext(), 0);
+  return true;
+}
 
-  StringRef GuardFnName = GuardMechanism == Mechanism::Check
-                              ? GuardCheckFunctionName
-                              : GuardDispatchFunctionName;
-  GuardFnGlobal = M.getOrInsertGlobal(GuardFnName, GuardFnPtrType, [&] {
-    auto *Var = new GlobalVariable(M, GuardFnPtrType, false,
-                                   GlobalVariable::ExternalLinkage, nullptr,
-                                   GuardFnName);
+Constant *CFGuardImpl::getGuardFnGlobal(Module &M, StringRef Name) {
+  return M.getOrInsertGlobal(Name, GuardFnPtrType, [&] {
+    auto *Var =
+        new GlobalVariable(M, GuardFnPtrType, false,
+                           GlobalVariable::ExternalLinkage, nullptr, Name);
     Var->setDSOLocal(true);
     return Var;
   });
+}
 
-  return true;
+// Whether the dispatch function can guard CB. On x86-64 it takes the target in
+// RAX and uses R10 and R11 as scratch, so the call must lower as a Win64 or
+// System V C call that passes nothing else in RAX: not a System V variadic
+// call's vector count in AL, nor a System V Swift call's sret pointer.
+static bool canUseDispatch(const CallBase &CB) {
+  const Triple &TT = CB.getModule()->getTargetTriple();
+  if (!TT.isX86_64())
+    return true;
+  CallingConv::ID CC = CB.getCallingConv();
+  switch (CC) {
+  case CallingConv::Win64:
+    return true;
+  case CallingConv::C:
+  case CallingConv::Fast:
+  case CallingConv::Tail:
+  case CallingConv::Swift:
+  case CallingConv::SwiftTail:
+  case CallingConv::X86_FastCall:
+  case CallingConv::X86_StdCall:
+  case CallingConv::X86_ThisCall:
+  case CallingConv::X86_VectorCall:
+    if (TT.hasDefaultMSABI())
+      return true;
+    [[fallthrough]];
+  case CallingConv::X86_64_SysV:
+    return !CB.getFunctionType()->isVarArg() &&
+           !((CC == CallingConv::Swift || CC == CallingConv::SwiftTail) &&
+             CB.hasStructRetAttr());
+  default:
+    return false;
+  }
 }
 
 bool CFGuardImpl::runOnFunction(Function &F) {
@@ -292,12 +325,21 @@ bool CFGuardImpl::runOnFunction(Function &F) {
     return false;
 
   // For each indirect call/invoke, add the appropriate dispatch or check.
-  if (GuardMechanism == Mechanism::Dispatch) {
-    for (CallBase *CB : IndirectCalls)
-      insertCFGuardDispatch(CB);
-  } else {
-    for (CallBase *CB : IndirectCalls)
+  Module &M = *F.getParent();
+  for (CallBase *CB : IndirectCalls) {
+    if (GuardMechanism == Mechanism::Dispatch && canUseDispatch(*CB)) {
+      insertCFGuardDispatch(
+          CB, IRBuilder<>(CB).CreateLoad(
+                  CB->getCalledOperand()->getType(),
+                  getGuardFnGlobal(M, GuardDispatchFunctionName)));
+    } else if (CB->isMustTailCall() && M.getTargetTriple().isAArch64()) {
+      FunctionCallee Thunk = M.getOrInsertFunction(
+          GuardTailCallThunkName, Type::getVoidTy(M.getContext()));
+      cast<Function>(Thunk.getCallee())->setDSOLocal(true);
+      insertCFGuardDispatch(CB, Thunk.getCallee());
+    } else {
       insertCFGuardCheck(CB);
+    }
   }
 
   return true;

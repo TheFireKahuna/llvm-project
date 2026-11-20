@@ -15,6 +15,7 @@
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
+#include "llvm/IR/Constants.h"
 #include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCObjectFileInfo.h"
@@ -38,16 +39,33 @@ void WinCFGuard::endFunction(const MachineFunction *MF) {
   llvm::append_range(LongjmpTargets, MF->getLongjmpTargets());
 }
 
+// Whether U is an entry of llvm.global_ctors or llvm.global_dtors whose key
+// the module does not define, which the AsmPrinter does not emit.
+static bool isDroppedStructor(const User *U) {
+  const auto *Entry = dyn_cast<ConstantStruct>(U);
+  if (!Entry || Entry->getNumOperands() != 3 || !Entry->hasOneUser() ||
+      !Entry->user_back()->hasOneUser())
+    return false;
+  StringRef List = Entry->user_back()->user_back()->getName();
+  const auto *Key =
+      dyn_cast<GlobalValue>(Entry->getOperand(2)->stripPointerCasts());
+  return (List == "llvm.global_ctors" || List == "llvm.global_dtors") && Key &&
+         Key->isDeclarationForLinker();
+}
+
 /// Returns true if this function's address is escaped in a way that might make
-/// it an indirect call target. Function::hasAddressTaken gives different
-/// results when a function is called directly with a function prototype
-/// mismatch, which requires a cast.
-static bool isPossibleIndirectCallTarget(const GlobalValue *GV) {
+/// it an indirect call target, considering only static data if InData.
+/// Function::hasAddressTaken gives different results when a function is called
+/// directly with a function prototype mismatch, which requires a cast.
+static bool isPossibleIndirectCallTarget(const GlobalValue *GV,
+                                         bool InData = false) {
   SmallVector<const Value *, 4> Users{GV};
   while (!Users.empty()) {
     const Value *FnOrCast = Users.pop_back_val();
     for (const Use &U : FnOrCast->uses()) {
       const User *FnUser = U.getUser();
+      if (InData && isa<Instruction>(FnUser))
+        continue;
       if (const auto *Call = dyn_cast<CallBase>(FnUser)) {
         if ((!Call->isCallee(&U) || U.get() != GV) &&
             !Call->getFunction()->getName().ends_with("$exit_thunk")) {
@@ -68,8 +86,15 @@ static bool isPossibleIndirectCallTarget(const GlobalValue *GV) {
         // Ignore llvm.arm64ec.symbolmap; it doesn't lower to an actual address.
         if (G->getName() == "llvm.arm64ec.symbolmap")
           continue;
+        // The system calls the language handler an unwind record names
+        // without a check.
+        if (const auto *F = dyn_cast<Function>(G);
+            F && F->hasPersonalityFn() && F->getPersonalityFn() == U.get())
+          continue;
         // Globals (for example, vtables) are escapes.
         return true;
+      } else if (isDroppedStructor(FnUser)) {
+        continue;
       } else if (isa<Constant>(FnUser)) {
         // Constants which aren't a global are intermediate values; recursively
         // analyze the users to see if they actually escape.
@@ -90,21 +115,21 @@ void WinCFGuard::endModule() {
   const Module *M = Asm->MMI->getModule();
   std::vector<const MCSymbol *> GFIDsEntries;
   std::vector<const MCSymbol *> GIATsEntries;
+  std::vector<const MCSymbol *> SuppressedTargets;
   for (const Function &F : *M) {
+    if (!F.isDeclaration() && F.hasFnAttribute("guard_suppress"))
+      SuppressedTargets.push_back(Asm->getSymbol(&F));
     if (isPossibleIndirectCallTarget(&F)) {
-      // If F is a dllimport and has an "__imp_" symbol already defined, add the
-      // "__imp_" symbol to the .giats section.
-      if (F.hasDLLImportStorageClass()) {
-        if (MCSymbol *impSym = lookupImpSymbol(Asm->getSymbol(&F))) {
-          GIATsEntries.push_back(impSym);
-        }
-      }
-      // Add the function's symbol to the .gfids section.
-      // Note: For dllimport functions, MSVC sometimes does not add this symbol
-      // to the .gfids section, but only adds the corresponding "__imp_" symbol
-      // to the .giats section. Here we always add the symbol to the .gfids
-      // section, since this does not introduce security risks.
-      GFIDsEntries.push_back(Asm->getSymbol(&F));
+      // Code takes a dllimport function's address from its "__imp_" symbol,
+      // which .giats lists. As in MSVC, .gfids lists the function, whose
+      // symbol names its import thunk, only where static data holds it.
+      MCSymbol *ImpSym = F.hasDLLImportStorageClass()
+                             ? lookupImpSymbol(Asm->getSymbol(&F))
+                             : nullptr;
+      if (ImpSym)
+        GIATsEntries.push_back(ImpSym);
+      if (!ImpSym || isPossibleIndirectCallTarget(&F, /*InData=*/true))
+        GFIDsEntries.push_back(Asm->getSymbol(&F));
     }
   }
 
@@ -115,11 +140,24 @@ void WinCFGuard::endModule() {
       GFIDsEntries.push_back(Asm->getSymbol(&GA));
   }
 
-  if (GFIDsEntries.empty() && GIATsEntries.empty() && LongjmpTargets.empty())
+  if (GFIDsEntries.empty() && GIATsEntries.empty() && LongjmpTargets.empty() &&
+      SuppressedTargets.empty())
     return;
 
-  // Emit the symbol index of each GFIDs entry to form the .gfids section.
+  // Name each suppressed target to the linker as MSVC does, so that the
+  // function table lists it as not a valid call target.
   auto &OS = *Asm->OutStreamer;
+  if (!SuppressedTargets.empty()) {
+    const Triple &TT = M->getTargetTriple();
+    StringRef Flag = TT.isWindowsMSVCEnvironment() || TT.isUEFI()
+                         ? " /GUARDSYM:"
+                         : " -guardsym:";
+    OS.switchSection(Asm->OutContext.getObjectFileInfo()->getDrectveSection());
+    for (const MCSymbol *S : SuppressedTargets)
+      OS.emitBytes((Flag + S->getName() + ",S").str());
+  }
+
+  // Emit the symbol index of each GFIDs entry to form the .gfids section.
   OS.switchSection(Asm->OutContext.getObjectFileInfo()->getGFIDsSection());
   for (const MCSymbol *S : GFIDsEntries)
     OS.emitCOFFSymbolIndex(S);

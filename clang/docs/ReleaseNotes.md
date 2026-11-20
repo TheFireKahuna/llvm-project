@@ -464,6 +464,10 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
   `void (*unlock)(struct BDev *bdev) UNLOCK_FUNCTION(bdev->lock)`, keeps
   working. Without the flag both forward references remain errors.
 
+- `__declspec(guard(suppress))` is supported. Clang names the function to the
+  linker as MSVC does, with `/GUARDSYM:<symbol>,S`, so the image's Control Flow
+  Guard function table lists it as not a valid call target.
+
 ### Improvements to Clang's diagnostics
 
 - Fixed missing `-Wuninitialized-explicit-init` warnings for C file-scope
