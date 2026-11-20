@@ -123,6 +123,11 @@ public:
   }
 
   void createBlock(StringRef FileName);
+  /// Begins a block for the file whose checksum entry is at
+  /// \p ChecksumBufferOffset in the checksums subsection.
+  void createBlock(uint32_t ChecksumBufferOffset) {
+    Blocks.emplace_back(ChecksumBufferOffset);
+  }
   void addLineInfo(uint32_t Offset, const LineInfo &Line);
   void addLineAndColumnInfo(uint32_t Offset, const LineInfo &Line,
                             uint32_t ColStart, uint32_t ColEnd);

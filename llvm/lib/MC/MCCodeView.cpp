@@ -529,26 +529,9 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
       compressAnnotation(FileOffset, Buffer);
     }
 
-    int LineDelta = CurSourceLoc.Line - LastSourceLoc.Line;
-    unsigned EncodedLineDelta = encodeSignedNumber(LineDelta);
-    unsigned CodeDelta = computeLabelDiff(Asm, LastLabel, Loc.getLabel());
-    if (EncodedLineDelta < 0x8 && CodeDelta <= 0xf) {
-      // The ChangeCodeOffsetAndLineOffset combination opcode is used when the
-      // encoded line delta uses 3 or fewer set bits and the code offset fits
-      // in one nibble.
-      unsigned Operand = (EncodedLineDelta << 4) | CodeDelta;
-      compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeOffsetAndLineOffset,
-                         Buffer);
-      compressAnnotation(Operand, Buffer);
-    } else {
-      // Otherwise use the separate line and code deltas.
-      if (LineDelta != 0) {
-        compressAnnotation(BinaryAnnotationsOpCode::ChangeLineOffset, Buffer);
-        compressAnnotation(EncodedLineDelta, Buffer);
-      }
-      compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeOffset, Buffer);
-      compressAnnotation(CodeDelta, Buffer);
-    }
+    compressLineAndCodeDelta(CurSourceLoc.Line - LastSourceLoc.Line,
+                             computeLabelDiff(Asm, LastLabel, Loc.getLabel()),
+                             Buffer);
 
     LastLabel = Loc.getLabel();
     LastSourceLoc = CurSourceLoc;
@@ -591,71 +574,46 @@ void CodeViewContext::encodeDefRange(const MCAssembler &Asm,
   }
 
   // Write down each range where the variable is defined.
-  for (size_t I = 0, E = Frag.getRanges().size(); I != E;) {
-    // If the range size of multiple consecutive ranges is under the max,
-    // combine the ranges and emit some gaps.
-    const MCSymbol *RangeBegin = Frag.getRanges()[I].first;
-    unsigned RangeSize = GapAndRangeSizes[I].second;
-    size_t J = I + 1;
-    for (; J != E; ++J) {
-      unsigned GapAndRangeSize = GapAndRangeSizes[J].first + GapAndRangeSizes[J].second;
-      if (RangeSize + GapAndRangeSize > MaxDefRange)
-        break;
-      RangeSize += GapAndRangeSize;
-    }
+  support::endian::Writer LEWriter(OS, llvm::endianness::little);
+  packDefRange(GapAndRangeSizes, [&](size_t I, size_t J, unsigned Bias,
+                                     uint16_t Chunk) {
     unsigned NumGaps = J - I - 1;
+    const MCSymbolRefExpr *SRE =
+        MCSymbolRefExpr::create(Frag.getRanges()[I].first, Ctx);
+    const MCBinaryExpr *BE =
+        MCBinaryExpr::createAdd(SRE, MCConstantExpr::create(Bias, Ctx), Ctx);
 
-    support::endian::Writer LEWriter(OS, llvm::endianness::little);
-
-    unsigned Bias = 0;
-    // We must split the range into chunks of MaxDefRange, this is a fundamental
-    // limitation of the file format.
-    do {
-      uint16_t Chunk = std::min((uint32_t)MaxDefRange, RangeSize);
-
-      const MCSymbolRefExpr *SRE = MCSymbolRefExpr::create(RangeBegin, Ctx);
-      const MCBinaryExpr *BE =
-          MCBinaryExpr::createAdd(SRE, MCConstantExpr::create(Bias, Ctx), Ctx);
-
-      // Each record begins with a 2-byte number indicating how large the record
-      // is.
-      StringRef FixedSizePortion = Frag.getFixedSizePortion();
-      // Our record is a fixed sized prefix and a LocalVariableAddrRange that we
-      // are artificially constructing.
-      size_t RecordSize = FixedSizePortion.size() +
-                          sizeof(LocalVariableAddrRange) + 4 * NumGaps;
-      // Write out the record size.
-      LEWriter.write<uint16_t>(RecordSize);
-      // Write out the fixed size prefix.
-      OS << FixedSizePortion;
-      // Make space for a fixup that will eventually have a section relative
-      // relocation pointing at the offset where the variable becomes live.
-      Fixups.push_back(MCFixup::create(Contents.size(), BE, FK_SecRel_4));
-      LEWriter.write<uint32_t>(0); // Fixup for code start.
-      // Make space for a fixup that will record the section index for the code.
-      Fixups.push_back(MCFixup::create(Contents.size(), BE, FK_SecRel_2));
-      LEWriter.write<uint16_t>(0); // Fixup for section index.
-      // Write down the range's extent.
-      LEWriter.write<uint16_t>(Chunk);
-
-      // Move on to the next range.
-      Bias += Chunk;
-      RangeSize -= Chunk;
-    } while (RangeSize > 0);
+    // Each record begins with a 2-byte number indicating how large the record
+    // is.
+    StringRef FixedSizePortion = Frag.getFixedSizePortion();
+    // Our record is a fixed sized prefix and a LocalVariableAddrRange that we
+    // are artificially constructing.
+    size_t RecordSize =
+        FixedSizePortion.size() + sizeof(LocalVariableAddrRange) + 4 * NumGaps;
+    // Write out the record size.
+    LEWriter.write<uint16_t>(RecordSize);
+    // Write out the fixed size prefix.
+    OS << FixedSizePortion;
+    // Make space for a fixup that will eventually have a section relative
+    // relocation pointing at the offset where the variable becomes live.
+    Fixups.push_back(MCFixup::create(Contents.size(), BE, FK_SecRel_4));
+    LEWriter.write<uint32_t>(0); // Fixup for code start.
+    // Make space for a fixup that will record the section index for the code.
+    Fixups.push_back(MCFixup::create(Contents.size(), BE, FK_SecRel_2));
+    LEWriter.write<uint16_t>(0); // Fixup for section index.
+    // Write down the range's extent.
+    LEWriter.write<uint16_t>(Chunk);
 
     // Emit the gaps afterwards.
-    assert((NumGaps == 0 || Bias <= MaxDefRange) &&
-           "large ranges should not have gaps");
     unsigned GapStartOffset = GapAndRangeSizes[I].second;
     for (++I; I != J; ++I) {
       unsigned GapSize, RangeSize;
-      assert(I < GapAndRangeSizes.size());
       std::tie(GapSize, RangeSize) = GapAndRangeSizes[I];
       LEWriter.write<uint16_t>(GapStartOffset);
       LEWriter.write<uint16_t>(GapSize);
       GapStartOffset += GapSize + RangeSize;
     }
-  }
+  });
 
   Frag.setVarContents(Contents);
   assert(Fixups.size() < 256 && "Store fixups outside of MCFragment's VarFixup "

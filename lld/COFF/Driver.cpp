@@ -1392,6 +1392,15 @@ static void findKeepUniqueSections(COFFLinkerContext &ctx) {
   // referenced symbol as address-significant.
   for (ObjFile *obj : ctx.objFileInstances) {
     ArrayRef<Symbol *> syms = obj->getSymbols();
+    // A function the object lists as address-taken for Control Flow Guard has
+    // a significant address, whatever its address-significance table says.
+    for (SectionChunk *c : obj->getGuardFidChunks()) {
+      ArrayRef<uint8_t> data = c->getContents();
+      for (size_t i = 0, e = data.size() / 4; i != e; ++i)
+        if (uint32_t index = support::endian::read32le(data.data() + i * 4);
+            index < syms.size())
+          markAddrsig(syms[index]);
+    }
     if (obj->addrsigSec) {
       ArrayRef<uint8_t> contents;
       cantFail(

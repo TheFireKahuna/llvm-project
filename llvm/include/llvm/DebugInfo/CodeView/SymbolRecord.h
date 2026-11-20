@@ -402,6 +402,30 @@ inline uint32_t encodeSignedNumber(uint32_t Data) {
   return Data << 1;
 }
 
+/// Appends to \p Buffer the annotations with which the line table of an inline
+/// site advances by \p LineDelta lines and \p CodeDelta bytes of code: one
+/// annotation where both are small, and otherwise one for each.
+inline void compressLineAndCodeDelta(int32_t LineDelta, uint32_t CodeDelta,
+                                     SmallVectorImpl<char> &Buffer) {
+  uint32_t EncodedLineDelta = encodeSignedNumber(LineDelta);
+  if (EncodedLineDelta < 0x8 && CodeDelta <= 0xf) {
+    // The ChangeCodeOffsetAndLineOffset combination opcode is used when the
+    // encoded line delta uses 3 or fewer set bits and the code offset fits
+    // in one nibble.
+    compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeOffsetAndLineOffset,
+                       Buffer);
+    compressAnnotation((EncodedLineDelta << 4) | CodeDelta, Buffer);
+    return;
+  }
+  // Otherwise use the separate line and code deltas.
+  if (LineDelta != 0) {
+    compressAnnotation(BinaryAnnotationsOpCode::ChangeLineOffset, Buffer);
+    compressAnnotation(EncodedLineDelta, Buffer);
+  }
+  compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeOffset, Buffer);
+  compressAnnotation(CodeDelta, Buffer);
+}
+
 // S_INLINESITE
 class InlineSiteSym : public SymbolRecord {
 public:
@@ -505,6 +529,40 @@ struct LocalVariableAddrGap {
 };
 
 enum : uint16_t { MaxDefRange = 0xf000 };
+
+/// Packs the ranges in which a variable has one location into S_DEFRANGE*
+/// records. \p GapAndRangeSizes holds, for each range, its distance from the
+/// end of the range before it and its size. Consecutive ranges share a record,
+/// the distances between them its gaps, while the record covers at most
+/// MaxDefRange bytes, and a longer range is split into records of that size,
+/// which is a limit of the format. Calls \p Record(I, J, Bias, Size) for each
+/// record: it begins \p Bias bytes into range I, covers \p Size bytes and
+/// has the ranges after I and before J as its gaps.
+template <typename RecordFn>
+void packDefRange(ArrayRef<std::pair<unsigned, unsigned>> GapAndRangeSizes,
+                  RecordFn Record) {
+  for (size_t I = 0, E = GapAndRangeSizes.size(); I != E;) {
+    unsigned RangeSize = GapAndRangeSizes[I].second;
+    size_t J = I + 1;
+    for (; J != E; ++J) {
+      unsigned GapAndRangeSize =
+          GapAndRangeSizes[J].first + GapAndRangeSizes[J].second;
+      if (RangeSize + GapAndRangeSize > MaxDefRange)
+        break;
+      RangeSize += GapAndRangeSize;
+    }
+    assert((J == I + 1 || RangeSize <= MaxDefRange) &&
+           "large ranges should not have gaps");
+    unsigned Bias = 0;
+    do {
+      uint16_t Chunk = std::min((uint32_t)MaxDefRange, RangeSize);
+      Record(I, J, Bias, Chunk);
+      Bias += Chunk;
+      RangeSize -= Chunk;
+    } while (RangeSize > 0);
+    I = J;
+  }
+}
 
 // S_DEFRANGE
 class DefRangeSym : public SymbolRecord {

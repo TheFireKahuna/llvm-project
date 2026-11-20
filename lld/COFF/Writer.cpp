@@ -22,6 +22,7 @@
 #include "lld/Common/Timer.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/StringTableBuilder.h"
@@ -362,6 +363,8 @@ private:
   OutputSection *a64xrmSec;
   OutputSection *rsrcSec;
   OutputSection *relocSec;
+  // Whether assignAddresses leaves .reloc as it is.
+  bool deferBaserels = false;
   OutputSection *ctorsSec;
   OutputSection *dtorsSec;
   // Either .rdata section or .buildid section.
@@ -697,6 +700,20 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
 
 // Assign addresses and add thunks if necessary.
 void Writer::finalizeAddresses() {
+  // Base relocations follow from the final layout alone. Where relaxation may
+  // assign addresses again, .reloc is built once they are final, provided
+  // that nothing the image loads lies after it, whose address would follow
+  // its size.
+  auto after = llvm::find(ctx.outputSections, relocSec);
+  deferBaserels =
+      ctx.hasForkObject &&
+      std::all_of(after, ctx.outputSections.end(), [](OutputSection *sec) {
+        return sec->header.Characteristics & IMAGE_SCN_MEM_DISCARDABLE;
+      });
+  llvm::scope_exit build([&] {
+    if (std::exchange(deferBaserels, false))
+      assignAddresses();
+  });
   assignAddresses();
   // The loader reads an exported address inside the export directory as a
   // forwarder string. Nothing is defined inside LLD's directory, but an export
@@ -1887,7 +1904,7 @@ void Writer::assignAddresses() {
 
   for (OutputSection *sec : ctx.outputSections) {
     llvm::TimeTraceScope timeScope("Section: ", sec->name);
-    if (sec == relocSec) {
+    if (sec == relocSec && !deferBaserels) {
       sec->chunks.clear();
       addBaserels();
       if (ctx.dynamicRelocs) {
@@ -1950,7 +1967,8 @@ void Writer::assignAddresses() {
   // of its block past the header where they fit it, else its slot of the
   // first plane where they fit a slot. The pe model has no place.
   Symbol *placeSym = ctx.symtab.find("__tp_place");
-  if (isa_and_nonnull<Defined>(placeSym) && ctx.isTlsModel("pe"))
+  if (isa_and_nonnull<Defined>(placeSym) && ctx.isTlsModel("pe") &&
+      !deferBaserels)
     Err(ctx) << "__tp_place is defined in an image of the pe thread-local "
              << "model, which has no place";
   if (ctx.tlsFirst) {

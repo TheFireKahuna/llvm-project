@@ -2551,6 +2551,7 @@ constexpr EnumStringDef<COFF::LinkRecordKind> LinkRecordKindDefs[] = {
     {{"Symbols"}, COFF::LinkRecordSymbols},
     {{"Sections"}, COFF::LinkRecordSections},
     {{"Contracts"}, COFF::LinkRecordContracts},
+    {{"Spans"}, COFF::LinkRecordSpans},
     {{"Images"}, COFF::LinkRecordImages},
     {{"Overrides"}, COFF::LinkRecordOverrides},
     {{"ImageCode"}, COFF::LinkRecordImageCode},
@@ -2601,6 +2602,47 @@ void COFFDumper::printCOFFLinkRecords() {
                               getJumpTableEntrySizeNames());
                   W.printNumber("Load", getSymbolName(Fields[5]), Fields[5]);
                   W.printNumber("Flags", Fields[6]);
+                }
+                return C.takeError();
+              }
+              if (Kind == COFF::LinkRecordSpans) {
+                DataExtractor Data(Payload, /*IsLittleEndian=*/true);
+                DataExtractor::Cursor C(0);
+                while (C && !Data.eof(C)) {
+                  DictScope L(W, "Spans");
+                  for (const char *Label : {"Field", "Target"}) {
+                    uint64_t Section = Data.getULEB128(C);
+                    if (C)
+                      W.printNumber(Label, getSymbolName(Section), Section);
+                  }
+                  uint64_t Offset = 0;
+                  for (uint64_t Count = Data.getULEB128(C); C && Count;
+                       --Count) {
+                    uint64_t Head = Data.getULEB128(C);
+                    unsigned SpanKind = Head & 15;
+                    Offset += Head >> 4;
+                    int64_t Operand =
+                        SpanKind == COFF::SpanAddend32 ? Data.getSLEB128(C)
+                        : SpanKind >= COFF::SpanData   ? Data.getULEB128(C)
+                                                       : 0;
+                    if (!C)
+                      break;
+                    raw_ostream &OS = W.startLine();
+                    OS << format_hex(Offset, 1, /*Upper=*/true);
+                    if (SpanKind == COFF::SpanAddend32)
+                      OS << " ADDEND32 " << Operand << "\n";
+                    else if (SpanKind >= COFF::SpanData)
+                      OS << ' '
+                         << Obj->getRelocationTypeName(
+                                COFF::SpanTypes[SpanKind - COFF::SpanData])
+                         << format(" 0x%" PRIX64 "\n", Operand);
+                    else if (SpanKind == COFF::SpanJump32)
+                      OS << " JUMP32\n";
+                    else if (SpanKind > COFF::SpanRel32)
+                      OS << " REL32_" << SpanKind - COFF::SpanRel32 << "\n";
+                    else
+                      OS << (SpanKind ? " REL32\n" : " REL8\n");
+                  }
                 }
                 return C.takeError();
               }

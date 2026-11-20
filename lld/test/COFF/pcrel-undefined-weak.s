@@ -1,10 +1,7 @@
 # REQUIRES: x86, aarch64
 
-## A weak external that nothing defines resolves to absolute zero, which no
-## PC-relative field reaches from an image, so a reference to it there is an
-## error, as link.exe's LNK2016 is, and an ARM64 branch takes no range thunk.
-## In an object LLVM made for Windows Itanium or NT-POSIX, an ARM64 branch to
-## it goes to the next instruction, as lld/ELF has it for the AArch64 ABI.
+## A PC-relative reference to an undefined weak (address zero) is an error, as
+## LNK2016; in a fork object an ARM64 branch to it goes to the next instruction.
 
 # RUN: rm -rf %t.dir && split-file %s %t.dir && cd %t.dir
 # DEFINE: %{link} = lld-link -entry:main -subsystem:console -out:out.exe
@@ -47,6 +44,19 @@
 # A64-FORK-NEXT: 140001010: ret
 # A64-FORK-NOT:  br
 
+## Such a branch reaches from anywhere, so its section, out of reach of zero,
+## resizes as any other: its last jump goes.
+# RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium a64-far.s -o a64-far.obj
+# RUN: %{link} a64-far.obj -verbose 2>&1 | FileCheck --check-prefix=FAR-LOG %s
+# RUN: llvm-objdump -d --no-show-raw-insn out.exe | FileCheck --check-prefix=FAR %s
+
+# FAR-LOG:     deleting 1 tail jumps
+# FAR-LOG-NOT: keeps its size
+
+# FAR:      140101004: b.eq 0x140101008
+# FAR-NEXT: 140101008: tbz w0, #0x0, 0x14010100c
+# FAR-NEXT: 14010100c: ret
+
 #--- x64.s
   .globl main
 main:
@@ -63,5 +73,20 @@ main:
   b weakfn
   b.eq weakfn
   tbz w0, #0, weakfn
+  ret
+  .weak weakfn
+
+#--- a64-far.s
+  .globl main
+main:
+  ret
+  .section .text$a,"xr"
+  .space 0x100000
+  .section .text$b,"xr"
+  b.eq weakfn
+  tbz w0, #0, weakfn
+  b next
+  .section .text$c,"xr"
+next:
   ret
   .weak weakfn

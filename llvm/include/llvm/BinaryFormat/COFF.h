@@ -979,6 +979,7 @@ enum LinkRecordKind : uint64_t {
   LinkRecordSymbols = 1,
   LinkRecordSections = 2,
   LinkRecordContracts = 3,
+  LinkRecordSpans = 5,
   // In a member of an import library.
   LinkRecordImages = 4,
   LinkRecordOverrides = 6,
@@ -1012,6 +1013,42 @@ enum SwitchTableFlags : uint64_t {
   /// by a check that the compiler emitted.
   SwitchTableRangeChecked = 1,
 };
+
+/// The payload of a Spans group is lists, each the symbol of the section that
+/// holds its fields, the symbol of the code section whose layout they depend
+/// on, a count and that many spans in the order of their fields. A span is
+/// SpanKind plus sixteen times the distance of its field from the field of
+/// the span before it, or from the section's start, and then the operand its
+/// kind names. The field holds A - B, both points of the code section, which
+/// the linker moves only by deleting bytes at relocations, by redoing padding
+/// at ALIGN relocations and by narrowing SpanJump32 jumps; the linker reads A
+/// from the field and writes the distance between where the two points come to
+/// lie. A code section that a list of its own fields names, which may be empty,
+/// states every such value in a list or a relocation.
+enum SpanKind : unsigned {
+  /// The 8-bit field of an instruction that ends with it, B.
+  SpanRel8 = 0,
+  /// The 32-bit field of an instruction that ends at B, with it or, in the
+  /// kinds after this one but SpanJump32, 1, 2 or 4 bytes after it.
+  SpanRel32 = 1,
+  /// The 32-bit field of a jmp or jcc that ends with it, B, which the
+  /// assembler made long and which reaches A with 8 bits in some link: the
+  /// linker chooses its width.
+  SpanJump32 = 4,
+  /// A field of the relocation type SpanTypes gives for the kinds from this
+  /// one on. The operand is B's offset.
+  SpanData = 6,
+  /// A 32-bit field in another section whose relocation names the code
+  /// section's symbol: the field holds A's offset plus the operand, an
+  /// SLEB128, and the linker adds A's movement to it.
+  SpanAddend32 = 15,
+};
+constexpr uint16_t SpanTypes[] = {
+    IMAGE_REL_LLVM_SSPAN8,        IMAGE_REL_LLVM_SSPAN16,
+    IMAGE_REL_AMD64_SSPAN32,      IMAGE_REL_LLVM_SSPAN64,
+    IMAGE_REL_LLVM_SSPAN_ULEB,    IMAGE_REL_LLVM_SSPAN_SLEB,
+    IMAGE_REL_LLVM_USPAN8,        IMAGE_REL_LLVM_USPAN16,
+    IMAGE_REL_LLVM_SSPAN_EPILOGV2};
 
 /// Writes a link fact whose operands are numbers.
 LLVM_ABI void encodeLinkFact(raw_ostream &OS, uint64_t Symbol, uint64_t Tag,
