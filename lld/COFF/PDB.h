@@ -25,6 +25,7 @@ class SectionChunk;
 class COFFLinkerContext;
 
 void createPDB(COFFLinkerContext &ctx, llvm::ArrayRef<uint8_t> sectionTable,
+               llvm::ArrayRef<uint8_t> fixups,
                llvm::codeview::DebugInfo *buildId);
 
 std::optional<std::pair<llvm::StringRef, uint32_t>>

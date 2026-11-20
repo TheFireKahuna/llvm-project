@@ -198,6 +198,14 @@ void COFFDumper::dumpSections(unsigned NumSections) {
     for (const auto &Reloc : ObjSection.relocations()) {
       const object::coff_relocation *reloc = Obj.getCOFFRelocation(Reloc);
       COFFYAML::Relocation Rel;
+      Rel.VirtualAddress = reloc->VirtualAddress;
+      Rel.Type = reloc->Type;
+      // The index of a type that names no symbol is kept as written.
+      if (COFF::relocationNamesNoSymbol(reloc->Type)) {
+        Rel.SymbolTableIndex = reloc->SymbolTableIndex;
+        Relocations.push_back(Rel);
+        continue;
+      }
       object::symbol_iterator Sym = Reloc.getSymbol();
       Expected<StringRef> SymbolNameOrErr = Sym->getName();
       if (!SymbolNameOrErr) {
@@ -210,8 +218,6 @@ void COFFDumper::dumpSections(unsigned NumSections) {
         Rel.SymbolName = *SymbolNameOrErr;
       else
         Rel.SymbolTableIndex = reloc->SymbolTableIndex;
-      Rel.VirtualAddress = reloc->VirtualAddress;
-      Rel.Type = reloc->Type;
       Relocations.push_back(Rel);
     }
     NewYAMLSection.Relocations = Relocations;

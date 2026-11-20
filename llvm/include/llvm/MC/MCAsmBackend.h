@@ -10,6 +10,7 @@
 #define LLVM_MC_MCASMBACKEND_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 #include "llvm/MC/MCDirectives.h"
 #include "llvm/MC/MCFixup.h"
 #include "llvm/Support/Compiler.h"
@@ -30,6 +31,7 @@ class MCObjectWriter;
 class MCOperand;
 class MCSubtargetInfo;
 class MCValue;
+template <typename T> class SmallVectorImpl;
 class raw_pwrite_stream;
 class StringRef;
 class raw_ostream;
@@ -62,6 +64,25 @@ protected: // Can only create subclasses.
   bool AllowEnhancedRelaxation = false;
   bool AllowBundling = false;
 
+  // Temporary symbol used to check whether a PC-relative fixup is resolved.
+  MCSymbol *PCRelTemp = nullptr;
+
+  /// Implement relaxDwarfLineAddr for a linker relaxation target: encode an
+  /// address delta that is not an assemble-time constant with
+  /// DW_LNS_fixed_advance_pc or DW_LNE_set_address and a data fixup.
+  bool relaxDwarfLineAddrWithFixup(MCFragment &F) const;
+
+  /// Implement relaxDwarfCFA for a linker relaxation target: encode an address
+  /// delta that is not an assemble-time constant with the smallest
+  /// DW_CFA_advance_loc* of at least \p MinBits operand bits that holds its
+  /// current value. \p AddFixups appends the fixups of the operand, given its
+  /// size in bits and its offset.
+  bool
+  relaxDwarfCFAWithFixups(MCFragment &F, unsigned MinBits,
+                          function_ref<void(unsigned Bits, unsigned Offset,
+                                            SmallVectorImpl<MCFixup> &Fixups)>
+                              AddFixups) const;
+
 public:
   MCAsmBackend(const MCAsmBackend &) = delete;
   MCAsmBackend &operator=(const MCAsmBackend &) = delete;
@@ -70,6 +91,11 @@ public:
   const llvm::endianness Endian;
 
   void setAssembler(MCAssembler *A) { Asm = A; }
+
+  /// Return true if the offset between \p SymA and \p F is unaffected by
+  /// linker-relaxable fragments, so that a PC-relative fixup in \p F against
+  /// \p SymA can be resolved.
+  bool isPCRelFixupResolved(const MCSymbol *SymA, const MCFragment &F);
 
   MCContext &getContext() const;
 

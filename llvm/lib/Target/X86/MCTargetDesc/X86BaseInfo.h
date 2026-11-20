@@ -66,6 +66,8 @@ enum IPREFIXES {
   IP_USE_DISP8 = 1U << 12,
   IP_USE_DISP32 = 1U << 13,
   IP_HAS_REX_W = 1U << 14,
+  // Not a prefix: a jmp that no Windows unwind frame covers.
+  IP_TAIL_JUMP = 1U << 15,
 };
 
 enum OperandType : unsigned {

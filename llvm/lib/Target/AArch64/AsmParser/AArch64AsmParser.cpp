@@ -922,13 +922,15 @@ public:
 
   // NOTE: Also used for isLogicalImmNot as anything that can be represented as
   // a logical immediate can always be represented when inverted.
-  template <typename T>
-  bool isLogicalImm() const {
+  template <typename T, bool AllowSymbol = false> bool isLogicalImm() const {
     if (!isImm())
       return false;
     const MCConstantExpr *MCE = dyn_cast<MCConstantExpr>(getImm());
-    if (!MCE)
-      return false;
+    if (!MCE) {
+      // An absolute symbol's value, which the linker encodes.
+      auto *SE = dyn_cast<MCSpecifierExpr>(getImm());
+      return AllowSymbol && SE && SE->getSpecifier() == AArch64::S_ABS_LOGIMM;
+    }
 
     int64_t Val = MCE->getValue();
     // Avoid left shift by 64 directly.
@@ -2018,7 +2020,9 @@ public:
   template <typename T>
   void addLogicalImmOperands(MCInst &Inst, unsigned N) const {
     assert(N == 1 && "Invalid number of operands!");
-    const MCConstantExpr *MCE = cast<MCConstantExpr>(getImm());
+    const MCConstantExpr *MCE = dyn_cast<MCConstantExpr>(getImm());
+    if (!MCE)
+      return Inst.addOperand(MCOperand::createExpr(getImm()));
     std::make_unsigned_t<T> Val = MCE->getValue();
     uint64_t encoding = AArch64_AM::encodeLogicalImmediate(Val, sizeof(T) * 8);
     Inst.addOperand(MCOperand::createImm(encoding));
@@ -4438,6 +4442,7 @@ bool AArch64AsmParser::parseSymbolicImmVal(const MCExpr *&ImmVal) {
                   .Case("abs_g0", AArch64::S_ABS_G0)
                   .Case("abs_g0_s", AArch64::S_ABS_G0_S)
                   .Case("abs_g0_nc", AArch64::S_ABS_G0_NC)
+                  .Case("abs_logimm", AArch64::S_ABS_LOGIMM)
                   .Case("prel_g3", AArch64::S_PREL_G3)
                   .Case("prel_g2", AArch64::S_PREL_G2)
                   .Case("prel_g2_nc", AArch64::S_PREL_G2_NC)

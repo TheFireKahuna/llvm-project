@@ -40,6 +40,9 @@ enum Fixups {
   // FIXME: comment
   fixup_aarch64_movw,
 
+  // The 13-bit bitmask immediate of a logical instruction.
+  fixup_aarch64_logical_imm,
+
   // The high 9 bits of a 11-bit pc-relative immediate.
   fixup_aarch64_pcrel_branch9,
 
@@ -62,6 +65,9 @@ enum Fixups {
   // The high 26 bits of a 28-bit pc-relative immediate. Distinguished from
   // branch26 only on ELF.
   fixup_aarch64_pcrel_call26,
+
+  // The same, for a b that no Windows unwind frame covers.
+  fixup_aarch64_pcrel_tail26,
 
   // Marker
   LastTargetFixupKind,

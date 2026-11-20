@@ -195,6 +195,9 @@ public:
   // expressions with @). MCSpecifierExpr, as used by AArch64 and RISC-V, offers
   // a cleaner approach.
   enum VariantKind : uint16_t {
+    // symbol@imgrel_call (image-relative, in a field through which a function
+    // is only called)
+    VK_COFF_IMGREL32_CALL = 2,
     VK_COFF_IMGREL32 = 3, // symbol@imgrel (image-relative)
 
     FirstTargetSpecifier,

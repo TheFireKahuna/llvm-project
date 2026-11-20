@@ -1,0 +1,150 @@
+## The relocation types of Windows Itanium and NT-POSIX objects take one number
+## from 0x8000 up on both machines, and a type one machine alone has is not
+## named on the other. ABSOLUTE, ALIGN and TLS_SCALE name no symbol: no tool
+## resolves their index, and yaml keeps it.
+
+# RUN: yaml2obj --docnum=1 -DM=AMD64 %s -o %t.x1
+# RUN: yaml2obj --docnum=2 %s -o %t.x2
+# RUN: yaml2obj --docnum=1 -DM=ARM64 %s -o %t.a1
+# RUN: yaml2obj --docnum=3 %s -o %t.a3
+# RUN: obj2yaml %t.x1 | yaml2obj -o %t.x1y
+# RUN: obj2yaml %t.x2 | yaml2obj -o %t.x2y
+# RUN: obj2yaml %t.a1 | yaml2obj -o %t.a1y
+# RUN: obj2yaml %t.a3 | yaml2obj -o %t.a3y
+# RUN: llvm-readobj -r --expand-relocs %t.x1y %t.x2y | \
+# RUN:   FileCheck %s --check-prefixes=CHECK,X64
+# RUN: llvm-readobj -r --expand-relocs %t.a1y %t.a3y | \
+# RUN:   FileCheck %s --check-prefixes=CHECK,A64
+# RUN: llvm-objdump -r %t.x1 %t.x2 | FileCheck %s --check-prefix=OBJDUMP
+# RUN: not yaml2obj --docnum=2 -DM=ARM64 %s 2>&1 | FileCheck %s --check-prefix=OTHER
+# RUN: not yaml2obj --docnum=3 -DM=AMD64 %s 2>&1 | FileCheck %s --check-prefix=OTHER
+
+# OTHER: error: unknown enumerated scalar
+
+# OBJDUMP: 0000000000000000 IMAGE_REL_LLVM_ALIGN {{$}}
+# OBJDUMP: 0000000000000000 IMAGE_REL_LLVM_TLS_SCALE {{$}}
+# OBJDUMP: 0000000000000000 IMAGE_REL_AMD64_ABSOLUTE {{$}}
+
+# CHECK:      Type: IMAGE_REL_LLVM_ADDR32NB_CALL (32768)
+# CHECK:      Type: IMAGE_REL_LLVM_REL32_CALL (32769)
+# CHECK:      Type: IMAGE_REL_LLVM_BRANCH_TAIL (32770)
+# CHECK:      Type: IMAGE_REL_LLVM_ALIGN (32771)
+# CHECK-NEXT: Symbol: -
+# CHECK-NEXT: SymbolIndex: 2180
+# CHECK:      Type: IMAGE_REL_LLVM_SSPAN8 (32784)
+# CHECK:      Type: IMAGE_REL_LLVM_SSPAN16 (32785)
+# CHECK:      Type: IMAGE_REL_LLVM_SSPAN64 (32787)
+# CHECK:      Type: IMAGE_REL_LLVM_SSPAN_ULEB (32788)
+# CHECK:      Type: IMAGE_REL_LLVM_SSPAN_SLEB (32789)
+# CHECK:      Type: IMAGE_REL_LLVM_USPAN8 (32791)
+# CHECK:      Type: IMAGE_REL_LLVM_USPAN16 (32792)
+# CHECK:      Type: IMAGE_REL_LLVM_FUSED_CALL (32832)
+# CHECK:      Type: IMAGE_REL_LLVM_FUSED_JUMP (32833)
+# CHECK:      Type: IMAGE_REL_LLVM_FUSED_READ (32834)
+# CHECK:      Type: IMAGE_REL_LLVM_TLS_SCALE (32852)
+# CHECK-NEXT: Symbol: -
+# CHECK-NEXT: SymbolIndex: 7
+
+# X64:        Type: IMAGE_REL_AMD64_ABSOLUTE (0)
+# X64-NEXT:   Symbol: -
+# X64-NEXT:   SymbolIndex: 9
+# X64:        Type: IMAGE_REL_LLVM_SSPAN_EPILOGV2 (32772)
+# X64:        Type: IMAGE_REL_LLVM_BRANCH32 (32800)
+# X64:        Type: IMAGE_REL_LLVM_JUMP32 (32801)
+# X64:        Type: IMAGE_REL_LLVM_JUMP8 (32802)
+# X64:        Type: IMAGE_REL_LLVM_MEM_CALL (32803)
+# X64:        Type: IMAGE_REL_LLVM_MEM_JUMP (32804)
+# X64:        Type: IMAGE_REL_LLVM_MEM_JUMP_P1 (32805)
+# X64:        Type: IMAGE_REL_LLVM_MEM_LOAD (32806)
+# X64:        Type: IMAGE_REL_LLVM_MEM_LOAD_REX2 (32807)
+# X64:        Type: IMAGE_REL_LLVM_LEA (32808)
+# X64:        Type: IMAGE_REL_LLVM_LEA_OFFSET (32809)
+# X64:        Type: IMAGE_REL_LLVM_FUSED_READ_REX2 (32835)
+# X64:        Type: IMAGE_REL_LLVM_FUSED_ACCESS (32836)
+# X64:        Type: IMAGE_REL_LLVM_FUSED_INDEX (32837)
+# X64:        Type: IMAGE_REL_LLVM_TPOFF32 (32848)
+
+# A64:        Type: IMAGE_REL_LLVM_SSPAN32 (32786)
+# A64:        Type: IMAGE_REL_LLVM_SSPAN_WORDS18 (32790)
+# A64:        Type: IMAGE_REL_LLVM_USPAN8_W (32793)
+# A64:        Type: IMAGE_REL_LLVM_USPAN16_W (32794)
+# A64:        Type: IMAGE_REL_LLVM_MOVW_UABS_G0 (32816)
+# A64:        Type: IMAGE_REL_LLVM_MOVW_UABS_G0_NC (32817)
+# A64:        Type: IMAGE_REL_LLVM_MOVW_UABS_G1 (32818)
+# A64:        Type: IMAGE_REL_LLVM_LOGIMM (32819)
+# A64:        Type: IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL (32820)
+# A64:        Type: IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL (32821)
+# A64:        Type: IMAGE_REL_LLVM_TPOFF_HIGH12A (32849)
+# A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12A (32850)
+# A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12L (32851)
+
+--- !COFF
+header: { Machine: IMAGE_FILE_MACHINE_[[M=AMD64]], Characteristics: [] }
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE ]
+    SectionData:     '00'
+    Relocations:
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_ADDR32NB_CALL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_REL32_CALL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_BRANCH_TAIL }
+      - { VirtualAddress: 0, SymbolTableIndex: 2180, Type: IMAGE_REL_LLVM_ALIGN }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN8 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN16 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN64 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN_ULEB }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN_SLEB }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_USPAN8 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_USPAN16 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_CALL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ }
+      - { VirtualAddress: 0, SymbolTableIndex: 7, Type: IMAGE_REL_LLVM_TLS_SCALE }
+symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]
+
+--- !COFF
+header: { Machine: IMAGE_FILE_MACHINE_[[M=AMD64]], Characteristics: [] }
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE ]
+    SectionData:     '00'
+    Relocations:
+      - { VirtualAddress: 0, SymbolTableIndex: 9, Type: IMAGE_REL_AMD64_ABSOLUTE }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN_EPILOGV2 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_BRANCH32 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_JUMP32 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_JUMP8 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_CALL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_JUMP }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_JUMP_P1 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_LOAD }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_LOAD_REX2 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA_OFFSET }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ_REX2 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_ACCESS }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_INDEX }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF32 }
+symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]
+
+--- !COFF
+header: { Machine: IMAGE_FILE_MACHINE_[[M=ARM64]], Characteristics: [] }
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE ]
+    SectionData:     '00'
+    Relocations:
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN32 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN_WORDS18 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_USPAN8_W }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_USPAN16_W }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MOVW_UABS_G0 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MOVW_UABS_G0_NC }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MOVW_UABS_G1 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LOGIMM }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_HIGH12A }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_LOW12A }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_LOW12L }
+symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]

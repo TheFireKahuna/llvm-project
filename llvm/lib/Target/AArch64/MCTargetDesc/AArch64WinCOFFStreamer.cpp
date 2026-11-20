@@ -7,11 +7,14 @@
 //===----------------------------------------------------------------------===//
 
 #include "AArch64WinCOFFStreamer.h"
+#include "AArch64MCTargetDesc.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
 
@@ -28,11 +31,25 @@ public:
                          std::unique_ptr<MCObjectWriter> OW)
       : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {}
 
+  void emitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI) override;
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables() override;
   void emitWindowsUnwindTables(WinEH::FrameInfo *Frame) override;
   void finishImpl() override;
 };
+
+void AArch64WinCOFFStreamer::emitInstruction(const MCInst &Inst,
+                                             const MCSubtargetInfo &STI) {
+  // On Windows Itanium and NT-POSIX the relocation type of a b states whether
+  // the linker may delete it, which it may where no unwind frame covers it.
+  if (Inst.getOpcode() == AArch64::B && !getCurrentWinFrameInfo() &&
+      STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    MCInst Tail(Inst);
+    Tail.setFlags(AArch64::TailBranchFlag);
+    return MCWinCOFFStreamer::emitInstruction(Tail, STI);
+  }
+  MCWinCOFFStreamer::emitInstruction(Inst, STI);
+}
 
 void AArch64WinCOFFStreamer::emitWinEHHandlerData(SMLoc Loc) {
   MCStreamer::emitWinEHHandlerData(Loc);

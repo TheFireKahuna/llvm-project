@@ -378,8 +378,9 @@ const RegisterBankInfo *AArch64Subtarget::getRegBankInfo() const {
 
 unsigned AArch64Subtarget::getNumAbsoluteSymbolMOVs(const GlobalValue *GV,
                                                     int64_t Offset) const {
-  // Only ELF has relocations that write an absolute value into MOVZ and MOVK.
-  if (!isTargetELF())
+  // Only ELF, and COFF on Windows Itanium and NT-POSIX, have relocations that
+  // write an absolute value into MOVZ and MOVK.
+  if (!isTargetELF() && !TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment())
     return 0;
   std::optional<ConstantRange> CR = GV->getAbsoluteSymbolRange();
   if (!CR)

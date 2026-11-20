@@ -4,10 +4,31 @@
 # RUN: llvm-objdump -d %t.exe | FileCheck %s
 # RUN: yaml2obj --docnum=2 %s -o %t2.obj
 # RUN: not lld-link /out:%t2.exe /entry:main %t2.obj 2>&1 | FileCheck --check-prefix=INDEX %s
+# RUN: yaml2obj --docnum=3 %s -o %t3.obj
+# RUN: lld-link /out:%t3.exe /entry:main %t3.obj
+# RUN: llvm-objdump -s -j .text %t3.exe | FileCheck --check-prefix=SPAN %s
+# RUN: yaml2obj --docnum=4 %s -o %t4.obj
+# RUN: not lld-link /out:%t4.exe /entry:main %t4.obj 2>&1 | FileCheck --check-prefix=FIT %s
 
 # WARN: warning: {{.*}}.obj: ADDR32 relocation against foo is out of range
 # INDEX: error: {{.*}}2.obj: relocation in .text has invalid symbol index 4294967295
 # INDEX: error: {{.*}}2.obj: weak external weak has invalid symbol index 305419896
+
+## USPAN8 and USPAN16 overwrite with A - B, and SSPAN_EPILOGV2 writes it into
+## the split field of an unwind epilogue offset.
+# SPAN: 1000 80800000 23100000
+
+# FIT:      error: {{.*}}4.obj: IMAGE_REL_LLVM_JUMP8 relocation against foo is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_SSPAN_ULEB relocation against p1 with a PAIR against p0 is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_SSPAN_ULEB relocation against p0 with a PAIR against p1 is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_SSPAN_SLEB relocation against p1 with a PAIR against p0 is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_SSPAN_EPILOGV2 relocation against r with a PAIR against p0 is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_SSPAN8 relocation against p1 with a PAIR against p0 is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_USPAN8 relocation against p0 with a PAIR against p1 is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_SSPAN16 relocation against h with a PAIR against p0 is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_USPAN16 relocation against r with a PAIR against p0 is out of range
+# FIT-NEXT: error: {{.*}}4.obj: IMAGE_REL_LLVM_SSPAN_ULEB relocation against p1 with a PAIR against p0 is out of range
+# FIT-NOT:  error:
 
 # CHECK: .text:
 # CHECK: 1000: a1 03 20 00 40 00 00 00 00
@@ -132,4 +153,69 @@ symbols:
       StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
   - { Name: weak, Value: 0, SectionNumber: 0, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL,
       StorageClass: IMAGE_SYM_CLASS_WEAK_EXTERNAL, WeakExternal: { TagIndex: 305419896, Characteristics: IMAGE_WEAK_EXTERN_SEARCH_ALIAS } }
+...
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4096
+    SectionData:     '0000000000000000'
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: p1, Type: IMAGE_REL_LLVM_USPAN8 }
+      - { VirtualAddress: 0, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 1, SymbolName: p1, Type: IMAGE_REL_LLVM_USPAN16 }
+      - { VirtualAddress: 1, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 4, SymbolName: q, Type: IMAGE_REL_LLVM_SSPAN_EPILOGV2 }
+      - { VirtualAddress: 4, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+symbols:
+  - { Name: main, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: p0, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: p1, Value: 128, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: q, Value: 291, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+...
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4096
+    SectionData:     00000000008080000000060000000000000000000080
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: foo, Type: IMAGE_REL_LLVM_JUMP8 }
+      - { VirtualAddress: 4, SymbolName: p1, Type: IMAGE_REL_LLVM_SSPAN_ULEB }
+      - { VirtualAddress: 4, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 5, SymbolName: p0, Type: IMAGE_REL_LLVM_SSPAN_ULEB }
+      - { VirtualAddress: 5, SymbolName: p1, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 8, SymbolName: p1, Type: IMAGE_REL_LLVM_SSPAN_SLEB }
+      - { VirtualAddress: 8, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 9, SymbolName: r, Type: IMAGE_REL_LLVM_SSPAN_EPILOGV2 }
+      - { VirtualAddress: 9, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 11, SymbolName: p1, Type: IMAGE_REL_LLVM_SSPAN8 }
+      - { VirtualAddress: 11, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 12, SymbolName: p0, Type: IMAGE_REL_LLVM_USPAN8 }
+      - { VirtualAddress: 12, SymbolName: p1, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 13, SymbolName: h, Type: IMAGE_REL_LLVM_SSPAN16 }
+      - { VirtualAddress: 13, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 15, SymbolName: r, Type: IMAGE_REL_LLVM_USPAN16 }
+      - { VirtualAddress: 15, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 21, SymbolName: p1, Type: IMAGE_REL_LLVM_SSPAN_ULEB }
+      - { VirtualAddress: 21, SymbolName: p0, Type: IMAGE_REL_AMD64_PAIR }
+  - Name:            .zzz
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       4096
+    SectionData:     0000000000000000
+symbols:
+  - { Name: main, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: foo, Value: 3, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: p0, Value: 0, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: p1, Value: 128, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: r, Value: 65827, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: h, Value: 32768, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
 ...

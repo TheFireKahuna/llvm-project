@@ -1336,10 +1336,15 @@ template <typename T>
 void AArch64InstPrinter::printLogicalImm(const MCInst *MI, unsigned OpNum,
                                          const MCSubtargetInfo &STI,
                                          raw_ostream &O) {
-  uint64_t Val = MI->getOperand(OpNum).getImm();
+  const MCOperand &MO = MI->getOperand(OpNum);
   WithMarkup M = markup(O, Markup::Immediate);
+  if (MO.isExpr()) {
+    O << '#';
+    MAI.printExpr(O, *MO.getExpr());
+    return;
+  }
   O << "#0x";
-  O.write_hex(AArch64_AM::decodeLogicalImmediate(Val, 8 * sizeof(T)));
+  O.write_hex(AArch64_AM::decodeLogicalImmediate(MO.getImm(), 8 * sizeof(T)));
 }
 
 void AArch64InstPrinter::printShifter(const MCInst *MI, unsigned OpNum,

@@ -6,12 +6,15 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "X86BaseInfo.h"
 #include "X86MCTargetDesc.h"
 #include "X86TargetStreamer.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCObjectWriter.h"
+#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
 
@@ -36,6 +39,31 @@ public:
 
 void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
                                          const MCSubtargetInfo &STI) {
+  // On Windows Itanium and NT-POSIX the relocation type of a jmp states what
+  // the linker may do to it, which the unwind data covering it decides. A jmp
+  // outside a frame may be deleted. Version 2 unwind data states the size of
+  // an epilogue with the jmp at its end, so that jmp has 32 bits for good.
+  if (Inst.getOpcode() == X86::JMP_1 && STI.hasFeature(X86::Is64Bit) &&
+      STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    const WinEH::FrameInfo *Frame = getCurrentWinFrameInfo();
+    auto AtEpilogEnd = [&] {
+      if (isInEpilogCFI())
+        return true;
+      if (Frame->EpilogMap.empty())
+        return false;
+      const MCSymbol *End = Frame->EpilogMap.back().second.End;
+      return End->getFragment() == getCurrentFragment() &&
+             End->getOffset() == getCurFragSize();
+    };
+    if (!Frame || (Frame->Version == 2 && AtEpilogEnd())) {
+      MCInst Jump(Inst);
+      if (Frame)
+        Jump.setOpcode(X86::JMP_4);
+      else
+        Jump.setFlags(Inst.getFlags() | X86::IP_TAIL_JUMP);
+      return X86_MC::emitInstruction(*this, Jump, STI);
+    }
+  }
   X86_MC::emitInstruction(*this, Inst, STI);
 }
 

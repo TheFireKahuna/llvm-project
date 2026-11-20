@@ -17,9 +17,11 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Object/COFF.h"
+#include "llvm/Support/AArch64LogicalImmediate.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/EndianStream.h"
+#include "llvm/Support/LEB128.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <iterator>
@@ -122,7 +124,8 @@ static void applySecIdx(uint8_t *off, OutputSection *os,
     add16(off, numOutputSections + 1);
 }
 
-void SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
+// Returns false if the value does not fit the relocation's field.
+bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
                                uint64_t s, uint64_t p,
                                uint64_t imageBase) const {
   switch (type) {
@@ -132,7 +135,19 @@ void SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_AMD64_ADDR64:
     add64(off, s + imageBase);
     break;
+  case IMAGE_REL_LLVM_ADDR32NB_CALL:
   case IMAGE_REL_AMD64_ADDR32NB: add32(off, s); break;
+  case IMAGE_REL_LLVM_REL32_CALL:
+  case IMAGE_REL_LLVM_BRANCH_TAIL:
+  case IMAGE_REL_LLVM_BRANCH32:
+  case IMAGE_REL_LLVM_JUMP32:
+  case IMAGE_REL_LLVM_MEM_CALL:
+  case IMAGE_REL_LLVM_MEM_JUMP:
+  case IMAGE_REL_LLVM_MEM_JUMP_P1:
+  case IMAGE_REL_LLVM_MEM_LOAD:
+  case IMAGE_REL_LLVM_MEM_LOAD_REX2:
+  case IMAGE_REL_LLVM_LEA:
+  case IMAGE_REL_LLVM_LEA_OFFSET:
   case IMAGE_REL_AMD64_REL32:    add32(off, s - p - 4); break;
   case IMAGE_REL_AMD64_REL32_1:  add32(off, s - p - 5); break;
   case IMAGE_REL_AMD64_REL32_2:  add32(off, s - p - 6); break;
@@ -143,13 +158,33 @@ void SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
     applySecIdx(off, os, file->symtab.ctx.outputSections.size());
     break;
   case IMAGE_REL_AMD64_SECREL:   applySecRel(this, off, os, s); break;
+  case IMAGE_REL_LLVM_JUMP8: {
+    int64_t v = s + int8_t(*off) - p - 1;
+    if (!isInt<8>(v))
+      return false;
+    *off = v;
+    break;
+  }
+  // A fused read's field holds how its load is disposed of, not an addend.
+  case IMAGE_REL_LLVM_FUSED_READ:
+  case IMAGE_REL_LLVM_FUSED_READ_REX2:
+    write32le(off, s - p - 4);
+    break;
+  // No image has a link-time thread-local place.
+  case IMAGE_REL_LLVM_TPOFF32:
+    return false;
   case IMAGE_REL_AMD64_SREL32:
   case IMAGE_REL_AMD64_EHANDLER:
+  case IMAGE_REL_LLVM_FUSED_CALL:
+  case IMAGE_REL_LLVM_FUSED_JUMP:
+  case IMAGE_REL_LLVM_FUSED_ACCESS:
+  case IMAGE_REL_LLVM_FUSED_INDEX:
     break;
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
           toString(file));
   }
+  return true;
 }
 
 void SectionChunk::applyRelX86(uint8_t *off, uint16_t type, OutputSection *os,
@@ -344,20 +379,24 @@ static void applyArm64Branch14(uint8_t *off, int64_t v) {
   or32(off, (v & 0x0000FFFC) << 3);
 }
 
-void SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
+// Returns false if the value does not fit the relocation's field.
+bool SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
                                  uint64_t s, uint64_t p,
                                  uint64_t imageBase) const {
   switch (type) {
   case IMAGE_REL_ARM64_PAGEBASE_REL21: applyArm64Addr(off, s, p, 12); break;
   case IMAGE_REL_ARM64_REL21:          applyArm64Addr(off, s, p, 0); break;
   case IMAGE_REL_ARM64_PAGEOFFSET_12A: applyArm64Imm(off, s & 0xfff, 0); break;
+  case IMAGE_REL_LLVM_FUSED_READ:
   case IMAGE_REL_ARM64_PAGEOFFSET_12L: applyArm64Ldr(off, s & 0xfff); break;
+  case IMAGE_REL_LLVM_BRANCH_TAIL:
   case IMAGE_REL_ARM64_BRANCH26:       applyArm64Branch26(off, s - p); break;
   case IMAGE_REL_ARM64_BRANCH19:       applyArm64Branch19(off, s - p); break;
   case IMAGE_REL_ARM64_BRANCH14:       applyArm64Branch14(off, s - p); break;
   case IMAGE_REL_ARM64_ADDR32:
     add32(off, s + imageBase);
     break;
+  case IMAGE_REL_LLVM_ADDR32NB_CALL:
   case IMAGE_REL_ARM64_ADDR32NB:       add32(off, s); break;
   case IMAGE_REL_ARM64_ADDR64:
     add64(off, s + imageBase);
@@ -369,11 +408,45 @@ void SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_ARM64_SECTION:
     applySecIdx(off, os, file->symtab.ctx.outputSections.size());
     break;
+  case IMAGE_REL_LLVM_REL32_CALL:
   case IMAGE_REL_ARM64_REL32:          add32(off, s - p - 4); break;
+  // The low or the second 16 bits of an absolute value in a MOVZ or MOVK.
+  case IMAGE_REL_LLVM_MOVW_UABS_G0:
+  case IMAGE_REL_LLVM_MOVW_UABS_G0_NC:
+  case IMAGE_REL_LLVM_MOVW_UABS_G1: {
+    uint32_t insn = read32le(off);
+    uint64_t v = s + imageBase + ((insn >> 5) & 0xffff);
+    unsigned shift = type == IMAGE_REL_LLVM_MOVW_UABS_G1 ? 16 : 0;
+    if (type != IMAGE_REL_LLVM_MOVW_UABS_G0_NC && v >> (shift + 16))
+      return false;
+    write32le(off, (insn & ~(0xffff << 5)) | ((v >> shift) & 0xffff) << 5);
+    break;
+  }
+  // An absolute value as the bitmask immediate of AND, ANDS or TST.
+  case IMAGE_REL_LLVM_LOGIMM: {
+    uint32_t insn = read32le(off);
+    uint64_t imm;
+    if (!AArch64_AM::processLogicalImmediate(s + imageBase,
+                                             insn >> 31 ? 64 : 32, imm))
+      return false;
+    write32le(off, (insn & ~(0x1fff << 10)) | imm << 10);
+    break;
+  }
+  // No image has a link-time thread-local place.
+  case IMAGE_REL_LLVM_TPOFF_HIGH12A:
+  case IMAGE_REL_LLVM_TPOFF_LOW12A:
+  case IMAGE_REL_LLVM_TPOFF_LOW12L:
+    return false;
+  case IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL:
+  case IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL:
+  case IMAGE_REL_LLVM_FUSED_CALL:
+  case IMAGE_REL_LLVM_FUSED_JUMP:
+    break;
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
           toString(file));
   }
+  return true;
 }
 
 static void applyMipsBranch(uint8_t *off, int64_t v) {
@@ -487,21 +560,41 @@ bool SectionChunk::isPair(uint16_t type) const {
 }
 
 // Returns the PAIR naming the second operand B of rel, whose value is then
-// A - B: x86-64 SSPAN32 and its PAIR at the same offset, or an ARM64 page
-// offset followed by a PAIR.
+// A - B: a span and its PAIR at the same offset, or an ARM64 page offset
+// followed by a PAIR.
 const coff_relocation *SectionChunk::getPair(const coff_relocation &rel) const {
   const coff_relocation *next = &rel + 1;
   if (next == relocsData + relocsSize || !isPair(next->Type))
     return nullptr;
-  if (next->Type == IMAGE_REL_AMD64_PAIR)
-    return rel.Type == IMAGE_REL_AMD64_SSPAN32 &&
-                   rel.VirtualAddress == next->VirtualAddress
-               ? next
-               : nullptr;
-  return rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12A ||
-                 rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L
-             ? next
-             : nullptr;
+  bool x64 = next->Type == IMAGE_REL_AMD64_PAIR;
+  switch (rel.Type) {
+  case IMAGE_REL_ARM64_PAGEOFFSET_12A:
+  case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+    return x64 ? nullptr : next;
+  case IMAGE_REL_AMD64_SSPAN32:
+  case IMAGE_REL_LLVM_SSPAN_EPILOGV2:
+    if (!x64)
+      return nullptr;
+    break;
+  case IMAGE_REL_LLVM_SSPAN32:
+  case IMAGE_REL_LLVM_SSPAN_WORDS18:
+  case IMAGE_REL_LLVM_USPAN8_W:
+  case IMAGE_REL_LLVM_USPAN16_W:
+    if (x64)
+      return nullptr;
+    break;
+  case IMAGE_REL_LLVM_SSPAN8:
+  case IMAGE_REL_LLVM_SSPAN16:
+  case IMAGE_REL_LLVM_SSPAN64:
+  case IMAGE_REL_LLVM_USPAN8:
+  case IMAGE_REL_LLVM_USPAN16:
+  case IMAGE_REL_LLVM_SSPAN_ULEB:
+  case IMAGE_REL_LLVM_SSPAN_SLEB:
+    break;
+  default:
+    return nullptr;
+  }
+  return rel.VirtualAddress == next->VirtualAddress ? next : nullptr;
 }
 
 Symbol *SectionChunk::getRelocTarget(const coff_relocation &rel) const {
@@ -513,7 +606,8 @@ Symbol *SectionChunk::getRelocTarget(const coff_relocation &rel) const {
 // Returns whether a relocation of the given type at off in sc, naming a
 // function override, takes the stub rather than the body: debug info and
 // unwind data describe the body, an ARM64 BRANCH26 is a site, which branches
-// to the default body as linked, and an addend points into the body.
+// to the default body as linked, and an addend points into the body. A fused
+// read's field on x86-64 holds no addend, and a JUMP8's is one byte.
 static bool referencesStub(const SectionChunk *sc, uint16_t type,
                            const uint8_t *off) {
   StringRef name = sc->getSectionName();
@@ -521,10 +615,14 @@ static bool referencesStub(const SectionChunk *sc, uint16_t type,
       name.starts_with(".xdata"))
     return false;
   if (sc->getArch() != Triple::aarch64)
-    return (type == IMAGE_REL_AMD64_ADDR64 ? read64le(off) : read32le(off)) ==
-           0;
+    return type == IMAGE_REL_LLVM_FUSED_READ ||
+           type == IMAGE_REL_LLVM_FUSED_READ_REX2 ||
+           (type == IMAGE_REL_AMD64_ADDR64 ? read64le(off)
+            : type == IMAGE_REL_LLVM_JUMP8 ? *off
+                                           : read32le(off)) == 0;
   switch (type) {
   case IMAGE_REL_ARM64_BRANCH26:
+  case IMAGE_REL_LLVM_BRANCH_TAIL:
     return false;
   case IMAGE_REL_ARM64_ADDR64:
     return read64le(off) == 0;
@@ -533,6 +631,7 @@ static bool referencesStub(const SectionChunk *sc, uint16_t type,
     return (read32le(off) & 0x60ffffe0) == 0;
   case IMAGE_REL_ARM64_PAGEOFFSET_12A:
   case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+  case IMAGE_REL_LLVM_FUSED_READ:
     return (read32le(off) & 0x3ffc00) == 0;
   case IMAGE_REL_ARM64_BRANCH19:
     return (read32le(off) & 0xffffe0) == 0;
@@ -601,12 +700,81 @@ void SectionChunk::applyRelocation(uint8_t *off,
   Chunk *c = sym->getChunk();
   OutputSection *os = c ? ctx.getOutputSection(c) : nullptr;
 
-  // A pair's value is A - B: it overwrites an x86-64 field, and is added to an
-  // ARM64 page offset's immediate, a byte offset that must stay in the page.
+  // A pair's value is A - B. It overwrites a span's field, which must hold it,
+  // a LEB128 keeping its assembled length, and is added to an ARM64 page
+  // offset's immediate, a byte offset that must stay in the page.
   if (pair) {
     int64_t v = s - b->getRVA();
-    if (rel.Type == IMAGE_REL_AMD64_SSPAN32) {
+    auto check = [&](bool fits, bool aligned = true) {
+      if (!fits || !aligned)
+        Err(ctx) << file << ": "
+                 << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+                 << " relocation against " << toString(ctx, *sym)
+                 << " with a PAIR against " << toString(ctx, *b)
+                 << (fits ? " is misaligned" : " is out of range");
+      return fits && aligned;
+    };
+    switch (rel.Type) {
+    case IMAGE_REL_AMD64_SSPAN32:
       write32le(off, v);
+      return;
+    case IMAGE_REL_LLVM_SSPAN8:
+      if (check(isInt<8>(v)))
+        *off = v;
+      return;
+    case IMAGE_REL_LLVM_USPAN8:
+      if (check(isUInt<8>(v)))
+        *off = v;
+      return;
+    case IMAGE_REL_LLVM_SSPAN16:
+      if (check(isInt<16>(v)))
+        write16le(off, v);
+      return;
+    case IMAGE_REL_LLVM_USPAN16:
+      if (check(isUInt<16>(v)))
+        write16le(off, v);
+      return;
+    case IMAGE_REL_LLVM_SSPAN32:
+      if (check(isInt<32>(v)))
+        write32le(off, v);
+      return;
+    // The word-scaled spans count instructions.
+    case IMAGE_REL_LLVM_USPAN8_W:
+      if (check(isUInt<10>(v), !(v & 3)))
+        *off = v >> 2;
+      return;
+    case IMAGE_REL_LLVM_USPAN16_W:
+      if (check(isUInt<18>(v), !(v & 3)))
+        write16le(off, v >> 2);
+      return;
+    case IMAGE_REL_LLVM_SSPAN_WORDS18:
+      if (check(isUInt<20>(v), !(v & 3)))
+        write32le(off, (read32le(off) & ~0x3ffff) | v >> 2);
+      return;
+    case IMAGE_REL_LLVM_SSPAN64:
+      write64le(off, v);
+      return;
+    case IMAGE_REL_LLVM_SSPAN_ULEB:
+    case IMAGE_REL_LLVM_SSPAN_SLEB: {
+      ArrayRef<uint8_t> field = getContents().drop_front(rel.VirtualAddress);
+      const uint8_t *last =
+          llvm::find_if(field, [](uint8_t c) { return !(c & 0x80); });
+      unsigned size = last - field.begin() + 1;
+      if (rel.Type == IMAGE_REL_LLVM_SSPAN_ULEB) {
+        if (check(last != field.end() && v >= 0 && isUIntN(7 * size, v)))
+          encodeULEB128(v, off, size);
+      } else if (check(last != field.end() && isIntN(7 * size, v))) {
+        encodeSLEB128(v, off, size);
+      }
+      return;
+    }
+    // The offset's low byte is the unwind code's first byte, and its high
+    // four bits are the top of the second.
+    case IMAGE_REL_LLVM_SSPAN_EPILOGV2:
+      if (check(isUInt<12>(v))) {
+        off[0] = v;
+        off[1] = (off[1] & 0xf) | (v >> 8) << 4;
+      }
       return;
     }
     uint32_t insn = read32le(off);
@@ -618,25 +786,29 @@ void SectionChunk::applyRelocation(uint8_t *off,
     } else {
       v += imm;
     }
-    if (v & ((1 << scale) - 1) || !isUInt<12>(v))
-      Err(ctx) << file << ": "
-               << file->getCOFFObj()->getRelocationTypeName(rel.Type)
-               << " relocation against " << toString(ctx, *sym)
-               << " with a PAIR against " << toString(ctx, *b)
-               << (isUInt<12>(v) ? " is misaligned" : " is out of range");
-    else
+    if (check(isUInt<12>(v), !(v & ((1 << scale) - 1))))
       write32le(off, (insn & ~(0xfff << 10)) | (v >> scale) << 10);
     return;
   }
 
-  // ARM64's PC-relative page addresses cannot reach an absolute value, and an
-  // x86-64 32-bit address is sign-extended where it is used.
+  // ARM64's PC-relative page addresses cannot reach an absolute value, its
+  // immediate forms hold nothing else, and an x86-64 32-bit address is
+  // sign-extended where it is used.
   uint64_t imageBase = ctx.config.imageBase;
   if (isa<DefinedAbsolute>(sym) && getArch() == Triple::aarch64 &&
       (rel.Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
        rel.Type == IMAGE_REL_ARM64_REL21)) {
     Err(ctx) << file << ": PC-relative relocation against absolute symbol "
              << toString(ctx, *sym);
+    return;
+  }
+  if (!isa<DefinedAbsolute>(sym) && getArch() == Triple::aarch64 &&
+      rel.Type >= IMAGE_REL_LLVM_MOVW_UABS_G0 &&
+      rel.Type <= IMAGE_REL_LLVM_LOGIMM) {
+    Err(ctx) << file << ": "
+             << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+             << " relocation against " << toString(ctx, *sym)
+             << ", which is not an absolute symbol";
     return;
   }
   if (getArch() == Triple::x86_64 && rel.Type == IMAGE_REL_AMD64_ADDR32 &&
@@ -646,9 +818,10 @@ void SectionChunk::applyRelocation(uint8_t *off,
 
   // Compute the RVA of the relocation for relative relocations.
   uint64_t p = rva + rel.VirtualAddress;
+  bool fits = true;
   switch (getArch()) {
   case Triple::x86_64:
-    applyRelX64(off, rel.Type, os, s, p, imageBase);
+    fits = applyRelX64(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::x86:
     applyRelX86(off, rel.Type, os, s, p, imageBase);
@@ -657,7 +830,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
     applyRelARM(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::aarch64:
-    applyRelARM64(off, type, os, s, p, imageBase);
+    fits = applyRelARM64(off, type, os, s, p, imageBase);
     break;
   case Triple::mipsel:
     applyRelMIPS(off, rel.Type, os, s, p, imageBase);
@@ -665,6 +838,15 @@ void SectionChunk::applyRelocation(uint8_t *off,
   default:
     llvm_unreachable("unknown machine type");
   }
+  if (!fits)
+    Err(ctx) << file << ": "
+             << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+             << " relocation against " << toString(ctx, *sym)
+             << (rel.Type == IMAGE_REL_LLVM_LOGIMM
+                     ? " is not a bitmask immediate"
+                 : rel.Type >= IMAGE_REL_LLVM_TPOFF32
+                     ? " needs an image whose thread-local place the link knows"
+                     : " is out of range");
 }
 
 // Defend against unsorted relocations. This may be overly conservative.

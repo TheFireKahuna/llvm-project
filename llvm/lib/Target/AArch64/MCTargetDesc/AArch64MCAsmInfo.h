@@ -96,6 +96,7 @@ enum {
   S_G2           = 0x060,
   S_G3           = 0x070,
   S_LO15         = 0x080,
+  S_LOGIMM       = 0x090,
   S_AddressFragBits = 0x0f0,
 
   // Whether the final relocation is a checked one (where a linker should
@@ -122,6 +123,7 @@ enum {
   S_ABS_G0            = S_ABS          | S_G0,
   S_ABS_G0_S          = S_SABS         | S_G0,
   S_ABS_G0_NC         = S_ABS          | S_G0      | S_NC,
+  S_ABS_LOGIMM        = S_ABS          | S_LOGIMM,
   S_LO12              = S_ABS          | S_PAGEOFF | S_NC,
   S_PREL_G3           = S_PREL         | S_G3,
   S_PREL_G2           = S_PREL         | S_G2,

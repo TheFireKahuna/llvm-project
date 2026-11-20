@@ -475,7 +475,8 @@ static bool hasSecRelSymbolRef(const MCExpr *Expr) {
   return false;
 }
 
-static bool isPCRel32Branch(const MCInst &MI, const MCInstrInfo &MCII) {
+static bool isPCRel32Branch(const MCInst &MI, const MCInstrInfo &MCII,
+                            const Triple &TT) {
   unsigned Opcode = MI.getOpcode();
   const MCInstrDesc &Desc = MCII.get(Opcode);
   if ((Opcode != X86::CALL64pcrel32 && Opcode != X86::JMP_4 &&
@@ -488,6 +489,10 @@ static bool isPCRel32Branch(const MCInst &MI, const MCInstrInfo &MCII) {
   const MCOperand &Op = MI.getOperand(CurOp);
   if (!Op.isExpr())
     return false;
+  // On Windows Itanium and NT-POSIX the relocation type of every direct branch
+  // states that it is one.
+  if (TT.isWindowsItaniumOrNTPOSIXEnvironment())
+    return true;
 
   auto *Ref = dyn_cast<MCSymbolRefExpr>(Op.getExpr());
   return Ref && Ref->getSpecifier() == X86::S_None;
@@ -606,6 +611,43 @@ void X86MCCodeEmitter::emitMemModRMByte(
 
     unsigned Opcode = MI.getOpcode();
     unsigned FixupKind = [&]() {
+      // On Windows Itanium and NT-POSIX the relocation type states the form of
+      // a call, jump, load or lea that refers to a symbol through RIP with no
+      // segment register. NumPrefixes is the bytes before a one-byte opcode
+      // and this ModRM byte; a call's prefixes are not part of its form.
+      if (STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+        if (BaseReg != X86::RIP || !Disp.isExpr() ||
+            MI.getOperand(Op + X86::AddrSegmentReg).getReg())
+          return X86::reloc_riprel_4byte;
+        bool HasOffset = !isa<MCSymbolRefExpr>(Disp.getExpr());
+        unsigned NumPrefixes = CB.size() - StartByte - 2;
+        switch (Opcode) {
+        case X86::LEA16r:
+        case X86::LEA64_32r:
+        case X86::LEA64r:
+          return X86::reloc_riprel_4byte_lea;
+        case X86::MOV64rm:
+          if (!HasOffset)
+            return Kind == REX2 ? X86::reloc_riprel_4byte_movq_load_rex2
+                                : X86::reloc_riprel_4byte_movq_load;
+          break;
+        case X86::CALL64m:
+        case X86::CALL64m_NT:
+          if (!HasOffset)
+            return X86::reloc_riprel_4byte_call;
+          break;
+        case X86::JMP64m:
+        case X86::JMP64m_REX:
+        case X86::JMP64m_NT:
+          if (!HasOffset && NumPrefixes == 0)
+            return X86::reloc_riprel_4byte_jump;
+          if (!HasOffset && NumPrefixes == 1)
+            return X86::reloc_riprel_4byte_jump_p1;
+          break;
+        }
+        return X86::reloc_riprel_4byte;
+      }
+
       // Enable relaxed relocation only for a MCSymbolRefExpr.  We cannot use a
       // relaxed relocation if an offset is present (e.g. x@GOTPCREL+4).
       if (!(Disp.isExpr() && isa<MCSymbolRefExpr>(Disp.getExpr())))
@@ -1585,12 +1627,16 @@ void X86MCCodeEmitter::encodeInstruction(const MCInst &MI,
   case X86II::RawFrm:
     emitByte(BaseOpcode + OpcodeOffset, CB);
 
-    if (!STI.hasFeature(X86::Is64Bit) || !isPCRel32Branch(MI, MCII))
+    if (!STI.hasFeature(X86::Is64Bit) ||
+        !isPCRel32Branch(MI, MCII, STI.getTargetTriple()))
       break;
 
     const MCOperand &Op = MI.getOperand(CurOp++);
-    emitImmediate(Op, MI.getLoc(), X86::reloc_branch_4byte_pcrel, true,
-                  StartByte, CB, Fixups);
+    emitImmediate(Op, MI.getLoc(),
+                  MI.getFlags() & X86::IP_TAIL_JUMP
+                      ? X86::reloc_tail_4byte_pcrel
+                      : X86::reloc_branch_4byte_pcrel,
+                  true, StartByte, CB, Fixups);
     break;
   }
   case X86II::RawFrmMemOffs:

@@ -78,6 +78,9 @@ enum OperandType {
   OPERAND_IMM_UINT5,
   OPERAND_IMM_UINT8,
 };
+
+// MCInst flag: a b that no Windows unwind frame covers.
+enum : unsigned { TailBranchFlag = 1 };
 } // namespace AArch64
 
 } // namespace llvm

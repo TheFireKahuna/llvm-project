@@ -220,6 +220,11 @@ Error DumpOutputStyle::dump() {
       return EC;
   }
 
+  if (opts::dump::DumpFixups) {
+    if (auto EC = dumpFixups())
+      return EC;
+  }
+
   if (opts::dump::DumpSectionContribs) {
     if (auto EC = dumpSectionContribs())
       return EC;
@@ -1825,6 +1830,46 @@ void DumpOutputStyle::dumpSectionHeaders(StringRef Label, DbgHeaderType Type) {
                             P.getIndentLevel(), Header.Characteristics, 1, ""));
     ++I;
   }
+}
+
+Error DumpOutputStyle::dumpFixups() {
+  printHeader(P, "Fixups");
+
+  if (File.isObj()) {
+    printStreamNotValidForObj();
+    return Error::success();
+  }
+
+  PDBFile &File = getPdb();
+  if (!File.hasPDBDbiStream()) {
+    printStreamNotPresent("DBI");
+    return Error::success();
+  }
+
+  ExitOnError Err("Error dumping fixups: ");
+  uint32_t SI =
+      Err(File.getPDBDbiStream()).getDebugStreamIndex(DbgHeaderType::Fixup);
+  if (SI == kInvalidStreamIndex) {
+    printStreamNotPresent("Fixup");
+    return Error::success();
+  }
+
+  // A record is a relocation's type, flags for the kind of its target, and
+  // the addresses of its site and its target.
+  auto Stream = File.createIndexedStream(SI);
+  BinaryStreamReader Reader(*Stream);
+  P.printLine("Type | Flags |      RVA |   Target");
+  while (Reader.bytesRemaining() >= 12) {
+    uint16_t Type, Flags;
+    uint32_t RVA, Target;
+    Err(Reader.readInteger(Type));
+    Err(Reader.readInteger(Flags));
+    Err(Reader.readInteger(RVA));
+    Err(Reader.readInteger(Target));
+    P.formatLine("{0:X-4} | {1:X-4}  | {2:X-8} | {3:X-8}", Type, Flags, RVA,
+                 Target);
+  }
+  return Error::success();
 }
 
 Error DumpOutputStyle::dumpSectionContribs() {

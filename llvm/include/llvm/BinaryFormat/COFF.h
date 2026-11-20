@@ -438,9 +438,62 @@ enum RelocationTypesMips : unsigned {
   IMAGE_REL_MIPS_PAIR = 0x0025,
 };
 
+/// Relocation types of AMD64 and ARM64 objects that only LLD applies. A number
+/// has one meaning on both machines, and a type is named on the machines that
+/// have it.
+enum RelocationTypesLLVM : unsigned {
+  IMAGE_REL_LLVM_ADDR32NB_CALL = 0x8000,
+  IMAGE_REL_LLVM_REL32_CALL = 0x8001,
+  IMAGE_REL_LLVM_BRANCH_TAIL = 0x8002,
+  IMAGE_REL_LLVM_ALIGN = 0x8003,
+  IMAGE_REL_LLVM_SSPAN_EPILOGV2 = 0x8004, // AMD64
+  IMAGE_REL_LLVM_SSPAN8 = 0x8010,
+  IMAGE_REL_LLVM_SSPAN16 = 0x8011,
+  IMAGE_REL_LLVM_SSPAN32 = 0x8012, // ARM64
+  IMAGE_REL_LLVM_SSPAN64 = 0x8013,
+  IMAGE_REL_LLVM_SSPAN_ULEB = 0x8014,
+  IMAGE_REL_LLVM_SSPAN_SLEB = 0x8015,
+  IMAGE_REL_LLVM_SSPAN_WORDS18 = 0x8016, // ARM64
+  IMAGE_REL_LLVM_USPAN8 = 0x8017,
+  IMAGE_REL_LLVM_USPAN16 = 0x8018,
+  IMAGE_REL_LLVM_USPAN8_W = 0x8019,                // ARM64
+  IMAGE_REL_LLVM_USPAN16_W = 0x801A,               // ARM64
+  IMAGE_REL_LLVM_BRANCH32 = 0x8020,                // AMD64
+  IMAGE_REL_LLVM_JUMP32 = 0x8021,                  // AMD64
+  IMAGE_REL_LLVM_JUMP8 = 0x8022,                   // AMD64
+  IMAGE_REL_LLVM_MEM_CALL = 0x8023,                // AMD64
+  IMAGE_REL_LLVM_MEM_JUMP = 0x8024,                // AMD64
+  IMAGE_REL_LLVM_MEM_JUMP_P1 = 0x8025,             // AMD64
+  IMAGE_REL_LLVM_MEM_LOAD = 0x8026,                // AMD64
+  IMAGE_REL_LLVM_MEM_LOAD_REX2 = 0x8027,           // AMD64
+  IMAGE_REL_LLVM_LEA = 0x8028,                     // AMD64
+  IMAGE_REL_LLVM_LEA_OFFSET = 0x8029,              // AMD64
+  IMAGE_REL_LLVM_MOVW_UABS_G0 = 0x8030,            // ARM64
+  IMAGE_REL_LLVM_MOVW_UABS_G0_NC = 0x8031,         // ARM64
+  IMAGE_REL_LLVM_MOVW_UABS_G1 = 0x8032,            // ARM64
+  IMAGE_REL_LLVM_LOGIMM = 0x8033,                  // ARM64
+  IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL = 0x8034, // ARM64
+  IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL = 0x8035, // ARM64
+  IMAGE_REL_LLVM_FUSED_CALL = 0x8040,
+  IMAGE_REL_LLVM_FUSED_JUMP = 0x8041,
+  IMAGE_REL_LLVM_FUSED_READ = 0x8042,
+  IMAGE_REL_LLVM_FUSED_READ_REX2 = 0x8043, // AMD64
+  IMAGE_REL_LLVM_FUSED_ACCESS = 0x8044,    // AMD64
+  IMAGE_REL_LLVM_FUSED_INDEX = 0x8045,     // AMD64
+  IMAGE_REL_LLVM_TPOFF32 = 0x8050,         // AMD64
+  IMAGE_REL_LLVM_TPOFF_HIGH12A = 0x8051,   // ARM64
+  IMAGE_REL_LLVM_TPOFF_LOW12A = 0x8052,    // ARM64
+  IMAGE_REL_LLVM_TPOFF_LOW12L = 0x8053,    // ARM64
+  IMAGE_REL_LLVM_TLS_SCALE = 0x8054,
+};
+
 /// Returns true for a relocation type whose SymbolTableIndex names no symbol
-/// and must not be resolved: ABSOLUTE, type 0 on every machine.
-inline bool relocationNamesNoSymbol(uint16_t Type) { return Type == 0; }
+/// and must not be resolved: ABSOLUTE, type 0 on every machine, ALIGN, whose
+/// index is its parameters, and TLS_SCALE.
+inline bool relocationNamesNoSymbol(uint16_t Type) {
+  return Type == 0 || Type == IMAGE_REL_LLVM_ALIGN ||
+         Type == IMAGE_REL_LLVM_TLS_SCALE;
+}
 
 enum DynamicRelocationType : unsigned {
   IMAGE_DYNAMIC_RELOCATION_GUARD_RF_PROLOGUE = 1,

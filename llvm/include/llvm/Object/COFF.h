@@ -1077,7 +1077,8 @@ public:
 
   /// Returns true if a relocation of \p Type may take the address of the
   /// function it names, as isGuardCFAddressTakingSection counts it. i386's
-  /// REL32 only branches; x86-64's also computes addresses.
+  /// REL32 only branches; x86-64's also computes addresses. An LLVM type
+  /// states whether it does.
   bool isGuardCFAddressTakingRelocation(uint16_t Type) const;
 
 protected:

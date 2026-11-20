@@ -6,6 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "MCTargetDesc/AArch64AddressingModes.h"
 #include "MCTargetDesc/AArch64FixupKinds.h"
 #include "MCTargetDesc/AArch64MCAsmInfo.h"
 #include "MCTargetDesc/AArch64MCTargetDesc.h"
@@ -57,12 +58,14 @@ public:
         {"fixup_aarch64_ldst_imm12_scale16", 10, 12, 0},
         {"fixup_aarch64_ldr_pcrel_imm19", 5, 19, 0},
         {"fixup_aarch64_movw", 5, 16, 0},
+        {"fixup_aarch64_logical_imm", 10, 13, 0},
         {"fixup_aarch64_pcrel_branch9", 5, 9, 0},
         {"fixup_aarch64_pcrel_branch14", 5, 14, 0},
         {"fixup_aarch64_pcrel_branch16", 5, 16, 0},
         {"fixup_aarch64_pcrel_branch19", 5, 19, 0},
         {"fixup_aarch64_pcrel_branch26", 0, 26, 0},
-        {"fixup_aarch64_pcrel_call26", 0, 26, 0}};
+        {"fixup_aarch64_pcrel_call26", 0, 26, 0},
+        {"fixup_aarch64_pcrel_tail26", 0, 26, 0}};
 
     // Fixup kinds from raw relocation types and .reloc directives force
     // relocations and do not need these fields.
@@ -103,6 +106,7 @@ static unsigned getFixupKindNumBytes(unsigned Kind) {
     return 2;
 
   case AArch64::fixup_aarch64_movw:
+  case AArch64::fixup_aarch64_logical_imm:
   case AArch64::fixup_aarch64_pcrel_branch9:
   case AArch64::fixup_aarch64_pcrel_branch14:
   case AArch64::fixup_aarch64_pcrel_branch16:
@@ -120,6 +124,7 @@ static unsigned getFixupKindNumBytes(unsigned Kind) {
   case AArch64::fixup_aarch64_pcrel_adrp_imm21:
   case AArch64::fixup_aarch64_pcrel_branch26:
   case AArch64::fixup_aarch64_pcrel_call26:
+  case AArch64::fixup_aarch64_pcrel_tail26:
   case FK_Data_4:
   case FK_SecRel_4:
     return 4;
@@ -232,6 +237,13 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
     }
 
     if (!IsResolved) {
+      // On Windows Itanium and NT-POSIX the field holds the relocation's
+      // addend, which the linker adds before it takes the bits.
+      if (TheTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+        if (!isUInt<16>(Value))
+          Ctx.reportError(Fixup.getLoc(), "fixup value out of range");
+        return Value;
+      }
       // FIXME: Figure out when this can actually happen, and verify our
       // behavior.
       Ctx.reportError(Fixup.getLoc(), "unresolved movw fixup not yet "
@@ -289,6 +301,8 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
     }
     return Value;
   }
+  case AArch64::fixup_aarch64_logical_imm:
+    return Value;
   case AArch64::fixup_aarch64_pcrel_branch9:
     // Signed 11-bit(9bits + 2 shifts) label
     if (!isInt<11>(SignedValue))
@@ -318,6 +332,7 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
     return (Value >> 2) & 0xffff;
   case AArch64::fixup_aarch64_pcrel_branch26:
   case AArch64::fixup_aarch64_pcrel_call26:
+  case AArch64::fixup_aarch64_pcrel_tail26:
     if (TheTriple.isOSBinFormatCOFF() && !IsResolved && SignedValue != 0) {
       // MSVC link.exe and lld do not support this relocation type
       // with a non-zero offset
@@ -381,6 +396,7 @@ unsigned AArch64AsmBackend::getFixupKindContainereSizeInBytes(unsigned Kind) con
     return 8;
 
   case AArch64::fixup_aarch64_movw:
+  case AArch64::fixup_aarch64_logical_imm:
   case AArch64::fixup_aarch64_pcrel_branch9:
   case AArch64::fixup_aarch64_pcrel_branch14:
   case AArch64::fixup_aarch64_pcrel_branch16:
@@ -396,6 +412,7 @@ unsigned AArch64AsmBackend::getFixupKindContainereSizeInBytes(unsigned Kind) con
   case AArch64::fixup_aarch64_pcrel_adrp_imm21:
   case AArch64::fixup_aarch64_pcrel_branch26:
   case AArch64::fixup_aarch64_pcrel_call26:
+  case AArch64::fixup_aarch64_pcrel_tail26:
     // Instructions are always little endian
     return 0;
   }
@@ -424,7 +441,8 @@ void AArch64AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     IsResolved = false;
   maybeAddReloc(F, Fixup, Target, Value, IsResolved);
   MCFixupKind Kind = Fixup.getKind();
-  if (mc::isRelocation(Kind))
+  // An FT_LEB fragment's contents hold its value already.
+  if (mc::isRelocation(Kind) || Kind == FK_Data_leb128)
     return;
 
   if (Fixup.getKind() == FK_Data_8 && TheTriple.isOSBinFormatELF()) {
@@ -442,6 +460,16 @@ void AArch64AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
               (uint64_t(Expr->getKey()) << 60) |
               (uint64_t(Expr->hasAddressDiversity()) << 63);
     }
+  }
+
+  // A bitmask immediate is encoded for its instruction's register size. The
+  // linker encodes an unresolved one, whose field holds no addend.
+  if (Kind == AArch64::fixup_aarch64_logical_imm &&
+      (IsResolved ? !AArch64_AM::processLogicalImmediate(
+                        Value, Data[3] & 0x80 ? 64 : 32, Value)
+                  : Value != 0)) {
+    getContext().reportError(Fixup.getLoc(), "fixup value out of range");
+    return;
   }
 
   if (!Value)
@@ -771,6 +799,32 @@ class COFFAArch64AsmBackend : public AArch64AsmBackend {
 public:
   COFFAArch64AsmBackend(const Target &T, const Triple &TheTriple)
       : AArch64AsmBackend(T, TheTriple, /*IsLittleEndian*/ true) {}
+
+  // On Windows Itanium and NT-POSIX a label difference the linker may change
+  // is a fixup, which the object writer records as a span.
+  bool relaxDwarfLineAddr(MCFragment &F) const override {
+    return TheTriple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+           relaxDwarfLineAddrWithFixup(F);
+  }
+  bool relaxDwarfCFA(MCFragment &F) const override {
+    return TheTriple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+           relaxDwarfCFAWithFixups(
+               F, 8,
+               [&](unsigned Bits, unsigned Offset,
+                   SmallVectorImpl<MCFixup> &Fixups) {
+                 Fixups.push_back(
+                     MCFixup::create(Offset, &F.getDwarfAddrDelta(),
+                                     MCFixup::getDataKindForSize(Bits / 8)));
+               });
+  }
+  std::pair<bool, bool> relaxLEB128(MCFragment &F,
+                                    int64_t &Value) const override {
+    if (!TheTriple.isWindowsItaniumOrNTPOSIXEnvironment() ||
+        !F.getLEBValue().evaluateKnownAbsolute(Value, *Asm))
+      return {false, false};
+    F.setVarFixups({MCFixup::create(0, &F.getLEBValue(), FK_Data_leb128)});
+    return {true, false};
+  }
 
   std::unique_ptr<MCObjectTargetWriter>
   createObjectTargetWriter() const override {

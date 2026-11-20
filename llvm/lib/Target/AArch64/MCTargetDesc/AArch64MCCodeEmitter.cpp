@@ -121,6 +121,12 @@ public:
                                   SmallVectorImpl<MCFixup> &Fixups,
                                   const MCSubtargetInfo &STI) const;
 
+  /// getLogicalImmOpValue - Return the encoded value for the bitmask immediate
+  /// of a logical instruction, or record a fixup for a symbolic one.
+  uint32_t getLogicalImmOpValue(const MCInst &MI, unsigned OpIdx,
+                                SmallVectorImpl<MCFixup> &Fixups,
+                                const MCSubtargetInfo &STI) const;
+
   /// getMoveWideImmOpValue - Return the encoded value for the immediate operand
   /// of a MOVZ or MOVK instruction.
   uint32_t getMoveWideImmOpValue(const MCInst &MI, unsigned OpIdx,
@@ -403,6 +409,30 @@ AArch64MCCodeEmitter::getMemExtendOpValue(const MCInst &MI, unsigned OpIdx,
 }
 
 uint32_t
+AArch64MCCodeEmitter::getLogicalImmOpValue(const MCInst &MI, unsigned OpIdx,
+                                           SmallVectorImpl<MCFixup> &Fixups,
+                                           const MCSubtargetInfo &STI) const {
+  const MCOperand &MO = MI.getOperand(OpIdx);
+
+  if (MO.isImm())
+    return MO.getImm();
+  assert(MO.isExpr() && "Unexpected logical immediate");
+
+  // The relocation that encodes a symbol's value is AND's and ANDS's.
+  unsigned Opc = MI.getOpcode();
+  if (Opc != AArch64::ANDWri && Opc != AArch64::ANDXri &&
+      Opc != AArch64::ANDSWri && Opc != AArch64::ANDSXri)
+    Ctx.reportError(MI.getLoc(), "a symbolic bitmask immediate needs AND, "
+                                 "ANDS or TST");
+
+  addFixup(Fixups, 0, MO.getExpr(), AArch64::fixup_aarch64_logical_imm);
+
+  ++MCNumFixups;
+
+  return 0;
+}
+
+uint32_t
 AArch64MCCodeEmitter::getMoveWideImmOpValue(const MCInst &MI, unsigned OpIdx,
                                             SmallVectorImpl<MCFixup> &Fixups,
                                             const MCSubtargetInfo &STI) const {
@@ -453,6 +483,8 @@ AArch64MCCodeEmitter::getBranchTargetOpValue(const MCInst &MI, unsigned OpIdx,
 
   unsigned Kind = MI.getOpcode() == AArch64::BL
                       ? AArch64::fixup_aarch64_pcrel_call26
+                  : MI.getFlags() & AArch64::TailBranchFlag
+                      ? AArch64::fixup_aarch64_pcrel_tail26
                       : AArch64::fixup_aarch64_pcrel_branch26;
   addFixup(Fixups, 0, MO.getExpr(), Kind, true);
 

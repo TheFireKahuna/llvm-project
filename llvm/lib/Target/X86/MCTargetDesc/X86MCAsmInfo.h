@@ -103,6 +103,8 @@ enum {
   S_TLVPPAGE,
   S_TLVPPAGEOFF,
   S_TPOFF,
+  // On COFF, a PC-relative data field through which a function is only called.
+  S_COFF_REL32_CALL,
 };
 } // namespace X86
 } // namespace llvm

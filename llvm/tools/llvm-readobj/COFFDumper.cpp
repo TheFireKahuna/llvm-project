@@ -1724,8 +1724,10 @@ void COFFDumper::printRelocation(const SectionRef &Section,
   Reloc.getTypeName(RelocName);
   symbol_iterator Symbol = Reloc.getSymbol();
   int64_t SymbolIndex = -1;
-  if (Symbol != Obj->symbol_end() &&
-      !COFF::relocationNamesNoSymbol(RelocType)) {
+  if (COFF::relocationNamesNoSymbol(RelocType)) {
+    // The index is the relocation's own data.
+    SymbolIndex = Obj->getCOFFRelocation(Reloc)->SymbolTableIndex;
+  } else if (Symbol != Obj->symbol_end()) {
     Expected<StringRef> SymbolNameOrErr = Symbol->getName();
     if (!SymbolNameOrErr)
       reportError(SymbolNameOrErr.takeError(), Obj->getFileName());

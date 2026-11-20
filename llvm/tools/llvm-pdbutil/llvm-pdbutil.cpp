@@ -644,6 +644,8 @@ cl::opt<bool> DumpSectionMap("section-map", cl::desc("dump section map"),
 cl::opt<bool> DumpSectionHeaders("section-headers",
                                  cl::desc("Dump image section headers"),
                                  cl::cat(MiscOptions), cl::sub(DumpSubcommand));
+cl::opt<bool> DumpFixups("fixups", cl::desc("dump fixup records"),
+                         cl::cat(MiscOptions), cl::sub(DumpSubcommand));
 cl::opt<bool> DumpDXContainer("dxcontainer", cl::desc("dump DXContainer"),
                               cl::cat(MiscOptions), cl::sub(DumpSubcommand));
 
@@ -1634,6 +1636,7 @@ int main(int Argc, const char **Argv) {
     if (opts::dump::RawAll) {
       opts::dump::DumpDXContainer = true;
       opts::dump::DumpGlobals = true;
+      opts::dump::DumpFixups = true;
       opts::dump::DumpFpo = true;
       opts::dump::DumpInlineeLines = true;
       opts::dump::DumpIds = true;

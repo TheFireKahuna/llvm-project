@@ -126,8 +126,8 @@ public:
                          size_t alignedSize, uint32_t &nextRelocIndex,
                          std::vector<uint8_t> &storage);
 
-  /// Add the section map and section contributions to the PDB.
-  void addSections(ArrayRef<uint8_t> sectionTable);
+  /// Add the section map, section contributions and fixups to the PDB.
+  void addSections(ArrayRef<uint8_t> sectionTable, ArrayRef<uint8_t> fixups);
 
   /// Write the PDB to disk and store the Guid generated for it in *Guid.
   void commit(codeview::GUID *guid);
@@ -1612,6 +1612,7 @@ void PDBLinker::addImportFilesToPDB() {
 // Creates a PDB file.
 void lld::coff::createPDB(COFFLinkerContext &ctx,
                           ArrayRef<uint8_t> sectionTable,
+                          ArrayRef<uint8_t> fixups,
                           llvm::codeview::DebugInfo *buildId) {
   llvm::TimeTraceScope timeScope("PDB file");
   ScopedTimer t1(ctx.totalPdbLinkTimer);
@@ -1624,7 +1625,7 @@ void lld::coff::createPDB(COFFLinkerContext &ctx,
     pdb.initialize(buildId);
     pdb.addObjectsToPDB();
     pdb.addImportFilesToPDB();
-    pdb.addSections(sectionTable);
+    pdb.addSections(sectionTable, fixups);
     pdb.addNatvisFiles();
     pdb.addNamedStreams();
     pdb.addPublicsToPDB();
@@ -1680,7 +1681,8 @@ void PDBLinker::initialize(llvm::codeview::DebugInfo *buildId) {
   dbiBuilder.setBuildNumber(14, 11);
 }
 
-void PDBLinker::addSections(ArrayRef<uint8_t> sectionTable) {
+void PDBLinker::addSections(ArrayRef<uint8_t> sectionTable,
+                            ArrayRef<uint8_t> fixups) {
   llvm::TimeTraceScope timeScope("PDB output sections");
   ExitOnError exitOnErr;
   // It's not entirely clear what this is, but the * Linker * module uses it.
@@ -1722,6 +1724,10 @@ void PDBLinker::addSections(ArrayRef<uint8_t> sectionTable) {
   // Add COFF section header stream.
   exitOnErr(
       dbiBuilder.addDbgStream(pdb::DbgHeaderType::SectionHdr, sectionTable));
+
+  // Add the Fixup Data stream.
+  if (!fixups.empty())
+    exitOnErr(dbiBuilder.addDbgStream(pdb::DbgHeaderType::Fixup, fixups));
 }
 
 void PDBLinker::commit(codeview::GUID *guid) {

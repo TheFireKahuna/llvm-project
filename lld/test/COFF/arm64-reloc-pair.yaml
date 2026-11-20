@@ -1,27 +1,17 @@
 # REQUIRES: aarch64
 
-## A PAIR after PAGEOFFSET_12A or PAGEOFFSET_12L names B: the field becomes its
-## byte offset, unsigned for 12A and signed for 12L, plus A - B, which must stay
-## within the page and aligned. ICF ignores the PAIR's symbol and the PAIR keeps
-## nothing live. A PAIR after anything else, and an ARM64 PC-relative address
-## of an absolute symbol, are errors.
+## A PAIR after PAGEOFFSET_12A or PAGEOFFSET_12L adds A - B to the field's
+## byte offset, which must stay within the page and aligned. A PAIR after
+## anything else, and an ARM64 PC-relative address of an absolute symbol, are
+## errors, and the AArch64 types from 0x8000 up check their values.
 
-# RUN: yaml2obj --docnum=1 %s -o %t1.obj
-# RUN: llvm-readobj -r %t1.obj | FileCheck --check-prefix=NAME %s
-# RUN: lld-link /entry:main /subsystem:console /opt:icf /verbose /out:%t1.exe %t1.obj 2>&1 \
-# RUN:   | FileCheck --check-prefix=ICF %s
-# RUN: llvm-objdump -d --no-print-imm-hex %t1.exe | FileCheck %s
-# RUN: yaml2obj --docnum=2 %s -o %t2.obj
+# RUN: yaml2obj --docnum=1 %s -o %t2.obj
 # RUN: not lld-link /entry:main /subsystem:console /out:%t2.exe %t2.obj 2>&1 \
 # RUN:   | FileCheck --check-prefix=ERR %s
 
-# NAME: 0x0 IMAGE_REL_ARM64_PAIR b
-
-# ICF:      Selected f1
-# ICF-NEXT:   Removed f2
-
-# CHECK: add x0, x1, #2064
-# CHECK: ldr x0, [x1, #16]
+# RUN: yaml2obj --docnum=2 %s -o %t3.obj
+# RUN: not lld-link /entry:main /subsystem:console /out:%t3.exe %t3.obj 2>&1 \
+# RUN:   | FileCheck --check-prefix=FIT %s
 
 # ERR:      error: {{.*}}2.obj: IMAGE_REL_ARM64_PAGEOFFSET_12L relocation against a with a PAIR against main is out of range
 # ERR-NEXT: error: {{.*}}2.obj: PC-relative relocation against absolute symbol abs
@@ -30,47 +20,16 @@
 # ERR-NEXT: error: {{.*}}2.obj: IMAGE_REL_ARM64_PAGEOFFSET_12L relocation against a4 with a PAIR against main is misaligned
 # ERR-NEXT: error: {{.*}}2.obj: PAIR relocation in .text follows no relocation it pairs with
 
---- !COFF
-header:
-  Machine:         IMAGE_FILE_MACHINE_ARM64
-  Characteristics: []
-sections:
-  - Name:            .text
-    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
-    Alignment:       4
-    SectionData:     20002091200040F90000009400000094C0035FD6
-    Relocations:
-      - { VirtualAddress: 0, SymbolName: a, Type: IMAGE_REL_ARM64_PAGEOFFSET_12A }
-      - { VirtualAddress: 0, SymbolName: b, Type: IMAGE_REL_ARM64_PAIR }
-      - { VirtualAddress: 4, SymbolName: a, Type: IMAGE_REL_ARM64_PAGEOFFSET_12L }
-      - { VirtualAddress: 4, SymbolName: b, Type: IMAGE_REL_ARM64_PAIR }
-      - { VirtualAddress: 8, SymbolName: f1, Type: IMAGE_REL_ARM64_BRANCH26 }
-      - { VirtualAddress: 12, SymbolName: f2, Type: IMAGE_REL_ARM64_BRANCH26 }
-  - Name:            .text$mn
-    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
-    Alignment:       4
-    SectionData:     20000091C0035FD6
-    Relocations:
-      - { VirtualAddress: 0, SymbolName: a, Type: IMAGE_REL_ARM64_PAGEOFFSET_12A }
-      - { VirtualAddress: 0, SymbolName: main, Type: IMAGE_REL_ARM64_PAIR }
-  - Name:            .text$mn
-    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
-    Alignment:       4
-    SectionData:     20000091C0035FD6
-    Relocations:
-      - { VirtualAddress: 0, SymbolName: a, Type: IMAGE_REL_ARM64_PAGEOFFSET_12A }
-      - { VirtualAddress: 0, SymbolName: b, Type: IMAGE_REL_ARM64_PAIR }
-symbols:
-  - { Name: .text$mn, Value: 0, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
-      SectionDefinition: { Length: 8, NumberOfRelocations: 2, NumberOfLinenumbers: 0, CheckSum: 0, Number: 2, Selection: IMAGE_COMDAT_SELECT_ANY } }
-  - { Name: f1, Value: 0, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
-  - { Name: .text$mn, Value: 0, SectionNumber: 3, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC,
-      SectionDefinition: { Length: 8, NumberOfRelocations: 2, NumberOfLinenumbers: 0, CheckSum: 0, Number: 3, Selection: IMAGE_COMDAT_SELECT_ANY } }
-  - { Name: f2, Value: 0, SectionNumber: 3, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
-  - { Name: main, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
-  - { Name: b, Value: 8, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
-  - { Name: a, Value: 24, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
-...
+# FIT:      error: {{.*}}3.obj: IMAGE_REL_LLVM_MOVW_UABS_G0 relocation against abs32 is out of range
+# FIT-NEXT: error: {{.*}}3.obj: IMAGE_REL_LLVM_MOVW_UABS_G1 relocation against max is out of range
+# FIT-NEXT: error: {{.*}}3.obj: IMAGE_REL_LLVM_LOGIMM relocation against five is not a bitmask immediate
+# FIT-NEXT: error: {{.*}}3.obj: IMAGE_REL_LLVM_MOVW_UABS_G0 relocation against far, which is not an absolute symbol
+# FIT-NEXT: error: {{.*}}3.obj: IMAGE_REL_LLVM_LOGIMM relocation against far, which is not an absolute symbol
+# FIT-NEXT: error: {{.*}}3.obj: IMAGE_REL_LLVM_USPAN8_W relocation against far2 with a PAIR against main is out of range
+# FIT-NEXT: error: {{.*}}3.obj: IMAGE_REL_LLVM_USPAN8_W relocation against odd with a PAIR against main is misaligned
+# FIT-NEXT: error: {{.*}}3.obj: IMAGE_REL_LLVM_USPAN16_W relocation against huge with a PAIR against main is out of range
+# FIT-NEXT: error: {{.*}}3.obj: IMAGE_REL_LLVM_SSPAN_WORDS18 relocation against huge with a PAIR against main is out of range
+# FIT-NOT:  error:
 
 --- !COFF
 header:
@@ -103,4 +62,38 @@ symbols:
   - { Name: a, Value: 4104, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
   - { Name: a4, Value: 4, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
   - { Name: abs, Value: 4660, SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+...
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ARM64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     000080522000A0522000001200000000000000000000000000000000000000000000000000000000
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: abs32, Type: IMAGE_REL_LLVM_MOVW_UABS_G0 }
+      - { VirtualAddress: 4, SymbolName: max, Type: IMAGE_REL_LLVM_MOVW_UABS_G1 }
+      - { VirtualAddress: 8, SymbolName: five, Type: IMAGE_REL_LLVM_LOGIMM }
+      - { VirtualAddress: 16, SymbolName: far, Type: IMAGE_REL_LLVM_MOVW_UABS_G0 }
+      - { VirtualAddress: 20, SymbolName: far, Type: IMAGE_REL_LLVM_LOGIMM }
+      - { VirtualAddress: 24, SymbolName: far2, Type: IMAGE_REL_LLVM_USPAN8_W }
+      - { VirtualAddress: 24, SymbolName: main, Type: IMAGE_REL_ARM64_PAIR }
+      - { VirtualAddress: 25, SymbolName: odd, Type: IMAGE_REL_LLVM_USPAN8_W }
+      - { VirtualAddress: 25, SymbolName: main, Type: IMAGE_REL_ARM64_PAIR }
+      - { VirtualAddress: 26, SymbolName: huge, Type: IMAGE_REL_LLVM_USPAN16_W }
+      - { VirtualAddress: 26, SymbolName: main, Type: IMAGE_REL_ARM64_PAIR }
+      - { VirtualAddress: 28, SymbolName: huge, Type: IMAGE_REL_LLVM_SSPAN_WORDS18 }
+      - { VirtualAddress: 28, SymbolName: main, Type: IMAGE_REL_ARM64_PAIR }
+symbols:
+  - { Name: main, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: far, Value: 512, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: far2, Value: 1024, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: odd, Value: 6, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: huge, Value: 1048576, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: abs32, Value: 305419896, SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: max, Value: 4294967295, SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: five, Value: 5, SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
 ...

@@ -345,104 +345,25 @@ bool RISCVAsmBackend::relaxAlign(MCFragment &F, unsigned &Size) {
 }
 
 bool RISCVAsmBackend::relaxDwarfLineAddr(MCFragment &F) const {
-  int64_t LineDelta = F.getDwarfLineDelta();
-  const MCExpr &AddrDelta = F.getDwarfAddrDelta();
-  int64_t Value;
-  // If the label difference can be resolved, use the default handling, which
-  // utilizes a shorter special opcode.
-  if (AddrDelta.evaluateAsAbsolute(Value, *Asm))
-    return false;
-  [[maybe_unused]] bool IsAbsolute =
-      AddrDelta.evaluateKnownAbsolute(Value, *Asm);
-  assert(IsAbsolute && "CFA with invalid expression");
-
-  SmallVector<char> Data;
-  raw_svector_ostream OS(Data);
-
-  // INT64_MAX is a signal that this is actually a DW_LNE_end_sequence.
-  if (LineDelta != INT64_MAX) {
-    OS << uint8_t(dwarf::DW_LNS_advance_line);
-    encodeSLEB128(LineDelta, OS);
-  }
-
-  // According to the DWARF specification, the `DW_LNS_fixed_advance_pc` opcode
-  // takes a single unsigned half (unencoded) operand. The maximum encodable
-  // value is therefore 65535.  Set a conservative upper bound for relaxation.
-  unsigned PCBytes;
-  if (Value > 60000) {
-    PCBytes = getContext().getAsmInfo().getCodePointerSize();
-    OS << uint8_t(dwarf::DW_LNS_extended_op) << uint8_t(PCBytes + 1)
-       << uint8_t(dwarf::DW_LNE_set_address);
-    OS.write_zeros(PCBytes);
-  } else {
-    PCBytes = 2;
-    OS << uint8_t(dwarf::DW_LNS_fixed_advance_pc);
-    support::endian::write<uint16_t>(OS, 0, Endian);
-  }
-  auto Offset = OS.tell() - PCBytes;
-
-  if (LineDelta == INT64_MAX) {
-    OS << uint8_t(dwarf::DW_LNS_extended_op);
-    OS << uint8_t(1);
-    OS << uint8_t(dwarf::DW_LNE_end_sequence);
-  } else {
-    OS << uint8_t(dwarf::DW_LNS_copy);
-  }
-
-  F.setVarContents(Data);
-  F.setVarFixups({MCFixup::create(Offset, &AddrDelta,
-                                  MCFixup::getDataKindForSize(PCBytes))});
-  return true;
+  return relaxDwarfLineAddrWithFixup(F);
 }
 
 bool RISCVAsmBackend::relaxDwarfCFA(MCFragment &F) const {
-  const MCExpr &AddrDelta = F.getDwarfAddrDelta();
-  SmallVector<MCFixup, 2> Fixups;
-  int64_t Value;
-  if (AddrDelta.evaluateAsAbsolute(Value, *Asm))
-    return false;
-  [[maybe_unused]] bool IsAbsolute =
-      AddrDelta.evaluateKnownAbsolute(Value, *Asm);
-  assert(IsAbsolute && "CFA with invalid expression");
-
-  assert(getContext().getAsmInfo().getMinInstAlignment() == 1 &&
-         "expected 1-byte alignment");
-  if (Value == 0) {
-    F.clearVarContents();
-    F.clearVarFixups();
-    return true;
-  }
-
-  auto AddFixups = [&Fixups, &AddrDelta](unsigned Offset,
-                                         std::pair<unsigned, unsigned> Fixup) {
-    const MCBinaryExpr &MBE = cast<MCBinaryExpr>(AddrDelta);
-    Fixups.push_back(MCFixup::create(Offset, MBE.getLHS(), std::get<0>(Fixup)));
-    Fixups.push_back(MCFixup::create(Offset, MBE.getRHS(), std::get<1>(Fixup)));
-  };
-
-  SmallVector<char, 8> Data;
-  raw_svector_ostream OS(Data);
-  if (isUIntN(6, Value)) {
-    OS << uint8_t(dwarf::DW_CFA_advance_loc);
-    AddFixups(0, {ELF::R_RISCV_SET6, ELF::R_RISCV_SUB6});
-  } else if (isUInt<8>(Value)) {
-    OS << uint8_t(dwarf::DW_CFA_advance_loc1);
-    support::endian::write<uint8_t>(OS, 0, Endian);
-    AddFixups(1, {ELF::R_RISCV_SET8, ELF::R_RISCV_SUB8});
-  } else if (isUInt<16>(Value)) {
-    OS << uint8_t(dwarf::DW_CFA_advance_loc2);
-    support::endian::write<uint16_t>(OS, 0, Endian);
-    AddFixups(1, {ELF::R_RISCV_SET16, ELF::R_RISCV_SUB16});
-  } else if (isUInt<32>(Value)) {
-    OS << uint8_t(dwarf::DW_CFA_advance_loc4);
-    support::endian::write<uint32_t>(OS, 0, Endian);
-    AddFixups(1, {ELF::R_RISCV_SET32, ELF::R_RISCV_SUB32});
-  } else {
-    llvm_unreachable("unsupported CFA encoding");
-  }
-  F.setVarContents(Data);
-  F.setVarFixups(Fixups);
-  return true;
+  return relaxDwarfCFAWithFixups(
+      F, 6,
+      [&](unsigned Bits, unsigned Offset, SmallVectorImpl<MCFixup> &Fixups) {
+        unsigned Set = Bits == 6    ? ELF::R_RISCV_SET6
+                       : Bits == 8  ? ELF::R_RISCV_SET8
+                       : Bits == 16 ? ELF::R_RISCV_SET16
+                                    : ELF::R_RISCV_SET32;
+        unsigned Sub = Bits == 6    ? ELF::R_RISCV_SUB6
+                       : Bits == 8  ? ELF::R_RISCV_SUB8
+                       : Bits == 16 ? ELF::R_RISCV_SUB16
+                                    : ELF::R_RISCV_SUB32;
+        const auto &MBE = cast<MCBinaryExpr>(F.getDwarfAddrDelta());
+        Fixups.push_back(MCFixup::create(Offset, MBE.getLHS(), Set));
+        Fixups.push_back(MCFixup::create(Offset, MBE.getRHS(), Sub));
+      });
 }
 
 std::pair<bool, bool> RISCVAsmBackend::relaxLEB128(MCFragment &LF,
@@ -654,26 +575,6 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, uint64_t Value,
     return Value;
   }
   }
-}
-
-bool RISCVAsmBackend::isPCRelFixupResolved(const MCSymbol *SymA,
-                                           const MCFragment &F) {
-  // If the section does not contain linker-relaxable fragments, PC-relative
-  // fixups can be resolved.
-  if (!F.getParent()->isLinkerRelaxable())
-    return true;
-
-  // Otherwise, check if the offset between the symbol and fragment is fully
-  // resolved, unaffected by linker-relaxable fragments (e.g. instructions or
-  // offset-affected FT_Align fragments). Complements the generic
-  // isSymbolRefDifferenceFullyResolvedImpl.
-  if (!PCRelTemp)
-    PCRelTemp = getContext().createTempSymbol();
-  PCRelTemp->setFragment(const_cast<MCFragment *>(&F));
-  MCValue Res;
-  MCExpr::evaluateSymbolicAdd(Asm, false, MCValue::get(SymA),
-                              MCValue::get(nullptr, PCRelTemp), Res);
-  return !Res.getSubSym();
 }
 
 // Get the corresponding PC-relative HI fixup that a S_PCREL_LO points to, and

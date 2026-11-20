@@ -271,8 +271,12 @@ COFFSymbol *WinCOFFWriter::getOrCreateSecRelSymbol(const MCSymbol &Sym,
 
   COFFSection *Section = SectionMap[TargetSection];
   std::string Name;
-  if (Sym.isTemporary() && !Sym.getName().empty() &&
-      Offset == Asm->getSymbolOffset(Sym))
+  // A section the linker resizes may need a label for every value that depends
+  // on its layout, so each takes a short name and no string table entry.
+  if (TargetSection->isLinkerRelaxable())
+    Name = ("$L" + Twine::utohexstr(++SecRelSymbolCount)).str();
+  else if (Sym.isTemporary() && !Sym.getName().empty() &&
+           Offset == Asm->getSymbolOffset(Sym))
     Name = Sym.getName().str();
   else
     Name =
@@ -918,17 +922,12 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     // Offset of the symbol in the section
     int64_t OffsetOfB = Asm->getSymbolOffset(*B);
 
-    // REL32 below writes A - B only when B lies in the field's section.
-    // Elsewhere, x86-64 writes 32 bits of A - B as SSPAN32 and PAIR.
-    if (&B->getSection() != MCSec) {
-      if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
-          Asm->getBackend().getFixupKindInfo(Fixup.getKind()).TargetSize == 32)
-        recordSpan(F, Fixup, A, *B, Target.getConstant(), FixedValue);
-      else
-        getContext().reportError(
-            Fixup.getLoc(), "Cannot represent a difference across sections");
-      return;
-    }
+    // REL32 below writes A - B only when B lies in the field's section and
+    // the linker resizes nothing between B and the field. Otherwise A - B is
+    // a span.
+    if (&B->getSection() != MCSec ||
+        !Asm->getBackend().isPCRelFixupResolved(B, F))
+      return recordSpan(F, Fixup, A, *B, Target.getConstant(), FixedValue);
 
     // Offset of the relocation in the section
     int64_t OffsetOfRelocation = Asm->getFragmentOffset(F) + Fixup.getOffset();
@@ -975,6 +974,10 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     }
     Reloc.Symb = getOrCreateSecRelSymbol(A, SecRelSymbolOffset);
     FixedValue = 0;
+  } else if (UseSectionSymbol && A.getSection().isLinkerRelaxable()) {
+    // The linker moves a label with the code it resizes; an offset from the
+    // section's start would not follow.
+    Reloc.Symb = getOrCreateSecRelSymbol(A, Asm->getSymbolOffset(A));
   } else if (UseSectionSymbol && COFF::isAnyArm64(Header.Machine) &&
              Reloc.Data.Type == COFF::IMAGE_REL_ARM64_BRANCH26) {
     // The field of an ARM64 branch holds no offset from a symbol, so a target
@@ -1014,18 +1017,26 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   Reloc.Data.VirtualAddress += Fixup.getOffset();
 
   // The *_REL32 relocations are relative to the end of the relocation,
-  // not to the start; AMD64's REL32_1 to REL32_5 to 1 to 5 bytes after it.
+  // not to the start; AMD64's REL32_1 to REL32_5 to 1 to 5 bytes after it. So
+  // are the PC-relative LLVM types, whose field has four bytes or, for JUMP8,
+  // one.
   if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
       Reloc.Data.Type >= COFF::IMAGE_REL_AMD64_REL32 &&
       Reloc.Data.Type <= COFF::IMAGE_REL_AMD64_REL32_5)
     FixedValue += 4 + Reloc.Data.Type - COFF::IMAGE_REL_AMD64_REL32;
+  else if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
+           Reloc.Data.Type == COFF::IMAGE_REL_LLVM_BRANCH_TAIL)
+    FixedValue += 4;
   else if ((Header.Machine == COFF::IMAGE_FILE_MACHINE_I386 &&
             Reloc.Data.Type == COFF::IMAGE_REL_I386_REL32) ||
            (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT &&
             Reloc.Data.Type == COFF::IMAGE_REL_ARM_REL32) ||
            (COFF::isAnyArm64(Header.Machine) &&
-            Reloc.Data.Type == COFF::IMAGE_REL_ARM64_REL32))
-    FixedValue += 4;
+            Reloc.Data.Type == COFF::IMAGE_REL_ARM64_REL32) ||
+           Reloc.Data.Type == COFF::IMAGE_REL_LLVM_REL32_CALL ||
+           (Reloc.Data.Type >= COFF::IMAGE_REL_LLVM_BRANCH32 &&
+            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_LEA_OFFSET))
+    FixedValue += Reloc.Data.Type == COFF::IMAGE_REL_LLVM_JUMP8 ? 1 : 4;
 
   if (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT) {
     switch (Reloc.Data.Type) {
@@ -1083,12 +1094,51 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   }
 }
 
-// Writes A + Constant - B as SSPAN32 naming A and PAIR naming B, at the field.
-// Both are local, as linkers resolve an external one to a thunk, and B lies in
-// A's section or in one associative to it, so that B lives while A does.
+// Writes A + Constant - B as a span type naming A and PAIR naming B, at the
+// field. Both are local, as linkers resolve an external one to a thunk, and B
+// lies in A's section or in one associative to it, so that B lives while A
+// does.
 void WinCOFFWriter::recordSpan(const MCFragment &F, const MCFixup &Fixup,
                                const MCSymbol &A, const MCSymbol &B,
                                int64_t Constant, uint64_t &FixedValue) {
+  // x86-64's 32-bit span is the one link.exe applies. The other widths, and
+  // every width on AArch64, are types of Windows Itanium and NT-POSIX objects.
+  bool IsAMD64 = Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64;
+  unsigned Type = COFF::IMAGE_REL_AMD64_ABSOLUTE;
+  if (IsAMD64 &&
+      Asm->getBackend().getFixupKindInfo(Fixup.getKind()).TargetSize == 32)
+    Type = COFF::IMAGE_REL_AMD64_SSPAN32;
+  else if ((IsAMD64 || Header.Machine == COFF::IMAGE_FILE_MACHINE_ARM64) &&
+           getContext()
+               .getTargetTriple()
+               .isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // The operand of a DWARF advance is unsigned; a data difference is signed.
+    bool IsAdvance = F.getKind() == MCFragment::FT_Dwarf ||
+                     F.getKind() == MCFragment::FT_DwarfFrame;
+    switch (Fixup.getKind()) {
+    case FK_Data_1:
+      Type =
+          IsAdvance ? COFF::IMAGE_REL_LLVM_USPAN8 : COFF::IMAGE_REL_LLVM_SSPAN8;
+      break;
+    case FK_Data_2:
+      Type = IsAdvance ? COFF::IMAGE_REL_LLVM_USPAN16
+                       : COFF::IMAGE_REL_LLVM_SSPAN16;
+      break;
+    case FK_Data_4:
+      Type = COFF::IMAGE_REL_LLVM_SSPAN32;
+      break;
+    case FK_Data_8:
+      Type = COFF::IMAGE_REL_LLVM_SSPAN64;
+      break;
+    case FK_Data_leb128:
+      Type = F.isLEBSigned() ? COFF::IMAGE_REL_LLVM_SSPAN_SLEB
+                             : COFF::IMAGE_REL_LLVM_SSPAN_ULEB;
+      break;
+    }
+  }
+  if (Type == COFF::IMAGE_REL_AMD64_ABSOLUTE || Fixup.isPCRel())
+    return getContext().reportError(
+        Fixup.getLoc(), "Cannot represent a difference across sections");
   if (!A.isInSection() || static_cast<const MCSymbolCOFF &>(A).isExternal() ||
       static_cast<const MCSymbolCOFF &>(B).isExternal())
     return getContext().reportError(
@@ -1125,10 +1175,11 @@ void WinCOFFWriter::recordSpan(const MCFragment &F, const MCFixup &Fixup,
   };
   COFFRelocation Span;
   Span.Data.VirtualAddress = Asm->getFragmentOffset(F) + Fixup.getOffset();
-  Span.Data.Type = COFF::IMAGE_REL_AMD64_SSPAN32;
+  Span.Data.Type = Type;
   Span.Symb = Label(A, OffsetOfA);
   COFFRelocation Pair = Span;
-  Pair.Data.Type = COFF::IMAGE_REL_AMD64_PAIR;
+  Pair.Data.Type =
+      IsAMD64 ? COFF::IMAGE_REL_AMD64_PAIR : COFF::IMAGE_REL_ARM64_PAIR;
   Pair.Symb = Label(B, OffsetOfB);
   COFFSection *Sec = SectionMap[F.getParent()];
   Sec->Relocations.push_back(Span);

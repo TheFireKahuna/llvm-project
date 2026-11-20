@@ -278,13 +278,13 @@ public:
   void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
   bool isPair(uint16_t type) const;
   const coff_relocation *getPair(const coff_relocation &rel) const;
-  void applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
+  bool applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelX86(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
   void applyRelARM(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                    uint64_t p, uint64_t imageBase) const;
-  void applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
+  bool applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                      uint64_t p, uint64_t imageBase) const;
   void applyRelMIPS(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
                     uint64_t p, uint64_t imageBase) const;

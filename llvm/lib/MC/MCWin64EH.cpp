@@ -278,7 +278,15 @@ static void EmitRuntimeFunction(MCStreamer &streamer,
 
   streamer.emitValueToAlignment(Align(4));
   EmitSymbolRefWithOfs(streamer, info->Begin, info->Begin);
-  EmitSymbolRefWithOfs(streamer, info->Begin, info->End);
+  // A linker that resizes the function moves a label at its end; a length
+  // added to its start would not follow.
+  if (context.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    streamer.emitValue(
+        MCSymbolRefExpr::create(info->End, MCSymbolRefExpr::VK_COFF_IMGREL32,
+                                context),
+        4);
+  else
+    EmitSymbolRefWithOfs(streamer, info->Begin, info->End);
   streamer.emitValue(MCSymbolRefExpr::create(info->Symbol,
                                              MCSymbolRefExpr::VK_COFF_IMGREL32,
                                              context), 4);
@@ -855,10 +863,10 @@ static void EmitUnwindInfoV3(MCStreamer &Streamer, WinEH::FrameInfo *Info) {
     EmitRuntimeFunction(Streamer, Info->ChainedParent);
   else if (Flags &
            (Win64EH::UNW_TerminateHandler | Win64EH::UNW_ExceptionHandler))
-    Streamer.emitValue(
-        MCSymbolRefExpr::create(Info->ExceptionHandler,
-                                MCSymbolRefExpr::VK_COFF_IMGREL32, Context),
-        4);
+    Streamer.emitValue(MCSymbolRefExpr::create(
+                           Info->ExceptionHandler,
+                           MCSymbolRefExpr::VK_COFF_IMGREL32_CALL, Context),
+                       4);
   else if (PayloadWords == 0) {
     // Minimum size: pad to 8 bytes total.
     Streamer.emitInt32(0);
@@ -1044,9 +1052,10 @@ static void EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info) {
     EmitRuntimeFunction(streamer, info->ChainedParent);
   else if (flags &
            ((Win64EH::UNW_TerminateHandler|Win64EH::UNW_ExceptionHandler) << 3))
-    streamer.emitValue(MCSymbolRefExpr::create(info->ExceptionHandler,
-                                              MCSymbolRefExpr::VK_COFF_IMGREL32,
-                                              context), 4);
+    streamer.emitValue(MCSymbolRefExpr::create(
+                           info->ExceptionHandler,
+                           MCSymbolRefExpr::VK_COFF_IMGREL32_CALL, context),
+                       4);
   else if (numCodes == 0) {
     // The minimum size of an UNWIND_INFO struct is 8 bytes. If we're not
     // a chained unwind info, if there is no handler, and if there are fewer
@@ -2302,10 +2311,10 @@ static void ARM64EmitUnwindInfoForSegment(MCStreamer &streamer,
     streamer.emitInt8(0xE3);
 
   if (info->HandlesExceptions)
-    streamer.emitValue(
-        MCSymbolRefExpr::create(info->ExceptionHandler,
-                                MCSymbolRefExpr::VK_COFF_IMGREL32, context),
-        4);
+    streamer.emitValue(MCSymbolRefExpr::create(
+                           info->ExceptionHandler,
+                           MCSymbolRefExpr::VK_COFF_IMGREL32_CALL, context),
+                       4);
 }
 
 // Populate the .xdata section.  The format of .xdata on ARM64 is documented at

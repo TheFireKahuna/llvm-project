@@ -22,7 +22,9 @@ using namespace llvm;
 
 constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> COFFAtSpecifierDefs[] = {
     {{"IMGREL"}, MCSymbolRefExpr::VK_COFF_IMGREL32},
+    {{"IMGREL_CALL"}, MCSymbolRefExpr::VK_COFF_IMGREL32_CALL},
     {{"PAGEOFF"}, AArch64::S_MACHO_PAGEOFF},
+    {{"REL32_CALL"}, AArch64::S_PLT},
 };
 constexpr auto COFFAtSpecifiers = BUILD_ENUM_STRINGS(COFFAtSpecifierDefs);
 
@@ -58,6 +60,7 @@ StringRef AArch64::getSpecifierName(AArch64::Specifier S) {
   case AArch64::S_ABS_G0:              return ":abs_g0:";
   case AArch64::S_ABS_G0_S:            return ":abs_g0_s:";
   case AArch64::S_ABS_G0_NC:           return ":abs_g0_nc:";
+  case AArch64::S_ABS_LOGIMM:          return ":abs_logimm:";
   case AArch64::S_PREL_G3:             return ":prel_g3:";
   case AArch64::S_PREL_G2:             return ":prel_g2:";
   case AArch64::S_PREL_G2_NC:          return ":prel_g2_nc:";

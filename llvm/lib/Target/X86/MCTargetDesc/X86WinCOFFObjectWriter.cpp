@@ -67,7 +67,9 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
   // reaches the function either way.
   auto Spec = Target.getSpecifier();
   if (Spec && Spec != X86::S_PLT && Spec != X86::S_COFF_SECREL &&
-      Spec != MCSymbolRefExpr::VK_COFF_IMGREL32) {
+      Spec != MCSymbolRefExpr::VK_COFF_IMGREL32 &&
+      Spec != MCSymbolRefExpr::VK_COFF_IMGREL32_CALL &&
+      !(Spec == X86::S_COFF_REL32_CALL && FixupKind == FK_Data_4)) {
     Ctx.reportError(Fixup.getLoc(),
                     "relocation specifier @" +
                         Ctx.getAsmInfo().getSpecifierName(Spec) +
@@ -75,6 +77,10 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
     return COFF::IMAGE_REL_AMD64_ABSOLUTE;
   }
   if (Is64Bit) {
+    // The relocation types of Windows Itanium and NT-POSIX objects state the
+    // form of the instruction, or that a data field's target is only called.
+    bool HasSiteTypes =
+        Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
     switch (FixupKind) {
     case X86::reloc_riprel_4byte_imm1:
       return COFF::IMAGE_REL_AMD64_REL32_1;
@@ -82,21 +88,52 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
       return COFF::IMAGE_REL_AMD64_REL32_2;
     case X86::reloc_riprel_4byte_imm4:
       return COFF::IMAGE_REL_AMD64_REL32_4;
-    case X86::reloc_riprel_4byte:
+    case X86::reloc_riprel_4byte_call:
+      return COFF::IMAGE_REL_LLVM_MEM_CALL;
+    case X86::reloc_riprel_4byte_jump:
+      return COFF::IMAGE_REL_LLVM_MEM_JUMP;
+    case X86::reloc_riprel_4byte_jump_p1:
+      return COFF::IMAGE_REL_LLVM_MEM_JUMP_P1;
+    case X86::reloc_riprel_4byte_lea:
+      // The target's constant is the offset less the field's four bytes.
+      return Target.getConstant() == -4 ? COFF::IMAGE_REL_LLVM_LEA
+                                        : COFF::IMAGE_REL_LLVM_LEA_OFFSET;
+    case X86::reloc_jump_4byte_pcrel:
+      return COFF::IMAGE_REL_LLVM_JUMP32;
+    case X86::reloc_jump_1byte_pcrel:
+      return COFF::IMAGE_REL_LLVM_JUMP8;
+    case X86::reloc_tail_4byte_pcrel:
+      return COFF::IMAGE_REL_LLVM_BRANCH_TAIL;
     case X86::reloc_riprel_4byte_movq_load:
+      if (HasSiteTypes)
+        return COFF::IMAGE_REL_LLVM_MEM_LOAD;
+      return COFF::IMAGE_REL_AMD64_REL32;
     case X86::reloc_riprel_4byte_movq_load_rex2:
+      if (HasSiteTypes)
+        return COFF::IMAGE_REL_LLVM_MEM_LOAD_REX2;
+      return COFF::IMAGE_REL_AMD64_REL32;
+    case X86::reloc_branch_4byte_pcrel:
+      if (HasSiteTypes)
+        return COFF::IMAGE_REL_LLVM_BRANCH32;
+      return COFF::IMAGE_REL_AMD64_REL32;
+    case X86::reloc_riprel_4byte:
     case X86::reloc_riprel_4byte_relax:
     case X86::reloc_riprel_4byte_relax_rex:
     case X86::reloc_riprel_4byte_relax_rex2:
     case X86::reloc_riprel_4byte_relax_evex:
-    case X86::reloc_branch_4byte_pcrel:
       return COFF::IMAGE_REL_AMD64_REL32;
     case FK_Data_4:
-      if (PCRel)
-        return COFF::IMAGE_REL_AMD64_REL32;
+      if (PCRel || Spec == X86::S_COFF_REL32_CALL)
+        return HasSiteTypes &&
+                       (Spec == X86::S_PLT || Spec == X86::S_COFF_REL32_CALL)
+                   ? COFF::IMAGE_REL_LLVM_REL32_CALL
+                   : COFF::IMAGE_REL_AMD64_REL32;
       [[fallthrough]];
     case X86::reloc_signed_4byte:
     case X86::reloc_signed_4byte_relax:
+      if (Spec == MCSymbolRefExpr::VK_COFF_IMGREL32_CALL)
+        return HasSiteTypes ? COFF::IMAGE_REL_LLVM_ADDR32NB_CALL
+                            : COFF::IMAGE_REL_AMD64_ADDR32NB;
       if (Spec == MCSymbolRefExpr::VK_COFF_IMGREL32)
         return COFF::IMAGE_REL_AMD64_ADDR32NB;
       if (Spec == X86::S_COFF_SECREL)
@@ -118,12 +155,13 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
     case X86::reloc_riprel_4byte_movq_load:
       return COFF::IMAGE_REL_I386_REL32;
     case FK_Data_4:
-      if (PCRel)
+      if (PCRel || Spec == X86::S_COFF_REL32_CALL)
         return COFF::IMAGE_REL_I386_REL32;
       [[fallthrough]];
     case X86::reloc_signed_4byte:
     case X86::reloc_signed_4byte_relax:
-      if (Spec == MCSymbolRefExpr::VK_COFF_IMGREL32)
+      if (Spec == MCSymbolRefExpr::VK_COFF_IMGREL32 ||
+          Spec == MCSymbolRefExpr::VK_COFF_IMGREL32_CALL)
         return COFF::IMAGE_REL_I386_DIR32NB;
       if (Spec == X86::S_COFF_SECREL)
         return COFF::IMAGE_REL_I386_SECREL;

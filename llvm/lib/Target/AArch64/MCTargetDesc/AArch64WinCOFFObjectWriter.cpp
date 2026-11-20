@@ -82,6 +82,24 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
   }
 
   switch (FixupKind) {
+  case AArch64::fixup_aarch64_movw:
+  case AArch64::fixup_aarch64_logical_imm:
+    // Windows Itanium and NT-POSIX objects have relocations that write an
+    // absolute value into MOVZ, MOVK and a bitmask immediate.
+    if (Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      switch (Spec) {
+      case AArch64::S_ABS_G0:
+        return COFF::IMAGE_REL_LLVM_MOVW_UABS_G0;
+      case AArch64::S_ABS_G0_NC:
+        return COFF::IMAGE_REL_LLVM_MOVW_UABS_G0_NC;
+      case AArch64::S_ABS_G1:
+        return COFF::IMAGE_REL_LLVM_MOVW_UABS_G1;
+      case AArch64::S_ABS_LOGIMM:
+        return COFF::IMAGE_REL_LLVM_LOGIMM;
+      default:
+        break;
+      }
+    [[fallthrough]];
   default: {
     if (auto *A64E = dyn_cast<MCSpecifierExpr>(Expr)) {
       Ctx.reportError(Fixup.getLoc(),
@@ -97,6 +115,12 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
   }
 
   case FK_Data_4:
+    // A PC-relative field through which a function is only called states so
+    // on Windows Itanium and NT-POSIX.
+    if (Spec == AArch64::S_PLT)
+      return Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()
+                 ? COFF::IMAGE_REL_LLVM_REL32_CALL
+                 : COFF::IMAGE_REL_ARM64_REL32;
     if (PCRel)
       return COFF::IMAGE_REL_ARM64_REL32;
     switch (Spec) {
@@ -104,6 +128,12 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
       return COFF::IMAGE_REL_ARM64_ADDR32;
     case MCSymbolRefExpr::VK_COFF_IMGREL32:
       return COFF::IMAGE_REL_ARM64_ADDR32NB;
+    case MCSymbolRefExpr::VK_COFF_IMGREL32_CALL:
+      // Windows Itanium and NT-POSIX objects state that the target is only
+      // called.
+      return Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()
+                 ? COFF::IMAGE_REL_LLVM_ADDR32NB_CALL
+                 : COFF::IMAGE_REL_ARM64_ADDR32NB;
     }
 
   case FK_Data_8:
@@ -152,6 +182,9 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
   case AArch64::fixup_aarch64_pcrel_branch26:
   case AArch64::fixup_aarch64_pcrel_call26:
     return COFF::IMAGE_REL_ARM64_BRANCH26;
+
+  case AArch64::fixup_aarch64_pcrel_tail26:
+    return COFF::IMAGE_REL_LLVM_BRANCH_TAIL;
   }
 }
 

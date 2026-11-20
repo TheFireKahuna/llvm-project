@@ -39,6 +39,15 @@ enum Fixups {
   reloc_riprel_4byte_imm1,                   // 32-bit rip-relative followed
   reloc_riprel_4byte_imm2,                   // by a 1, 2 or 4-byte immediate,
   reloc_riprel_4byte_imm4,                   // on COFF
+  // On Windows Itanium and NT-POSIX, whose relocation types state the form of
+  // the instruction:
+  reloc_riprel_4byte_call,    // call *sym(%rip), after any prefixes
+  reloc_riprel_4byte_jump,    // jmp *sym(%rip)
+  reloc_riprel_4byte_jump_p1, // jmp *sym(%rip) after one prefix byte
+  reloc_riprel_4byte_lea,     // lea sym+k(%rip), r
+  reloc_jump_4byte_pcrel,     // jmp or jcc the assembler relaxed to 32 bits
+  reloc_jump_1byte_pcrel,     // jmp or jcc the assembler left at 8 bits
+  reloc_tail_4byte_pcrel,     // 32-bit jmp that no unwind frame covers
   // Marker
   LastTargetFixupKind,
   NumTargetFixupKinds = LastTargetFixupKind - FirstTargetFixupKind

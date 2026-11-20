@@ -647,6 +647,13 @@ MCFixupKindInfo X86AsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
       {"reloc_riprel_4byte_imm1", 0, 32, 0},
       {"reloc_riprel_4byte_imm2", 0, 32, 0},
       {"reloc_riprel_4byte_imm4", 0, 32, 0},
+      {"reloc_riprel_4byte_call", 0, 32, 0},
+      {"reloc_riprel_4byte_jump", 0, 32, 0},
+      {"reloc_riprel_4byte_jump_p1", 0, 32, 0},
+      {"reloc_riprel_4byte_lea", 0, 32, 0},
+      {"reloc_jump_4byte_pcrel", 0, 32, 0},
+      {"reloc_jump_1byte_pcrel", 0, 8, 0},
+      {"reloc_tail_4byte_pcrel", 0, 32, 0},
       // clang-format on
   };
 
@@ -669,9 +676,11 @@ static unsigned getFixupKindSize(unsigned Kind) {
   default:
     llvm_unreachable("invalid fixup kind!");
   case FK_NONE:
+  case FK_Data_leb128:
     return 0;
   case FK_SecRel_1:
   case FK_Data_1:
+  case X86::reloc_jump_1byte_pcrel:
     return 1;
   case FK_SecRel_2:
   case FK_Data_2:
@@ -680,6 +689,12 @@ static unsigned getFixupKindSize(unsigned Kind) {
   case X86::reloc_riprel_4byte_imm1:
   case X86::reloc_riprel_4byte_imm2:
   case X86::reloc_riprel_4byte_imm4:
+  case X86::reloc_riprel_4byte_call:
+  case X86::reloc_riprel_4byte_jump:
+  case X86::reloc_riprel_4byte_jump_p1:
+  case X86::reloc_riprel_4byte_lea:
+  case X86::reloc_jump_4byte_pcrel:
+  case X86::reloc_tail_4byte_pcrel:
   case X86::reloc_riprel_4byte_relax:
   case X86::reloc_riprel_4byte_relax_rex:
   case X86::reloc_riprel_4byte_relax_rex2:
@@ -703,12 +718,26 @@ constexpr char GotSymName[] = "_GLOBAL_OFFSET_TABLE_";
 
 // Adjust PC-relative fixup offsets, which are calculated from the start of the
 // next instruction.
-std::optional<bool> X86AsmBackend::evaluateFixup(const MCFragment &,
+std::optional<bool> X86AsmBackend::evaluateFixup(const MCFragment &F,
                                                  MCFixup &Fixup,
                                                  MCValue &Target, uint64_t &) {
   if (Fixup.isPCRel()) {
+    // The variable part of a relaxable fragment holds a jump whose width the
+    // assembler chooses. On Windows Itanium and NT-POSIX its relocation states
+    // that width, which the linker may change.
+    if (F.getKind() == MCFragment::FT_Relaxable &&
+        Fixup.getOffset() >= F.getFixedSize() && STI.hasFeature(X86::Is64Bit) &&
+        STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        (Fixup.getKind() == FK_Data_1 ||
+         Fixup.getKind() == X86::reloc_branch_4byte_pcrel))
+      Fixup = MCFixup::create(Fixup.getOffset(), Fixup.getValue(),
+                              Fixup.getKind() == FK_Data_1
+                                  ? X86::reloc_jump_1byte_pcrel
+                                  : X86::reloc_jump_4byte_pcrel,
+                              true);
     switch (Fixup.getKind()) {
     case FK_Data_1:
+    case X86::reloc_jump_1byte_pcrel:
       Target.setConstant(Target.getConstant() - 1);
       break;
     case FK_Data_2:
@@ -1256,6 +1285,38 @@ public:
         .Case("secrel32", FK_SecRel_4)
         .Case("secidx", FK_SecRel_2)
         .Default(MCAsmBackend::getFixupKind(Name));
+  }
+
+  // On Windows Itanium and NT-POSIX a label difference the linker may change
+  // is a fixup, which the object writer records as a span.
+  bool relaxDwarfLineAddr(MCFragment &F) const override {
+    return getContext()
+               .getTargetTriple()
+               .isWindowsItaniumOrNTPOSIXEnvironment() &&
+           relaxDwarfLineAddrWithFixup(F);
+  }
+  bool relaxDwarfCFA(MCFragment &F) const override {
+    return getContext()
+               .getTargetTriple()
+               .isWindowsItaniumOrNTPOSIXEnvironment() &&
+           relaxDwarfCFAWithFixups(
+               F, 8,
+               [&](unsigned Bits, unsigned Offset,
+                   SmallVectorImpl<MCFixup> &Fixups) {
+                 Fixups.push_back(
+                     MCFixup::create(Offset, &F.getDwarfAddrDelta(),
+                                     MCFixup::getDataKindForSize(Bits / 8)));
+               });
+  }
+  std::pair<bool, bool> relaxLEB128(MCFragment &F,
+                                    int64_t &Value) const override {
+    if (!getContext()
+             .getTargetTriple()
+             .isWindowsItaniumOrNTPOSIXEnvironment() ||
+        !F.getLEBValue().evaluateKnownAbsolute(Value, *Asm))
+      return {false, false};
+    F.setVarFixups({MCFixup::create(0, &F.getLEBValue(), FK_Data_leb128)});
+    return {true, false};
   }
 
   std::unique_ptr<MCObjectTargetWriter>

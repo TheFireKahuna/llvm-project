@@ -1,0 +1,161 @@
+# REQUIRES: x86, aarch64
+
+## /debugtype:fixup writes the PDB's Fixup Data stream as link.exe does: a
+## record for each relocation that names a symbol, with a PAIR's at the site of
+## the relocation it follows, then the exception table's at their sorted
+## sites, then the debug directory's reference to the CodeView record. An
+## absolute target, x86-64's EHANDLER, ABSOLUTE and ALIGN have no record. The
+## flags are 0x8000 for a function, 0x4000 for a label and 0x2000 for a
+## section-relative reference between the first and the last thread-local
+## chunk.
+
+# RUN: yaml2obj --docnum=1 %s -o %t1.obj
+# RUN: lld-link /entry:f1 /subsystem:console /debug /debugtype:cv,fixup \
+# RUN:   /out:%t1.exe /pdb:%t1.pdb %t1.obj
+# RUN: llvm-pdbutil dump -fixups %t1.pdb | FileCheck --check-prefix=X64 %s
+# RUN: lld-link /entry:f1 /subsystem:console /debug /out:%t0.exe /pdb:%t0.pdb \
+# RUN:   %t1.obj
+# RUN: llvm-pdbutil dump -fixups %t0.pdb | FileCheck --check-prefix=NONE %s
+# RUN: yaml2obj --docnum=2 %s -o %t2.obj
+# RUN: lld-link /entry:f1 /subsystem:console /debug /debugtype:fixup \
+# RUN:   /out:%t2.exe /pdb:%t2.pdb %t2.obj
+# RUN: llvm-pdbutil dump -fixups %t2.pdb | FileCheck --check-prefix=ARM64 %s
+
+# NONE: Fixup stream not present
+
+# X64:      Type | Flags |      RVA |   Target
+# X64-NEXT: 0004 | 8000  | 00001021 | 00001000
+# X64-NEXT: 0010 | 4000  | 00003000 | 00001020
+# X64-NEXT: 000F | 8000  | 00003000 | 00001010
+# X64-NEXT: 000E | 8000  | 00003004 | 00001000
+# X64-NEXT: 0003 | 0000  | 0000300C | 00003008
+# X64-NEXT: 0001 | 8000  | 00003010 | 00001010
+# X64-NEXT: 000B | 2000  | 00003018 | 0000500C
+# X64-NEXT: 000B | 0000  | 0000301C | 00003008
+# X64-NEXT: 8010 | 4000  | 00003028 | 00001020
+# X64-NEXT: 000F | 8000  | 00003028 | 00001010
+# X64-NEXT: 8040 | 0000  | 0000302C | 00003008
+# X64-NEXT: 0003 | 8000  | 00004000 | 00001000
+# X64-NEXT: 0003 | 8000  | 00004004 | 00001000
+# X64-NEXT: 0003 | 0000  | 00004008 | [[XDATA:[0-9A-F]+]]
+# X64-NEXT: 0003 | 8000  | 0000400C | 00001010
+# X64-NEXT: 0003 | 8000  | 00004010 | 00001010
+# X64-NEXT: 0003 | 0000  | 00004014 | [[XDATA]]
+# X64-NEXT: 0003 | 0000  | 00002014 | 0000201C
+# X64-NOT:  {{.}}
+
+# ARM64:      Type | Flags |      RVA |   Target
+# ARM64-NEXT: 0006 | 4000  | 00001000 | 00001018
+# ARM64-NEXT: 0012 | 0000  | 00001000 | 00001008
+# ARM64-NEXT: 0007 | 4000  | 00001004 | 00001018
+# ARM64-NEXT: 0012 | 0000  | 00001004 | 00001008
+# ARM64-NEXT: 0003 | 8000  | 00001008 | 00001010
+# ARM64-NEXT: 0002 | 8000  | 00003000 | 00001000
+# ARM64-NEXT: 0002 | 8000  | 00003008 | 00001010
+# ARM64-NEXT: 0002 | 0000  | 00002014 | 0000201C
+# ARM64-NOT:  {{.}}
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_AMD64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       16
+    SectionData:     'C3000000000000000000000000000000C3000000000000000000000000000000E800000000C3'
+    Relocations:
+      - { VirtualAddress: 33, SymbolName: f1, Type: IMAGE_REL_AMD64_REL32 }
+  - Name:            .data
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       16
+    SectionData:     '000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000'
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: lab, Type: IMAGE_REL_AMD64_SSPAN32 }
+      - { VirtualAddress: 0, SymbolName: f2, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 4, SymbolName: f1, Type: IMAGE_REL_AMD64_SREL32 }
+      - { VirtualAddress: 8, SymbolName: f1, Type: IMAGE_REL_AMD64_EHANDLER }
+      - { VirtualAddress: 12, SymbolName: st, Type: IMAGE_REL_AMD64_ADDR32NB }
+      - { VirtualAddress: 16, SymbolName: f2, Type: IMAGE_REL_AMD64_ADDR64 }
+      - { VirtualAddress: 24, SymbolName: tv, Type: IMAGE_REL_AMD64_SECREL }
+      - { VirtualAddress: 28, SymbolName: st, Type: IMAGE_REL_AMD64_SECREL }
+      - { VirtualAddress: 32, SymbolTableIndex: 0, Type: IMAGE_REL_AMD64_ABSOLUTE }
+      - { VirtualAddress: 32, SymbolName: abs, Type: IMAGE_REL_AMD64_ADDR64 }
+      - { VirtualAddress: 40, SymbolName: lab, Type: IMAGE_REL_LLVM_SSPAN8 }
+      - { VirtualAddress: 40, SymbolName: f2, Type: IMAGE_REL_AMD64_PAIR }
+      - { VirtualAddress: 41, SymbolTableIndex: 0, Type: IMAGE_REL_LLVM_ALIGN }
+      - { VirtualAddress: 44, SymbolName: st, Type: IMAGE_REL_LLVM_FUSED_CALL }
+  - Name:            .pdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '000000000100000000000000'
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: f2, Type: IMAGE_REL_AMD64_ADDR32NB }
+      - { VirtualAddress: 4, SymbolName: f2, Type: IMAGE_REL_AMD64_ADDR32NB }
+      - { VirtualAddress: 8, SymbolName: .xdata, Type: IMAGE_REL_AMD64_ADDR32NB }
+  - Name:            .pdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '000000000100000000000000'
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: f1, Type: IMAGE_REL_AMD64_ADDR32NB }
+      - { VirtualAddress: 4, SymbolName: f1, Type: IMAGE_REL_AMD64_ADDR32NB }
+      - { VirtualAddress: 8, SymbolName: .xdata, Type: IMAGE_REL_AMD64_ADDR32NB }
+  - Name:            .xdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '0100000000000000'
+  - Name:            .tls
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       8
+    SectionData:     '0000000000000000'
+  - Name:            '.tls$'
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       8
+    SectionData:     '0000000000000000'
+  - Name:            '.tls$zzz'
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ, IMAGE_SCN_MEM_WRITE ]
+    Alignment:       8
+    SectionData:     '0000000000000000'
+symbols:
+  - { Name: .xdata, Value: 0, SectionNumber: 5, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: f1, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: f2, Value: 16, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: lab, Value: 32, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_LABEL }
+  - { Name: st, Value: 8, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: tv, Value: 4, SectionNumber: 7, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: abs, Value: 5, SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+...
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ARM64
+  Characteristics: []
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '20000091200040F900000094C0035FD6C0035FD6C0035FD6'
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: a, Type: IMAGE_REL_ARM64_PAGEOFFSET_12A }
+      - { VirtualAddress: 0, SymbolName: b, Type: IMAGE_REL_ARM64_PAIR }
+      - { VirtualAddress: 4, SymbolName: a, Type: IMAGE_REL_ARM64_PAGEOFFSET_12L }
+      - { VirtualAddress: 4, SymbolName: b, Type: IMAGE_REL_ARM64_PAIR }
+      - { VirtualAddress: 8, SymbolName: f2, Type: IMAGE_REL_ARM64_BRANCH26 }
+  - Name:            .pdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '0000000005002000'
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: f2, Type: IMAGE_REL_ARM64_ADDR32NB }
+  - Name:            .pdata
+    Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '0000000005002000'
+    Relocations:
+      - { VirtualAddress: 0, SymbolName: f1, Type: IMAGE_REL_ARM64_ADDR32NB }
+symbols:
+  - { Name: f1, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: f2, Value: 16, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_FUNCTION, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
+  - { Name: b, Value: 8, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: a, Value: 24, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_LABEL }
+...

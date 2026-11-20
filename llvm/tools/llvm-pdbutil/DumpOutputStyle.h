@@ -97,6 +97,7 @@ private:
   Error dumpPublics();
   Error dumpSymbolsFromGSI(const GSIHashTable &Table, bool HashExtras);
   Error dumpSectionHeaders();
+  Error dumpFixups();
   Error dumpSectionContribs();
   Error dumpSectionMap();
   Error dumpDXContainer();

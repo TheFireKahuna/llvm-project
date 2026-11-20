@@ -269,6 +269,7 @@ private:
   void sortSections();
   template <typename T> void sortExceptionTable(ChunkRange &exceptionTable);
   void sortExceptionTables();
+  void createFixups();
   void sortCRTSectionChunks(std::vector<Chunk *> &chunks);
   void addSyntheticIdata();
   void sortBySectionOrder(std::vector<Chunk *> &chunks);
@@ -314,6 +315,16 @@ private:
   std::vector<std::pair<COFF::DebugType, Chunk *>> debugRecords;
   CVDebugRecordChunk *buildId = nullptr;
   ArrayRef<uint8_t> sectionTable;
+
+  // A record of the PDB's Fixup Data stream: a relocation's type, what its
+  // target is, and where the two are in the image.
+  struct Fixup {
+    ulittle16_t type;
+    ulittle16_t flags;
+    ulittle32_t rva;
+    ulittle32_t target;
+  };
+  std::vector<Fixup> fixups;
 
   // List of Arm64EC export thunks.
   std::vector<std::pair<Chunk *, Defined *>> exportThunks;
@@ -448,6 +459,7 @@ bool Writer::isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
     int64_t diff = AbsoluteDifference(s, p) + margin;
     switch (relType) {
     case IMAGE_REL_ARM64_BRANCH26:
+    case IMAGE_REL_LLVM_BRANCH_TAIL:
       return isInt<28>(diff);
     case IMAGE_REL_ARM64_BRANCH19:
       return isInt<21>(diff);
@@ -845,6 +857,7 @@ void Writer::run() {
     writeSections();
     prepareLoadConfig();
     sortExceptionTables();
+    createFixups();
 
     // Fix up the alignment in the TLS Directory's characteristic field,
     // if a specific alignment value is needed
@@ -854,7 +867,10 @@ void Writer::run() {
 
   if (!ctx.config.pdbPath.empty() && ctx.config.debug) {
     assert(buildId);
-    createPDB(ctx, sectionTable, buildId->buildId);
+    createPDB(ctx, sectionTable,
+              {reinterpret_cast<const uint8_t *>(fixups.data()),
+               fixups.size() * sizeof(Fixup)},
+              buildId->buildId);
   }
   writeBuildId();
 
@@ -3102,6 +3118,146 @@ void Writer::sortExceptionTables() {
   }
 }
 
+static bool isSecRel(Triple::ArchType arch, uint16_t type) {
+  switch (arch) {
+  case Triple::x86:
+    return type == IMAGE_REL_I386_SECREL || type == IMAGE_REL_I386_SECREL7;
+  case Triple::x86_64:
+    return type == IMAGE_REL_AMD64_SECREL || type == IMAGE_REL_AMD64_SECREL7;
+  case Triple::aarch64:
+    return type >= IMAGE_REL_ARM64_SECREL &&
+           type <= IMAGE_REL_ARM64_SECREL_LOW12L;
+  default:
+    return false;
+  }
+}
+
+// Lists the image's relocations for the PDB's Fixup Data stream as link.exe
+// does: one record for each relocation that names a symbol, a PAIR's at the
+// site of the relocation it follows, none for x86-64's EHANDLER outside the
+// exception table, and none where the target is absolute. The flags are the
+// kind of the symbol the object names: 0x8000 a function, 0x4000 a label,
+// and 0x2000 a section-relative reference between the first and the last
+// thread-local chunk. The exception table's records follow the others, and
+// the last record is the debug directory's reference to the CodeView record.
+void Writer::createFixups() {
+  if (!(ctx.config.debugTypes & unsigned(coff::DebugType::Fixup)) || !buildId ||
+      errorCount())
+    return;
+  std::vector<Fixup> tableFixups;
+  for (OutputSection *os : ctx.outputSections) {
+    for (Chunk *c : os->chunks) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      if (!sc)
+        continue;
+      const COFFObjectFile *obj = sc->file->getCOFFObj();
+      ArrayRef<coff_relocation> rels = sc->getRelocs();
+      bool x64 = sc->getArch() == Triple::x86_64;
+
+      // The exception table was sorted by its entries' first fields, so an
+      // entry's relocations are recorded where the entry went.
+      ChunkRange &table =
+          x64 && ctx.config.machine != AMD64 ? hybridPdata : pdata;
+      size_t entrySize = x64 ? 12 : 8;
+      bool sorted = !rels.empty() && table.first &&
+                    sc->getRVA() >= table.first->getRVA() &&
+                    sc->getRVA() <= table.last->getRVA();
+      std::vector<uint8_t> entries(sorted ? sc->getSize() : 0);
+      if (sorted)
+        sc->writeTo(entries.data());
+
+      uint32_t site = 0;
+      bool absolute = false;
+      for (const coff_relocation &rel : rels) {
+        if (relocationNamesNoSymbol(rel.Type))
+          continue;
+        auto *d = dyn_cast_or_null<Defined>(
+            sc->file->getSymbol(rel.SymbolTableIndex));
+        if (!sc->isPair(rel.Type)) {
+          site = rel.VirtualAddress;
+          absolute = !d || isa<DefinedAbsolute>(d);
+        }
+        Chunk *tc = d ? d->getChunk() : nullptr;
+        OutputSection *tos = tc ? ctx.getOutputSection(tc) : nullptr;
+        if (absolute || !d || (tc && !tos) ||
+            (x64 && rel.Type == IMAGE_REL_AMD64_EHANDLER && !sorted))
+          continue;
+
+        // A range extension thunk's symbol replaced the one the object names.
+        uint32_t index = rel.SymbolTableIndex;
+        if (index >= obj->getNumberOfSymbols())
+          index = obj->getRelocations(sc->header)[&rel - rels.begin()]
+                      .SymbolTableIndex;
+        COFFSymbolRef ref = check(obj->getSymbol(index));
+        uint16_t flags = 0;
+        switch (ref.getStorageClass()) {
+        case IMAGE_SYM_CLASS_EXTERNAL:
+        case IMAGE_SYM_CLASS_STATIC:
+        case IMAGE_SYM_CLASS_WEAK_EXTERNAL:
+          if ((ref.getType() & 0x30) == IMAGE_SYM_DTYPE_FUNCTION << 4)
+            flags = 0x8000;
+          break;
+        case IMAGE_SYM_CLASS_LABEL:
+          flags = 0x4000;
+        }
+
+        uint32_t rva = sc->getRVA() + site;
+        if (sorted) {
+          uint32_t begin = read32le(&entries[site - site % entrySize]);
+          const uint8_t *buf = buffer->getBufferStart() + os->getFileOff() +
+                               table.first->getRVA() - os->getRVA();
+          size_t count = (table.last->getRVA() + table.last->getSize() -
+                          table.first->getRVA()) /
+                         entrySize;
+          size_t entry = 0;
+          while (entry != count) {
+            size_t mid = (entry + count) / 2;
+            if (read32le(buf + mid * entrySize) < begin)
+              entry = mid + 1;
+            else
+              count = mid;
+          }
+          rva = table.first->getRVA() + entry * entrySize + site % entrySize;
+        } else if (isSecRel(sc->getArch(), rel.Type) && tos &&
+                   tos->name == ".tls" &&
+                   d->getRVA() > tos->chunks.front()->getRVA() &&
+                   d->getRVA() < tos->chunks.back()->getRVA()) {
+          flags |= 0x2000;
+        }
+        (sorted ? tableFixups : fixups)
+            .push_back({ulittle16_t(rel.Type), ulittle16_t(flags),
+                        ulittle32_t(rva), ulittle32_t(d->getRVA())});
+      }
+    }
+  }
+  llvm::stable_sort(tableFixups, [](const Fixup &a, const Fixup &b) {
+    return a.rva < b.rva;
+  });
+  llvm::append_range(fixups, tableFixups);
+
+  // The CodeView record is the debug directory's first entry.
+  uint16_t type = 0xffff;
+  switch (ctx.config.machine) {
+  case I386:
+    type = IMAGE_REL_I386_DIR32NB;
+    break;
+  case AMD64:
+  case ARM64EC:
+    type = IMAGE_REL_AMD64_ADDR32NB;
+    break;
+  case ARM64:
+  case ARM64X:
+    type = IMAGE_REL_ARM64_ADDR32NB;
+    break;
+  default:
+    break;
+  }
+  fixups.push_back({ulittle16_t(type), ulittle16_t(0),
+                    ulittle32_t(debugDirectory->getRVA() +
+                                offsetof(debug_directory, AddressOfRawData)),
+                    ulittle32_t(buildId->getRVA())});
+}
+
 // The CRT section contains, among other things, the array of function
 // pointers that initialize every global variable that is not trivially
 // constructed. The CRT calls them one after the other prior to invoking
@@ -3223,7 +3379,8 @@ void Writer::createFunctionOverrides() {
       if (auto *sc = dyn_cast<SectionChunk>(c))
         for (const coff_relocation &rel : sc->getRelocs())
           if (FunctionOverrideThunk *t =
-                  rel.Type == IMAGE_REL_ARM64_BRANCH26
+                  rel.Type == IMAGE_REL_ARM64_BRANCH26 ||
+                          rel.Type == IMAGE_REL_LLVM_BRANCH_TAIL
                       ? FunctionOverrideThunk::get(sc->getRelocTarget(rel))
                       : nullptr;
               t &&

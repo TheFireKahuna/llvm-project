@@ -7,17 +7,25 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/MC/MCAsmBackend.h"
+#include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDXContainerWriter.h"
 #include "llvm/MC/MCELFObjectWriter.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCGOFFObjectWriter.h"
 #include "llvm/MC/MCMachObjectWriter.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSPIRVObjectWriter.h"
+#include "llvm/MC/MCSection.h"
+#include "llvm/MC/MCSymbol.h"
+#include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCWasmObjectWriter.h"
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/MCXCOFFObjectWriter.h"
+#include "llvm/Support/LEB128.h"
+#include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -121,6 +129,126 @@ void MCAsmBackend::maybeAddReloc(const MCFragment &F, const MCFixup &Fixup,
                                  bool IsResolved) {
   if (!IsResolved)
     Asm->getWriter().recordRelocation(F, Fixup, Target, Value);
+}
+
+bool MCAsmBackend::isPCRelFixupResolved(const MCSymbol *SymA,
+                                        const MCFragment &F) {
+  // If the section does not contain linker-relaxable fragments, PC-relative
+  // fixups can be resolved.
+  if (!F.getParent()->isLinkerRelaxable())
+    return true;
+
+  // Otherwise, check if the offset between the symbol and fragment is fully
+  // resolved, unaffected by linker-relaxable fragments (e.g. instructions or
+  // offset-affected FT_Align fragments). Complements the generic
+  // isSymbolRefDifferenceFullyResolvedImpl.
+  if (!PCRelTemp)
+    PCRelTemp = getContext().createTempSymbol();
+  PCRelTemp->setFragment(const_cast<MCFragment *>(&F));
+  MCValue Res;
+  MCExpr::evaluateSymbolicAdd(Asm, false, MCValue::get(SymA),
+                              MCValue::get(nullptr, PCRelTemp), Res);
+  return !Res.getSubSym();
+}
+
+bool MCAsmBackend::relaxDwarfLineAddrWithFixup(MCFragment &F) const {
+  int64_t LineDelta = F.getDwarfLineDelta();
+  const MCExpr &AddrDelta = F.getDwarfAddrDelta();
+  int64_t Value;
+  // If the label difference can be resolved, use the default handling, which
+  // utilizes a shorter special opcode.
+  if (AddrDelta.evaluateAsAbsolute(Value, *Asm))
+    return false;
+  [[maybe_unused]] bool IsAbsolute =
+      AddrDelta.evaluateKnownAbsolute(Value, *Asm);
+  assert(IsAbsolute && "CFA with invalid expression");
+
+  SmallVector<char> Data;
+  raw_svector_ostream OS(Data);
+
+  // INT64_MAX is a signal that this is actually a DW_LNE_end_sequence.
+  if (LineDelta != INT64_MAX) {
+    OS << uint8_t(dwarf::DW_LNS_advance_line);
+    encodeSLEB128(LineDelta, OS);
+  }
+
+  // According to the DWARF specification, the `DW_LNS_fixed_advance_pc` opcode
+  // takes a single unsigned half (unencoded) operand. The maximum encodable
+  // value is therefore 65535.  Set a conservative upper bound for relaxation.
+  unsigned PCBytes;
+  if (Value > 60000) {
+    PCBytes = getContext().getAsmInfo().getCodePointerSize();
+    assert((PCBytes == 4 || PCBytes == 8) && "Unexpected pointer size");
+    OS << uint8_t(dwarf::DW_LNS_extended_op) << uint8_t(PCBytes + 1)
+       << uint8_t(dwarf::DW_LNE_set_address);
+  } else {
+    PCBytes = 2;
+    OS << uint8_t(dwarf::DW_LNS_fixed_advance_pc);
+  }
+  auto Offset = OS.tell();
+  OS.write_zeros(PCBytes);
+
+  if (LineDelta == INT64_MAX) {
+    OS << uint8_t(dwarf::DW_LNS_extended_op);
+    OS << uint8_t(1);
+    OS << uint8_t(dwarf::DW_LNE_end_sequence);
+  } else {
+    OS << uint8_t(dwarf::DW_LNS_copy);
+  }
+
+  F.setVarContents(Data);
+  F.setVarFixups({MCFixup::create(Offset, &AddrDelta,
+                                  MCFixup::getDataKindForSize(PCBytes))});
+  return true;
+}
+
+bool MCAsmBackend::relaxDwarfCFAWithFixups(
+    MCFragment &F, unsigned MinBits,
+    function_ref<void(unsigned Bits, unsigned Offset,
+                      SmallVectorImpl<MCFixup> &Fixups)>
+        AddFixups) const {
+  const MCExpr &AddrDelta = F.getDwarfAddrDelta();
+  int64_t Value;
+  if (AddrDelta.evaluateAsAbsolute(Value, *Asm))
+    return false;
+  [[maybe_unused]] bool IsAbsolute =
+      AddrDelta.evaluateKnownAbsolute(Value, *Asm);
+  assert(IsAbsolute && "CFA with invalid expression");
+
+  assert(getContext().getAsmInfo().getMinInstAlignment() == 1 &&
+         "expected 1-byte alignment");
+  if (Value == 0) {
+    F.clearVarContents();
+    F.clearVarFixups();
+    return true;
+  }
+
+  // DW_CFA_advance_loc holds the delta in the low 6 bits of its opcode; the
+  // other forms take an operand of 1, 2 or 4 bytes.
+  SmallVector<char, 8> Data;
+  raw_svector_ostream OS(Data);
+  unsigned Bits;
+  if (MinBits <= 6 && isUIntN(6, Value)) {
+    Bits = 6;
+    OS << uint8_t(dwarf::DW_CFA_advance_loc);
+  } else if (isUInt<8>(Value)) {
+    Bits = 8;
+    OS << uint8_t(dwarf::DW_CFA_advance_loc1);
+  } else if (isUInt<16>(Value)) {
+    Bits = 16;
+    OS << uint8_t(dwarf::DW_CFA_advance_loc2);
+  } else if (isUInt<32>(Value)) {
+    Bits = 32;
+    OS << uint8_t(dwarf::DW_CFA_advance_loc4);
+  } else {
+    llvm_unreachable("unsupported CFA encoding");
+  }
+  OS.write_zeros(Bits / 8);
+  SmallVector<MCFixup, 2> Fixups;
+  AddFixups(Bits, Bits != 6, Fixups);
+  F.setVarContents(Data);
+  F.setVarFixups(Fixups);
+  return true;
 }
 
 bool MCAsmBackend::isDarwinCanonicalPersonality(const MCSymbol *Sym) const {
