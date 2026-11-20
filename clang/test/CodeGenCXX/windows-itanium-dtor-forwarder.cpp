@@ -42,10 +42,10 @@ OfLocal::~OfLocal() {}
 // CHECK-DAG: @_ZTV6Inline = {{.*}} ptr @_ZN8ImportedD2Ev, ptr @_ZN6InlineD0Ev]
 // CHECK-DAG: @llvm.compiler.used = appending global [4 x ptr] [ptr @_ZN6StrongD2Ev, ptr @_ZN6StrongD1Ev, ptr @_ZN4TmplIiED2Ev, ptr @_ZN4TmplIiED1Ev]
 // CHECK-DAG: @_ZN7OfLocalD2Ev = dso_local unnamed_addr alias void (ptr), ptr @_ZN5LocalD2Ev
-// CHECK-DAG: declare extern_weak void @_ZN6StrongD2Ev({{.*}}) unnamed_addr #[[FWD:[0-9]+]]
-// CHECK-DAG: declare extern_weak void @_ZN6StrongD1Ev({{.*}}) unnamed_addr #[[FWD]]
-// CHECK-DAG: declare extern_weak void @_ZN4TmplIiED2Ev({{.*}}) unnamed_addr #[[FWD]]
-// CHECK-DAG: declare extern_weak void @_ZN4TmplIiED1Ev({{.*}}) unnamed_addr #[[FWD]]
+// CHECK-DAG: declare {{.*}}extern_weak void @_ZN6StrongD2Ev({{.*}}) unnamed_addr #[[FWD:[0-9]+]]
+// CHECK-DAG: declare {{.*}}extern_weak void @_ZN6StrongD1Ev({{.*}}) unnamed_addr #[[FWD]]
+// CHECK-DAG: declare {{.*}}extern_weak void @_ZN4TmplIiED2Ev({{.*}}) unnamed_addr #[[FWD]]
+// CHECK-DAG: declare {{.*}}extern_weak void @_ZN4TmplIiED1Ev({{.*}}) unnamed_addr #[[FWD]]
 // CHECK-DAG: attributes #[[FWD]] = { {{.*}}"weak-alternate"="_ZN8ImportedD2Ev" }
 
 // MINGW: define dso_local void @_ZN6StrongD2Ev(

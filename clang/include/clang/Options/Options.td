@@ -5086,6 +5086,16 @@ defm function_sections : BoolFOption<"function-sections",
   PosFlag<SetTrue, [], [ClangOption, CC1Option, FlangOption, FC1Option],
           "Place each function in its own section">,
   NegFlag<SetFalse, [], [FlangOption, FC1Option]>>;
+// On Windows Itanium and NT-POSIX the prefix is part of a function's ABI:
+// checks in other images read it whether or not this unit checks calls.
+defm function_type_prefix : BoolFOption<"function-type-prefix",
+  LangOpts<"FunctionTypePrefix">,
+  Default<"T.isWindowsItaniumOrNTPOSIXEnvironment()">,
+  PosFlag<SetTrue, [], [CC1Option], "Give">,
+  NegFlag<SetFalse, [], [CC1Option], "Do not give">,
+  BothFlags<[], [CC1Option],
+            " every function a KCFI type prefix with a marker, which"
+            " indirect-call checks in any image can read">>;
 defm basic_block_address_map : BoolFOption<"basic-block-address-map",
   CodeGenOpts<"BBAddrMap">, DefaultFalse,
   PosFlag<SetTrue, [], [CC1Option], "Emit the basic block address map section.">,

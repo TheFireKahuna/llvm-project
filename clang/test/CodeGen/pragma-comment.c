@@ -8,7 +8,7 @@
 // RUN: %clang_cc1 %s -triple aarch64-windows-msvc -fms-extensions -emit-llvm -o - | FileCheck %s
 // RUN: %clang_cc1 %s -triple mipsel-windows-msvc -fms-extensions -emit-llvm -o - | FileCheck %s
 // RUN: %clang_cc1 %s -triple i686-unknown-uefi -fms-extensions -emit-llvm -o - | FileCheck %s
-// RUN: %clang_cc1 %s -triple x86_64-pc-windows-ntposix -fms-extensions -emit-llvm -o - | FileCheck %s
+// RUN: %clang_cc1 %s -triple x86_64-pc-windows-ntposix -fms-extensions -fno-function-type-prefix -emit-llvm -o - | FileCheck %s
 
 #pragma comment(lib, "msvcrt.lib")
 #pragma comment(lib, "kernel32")

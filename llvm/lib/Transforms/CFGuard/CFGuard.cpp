@@ -13,12 +13,18 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/CFGuard.h"
+#include "llvm/ADT/MapVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/IR/AttributeMask.h"
 #include "llvm/IR/CallingConv.h"
+#include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PatternMatch.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/TargetParser/Triple.h"
@@ -30,6 +36,8 @@ using OperandBundleDef = OperandBundleDefT<Value *>;
 #define DEBUG_TYPE "cfguard"
 
 STATISTIC(CFGuardCounter, "Number of Control Flow Guard checks added");
+STATISTIC(CFGuardProvenCounter,
+          "Number of indirect calls whose target is proven");
 
 constexpr StringRef GuardCheckFunctionName = "__guard_check_icall_fptr";
 constexpr StringRef GuardDispatchFunctionName = "__guard_dispatch_icall_fptr";
@@ -299,11 +307,245 @@ static bool canUseDispatch(const CallBase &CB) {
   }
 }
 
+// Returns true if I may call a function. A callee may spill a value that is
+// live across the call to its own writable frame.
+static bool mayCall(const Instruction &I) {
+  const auto *II = dyn_cast<IntrinsicInst>(&I);
+  return isa<CallBase>(I) && !(II && II->isAssumeLikeIntrinsic());
+}
+
+// Returns true if I, without its flags, computes a value from every value of
+// its operands: no operand makes it poison or undefined behaviour.
+static bool isTotal(const Instruction &I) {
+  using namespace PatternMatch;
+  const APInt *C;
+  switch (I.getOpcode()) {
+  case Instruction::Add:
+  case Instruction::Sub:
+  case Instruction::Mul:
+  case Instruction::And:
+  case Instruction::Or:
+  case Instruction::Xor:
+  case Instruction::Trunc:
+  case Instruction::ZExt:
+  case Instruction::SExt:
+  case Instruction::PtrToInt:
+  case Instruction::IntToPtr:
+  case Instruction::BitCast:
+  case Instruction::GetElementPtr:
+  case Instruction::ICmp:
+  case Instruction::Select:
+  case Instruction::PHI:
+  case Instruction::Freeze:
+    return true;
+  case Instruction::Shl:
+  case Instruction::LShr:
+  case Instruction::AShr:
+    return match(I.getOperand(1), m_APInt(C)) &&
+           C->ult(I.getType()->getScalarSizeInBits());
+  case Instruction::UDiv:
+  case Instruction::URem:
+    return match(I.getOperand(1), m_APInt(C)) && !C->isZero();
+  default:
+    return false;
+  }
+}
+
+// Returns the range of the index V where BB uses it. Each step follows only
+// what an operation computes, never a poison-generating flag, metadata, an
+// attribute or an assumption: an index that breaks such a promise is exactly
+// what an attacker supplies, and ValueTracking and LazyValueInfo read them
+// whatever the query asks. Only a value computed after LastCall, the last call
+// before the use, is followed, since a callee may spill an older one. With no
+// such call, a compare on the only edge into BB bounds the value too, and is
+// added to Compares.
+static ConstantRange getIndexRange(Value *V, BasicBlock *BB,
+                                   const Instruction *LastCall,
+                                   SmallVectorImpl<Value *> &Compares,
+                                   unsigned Depth = 6) {
+  using namespace PatternMatch;
+  const APInt *C;
+  if (match(V, m_APInt(C)))
+    return ConstantRange(*C);
+  unsigned BitWidth = V->getType()->getScalarSizeInBits();
+  ConstantRange CR = ConstantRange::getFull(BitWidth);
+
+  // The compare must be in the predecessor with no call after it, so that BB
+  // uses the value it tested.
+  BasicBlock *Pred = BB->getSinglePredecessor();
+  auto *BI =
+      Pred && !LastCall ? dyn_cast<CondBrInst>(Pred->getTerminator()) : nullptr;
+  auto *Cmp = BI ? dyn_cast<ICmpInst>(BI->getCondition()) : nullptr;
+  if (Cmp && Cmp->getParent() == Pred &&
+      match(Cmp, m_ICmp(m_Specific(V), m_APInt(C))) &&
+      none_of(make_range(Cmp->getIterator(), BI->getIterator()), mayCall)) {
+    CR = ConstantRange::makeExactICmpRegion(BI->getSuccessor(0) == BB
+                                                ? Cmp->getPredicate()
+                                                : Cmp->getInversePredicate(),
+                                            *C);
+    Compares.push_back(Cmp);
+  }
+
+  auto *I = dyn_cast<Instruction>(V);
+  if (!I || !Depth || I->getParent() != BB ||
+      (LastCall && I->comesBefore(LastCall)) || !isTotal(*I))
+    return CR;
+  auto Operand = [&] {
+    return getIndexRange(I->getOperand(0), BB, LastCall, Compares, Depth - 1);
+  };
+  if (isa<ZExtInst, SExtInst, TruncInst>(I))
+    return CR.intersectWith(
+        Operand().castOp(cast<CastInst>(I)->getOpcode(), BitWidth));
+  if (match(I, m_BinOp(m_Value(), m_APInt(C))))
+    return CR.intersectWith(Operand().binaryOp(
+        cast<BinaryOperator>(I)->getOpcode(), ConstantRange(*C)));
+  return CR;
+}
+
+// The proof reads no promise whose breach is undefined behaviour, but the
+// backend would: an nneg zext may become a sext, a samesign compare a signed
+// one, and a !range may delete the mask that bounds the index. Drops every
+// such promise from Values and from all they are computed from, so that the
+// backend computes what the proof read. Returns false if one cannot be
+// dropped. A loaded value and a call's result are what the machine holds,
+// whatever was promised of them.
+static bool dropPromises(SmallVectorImpl<Value *> &Values) {
+  AttributeMask Promises = AttributeFuncs::getUBImplyingAttributes();
+  Promises.addAttribute(Attribute::Range)
+      .addAttribute(Attribute::NonNull)
+      .addAttribute(Attribute::Alignment)
+      .addAttribute(Attribute::ZExt)
+      .addAttribute(Attribute::SExt);
+  SmallPtrSet<Value *, 16> Seen;
+  while (!Values.empty()) {
+    Value *V = Values.pop_back_val();
+    if (!Seen.insert(V).second)
+      continue;
+    // Without zeroext or signext, the function extends the argument itself.
+    if (auto *Arg = dyn_cast<Argument>(V))
+      Arg->getParent()->removeParamAttrs(Arg->getArgNo(), Promises);
+    auto *I = dyn_cast<Instruction>(V);
+    if (!I)
+      continue;
+    I->dropPoisonGeneratingAnnotations();
+    I->dropUBImplyingAttrsAndMetadata();
+    if (auto *CB = dyn_cast<CallBase>(I)) {
+      // An intrinsic is a computation, and none is known to be total. Without
+      // zeroext or signext the caller extends the result itself, but what the
+      // callee's declaration promises cannot be dropped here.
+      CB->removeRetAttrs(Promises);
+      if (isa<IntrinsicInst>(CB) || CB->getRange() ||
+          CB->hasRetAttr(Attribute::ZExt) || CB->hasRetAttr(Attribute::SExt))
+        return false;
+    } else if (isa<LoadInst>(I)) {
+      // Instruction selection may forward a value stored in the block.
+      for (Instruction &Prev :
+           make_range(I->getParent()->begin(), I->getIterator()))
+        if (auto *Store = dyn_cast<StoreInst>(&Prev))
+          Values.push_back(Store->getValueOperand());
+    } else if (isTotal(*I)) {
+      Values.append(I->op_begin(), I->op_end());
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Returns true if every word of C is null or the address of a function that
+// this image defines or reaches through its own thunk and that carries Type,
+// the type a KCFI check of the call would test, if there is one: leaving the
+// call unchecked must accept no target the check would reject.
+static bool holdsOnlyFunctions(const Constant *C, const ConstantInt *Type) {
+  if (isa<ConstantPointerNull, ConstantAggregateZero>(C))
+    return true;
+  if (auto *F = dyn_cast<Function>(C)) {
+    const MDNode *MD = F->getMetadata(LLVMContext::MD_kcfi_type);
+    return !F->hasDLLImportStorageClass() &&
+           (!Type ||
+            (MD && mdconst::extract<ConstantInt>(MD->getOperand(0)) == Type));
+  }
+  return isa<ConstantArray, ConstantStruct>(C) &&
+         all_of(C->operands(), [&](const Use &Op) {
+           return holdsOnlyFunctions(cast<Constant>(Op), Type);
+         });
+}
+
+// Returns the load of CB's target if the target is provably one of a fixed
+// set of functions and so needs no check: loaded from a table that is
+// read-only once the image is loaded and holds only functions, at an index
+// proven to select one of its words. The proof must not rest on inbounds,
+// which only makes an out-of-range address poison, and the promises it does
+// not rest on are dropped.
+static LoadInst *proveTarget(CallBase &CB) {
+  BasicBlock *BB = CB.getParent();
+  auto *Load = dyn_cast<LoadInst>(CB.getCalledOperand());
+  auto *GEP =
+      Load ? dyn_cast<GetElementPtrInst>(Load->getPointerOperand()) : nullptr;
+  // The mark is on the load, so no other call may be made through it.
+  if (!GEP || Load->getParent() != BB || GEP->getParent() != BB ||
+      any_of(Load->users(), [&](const User *U) {
+        auto *Call = dyn_cast<CallBase>(U);
+        return Call && Call != &CB && Call->getCalledOperand() == Load;
+      }))
+    return nullptr;
+
+  const DataLayout &DL = CB.getDataLayout();
+  unsigned IndexWidth = DL.getIndexTypeSizeInBits(GEP->getType());
+  APInt Offset(IndexWidth, 0);
+  auto *GV = dyn_cast<GlobalVariable>(
+      GEP->getPointerOperand()->stripAndAccumulateConstantOffsets(
+          DL, Offset, /*AllowNonInbounds=*/true));
+  std::optional<OperandBundleUse> KCFI =
+      CB.getOperandBundle(LLVMContext::OB_kcfi);
+  // A thread-local or explicitly placed constant may be writable.
+  if (!GV || !GV->isConstant() || !GV->hasDefinitiveInitializer() ||
+      GV->isDeclarationForLinker() || GV->isThreadLocal() || GV->hasSection() ||
+      !holdsOnlyFunctions(GV->getInitializer(),
+                          KCFI ? cast<ConstantInt>(KCFI->Inputs[0]) : nullptr))
+    return nullptr;
+
+  // Every offset must select a whole word of the table.
+  SmallMapVector<Value *, APInt, 4> VariableOffsets;
+  uint64_t WordSize = DL.getTypeStoreSize(Load->getType());
+  uint64_t TableSize = DL.getTypeAllocSize(GV->getValueType());
+  if (!GEP->collectOffset(DL, IndexWidth, VariableOffsets, Offset) ||
+      VariableOffsets.size() != 1 || TableSize < WordSize ||
+      VariableOffsets.front().second.urem(WordSize) || Offset.urem(WordSize))
+    return nullptr;
+
+  // The proof holds for values in registers. Requiring them to be computed
+  // after the last call keeps them out of a callee's frame; the backend checks
+  // that register allocation kept them out of this function's.
+  const Instruction *LastCall = CB.getPrevNode();
+  while (LastCall && !mayCall(*LastCall))
+    LastCall = LastCall->getPrevNode();
+  if (LastCall && GEP->comesBefore(LastCall))
+    return nullptr;
+
+  const auto &[Index, Scale] = VariableOffsets.front();
+  SmallVector<Value *, 8> Values = {Index};
+  ConstantRange Offsets = getIndexRange(Index, BB, LastCall, Values)
+                              .sextOrTrunc(IndexWidth)
+                              .multiply(ConstantRange(Scale))
+                              .add(ConstantRange(Offset));
+  return ConstantRange(APInt(IndexWidth, 0),
+                       APInt(IndexWidth, TableSize - WordSize + 1))
+                     .contains(Offsets) &&
+                 dropPromises(Values)
+             ? Load
+             : nullptr;
+}
+
 bool CFGuardImpl::runOnFunction(Function &F) {
   // Skip modules for which CFGuard checks have been disabled.
   if (CFGuardModuleFlag != ControlFlowGuardMode::Enabled)
     return false;
 
+  // A proven call is guarded like any other. The backend alone can drop the
+  // guard, once it knows that the marked target stayed in its register.
+  bool MarkProven =
+      F.getParent()->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
   SmallVector<CallBase *, 8> IndirectCalls;
 
   // Iterate over the instructions to find all indirect call/invoke/callbr
@@ -316,6 +558,11 @@ bool CFGuardImpl::runOnFunction(Function &F) {
       if (CB && CB->isIndirectCall() && !CB->hasFnAttr("guard_nocf")) {
         IndirectCalls.push_back(CB);
         CFGuardCounter++;
+        if (LoadInst *Load = MarkProven ? proveTarget(*CB) : nullptr) {
+          Load->setMetadata(LLVMContext::MD_cfguard_proven,
+                            MDNode::get(F.getContext(), {}));
+          CFGuardProvenCounter++;
+        }
       }
     }
   }

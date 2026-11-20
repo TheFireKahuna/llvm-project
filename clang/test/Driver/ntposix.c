@@ -2,22 +2,15 @@
 
 // RUN: rm -rf %t && split-file %s %t
 
-// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s 2>&1 \
-// RUN:   | FileCheck --check-prefix=CC1 %s \
-// RUN:       --implicit-check-not=-stack-protector \
-// RUN:       --implicit-check-not=-fms-extensions --implicit-check-not=-D_DLL \
-// RUN:       --implicit-check-not=-fno-use-cxa-atexit \
-// RUN:       --implicit-check-not=-fwchar-type \
-// RUN:       --implicit-check-not=-fvisibility-global-new-delete \
-// RUN:       --implicit-check-not=-fno-dllexport-inlines
-// RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s 2>&1 \
-// RUN:   | FileCheck --check-prefixes=CC1,CC1-A64 %s \
-// RUN:       --implicit-check-not=-stack-protector \
-// RUN:       --implicit-check-not=-fms-extensions --implicit-check-not=-D_DLL \
-// RUN:       --implicit-check-not=-fno-use-cxa-atexit \
-// RUN:       --implicit-check-not=-fwchar-type \
-// RUN:       --implicit-check-not=-fvisibility-global-new-delete \
-// RUN:       --implicit-check-not=-fno-dllexport-inlines
+// DEFINE: %{x64} = %clang -### --target=x86_64-pc-windows-ntposix -c %s
+// DEFINE: %{a64} = %clang -### --target=aarch64-pc-windows-ntposix -c %s
+// DEFINE: %{posix} = --implicit-check-not=-stack-protector --implicit-check-not=-fms-extensions \
+// DEFINE:   --implicit-check-not=-D_DLL --implicit-check-not=-fno-use-cxa-atexit \
+// DEFINE:   --implicit-check-not=-fwchar-type --implicit-check-not=-fvisibility-global-new-delete \
+// DEFINE:   --implicit-check-not=-fno-dllexport-inlines
+
+// RUN: %{x64} 2>&1 | FileCheck --check-prefix=CC1 %s %{posix}
+// RUN: %{a64} 2>&1 | FileCheck --check-prefixes=CC1,CC1-A64 %s %{posix}
 // CC1:         "-cc1" "-triple" "{{x86_64|aarch64}}-pc-windows-ntposix"
 // CC1-DAG:     "-pic-level" "2"
 // CC1-DAG:     "-Wget-proc-address-type"
@@ -30,51 +23,40 @@
 // CC1-DAG:     "-fdeclspec"
 // CC1-DAG:     "-exception-model=seh"
 // CC1-DAG:     "-cfguard-no-checks"
+// CC1-DAG:     "-fsanitize-cfi-icall-generalize-pointers"
 // CC1-DAG:     "-ehcontguard"
 // CC1-A64-DAG: "-target-feature" "+lse2"
 
-// A user's frame-pointer options still apply.
-// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s \
-// RUN:     -mno-omit-leaf-frame-pointer 2>&1 \
-// RUN:   | FileCheck --check-prefix=LEAF-FP %s
-// LEAF-FP: "-mframe-pointer=all"
+// A user's frame-pointer options still apply; Control Flow Guard's checks are
+// not yet a default; build systems written for POSIX pass -fPIC.
+// RUN: %{x64} -mno-omit-leaf-frame-pointer -mguard=cf -fPIC 2>&1 | FileCheck --check-prefix=USER %s \
+// RUN:   --implicit-check-not=error:
+// USER-DAG: "-mframe-pointer=all"
+// USER-DAG: "-cfguard"
+// USER-DAG: "-pic-level" "2"
 
 // Separate sections and unwind tables are not optional.
-// RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s -ffreestanding \
-// RUN:     -fno-data-sections -fno-unwind-tables 2>&1 \
-// RUN:   | FileCheck --check-prefix=MANDATORY %s
+// RUN: %{a64} -ffreestanding -fno-data-sections -fno-unwind-tables 2>&1 | FileCheck --check-prefix=MANDATORY %s
 // MANDATORY:      warning: ignoring '-fno-data-sections' option as it is not currently supported for target 'aarch64-pc-windows-ntposix'
 // MANDATORY-NEXT: warning: ignoring '-fno-unwind-tables' option as it is not currently supported for target 'aarch64-pc-windows-ntposix'
 // MANDATORY-DAG:  "-funwind-tables=2"
 // MANDATORY-DAG:  "-fdata-sections"
 
-// Control Flow Guard's checks are not yet a default.
-// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s -mguard=cf 2>&1 \
-// RUN:   | FileCheck --check-prefix=CF %s
-// CF: "-cfguard"
-
-// A 16-bit wchar_t is the Win32 face's, not an option's.
-// RUN: not %clang -### --target=x86_64-pc-windows-ntposix -c %s \
-// RUN:     -fshort-wchar 2>&1 \
-// RUN:   | FileCheck --check-prefix=SHORT-WCHAR -DARCH=x86_64 %s
-// RUN: not %clang -### --target=aarch64-pc-windows-ntposix -c %s \
-// RUN:     -fshort-wchar 2>&1 \
-// RUN:   | FileCheck --check-prefix=SHORT-WCHAR -DARCH=aarch64 %s
-// SHORT-WCHAR: error: unsupported option '-fshort-wchar' for target '[[ARCH]]-pc-windows-ntposix'
-
-// Build systems written for POSIX pass -fPIC.
-// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s -fPIC 2>&1 \
-// RUN:   | FileCheck --check-prefix=PIC %s --implicit-check-not=error:
-// PIC: "-pic-level" "2"
+// The options that would change a function's type id are errors, and so is a
+// hot patch, which would overwrite it. A 16-bit wchar_t is the Win32 face's,
+// not an option's.
+// RUN: not %{a64} -fsanitize-cfi-icall-experimental-normalize-integers -fsanitize-kcfi-arity \
+// RUN:   -fsanitize-kcfi-hash=FNV-1a -fms-hotpatch -fshort-wchar 2>&1 | FileCheck --check-prefix=ERRORS %s
+// ERRORS-DAG: error: unsupported option '-fsanitize-cfi-icall-experimental-normalize-integers' for target 'aarch64-pc-windows-ntposix'
+// ERRORS-DAG: error: unsupported option '-fsanitize-kcfi-arity' for target 'aarch64-pc-windows-ntposix'
+// ERRORS-DAG: error: unsupported option '-fsanitize-kcfi-hash=FNV-1a' for target 'aarch64-pc-windows-ntposix'
+// ERRORS-DAG: error: unsupported option '-fms-hotpatch' for target 'aarch64-pc-windows-ntposix'
+// ERRORS-DAG: error: unsupported option '-fshort-wchar' for target 'aarch64-pc-windows-ntposix'
 
 // The resource headers, then the C library's, the target's own first.
-// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s --sysroot=%t 2>&1 \
-// RUN:   | FileCheck --check-prefix=INCLUDE %s \
-// RUN:       --implicit-check-not=win32_itanium_wrappers \
-// RUN:       --implicit-check-not="Windows Kits"
-// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s --sysroot=%t \
-// RUN:     -nostdlibinc 2>&1 \
-// RUN:   | FileCheck --check-prefix=NOSTDLIBINC %s
+// RUN: %{x64} --sysroot=%t 2>&1 | FileCheck --check-prefix=INCLUDE %s \
+// RUN:   --implicit-check-not=win32_itanium_wrappers --implicit-check-not="Windows Kits"
+// RUN: %{x64} --sysroot=%t -nostdlibinc 2>&1 | FileCheck --check-prefix=NOSTDLIBINC %s
 // INCLUDE:      "-internal-isystem" "{{[^"]*}}{{/|\\\\}}include"
 // INCLUDE-SAME: "-internal-isystem" "[[ROOT:[^"]*]]{{/|\\\\}}include{{/|\\\\}}x86_64-pc-windows-ntposix"
 // INCLUDE-SAME: "-internal-isystem" "[[ROOT]]{{/|\\\\}}include"

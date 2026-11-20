@@ -618,6 +618,10 @@ LLVM_ABI ModulePass *createWindowsSecureHotPatchingPass();
 
 /// Lowers KCFI operand bundles for indirect calls.
 LLVM_ABI FunctionPass *createKCFIPass();
+
+/// Recomputes the constants in the addresses of proven call targets' loads
+/// before register allocation.
+LLVM_ABI FunctionPass *createCFGuardProvenAddressLegacyPass();
 } // namespace llvm
 
 #endif

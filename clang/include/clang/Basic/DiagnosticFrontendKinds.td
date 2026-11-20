@@ -494,6 +494,10 @@ def err_invalid_llvm_ir : Error<"invalid LLVM IR input: %0">;
 def err_os_unsupport_riscv_fmv : Error<
   "function multiversioning is currently only supported on Linux">;
 
+def err_patchable_function_entry_type_prefix : Error<
+  "offset %0 of 'patchable_function_entry' attribute differs from the "
+  "translation unit's offset %1, which every function type prefix has">;
+
 def warn_unreachable_version
     : Warning<"function version '%0' is unreachable; ignoring version">,
       InGroup<FunctionMultiVersioning>;

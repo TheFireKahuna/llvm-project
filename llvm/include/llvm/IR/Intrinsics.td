@@ -2547,6 +2547,13 @@ def int_public_type_test : DefaultAttrsIntrinsic<[llvm_i1_ty],
 // callees. This needs to be a musttail call.
 def int_icall_branch_funnel : DefaultAttrsIntrinsic<[], [llvm_vararg_ty], []>;
 
+// Traps unless the KCFI type word at the given offset before a function's
+// entry equals the given type.
+def int_kcfi_check : Intrinsic<[], [llvm_ptr_ty, llvm_i32_ty, llvm_i32_ty],
+                               [IntrInaccessibleMemOrArgMemOnly,
+                                ReadOnly<ArgIndex<0>>, NoCapture<ArgIndex<0>>,
+                                ImmArg<ArgIndex<1>>, ImmArg<ArgIndex<2>>]>;
+
 def int_load_relative: DefaultAttrsIntrinsic<[llvm_ptr_ty],
                                  [llvm_ptr_ty, llvm_any_scalar_int_ty],
                                  [IntrReadMem, IntrArgMemOnly]>;

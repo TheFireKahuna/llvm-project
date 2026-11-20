@@ -842,6 +842,18 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     }
   } // End of sanitizer scope
 
+  // A virtual function carries the KCFI type of its slot, salted by a class
+  // that this call cannot know, so the virtual path checks the second type
+  // that every function of a slot carries, 16 bytes before its entry, and the
+  // non-virtual path the function's own type, 4 bytes before it.
+  bool EmitKCFICheck =
+      CGF.SanOpts.has(SanitizerKind::KCFI) && CGM.hasKCFIVTableSlotTypes();
+  if (EmitKCFICheck)
+    Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::kcfi_check),
+                       {VirtualFn,
+                        CGM.CreateKCFIVfnTypeId(MPT->getPointeeType()),
+                        Builder.getInt32(16)});
+
   CGF.EmitBranch(FnEnd);
 
   // In the non-virtual path, the function pointer is actually a
@@ -886,6 +898,16 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
     }
   }
 
+  if (EmitKCFICheck) {
+    StringRef Salt;
+    if (const auto &Info = FPT->getExtraAttributeInfo())
+      Salt = Info.CFISalt;
+    Builder.CreateCall(CGM.getIntrinsic(llvm::Intrinsic::kcfi_check),
+                       {NonVirtualFn,
+                        CGM.CreateKCFITypeId(MPT->getPointeeType(), Salt),
+                        Builder.getInt32(4)});
+  }
+
   // We're done.
   CGF.EmitBlock(FnEnd);
   llvm::PHINode *CalleePtr = Builder.CreatePHI(CGF.DefaultPtrTy, 2);
@@ -911,6 +933,8 @@ CGCallee ItaniumCXXABI::EmitLoadOfMemberFunctionPointer(
   }
 
   CGCallee Callee(FPT, CalleePtr, PointerAuth);
+  if (EmitKCFICheck)
+    Callee.setKCFIChecked();
   return Callee;
 }
 
@@ -2337,6 +2361,12 @@ CGCallee ItaniumCXXABI::getVirtualFunctionPointer(CodeGenFunction &CGF,
     PointerAuth = CGF.EmitPointerAuthInfo(Schema, VTableSlotPtr, GD, QualType());
   }
   CGCallee Callee(GD, VFunc, PointerAuth);
+  // The call checks the KCFI type of the slot, which every function that can
+  // fill it carries.
+  if (CGM.hasKCFIVTableSlotTypes())
+    Callee.setKCFITypeId(CGM.CreateKCFIVTableSlotTypeId(
+        CGM.getItaniumVTableContext().findOriginalMethod(
+            GD.getCanonicalDecl())));
   return Callee;
 }
 
@@ -2935,7 +2965,8 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
 /// Register a global destructor using __cxa_atexit.
 static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
                                         llvm::FunctionCallee dtor,
-                                        llvm::Constant *addr, bool TLS) {
+                                        llvm::Constant *addr, bool TLS,
+                                        bool IsDestructor) {
   assert(!CGF.getTarget().getTriple().isOSAIX() &&
          "unexpected call to emitGlobalDtorWithCXAAtExit");
   assert((TLS || CGF.getTypes().getCodeGenOpts().CXAAtExit) &&
@@ -2945,6 +2976,12 @@ static void emitGlobalDtorWithCXAAtExit(CodeGenFunction &CGF,
     const llvm::Triple &T = CGF.getTarget().getTriple();
     Name = T.isOSDarwin() ?  "_tlv_atexit" : "__cxa_thread_atexit";
   }
+  // A destructor, or a helper that destroys an object, carries the KCFI type
+  // the runtime calls a destructor through, which a plain function passed to
+  // __cxa_atexit does not. The runtimes take one through a sibling entry
+  // point and call each function through the type it carries.
+  if (IsDestructor && CGF.CGM.hasKCFIVTableSlotTypes())
+    Name = TLS ? "__llvm_kcfi_cxa_thread_atexit" : "__llvm_kcfi_cxa_atexit";
 
   // We're assuming that the destructor function is something we can
   // reasonably call with the default CC.
@@ -3085,7 +3122,8 @@ void CodeGenModule::registerGlobalDtorsWithAtExit() {
       // Register the destructor function calling __cxa_atexit if it is
       // available. Otherwise fall back on calling atexit.
       if (getCodeGenOpts().CXAAtExit) {
-        emitGlobalDtorWithCXAAtExit(CGF, Dtor, nullptr, false);
+        emitGlobalDtorWithCXAAtExit(CGF, Dtor, nullptr, false,
+                                    /*IsDestructor=*/false);
       } else {
         // We're assuming that the destructor function is something we can
         // reasonably call with the correct CC.
@@ -3125,7 +3163,8 @@ void ItaniumCXXABI::registerGlobalDtor(CodeGenFunction &CGF, const VarDecl &D,
   // or not. CXAAtExit controls only __cxa_atexit, so use it if it is enabled.
   // We can always use __cxa_thread_atexit.
   if (CGM.getCodeGenOpts().CXAAtExit || D.getTLSKind())
-    return emitGlobalDtorWithCXAAtExit(CGF, dtor, addr, D.getTLSKind());
+    return emitGlobalDtorWithCXAAtExit(CGF, dtor, addr, D.getTLSKind(),
+                                       /*IsDestructor=*/true);
 
   // In Apple kexts, we want to add a global destructor entry.
   // FIXME: shouldn't this be guarded by some variable?

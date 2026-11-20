@@ -465,6 +465,11 @@ enum Arm64XFixupType : uint8_t {
   IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA = 2,
 };
 
+/// The KCFI type reserved for a function that no pointer can reach, under
+/// function type prefixes. No function or call has it: a type that hashes to
+/// it is one more.
+enum : uint32_t { SealedTypeId = 0 };
+
 enum COMDATType : uint8_t {
   IMAGE_COMDAT_SELECT_NODUPLICATES = 1,
   IMAGE_COMDAT_SELECT_ANY,

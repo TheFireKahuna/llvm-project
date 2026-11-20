@@ -1,0 +1,69 @@
+# RUN: llc -mtriple=aarch64-unknown-windows-itanium \
+# RUN:   -run-pass=aarch64-expand-pseudo -verify-machineinstrs %s -o - \
+# RUN:   | FileCheck %s
+
+# The guard check before a call whose target was loaded from a table the
+# CFGuard pass proved goes, with the load of the guard function's pointer and
+# the copy of the target it read, only if the target stayed in its register
+# from the load to the call.
+
+--- |
+  @table = internal constant [4 x ptr] zeroinitializer
+  @__guard_check_icall_fptr = external global ptr
+  define void @in_register() { ret void }
+  define void @copied() { ret void }
+  define void @target_reloaded() { ret void }
+...
+---
+# CHECK-LABEL: name: in_register
+# CHECK:       renamable $x9 = ANDXri
+# CHECK-NEXT:  renamable $x15 = LDRXroX
+# CHECK-NEXT:  BLR killed renamable $x15, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp{{$}}
+name: in_register
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x0, $x8
+    renamable $x9 = ANDXri killed renamable $x0, 4097
+    renamable $x10 = ADRP target-flags(aarch64-page) @__guard_check_icall_fptr
+    renamable $x15 = LDRXroX killed renamable $x8, killed renamable $x9, 0, 1 :: (cfguard-proven load (s64))
+    renamable $x8 = LDRXui killed renamable $x10, target-flags(aarch64-pageoff, aarch64-nc) @__guard_check_icall_fptr :: (dereferenceable load (s64) from @__guard_check_icall_fptr)
+    BLR killed renamable $x8, csr_win_aarch64_cfguard_check, implicit-def dead $lr, implicit $sp, implicit $x15, implicit-def $sp
+    BLR killed renamable $x15, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp, cfi-type 12
+    RET_ReallyLR
+...
+---
+# CHECK-LABEL: name: copied
+# CHECK:       renamable $x19 = LDRXroX
+# CHECK-NEXT:  BLR killed renamable $x19
+name: copied
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x0, $x8, $x10
+    renamable $x9 = ANDXri killed renamable $x0, 4097
+    renamable $x19 = LDRXroX killed renamable $x8, killed renamable $x9, 0, 1 :: (cfguard-proven load (s64))
+    $x15 = ORRXrs $xzr, $x19, 0
+    BLR killed renamable $x10, csr_win_aarch64_cfguard_check, implicit-def dead $lr, implicit $sp, implicit killed $x15, implicit-def $sp
+    BLR killed renamable $x19, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp
+    RET_ReallyLR
+...
+---
+# CHECK-LABEL: name: target_reloaded
+# CHECK:       BLR killed renamable $x10, csr_win_aarch64_cfguard_check
+# CHECK-NEXT:  BLR killed renamable $x15, csr_aarch64_aapcs, {{.*}}cfi-type 12
+name: target_reloaded
+tracksRegLiveness: true
+stack:
+  - { id: 0, type: spill-slot, offset: -16, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    liveins: $x0, $x8, $x10
+    renamable $x9 = ANDXri killed renamable $x0, 4097
+    renamable $x15 = LDRXroX killed renamable $x8, killed renamable $x9, 0, 1 :: (cfguard-proven load (s64))
+    STRXui killed $x15, $sp, 1 :: (store (s64) into %stack.0)
+    $x15 = LDRXui $sp, 1 :: (load (s64) from %stack.0)
+    BLR killed renamable $x10, csr_win_aarch64_cfguard_check, implicit-def dead $lr, implicit $sp, implicit $x15, implicit-def $sp
+    BLR killed renamable $x15, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp, cfi-type 12
+    RET_ReallyLR
+...

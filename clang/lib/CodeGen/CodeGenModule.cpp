@@ -57,6 +57,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/IR/AttributeMask.h"
 #include "llvm/IR/CallingConv.h"
@@ -1256,7 +1257,7 @@ void CodeGenModule::Release() {
     CodeGenFunction(*this).EmitCfiCheckFail();
     CodeGenFunction(*this).EmitCfiCheckStub();
   }
-  if (LangOpts.Sanitize.has(SanitizerKind::KCFI))
+  if (hasFunctionTypePrefix())
     finalizeKCFITypes();
   // On Windows Itanium and NT-POSIX a C++ object records the revision of the
   // C++ ABI it was compiled for, which fixes how its type_info objects compare
@@ -1266,6 +1267,21 @@ void CodeGenModule::Release() {
       getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       !LangOpts.isCompatibleWith(LangOptions::ClangABI::Ver23))
     AddDetectMismatch("_WIN_ITANIUM_CXX_ABI", "1");
+  // The marker tells prefixes whose type identifiers follow this module's
+  // definition from any other, and objects of two definitions, or with two
+  // prefix layouts, do not link.
+  if (LangOpts.FunctionTypePrefix) {
+    uint32_t Marker = llvm::getTypePrefixMarker(
+        CodeGenOpts.SanitizeCfiICallNormalizeIntegers,
+        CodeGenOpts.SanitizeCfiICallGeneralizePointers,
+        CodeGenOpts.SanitizeKcfiHash);
+    getModule().addModuleFlag(llvm::Module::Error, "function-type-prefix",
+                              Marker);
+    AddDetectMismatch(
+        "_WIN_ITANIUM_KCFI_PREFIX",
+        llvm::utohexstr(Marker, /*LowerCase=*/true, 8) + "." +
+            llvm::utostr(CodeGenOpts.PatchableFunctionEntryOffset));
+  }
   emitAtAvailableLinkGuard();
   if (Context.getTargetInfo().getTriple().isWasm())
     EmitMainVoidAlias();
@@ -1619,7 +1635,7 @@ void CodeGenModule::Release() {
                                 CodeGenOpts.UniqueSourceFileIdentifier)));
   }
 
-  if (LangOpts.Sanitize.has(SanitizerKind::KCFI)) {
+  if (hasFunctionTypePrefix()) {
     getModule().addModuleFlag(llvm::Module::Override, "kcfi", 1);
     // KCFI assumes patchable-function-prefix is the same for all indirectly
     // called functions. Store the expected offset for code generation.
@@ -2966,8 +2982,54 @@ llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
   if (getCodeGenOpts().SanitizeCfiICallGeneralizePointers)
     Out << ".generalized";
 
-  return llvm::ConstantInt::get(
-      Int32Ty, llvm::getKCFITypeID(OutName, getCodeGenOpts().SanitizeKcfiHash));
+  uint32_t TypeId =
+      llvm::getKCFITypeID(OutName, getCodeGenOpts().SanitizeKcfiHash);
+  if (LangOpts.FunctionTypePrefix && TypeId == llvm::COFF::SealedTypeId)
+    ++TypeId;
+  return llvm::ConstantInt::get(Int32Ty, TypeId);
+}
+
+llvm::ConstantInt *CodeGenModule::CreateKCFIVTableSlotTypeId(GlobalDecl Slot) {
+  const auto *MD = cast<CXXMethodDecl>(Slot.getDecl());
+  QualType FnType = MD->getType();
+  std::string Salt;
+  if (isa<CXXDestructorDecl>(MD)) {
+    FnType = Context.getFunctionType(Context.VoidTy, {Context.VoidPtrTy},
+                                     FunctionProtoType::ExtProtoInfo());
+    Salt = "__cxa_dtor";
+    if (Slot.getDtorType() != Dtor_Deleting)
+      return CreateKCFITypeId(FnType, Salt);
+  } else if (const auto &Info =
+                 FnType->castAs<FunctionProtoType>()->getExtraAttributeInfo()) {
+    Salt = Info.CFISalt.str();
+  }
+  if (!Salt.empty())
+    Salt += '.';
+  llvm::raw_string_ostream Out(Salt);
+  getCXXABI().getMangleContext().mangleCanonicalTypeName(
+      Context.getCanonicalTagType(MD->getParent()), Out);
+  return CreateKCFITypeId(FnType, Salt);
+}
+
+llvm::ConstantInt *CodeGenModule::CreateKCFIVfnTypeId(QualType FnType) {
+  std::string Salt = "__vfn";
+  if (const auto &Info =
+          FnType->castAs<FunctionProtoType>()->getExtraAttributeInfo())
+    Salt = (Info.CFISalt + "." + Salt).str();
+  return CreateKCFITypeId(FnType, Salt);
+}
+
+void CodeGenModule::setKCFIVTableSlotType(GlobalDecl Slot, llvm::Function *F) {
+  llvm::LLVMContext &Ctx = F->getContext();
+  F->setMetadata(llvm::LLVMContext::MD_kcfi_type,
+                 llvm::MDNode::get(Ctx, llvm::ConstantAsMetadata::get(
+                                            CreateKCFIVTableSlotTypeId(Slot))));
+  if (const auto *MD = cast<CXXMethodDecl>(Slot.getDecl());
+      !isa<CXXDestructorDecl>(MD))
+    F->setMetadata(
+        "kcfi_vfn_type",
+        llvm::MDNode::get(Ctx, llvm::ConstantAsMetadata::get(
+                                   CreateKCFIVfnTypeId(MD->getType()))));
 }
 
 void CodeGenModule::SetLLVMFunctionAttributes(GlobalDecl GD,
@@ -3791,7 +3853,18 @@ void CodeGenModule::createCalleeTypeMetadataForIcall(const QualType &QT,
   CB->setMetadata(llvm::LLVMContext::MD_callee_type, MDN);
 }
 
-void CodeGenModule::setKCFIType(const FunctionDecl *FD, llvm::Function *F) {
+void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
+  const auto *FD = cast<FunctionDecl>(GD.getDecl());
+  // A virtual member function carries the type of the slot it fills, and a
+  // destructor the type the runtime calls it through.
+  if (const auto *MD = dyn_cast<CXXMethodDecl>(FD);
+      MD && hasKCFIVTableSlotTypes() &&
+      (MD->isVirtual() || isa<CXXDestructorDecl>(MD)))
+    return setKCFIVTableSlotType(
+        MD->isVirtual() ? getItaniumVTableContext().findOriginalMethod(
+                              GD.getCanonicalDecl())
+                        : GD,
+        F);
   llvm::LLVMContext &Ctx = F->getContext();
   llvm::MDBuilder MDB(Ctx);
   llvm::StringRef Salt;
@@ -3943,8 +4016,8 @@ void CodeGenModule::SetFunctionAttributes(GlobalDecl GD, llvm::Function *F,
   if (CodeGenOpts.CallGraphSection)
     createIndirectFunctionTypeMD(FD, F);
 
-  if (LangOpts.Sanitize.has(SanitizerKind::KCFI))
-    setKCFIType(FD, F);
+  if (hasFunctionTypePrefix())
+    setKCFIType(GD, F);
 
   if (getLangOpts().OpenMP && FD->hasAttr<OMPDeclareSimdDeclAttr>())
     getOpenMPRuntime().emitDeclareSimdFunction(FD, F);
@@ -5725,10 +5798,9 @@ void CodeGenModule::setMultiVersionResolverAttributes(llvm::Function *Resolver,
   // Without ifuncs the resolver is the function callers reach, and the one
   // its address names, so an indirect call through that address checks the
   // resolver's type.
-  if (!getTarget().supportsIFunc() &&
-      LangOpts.Sanitize.has(SanitizerKind::KCFI))
-    if (const auto *FD = dyn_cast_or_null<FunctionDecl>(GD.getDecl()))
-      setKCFIType(FD, Resolver);
+  if (!getTarget().supportsIFunc() && hasFunctionTypePrefix())
+    if (isa_and_nonnull<FunctionDecl>(GD.getDecl()))
+      setKCFIType(GD, Resolver);
 
   // The resolver must be exempt from sanitizer instrumentation, as it can run
   // before the sanitizer is initialized.

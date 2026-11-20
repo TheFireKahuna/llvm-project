@@ -17,6 +17,7 @@
 #include "X86InstrInfo.h"
 #include "X86MachineFunctionInfo.h"
 #include "X86Subtarget.h"
+#include "llvm/CodeGen/KCFI.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunctionAnalysisManager.h"
@@ -51,6 +52,7 @@ private:
                            MachineBasicBlock::iterator MBBI);
   bool expandMI(MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI);
   bool expandMBB(MachineBasicBlock &MBB);
+  bool dropProvenCallGuards(MachineFunction &MF);
 
   /// This function expands pseudos which affects control flow.
   /// It is done in separate pass to simplify blocks navigation in main
@@ -920,6 +922,86 @@ void X86ExpandPseudoImpl::expandVastartSaveXmmRegs(
   VAStartPseudoInstr->eraseFromParent();
 }
 
+// The CFGuard pass guards an indirect call whose target it proved like any
+// other, and marks the load of the target. Where the target stayed in its
+// register from that load to the call, the guard and the KCFI check prove
+// nothing the table does not, and are dropped.
+bool X86ExpandPseudoImpl::dropProvenCallGuards(MachineFunction &MF) {
+  // A call through a retpoline or another indirect thunk is formed before
+  // register allocation, so a call made here would bypass it.
+  if (!STI->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+      STI->useIndirectThunkCalls())
+    return false;
+  bool Changed = false;
+  for (MachineBasicBlock &MBB : MF) {
+    for (MachineInstr &MI : make_early_inc_range(MBB)) {
+      MachineInstr *Load = nullptr, *Check;
+      switch (MI.getOpcode()) {
+      case X86::CALL64m:
+      case X86::TCRETURNmi64:
+      case X86::TCRETURN_WINmi64: {
+        // A call through the guard dispatch function, which takes the target
+        // in RAX, becomes a call of RAX.
+        const MachineOperand &Disp = MI.getOperand(X86::AddrDisp);
+        if (!Disp.isGlobal() ||
+            Disp.getGlobal()->getName() != "__guard_dispatch_icall_fptr" ||
+            !(Load = findProvenCallTarget(MI, X86::RAX, Check)) || Check)
+          continue;
+        MI.removeOperand(MI.findRegisterUseOperandIdx(X86::RAX, TRI));
+        for (unsigned I = 1; I != X86::AddrNumOperands; ++I)
+          MI.removeOperand(1);
+        MI.getOperand(0).setReg(X86::RAX);
+        MI.setDesc(TII->get(MI.isReturn() ? X86::TCRETURNri64 : X86::CALL64r));
+        MI.setCFIType(MF, 0);
+        break;
+      }
+      case X86::CALL64r:
+      case X86::TCRETURNri64:
+      case X86::TCRETURN_WIN64ri:
+        // A call that the guard check function precedes, with the target in
+        // RCX, loses the check.
+        Load = dropProvenCallCheck(MI, MI.getOperand(0).getReg(), X86::RCX);
+        break;
+      }
+      if (!Load)
+        continue;
+      Changed = true;
+
+      // Fold the load into the call, as instruction selection would have
+      // without the guard, where it is next to the call and the call alone
+      // reads the register, once.
+      Register Reg = MI.getOperand(0).getReg();
+      bool IsTailCall = MI.isReturn();
+      if (Load->getOpcode() != X86::MOV64rm ||
+          Load->getOperand(0).getReg() != Reg ||
+          prev_nodbg(MachineBasicBlock::iterator(MI), MBB.begin()) != Load ||
+          !(IsTailCall ||
+            (MI.modifiesRegister(Reg, TRI) && !STI->slowTwoMemOps())) ||
+          any_of(MI.implicit_operands(), [&](const MachineOperand &MO) {
+            return MO.isReg() && MO.isUse() &&
+                   TRI->regsOverlap(MO.getReg(), Reg);
+          }))
+        continue;
+      MachineInstrBuilder Call(
+          MF, MF.CreateMachineInstr(
+                  TII->get(IsTailCall ? X86::TCRETURNmi64 : X86::CALL64m),
+                  MI.getDebugLoc(), /*NoImplicit=*/true));
+      MBB.insert(MI, Call);
+      for (const MachineOperand &MO : drop_begin(Load->operands()))
+        Call.add(MO);
+      for (const MachineOperand &MO : drop_begin(MI.operands()))
+        Call.add(MO);
+      Call->cloneMemRefs(MF, *Load);
+      Call->setFlags(MI.getFlags());
+      if (MI.shouldUpdateAdditionalCallInfo())
+        MF.moveAdditionalCallInfo(&MI, Call);
+      MI.eraseFromParent();
+      Load->eraseFromParent();
+    }
+  }
+  return Changed;
+}
+
 /// Expand all pseudo instructions contained in \p MBB.
 /// \returns true if any expansion occurred for \p MBB.
 bool X86ExpandPseudoImpl::expandMBB(MachineBasicBlock &MBB) {
@@ -959,6 +1041,7 @@ bool X86ExpandPseudoImpl::runOnMachineFunction(MachineFunction &MF) {
   X86FL = STI->getFrameLowering();
 
   bool Modified = expandPseudosWhichAffectControlFlow(MF);
+  Modified |= dropProvenCallGuards(MF);
 
   for (MachineBasicBlock &MBB : MF)
     Modified |= expandMBB(MBB);

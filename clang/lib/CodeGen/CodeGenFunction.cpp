@@ -949,6 +949,12 @@ void CodeGenFunction::StartFunction(GlobalDecl GD, QualType RetTy,
     Count = Attr->getCount();
     Offset = Attr->getOffset();
     Section = Attr->getSection();
+    // Every type prefix of an image has the unit's patchable prefix.
+    if (getLangOpts().FunctionTypePrefix &&
+        Offset != CGM.getCodeGenOpts().PatchableFunctionEntryOffset)
+      CGM.getDiags().Report(Attr->getLocation(),
+                            diag::err_patchable_function_entry_type_prefix)
+          << Offset << CGM.getCodeGenOpts().PatchableFunctionEntryOffset;
   } else {
     Count = CGM.getCodeGenOpts().PatchableFunctionEntryCount;
     Offset = CGM.getCodeGenOpts().PatchableFunctionEntryOffset;

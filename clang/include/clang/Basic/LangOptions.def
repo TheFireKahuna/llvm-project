@@ -412,6 +412,9 @@ LANGOPT(SanitizeAddressFieldPadding, 2, 0, NotCompatible, "controls how aggressi
                                                       "field padding (0: none, 1:least "
                                                       "aggressive, 2: more aggressive)")
 
+LANGOPT(FunctionTypePrefix, 1, 0, NotCompatible,
+        "give every function a KCFI type prefix with a marker")
+
 LANGOPT(Cmse, 1, 0, NotCompatible, "ARM Security extensions support")
 
 LANGOPT(XRayInstrument, 1, 0, NotCompatible, "controls whether to do XRay instrumentation")

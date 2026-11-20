@@ -1,0 +1,41 @@
+# RUN: llc -mtriple=aarch64-unknown-windows-itanium \
+# RUN:   -run-pass=cfguard-proven-address -verify-machineinstrs %s -o - \
+# RUN:   | FileCheck %s
+
+# Before register allocation, the table's address and the page of the guard
+# check function's pointer, which a loop kept in registers across its calls,
+# are computed again in front of the proven load and of the check that the
+# call may lose.
+
+--- |
+  @table = internal constant [4 x ptr] zeroinitializer
+  @__guard_check_icall_fptr = external global ptr
+  define void @loop() { ret void }
+...
+---
+# CHECK-LABEL: name: loop
+# CHECK:       bb.0:
+# CHECK-NOT:   MOVaddr
+# CHECK-NOT:   ADRP
+# CHECK:       bb.1:
+# CHECK:       [[INDEX:%[0-9]+]]:gpr64 = LDRXui
+# CHECK-NEXT:  [[TABLE:%[0-9]+]]:gpr64common = MOVaddr target-flags(aarch64-page) @table, target-flags(aarch64-pageoff, aarch64-nc) @table
+# CHECK-NEXT:  [[TARGET:%[0-9]+]]:gpr64 = LDRXroX [[TABLE]], [[INDEX]], 0, 1 :: (cfguard-proven load (s64))
+# CHECK-NEXT:  [[PAGE:%[0-9]+]]:gpr64common = ADRP target-flags(aarch64-page) @__guard_check_icall_fptr
+# CHECK-NEXT:  %{{[0-9]+}}:gpr64 = LDRXui [[PAGE]], target-flags(aarch64-pageoff, aarch64-nc) @__guard_check_icall_fptr
+name: loop
+body: |
+  bb.0:
+    liveins: $x0
+    %0:gpr64common = COPY $x0
+    %1:gpr64common = MOVaddr target-flags(aarch64-page) @table, target-flags(aarch64-pageoff, aarch64-nc) @table
+    %2:gpr64common = ADRP target-flags(aarch64-page) @__guard_check_icall_fptr
+  bb.1:
+    %3:gpr64 = LDRXui %0, 0 :: (load (s64))
+    %4:gpr64 = LDRXroX %1, %3, 0, 1 :: (cfguard-proven load (s64))
+    %5:gpr64 = LDRXui %2, target-flags(aarch64-pageoff, aarch64-nc) @__guard_check_icall_fptr :: (load (s64) from @__guard_check_icall_fptr)
+    $x15 = COPY %4
+    BLR %5, csr_win_aarch64_cfguard_check, implicit-def dead $lr, implicit $sp, implicit $x15, implicit-def $sp
+    BLR %4, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp
+    B %bb.1
+...

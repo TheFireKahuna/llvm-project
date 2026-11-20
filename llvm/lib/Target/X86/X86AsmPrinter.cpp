@@ -52,6 +52,7 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 
 using namespace llvm;
 
@@ -137,32 +138,19 @@ void X86AsmPrinter::emitFunctionBodyEnd() {
 }
 
 uint32_t X86AsmPrinter::MaskKCFIType(uint32_t Value) {
-  // If the type hash matches an invalid pattern, mask the value.
-  const uint32_t InvalidValues[] = {
-      0xFA1E0FF3, /* ENDBR64 */
-      0xFB1E0FF3, /* ENDBR32 */
-  };
-  for (uint32_t N : InvalidValues) {
-    // LowerKCFI_CHECK emits -Value for indirect call checks, so we must also
-    // mask that. Note that -(Value + 1) == ~Value.
-    if (N == Value || -N == Value)
-      return Value + 1;
-  }
-  return Value;
+  return getX86KCFIType(Value);
 }
 
 void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,
-                                        bool HasType) {
+                                        unsigned TypeBytes) {
   // Keep the function entry aligned, taking patchable-function-prefix into
   // account if set.
   int64_t PrefixBytes = MF.getFunction().getFnAttributeAsParsedInteger(
       "patchable-function-prefix");
 
   // Also take the type identifier into account if we're emitting
-  // one. Otherwise, just pad with nops. The X86::MOV32ri instruction emitted
-  // in X86AsmPrinter::emitKCFITypeId is 5 bytes long.
-  if (HasType)
-    PrefixBytes += 5;
+  // one. Otherwise, just pad with nops.
+  PrefixBytes += TypeBytes;
 
   emitNops(offsetToAlignment(PrefixBytes, MF.getPreferredAlignment()));
 }
@@ -181,7 +169,7 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // If we don't have a type to emit, just emit padding if needed to maintain
   // the same alignment for all functions.
   if (!Type) {
-    EmitKCFITypePadding(MF, /*HasType=*/false);
+    EmitKCFITypePadding(MF, /*TypeBytes=*/0);
     return;
   }
 
@@ -196,14 +184,37 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     emitLinkage(&MF.getFunction(), FnSym);
   if (MAI.hasDotTypeDotSizeDirective())
     OutStreamer->emitSymbolAttribute(FnSym, MCSA_ELF_TypeFunction);
-  OutStreamer->emitLabel(FnSym);
 
   // Embed the type hash in the X86::MOV32ri instruction to avoid special
-  // casing object file parsers.
-  EmitKCFITypePadding(MF);
+  // casing object file parsers. The instruction is 5 bytes long.
+  const Module *M = F.getParent();
+  if (auto *Marker = mdconst::extract_or_null<ConstantInt>(
+          M->getModuleFlag("function-type-prefix"))) {
+    // In a function type prefix a 7-byte nopl precedes the move, with the
+    // marker as its displacement, so that the 8 bytes before the type are
+    // fixed. A function that can fill a vtable slot carries a second type
+    // before them, which the nopl states by its base register. The symbol
+    // follows the padding and so marks the prefix's start.
+    const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
+    EmitKCFITypePadding(MF, VfnMD ? 16 : 12);
+    OutStreamer->emitLabel(FnSym);
+    if (VfnMD)
+      OutStreamer->emitInt32(MaskKCFIType(
+          mdconst::extract<ConstantInt>(VfnMD->getOperand(0))->getZExtValue()));
+    MCInst Nop = MCInstBuilder(X86::NOOPL)
+                     .addReg(VfnMD ? X86::RCX : X86::RAX)
+                     .addImm(1)
+                     .addReg(X86::NoRegister)
+                     .addImm(static_cast<int32_t>(Marker->getZExtValue()))
+                     .addReg(X86::NoRegister);
+    Nop.setFlags(X86::IP_USE_DISP32);
+    EmitAndCountInstruction(Nop);
+  } else {
+    OutStreamer->emitLabel(FnSym);
+    EmitKCFITypePadding(MF, 5);
+  }
   unsigned DestReg = X86::EAX;
 
-  const Module *M = F.getParent();
   if (M->getModuleFlag("kcfi-arity")) {
     // The ArityToRegMap assumes the 64-bit SysV ABI.
     [[maybe_unused]] const auto &Triple = M->getTargetTriple();

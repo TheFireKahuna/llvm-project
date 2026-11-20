@@ -9162,6 +9162,19 @@ define dso_local i32 @f() !kcfi_type !0 {
 Clang emits `kcfi_type` metadata nodes for address-taken functions with
 `-fsanitize=kcfi`.
 
+#### '`cfguard_proven`' Metadata
+
+The `cfguard_proven` metadata, an empty node, marks the `load` of an indirect
+call's target that the Control Flow Guard pass proved to be one of a fixed set
+of functions: an entry of a constant table of functions, at an index proven in
+range without relying on undefined behaviour. On Windows Itanium and NT-POSIX
+targets the backend leaves the call unchecked where the loaded value stays in
+its register from the load to the call. The pass also drops, from the values
+the index is computed from, every flag, metadata and attribute whose breach is
+undefined behaviour, so that the backend computes the index the proof read.
+The proof depends on where the load is, so a pass that moves or duplicates the
+load must drop the metadata.
+
 #### '`pcsections`' Metadata
 
 The `pcsections` metadata can be attached to instructions and functions, for
@@ -27245,6 +27258,44 @@ A relative pointer is a pointer to an offset. This is the offset between the des
 pointer and the original pointer. The address of the destination pointer is obtained
 by loading this offset and adding it to the original pointer. This calculation is the
 same as that of the `llvm.load.relative` intrinsic.
+
+(llvm.kcfi.check)=
+
+#### '`llvm.kcfi.check`' Intrinsic
+
+##### Syntax:
+
+```
+declare void @llvm.kcfi.check(ptr %target, i32 immarg %type, i32 immarg %offset)
+```
+
+##### Overview:
+
+The '`llvm.kcfi.check`' intrinsic checks a KCFI type identifier that precedes
+a function, for an indirect call that cannot carry a `kcfi` operand bundle: one
+whose target was chosen between kinds of function that carry different types,
+or that checks a word other than the function's own type.
+
+##### Arguments:
+
+The first argument is the address of the function about to be called. The
+second argument is the expected type identifier. The third argument is the
+distance in bytes from the start of the 4-byte type word to the function's
+entry.
+
+##### Semantics:
+
+The intrinsic traps unless the 4-byte word at `offset` bytes before the
+function's entry equals `type` as the target stores it there: x86 stores a
+type that would spell an `ENDBR64` or `ENDBR32` instruction plus one. It is
+expanded before instruction selection into a load, a compare and a call to
+`@llvm.trap`. In a module with a `function-type-prefix` flag, a word other
+than the function's own type, an `offset` that is not 4, is a prefix's second
+word, and the intrinsic also traps unless the 4 bytes after the word begin the
+marker instruction of a prefix that holds one, so that the check fails on a
+prefix without a second word whatever precedes it. It does not account for a
+`patchable-function-prefix` between the word and the entry, with which it is
+an error.
 
 #### '`llvm.arithmetic.fence`' Intrinsic
 

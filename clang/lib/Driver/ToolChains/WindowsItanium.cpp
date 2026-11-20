@@ -9,6 +9,7 @@
 #include "WindowsItanium.h"
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
+#include "clang/Driver/SanitizerArgs.h"
 #include "clang/Options/Options.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Option/ArgList.h"
@@ -334,6 +335,26 @@ void WindowsItaniumBase::addClangTargetOptions(
                                                      : "-cfguard-no-checks");
   if (hasEHContGuard(getTriple()))
     CC1Args.push_back("-ehcontguard");
+
+  // Every function is preceded by its type id, whether or not KCFI checks
+  // calls. The id ignores pointee types, so that a unit without the checks can
+  // be called from one with them, and an option that would compute or encode
+  // it otherwise would change every function's ABI. A hot patch overwrites
+  // it, which SanitizerArgs reports where KCFI checks calls.
+  DriverArgs.ClaimAllArgs(options::OPT_fsanitize_cfi_icall_generalize_pointers);
+  CC1Args.push_back("-fsanitize-cfi-icall-generalize-pointers");
+  bool KCFI = getSanitizerArgs(DriverArgs, BA, DeviceOffloadKind).hasKCFI();
+  for (const Arg *A : DriverArgs.filtered(
+           options::OPT_fsanitize_cfi_icall_normalize_integers,
+           options::OPT_fsanitize_kcfi_arity,
+           options::OPT_fsanitize_kcfi_hash_EQ, options::OPT_fms_hotpatch)) {
+    const Option &O = A->getOption();
+    if (O.matches(options::OPT_fsanitize_kcfi_hash_EQ)
+            ? StringRef(A->getValue()) != "xxHash64"
+            : !O.matches(options::OPT_fms_hotpatch) || !KCFI)
+      getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
+          << A->getAsString(DriverArgs) << getTripleString();
+  }
 }
 
 void WindowsItaniumBase::addClangWarningOptions(ArgStringList &CC1Args) const {

@@ -71,6 +71,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/CFGuard.h"
 #include "llvm/Transforms/Instrumentation/HWAddressSanitizer.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include <cassert>
 #include <cstdint>
 #include <map>
@@ -158,6 +159,7 @@ public:
       HwasanMemaccessTuple;
   std::map<HwasanMemaccessTuple, MCSymbol *> HwasanMemaccessSymbols;
   void LowerKCFI_CHECK(const MachineInstr &MI);
+  void emitKCFITypeId(const MachineFunction &MF) override;
   void LowerHWASAN_CHECK_MEMACCESS(const MachineInstr &MI);
   void emitHwasanMemaccessSymbols(Module &M);
   void emitGuardTailCallThunk(Module &M);
@@ -695,6 +697,34 @@ void AArch64AsmPrinter::LowerPATCHABLE_EVENT_CALL(const MachineInstr &MI,
 
     recordSled(CurSled, MI, SledKind::CUSTOM_EVENT, 2);
   }
+}
+
+void AArch64AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
+  const Function &F = MF.getFunction();
+  const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type);
+  auto *Marker = mdconst::extract_or_null<ConstantInt>(
+      F.getParent()->getModuleFlag("function-type-prefix"));
+  if (!MD || !Marker)
+    return AsmPrinter::emitKCFITypeId(MF);
+
+  // A function type prefix holds the bytes x86 emits: the pattern with the
+  // marker, then the type, 12 bytes, after the second type of a function that
+  // can fill a vtable slot. Nops before it align the entry to 16 bytes, where
+  // Control Flow Guard can make a target valid alone, and the symbol marks the
+  // prefix's start, as on x86.
+  const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
+  unsigned PrefixBytes =
+      (VfnMD ? 16 : 12) +
+      4 * F.getFnAttributeAsParsedInteger("patchable-function-prefix");
+  emitAlignment(Align(16));
+  emitNops(offsetToAlignment(PrefixBytes, Align(16)) / 4);
+  OutStreamer->emitLabel(OutContext.getOrCreateSymbol("__cfi_" + F.getName()));
+  if (VfnMD)
+    OutStreamer->emitInt32(
+        mdconst::extract<ConstantInt>(VfnMD->getOperand(0))->getZExtValue());
+  OutStreamer->emitInt64(getTypePrefixPattern(Marker->getZExtValue(), VfnMD));
+  OutStreamer->emitInt32(
+      mdconst::extract<ConstantInt>(MD->getOperand(0))->getZExtValue());
 }
 
 void AArch64AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {

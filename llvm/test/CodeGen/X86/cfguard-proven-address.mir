@@ -1,0 +1,101 @@
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium \
+# RUN:   -run-pass=cfguard-proven-address -verify-machineinstrs %s -o - \
+# RUN:   | FileCheck %s
+
+# Before register allocation, a constant that the address of a proven call
+# target's load is computed from, and that is not computed since the last call
+# in the load's block, is computed again in front of its use. The one a loop
+# kept in a register across its calls goes if nothing else reads it.
+
+--- |
+  @table = internal constant [4 x ptr] zeroinitializer
+  @__guard_dispatch_icall_fptr = external global ptr
+  declare void @use(ptr)
+  define void @loop() { ret void }
+  define void @other_reader() { ret void }
+  define void @in_block() { ret void }
+  define void @not_constant() { ret void }
+...
+---
+# CHECK-LABEL: name: loop
+# CHECK:       bb.0:
+# CHECK-NOT:   LEA64r
+# CHECK:       bb.1:
+# CHECK:       %2:gr64_nosp = MOVZX64rm8
+# CHECK-NEXT:  %4:gr64 = LEA64r $rip, 1, $noreg, @table, $noreg
+# CHECK-NEXT:  %3:gr64 = MOV64rm %4, 8, %2, 0, $noreg :: (cfguard-proven load (s64))
+name: loop
+body: |
+  bb.0:
+    liveins: $rdi
+    %0:gr64 = COPY $rdi
+    %1:gr64 = LEA64r $rip, 1, $noreg, @table, $noreg
+  bb.1:
+    %2:gr64_nosp = MOVZX64rm8 %0, 1, $noreg, 0, $noreg :: (load (s8))
+    %3:gr64 = MOV64rm %1, 8, %2, 0, $noreg :: (cfguard-proven load (s64))
+    $rax = COPY %3
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    JMP_1 %bb.1
+...
+---
+# CHECK-LABEL: name: other_reader
+# CHECK:       bb.0:
+# CHECK:       %1:gr64 = LEA64r $rip, 1, $noreg, @table, $noreg
+# CHECK:       bb.1:
+# CHECK:       %4:gr64 = LEA64r $rip, 1, $noreg, @table, $noreg
+# CHECK-NEXT:  %3:gr64 = MOV64rm %4, 8, %2, 0, $noreg :: (cfguard-proven load (s64))
+# CHECK-NEXT:  $rcx = COPY %1
+name: other_reader
+body: |
+  bb.0:
+    liveins: $rdi
+    %0:gr64 = COPY $rdi
+    %1:gr64 = LEA64r $rip, 1, $noreg, @table, $noreg
+  bb.1:
+    %2:gr64_nosp = MOVZX64rm8 %0, 1, $noreg, 0, $noreg :: (load (s8))
+    %3:gr64 = MOV64rm %1, 8, %2, 0, $noreg :: (cfguard-proven load (s64))
+    $rcx = COPY %1
+    $rax = COPY %3
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rcx, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    JMP_1 %bb.1
+...
+---
+# A constant computed since the last call in the block stays where it is, but
+# not one computed before that call.
+# CHECK-LABEL: name: in_block
+# CHECK:       %1:gr64 = LEA64r $rip, 1, $noreg, @table, $noreg
+# CHECK-NEXT:  %2:gr64 = MOV64rm %1, 8, %0, 0, $noreg :: (cfguard-proven load (s64))
+# CHECK:       CALL64m
+# CHECK-NEXT:  %4:gr64 = LEA64r $rip, 1, $noreg, @table, $noreg
+# CHECK-NEXT:  %3:gr64 = MOV64rm %4, 8, %0, 0, $noreg :: (cfguard-proven load (s64))
+name: in_block
+body: |
+  bb.0:
+    liveins: $rdi
+    %0:gr64_nosp = COPY $rdi
+    %1:gr64 = LEA64r $rip, 1, $noreg, @table, $noreg
+    %2:gr64 = MOV64rm %1, 8, %0, 0, $noreg :: (cfguard-proven load (s64))
+    $rax = COPY %2
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    %3:gr64 = MOV64rm %1, 8, %0, 0, $noreg :: (cfguard-proven load (s64))
+    $rax = COPY %3
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# CHECK-LABEL: name: not_constant
+# CHECK:       bb.1:
+# CHECK-NOT:   COPY
+# CHECK:       %2:gr64 = MOV64rm %1, 8, %0, 0, $noreg :: (cfguard-proven load (s64))
+name: not_constant
+body: |
+  bb.0:
+    liveins: $rdi, $rdx
+    %0:gr64_nosp = COPY $rdi
+    %1:gr64 = COPY $rdx
+  bb.1:
+    %2:gr64 = MOV64rm %1, 8, %0, 0, $noreg :: (cfguard-proven load (s64))
+    $rax = COPY %2
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    JMP_1 %bb.1
+...

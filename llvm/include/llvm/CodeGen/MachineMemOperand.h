@@ -168,7 +168,11 @@ public:
     MOTargetFlag5 = 1u << 10,
     MOTargetFlag6 = 1u << 11,
 
-    LLVM_MARK_AS_BITMASK_ENUM(/* LargestFlag = */ MOTargetFlag6)
+    /// The value loaded is an indirect call target that the CFGuard pass
+    /// proved to be one of a fixed set of functions.
+    MOCFGuardProven = 1u << 12,
+
+    LLVM_MARK_AS_BITMASK_ENUM(/* LargestFlag = */ MOCFGuardProven)
   };
 
 private:

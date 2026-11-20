@@ -1000,6 +1000,12 @@ void TargetPassConfig::addMachinePasses() {
   // Run pre-ra passes.
   addPreRegAlloc();
 
+  // MachineLICM has moved the constants that a proven call target's load must
+  // find computed since the last call.
+  if (getOptLevel() != CodeGenOptLevel::None &&
+      TM->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    addPass(createCFGuardProvenAddressLegacyPass());
+
   // Debugifying the register allocator passes seems to provoke some
   // non-determinism that affects CodeGen and there doesn't seem to be a point
   // where it becomes safe again so stop debugifying here.

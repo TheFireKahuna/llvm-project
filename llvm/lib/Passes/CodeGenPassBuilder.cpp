@@ -41,6 +41,7 @@
 #include "llvm/CodeGen/InlineAsmPrepare.h"
 #include "llvm/CodeGen/InterleavedAccess.h"
 #include "llvm/CodeGen/InterleavedLoadCombine.h"
+#include "llvm/CodeGen/KCFI.h"
 #include "llvm/CodeGen/LiveDebugValuesPass.h"
 #include "llvm/CodeGen/LiveIntervals.h"
 #include "llvm/CodeGen/LiveVariables.h"
@@ -634,6 +635,12 @@ Error CodeGenPassBuilder::addMachinePasses(PassManagerWrapper &PMW) {
   }
   // Run pre-ra passes.
   addPreRegAlloc(PMW);
+
+  // MachineLICM has moved the constants that a proven call target's load must
+  // find computed since the last call.
+  if (getOptLevel() != CodeGenOptLevel::None &&
+      TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    addMachineFunctionPass(CFGuardProvenAddressPass(), PMW);
 
   // Run register allocation and passes that are tightly coupled with it,
   // including phi elimination and scheduling.

@@ -20,6 +20,7 @@
 #include "clang/Basic/CodeGenOptions.h"
 #include "clang/CodeGen/CGFunctionInfo.h"
 #include "clang/CodeGen/ConstantInitBuilder.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include <algorithm>
@@ -61,6 +62,11 @@ static void setThunkProperties(CodeGenModule &CGM, const ThunkInfo &Thunk,
 
   if (CGM.supportsCOMDAT() && ThunkFn->isWeakForLinker())
     ThunkFn->setComdat(CGM.getModule().getOrInsertComdat(ThunkFn->getName()));
+
+  // A thunk carries the KCFI type of the slot it fills, not that of the
+  // function it calls.
+  if (CGM.hasKCFIVTableSlotTypes())
+    CGM.setKCFIVTableSlotType(GD.getWithDecl(Thunk.Method), ThunkFn);
 }
 
 #ifndef NDEBUG
@@ -556,6 +562,15 @@ llvm::Constant *CodeGenVTables::maybeEmitThunk(GlobalDecl GD,
       MCtx.mangleThunk(MD, TI, /* elideOverrideInfo */ true, Out);
   }
 
+  // One thunk can fill slots that different classes introduce, which have
+  // different KCFI types, so it is named after its slot's.
+  if (CGM.hasKCFIVTableSlotTypes())
+    Out << ".kcfi."
+        << llvm::utohexstr(
+               CGM.CreateKCFIVTableSlotTypeId(GD.getWithDecl(TI.Method))
+                   ->getZExtValue(),
+               /*LowerCase=*/true, /*Width=*/8);
+
   llvm::Type *ThunkVTableTy = CGM.getTypes().GetFunctionTypeForVTable(GD);
   llvm::Constant *Thunk = CGM.GetAddrOfThunk(Name, ThunkVTableTy, GD);
 
@@ -882,6 +897,41 @@ void CodeGenVTables::addVTableComponent(ConstantArrayBuilder &builder,
       fnPtr = CGM.GetAddrOfFunction(GD, fnTy, /*ForVTable=*/true);
       if (CGM.getCodeGenOpts().PointerAuth.CXXVirtualFunctionPointers)
         GD = getItaniumVTableContext().findOriginalMethod(GD);
+    }
+
+    // The runtime's pure and deleted virtual functions carry no slot's KCFI
+    // type, so a call through the slot reaches one through a stub that does
+    // and reports as before. Slots of one type share a stub.
+    if ((fnPtr == PureVirtualFn || fnPtr == DeletedVirtualFn) &&
+        CGM.hasKCFIVTableSlotTypes()) {
+      GlobalDecl Slot = getItaniumVTableContext().findOriginalMethod(GD);
+      auto *Fn = cast<llvm::Function>(fnPtr);
+      std::string Name =
+          (Fn->getName() + ".kcfi." +
+           llvm::utohexstr(CGM.CreateKCFIVTableSlotTypeId(Slot)->getZExtValue(),
+                           /*LowerCase=*/true, /*Width=*/8))
+              .str();
+      llvm::Function *Stub = CGM.getModule().getFunction(Name);
+      if (!Stub) {
+        Stub = llvm::Function::Create(Fn->getFunctionType(),
+                                      llvm::GlobalValue::LinkOnceODRLinkage,
+                                      Name, &CGM.getModule());
+        Stub->setVisibility(llvm::GlobalValue::HiddenVisibility);
+        Stub->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
+        Stub->setDSOLocal(true);
+        if (CGM.supportsCOMDAT())
+          Stub->setComdat(CGM.getModule().getOrInsertComdat(Name));
+        CodeGenFunction CGF(CGM);
+        CGF.StartFunction(GlobalDecl(), CGM.getContext().VoidTy, Stub,
+                          CGM.getTypes().arrangeNullaryFunction(),
+                          FunctionArgList());
+        CGF.EmitNounwindRuntimeCall(Fn)->setDoesNotReturn();
+        CGF.Builder.CreateUnreachable();
+        CGF.Builder.ClearInsertionPoint();
+        CGF.FinishFunction();
+        CGM.setKCFIVTableSlotType(Slot, Stub);
+      }
+      fnPtr = Stub;
     }
 
     if (RelativeCXXABIVTables) {

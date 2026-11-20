@@ -6,7 +6,8 @@
 
 // On Windows Itanium a pure virtual slot names _purecall, the C runtime's
 // entry point, which every image defines, so it is not imported. A deleted
-// virtual function keeps the C++ runtime's entry point.
+// virtual function keeps the C++ runtime's entry point. The slots hold stubs
+// of the slots' KCFI type, which call them.
 
 struct S {
   virtual void pure() = 0;
@@ -15,8 +16,8 @@ struct S {
 };
 void S::key() {}
 
-// PURECALL: @_ZTV1S = {{.*}}[ptr null, ptr @_ZTI1S, ptr @_purecall, ptr @__cxa_deleted_virtual, ptr @_ZN1S3keyEv]
+// PURECALL: @_ZTV1S = {{.*}}[ptr null, ptr @_ZTI1S, ptr @_purecall[[STUB:\.kcfi\.[0-9a-f]+]], ptr @__cxa_deleted_virtual[[STUB]], ptr @_ZN1S3keyEv]
 // PURECALL: declare dso_local void @_purecall()
 // PURECALL: declare dllimport void @__cxa_deleted_virtual()
 
-// ITANIUM: @_ZTV1S = {{.*}}[ptr null, ptr @_ZTI1S, ptr @__cxa_pure_virtual, ptr @__cxa_deleted_virtual, ptr @_ZN1S3keyEv]
+// ITANIUM: @_ZTV1S = {{.*}}[ptr null, ptr @_ZTI1S, ptr @__cxa_pure_virtual{{.*}}, ptr @__cxa_deleted_virtual{{.*}}, ptr @_ZN1S3keyEv]

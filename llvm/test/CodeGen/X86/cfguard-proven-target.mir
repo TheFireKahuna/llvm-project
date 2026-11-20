@@ -1,0 +1,253 @@
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium -run-pass=x86-expand-pseudo \
+# RUN:   -verify-machineinstrs %s -o - | FileCheck %s
+
+# A call whose target was loaded from a table the CFGuard pass proved loses
+# its guard only if the target stayed in its register from the load to the
+# call, and every value the load's address is computed from is one the proof
+# takes as it comes (loaded from memory, an argument register) or a constant,
+# computed on the one path into the block since the last call.
+
+--- |
+  @table = internal constant [4 x ptr] zeroinitializer
+  @__guard_dispatch_icall_fptr = external global ptr
+  @__guard_check_icall_fptr = external global ptr
+  declare void @use()
+  define void @in_register() { ret void }
+  define void @copied() { ret void }
+  define void @checked() { ret void }
+  define void @unmarked() { ret void }
+  define void @target_reloaded() { ret void }
+  define void @index_reloaded() { ret void }
+  define void @call_after_load() { ret void }
+  define void @other_check() { ret void }
+  define void @several_predecessors() { ret void }
+  define void @across_call() { ret void }
+  define void @through_predecessor() { ret void }
+  define void @reloaded_in_predecessor() { ret void }
+  define void @call_in_predecessor() { ret void }
+...
+---
+# The load is next to the call, which is made through the table.
+# CHECK-LABEL: name: in_register
+# CHECK:       CALL64m killed renamable $rax, 8, killed renamable $rcx, 0, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp :: (cfguard-proven load (s64))
+name: in_register
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# CHECK-LABEL: name: copied
+# CHECK:       $rax = MOV64rr killed $rdx
+# CHECK-NEXT:  CALL64r $rax, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+name: copied
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rdx = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (cfguard-proven load (s64))
+    $rax = MOV64rr killed $rdx
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# The guard check function's call goes, with the copy of the target it read.
+# CHECK-LABEL: name: checked
+# CHECK:       renamable $rbx = MOV64rm
+# CHECK-NEXT:  $edi = MOV32ri 1
+# CHECK-NEXT:  CALL64r killed renamable $rbx, csr_64
+name: checked
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rdi
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rbx = MOV64rm killed renamable $rax, 8, killed renamable $rdi, 0, $noreg :: (cfguard-proven load (s64))
+    $rcx = MOV64rr $rbx
+    CALL64m $rip, 1, $noreg, @__guard_check_icall_fptr, $noreg, csr_win64_cfguard_check, implicit $rsp, implicit $ssp, implicit killed $rcx, implicit-def $rsp, implicit-def $ssp
+    $edi = MOV32ri 1
+    CALL64r killed renamable $rbx, csr_64, implicit $rsp, implicit $ssp, implicit $edi, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# CHECK-LABEL: name: unmarked
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr
+name: unmarked
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# CHECK-LABEL: name: target_reloaded
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr
+name: target_reloaded
+tracksRegLiveness: true
+stack:
+  - { id: 0, type: spill-slot, offset: -16, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (cfguard-proven load (s64))
+    MOV64mr $rsp, 1, $noreg, 8, $noreg, killed $rax :: (store (s64) into %stack.0)
+    $rax = MOV64rm $rsp, 1, $noreg, 8, $noreg :: (load (s64) from %stack.0)
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# CHECK-LABEL: name: index_reloaded
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr
+name: index_reloaded
+tracksRegLiveness: true
+stack:
+  - { id: 0, type: spill-slot, offset: -16, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    $rcx = MOV64rm $rsp, 1, $noreg, 8, $noreg :: (load (s64) from %stack.0)
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# CHECK-LABEL: name: call_after_load
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr
+name: call_after_load
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rbx = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64pcrel32 @use, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    $rax = MOV64rr killed $rbx
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# The check tested a value other than the proven target.
+# CHECK-LABEL: name: other_check
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_check_icall_fptr
+name: other_check
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx, $rdi
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rbx = MOV64rm killed renamable $rax, 8, killed renamable $rdi, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_check_icall_fptr, $noreg, csr_win64_cfguard_check, implicit $rsp, implicit $ssp, implicit killed $rcx, implicit-def $rsp, implicit-def $ssp
+    CALL64r killed renamable $rbx, csr_64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# A value from a block with several predecessors may have been in a register
+# that a callee spilled, even a constant such as the table's address.
+# CHECK-LABEL: name: several_predecessors
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr
+name: several_predecessors
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rdi
+    renamable $r14 = LEA64r $rip, 1, $noreg, @table, $noreg
+  bb.1:
+    liveins: $rdi, $r14
+    renamable $eax = MOVZX32rm8 renamable $rdi, 1, $noreg, 0, $noreg, implicit-def $rax :: (load (s8))
+    renamable $rax = MOV64rm renamable $r14, 8, killed renamable $rax, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    JMP_1 %bb.1
+...
+---
+# The index was in a register that a callee may have spilled.
+# CHECK-LABEL: name: across_call
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr
+name: across_call
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $rcx
+    $rsi = MOV64rr killed $rcx
+    CALL64pcrel32 @use, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rsi, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+    RET64
+...
+---
+# The index is followed through the block's only predecessor to the register
+# the function was entered with.
+# CHECK-LABEL: name: through_predecessor
+# CHECK:       bb.1:
+# CHECK:       CALL64m killed renamable $rax, 8, killed renamable $rcx, 0, $noreg, csr_win64
+name: through_predecessor
+tracksRegLiveness: true
+stack:
+  - { id: 0, type: spill-slot, offset: -16, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    liveins: $rcx
+    CMP64ri32 renamable $rcx, 255, implicit-def $eflags
+    JCC_1 %bb.2, 7, implicit killed $eflags
+  bb.1:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+  bb.2:
+    RET64
+...
+---
+# A compare in the predecessor proves nothing of a value that came back from a
+# stack slot before it, or that a callee may have spilled.
+# CHECK-LABEL: name: reloaded_in_predecessor
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr
+name: reloaded_in_predecessor
+tracksRegLiveness: true
+stack:
+  - { id: 0, type: spill-slot, offset: -16, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    liveins: $rdx
+    $rcx = MOV64rm $rsp, 1, $noreg, 8, $noreg :: (load (s64) from %stack.0)
+    CMP64ri32 renamable $rcx, 5, implicit-def $eflags
+    JCC_1 %bb.2, 7, implicit killed $eflags
+  bb.1:
+    liveins: $rcx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rcx, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+  bb.2:
+    RET64
+...
+---
+# CHECK-LABEL: name: call_in_predecessor
+# CHECK:       CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr
+name: call_in_predecessor
+tracksRegLiveness: true
+stack:
+  - { id: 0, type: spill-slot, offset: -16, size: 8, alignment: 8 }
+body: |
+  bb.0:
+    liveins: $rcx
+    $rbx = MOV64rr killed $rcx
+    CALL64pcrel32 @use, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    CMP64ri32 renamable $rbx, 255, implicit-def $eflags
+    JCC_1 %bb.2, 7, implicit killed $eflags
+  bb.1:
+    liveins: $rbx
+    renamable $rax = LEA64r $rip, 1, $noreg, @table, $noreg
+    renamable $rax = MOV64rm killed renamable $rax, 8, killed renamable $rbx, 0, $noreg :: (cfguard-proven load (s64))
+    CALL64m $rip, 1, $noreg, @__guard_dispatch_icall_fptr, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $rax, implicit-def $rsp, implicit-def $ssp
+  bb.2:
+    RET64
+...

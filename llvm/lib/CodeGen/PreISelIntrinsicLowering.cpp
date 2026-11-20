@@ -28,6 +28,7 @@
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
+#include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ProfDataUtils.h"
@@ -41,6 +42,7 @@
 #include "llvm/Transforms/Scalar/LowerConstantIntrinsics.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/BuildLibCalls.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include "llvm/Transforms/Utils/LowerMemIntrinsics.h"
 #include "llvm/Transforms/Utils/LowerVectorIntrinsics.h"
 
@@ -106,6 +108,49 @@ template <class T> static bool forEachCall(Function &Intrin, T Callback) {
       Changed |= Removed = Callback(CI);
     if (!Removed)
       LastUse = U;
+  }
+  return Changed;
+}
+
+static bool expandKCFICheck(Function &Intr) {
+  Module &M = *Intr.getParent();
+  LLVMContext &Ctx = M.getContext();
+  // The size of a patchable-function prefix between the type and the entry
+  // is not known here.
+  if (!Intr.use_empty() && M.getModuleFlag("kcfi-offset"))
+    Ctx.emitError("a patchable-function prefix is not compatible with "
+                  "llvm.kcfi.check on this target");
+
+  bool Changed = false;
+  for (User *U : make_early_inc_range(Intr.users())) {
+    auto *Call = cast<CallInst>(U);
+    IRBuilder<> B(Call);
+    uint64_t Type = cast<ConstantInt>(Call->getArgOperand(1))->getZExtValue();
+    if (M.getTargetTriple().isX86())
+      Type = getX86KCFIType(Type);
+    // A word before the type is a function type prefix's second word, which
+    // the marker instruction after it states: compared as one, the two never
+    // match a prefix without a second word, whatever precedes it.
+    IntegerType *Ty = B.getInt32Ty();
+    if (auto *Marker = mdconst::extract_or_null<ConstantInt>(
+            M.getModuleFlag("function-type-prefix"));
+        Marker && !cast<ConstantInt>(Call->getArgOperand(2))->equalsInt(4)) {
+      Ty = B.getInt64Ty();
+      Type |= getTypePrefixPattern(Marker->getZExtValue(), /*SecondWord=*/true)
+              << 32;
+    }
+    Value *Word =
+        B.CreateAlignedLoad(Ty,
+                            B.CreatePtrAdd(Call->getArgOperand(0),
+                                           B.CreateNeg(Call->getArgOperand(2))),
+                            Align(1));
+    Instruction *Trap = SplitBlockAndInsertIfThen(
+        B.CreateICmpNE(Word, ConstantInt::get(Ty, Type)), Call,
+        /*Unreachable=*/true, MDBuilder(Ctx).createUnlikelyBranchWeights());
+    B.SetInsertPoint(Trap);
+    B.CreateIntrinsic(Intrinsic::trap, {});
+    Call->eraseFromParent();
+    Changed = true;
   }
   return Changed;
 }
@@ -698,6 +743,9 @@ bool PreISelIntrinsicLowering::lowerIntrinsics(Module &M) const {
       break;
     case Intrinsic::load_relative:
       Changed |= lowerLoadRelative(F);
+      break;
+    case Intrinsic::kcfi_check:
+      Changed |= expandKCFICheck(F);
       break;
     case Intrinsic::can_load_speculatively:
       Changed |= lowerCanLoadSpeculatively(F, TM);

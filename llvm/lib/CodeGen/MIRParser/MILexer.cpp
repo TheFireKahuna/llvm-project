@@ -264,6 +264,7 @@ static MIToken::TokenKind getIdentifierKind(StringRef Identifier) {
       .Case("non-temporal", MIToken::kw_non_temporal)
       .Case("dereferenceable", MIToken::kw_dereferenceable)
       .Case("invariant", MIToken::kw_invariant)
+      .Case("cfguard-proven", MIToken::kw_cfguard_proven)
       .Case("align", MIToken::kw_align)
       .Case("basealign", MIToken::kw_basealign)
       .Case("addrspace", MIToken::kw_addrspace)

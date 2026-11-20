@@ -2535,6 +2535,10 @@ MachineMemOperand::Flags TargetLoweringBase::getLoadMemOperandFlags(
   if (LI.hasMetadata(LLVMContext::MD_invariant_load))
     Flags |= MachineMemOperand::MOInvariant;
 
+  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      LI.hasMetadata(LLVMContext::MD_cfguard_proven))
+    Flags |= MachineMemOperand::MOCFGuardProven;
+
   // Dereferenceability analysis is expensive, skip at O0.
   if (OptLevel != CodeGenOptLevel::None &&
       isDereferenceableAndAlignedPointer(

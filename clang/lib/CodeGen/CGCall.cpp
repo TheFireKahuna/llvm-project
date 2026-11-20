@@ -6370,9 +6370,12 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
   SmallVector<llvm::OperandBundleDef, 1> BundleList =
       getBundlesForFunclet(CalleePtr);
 
-  if (SanOpts.has(SanitizerKind::KCFI) &&
-      !isa_and_nonnull<FunctionDecl>(TargetDecl))
-    EmitKCFIOperandBundle(ConcreteCallee, CallArgs, BundleList);
+  if (SanOpts.has(SanitizerKind::KCFI) && !ConcreteCallee.isKCFIChecked()) {
+    if (llvm::ConstantInt *TypeId = ConcreteCallee.getKCFITypeId())
+      BundleList.emplace_back("kcfi", TypeId);
+    else if (!isa_and_nonnull<FunctionDecl>(TargetDecl))
+      EmitKCFIOperandBundle(ConcreteCallee, CallArgs, BundleList);
+  }
 
   // Add the pointer-authentication bundle.
   EmitPointerAuthOperandBundle(ConcreteCallee.getPointerAuthInfo(), BundleList);
@@ -6507,6 +6510,9 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
         Attrs = Attrs.addFnAttribute(getLLVMContext(), "guard_nocf");
     }
   }
+  // A KCFI check where the pointer was loaded stands for the call's checks.
+  if (ConcreteCallee.isKCFIChecked() && !CI->getCalledFunction())
+    Attrs = Attrs.addFnAttribute(getLLVMContext(), "guard_nocf");
 
   // Apply the attributes and calling convention.
   CI->setAttributes(Attrs);

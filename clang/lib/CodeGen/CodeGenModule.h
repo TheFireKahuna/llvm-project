@@ -1757,8 +1757,41 @@ public:
   /// Generate a cross-DSO type identifier for MD.
   llvm::ConstantInt *CreateCrossDsoCfiTypeId(llvm::Metadata *MD);
 
+  /// Whether functions carry a KCFI type prefix: where KCFI checks calls, and
+  /// where the prefix is part of the target's function ABI, checked or not.
+  bool hasFunctionTypePrefix() const {
+    return LangOpts.Sanitize.has(SanitizerKind::KCFI) ||
+           LangOpts.FunctionTypePrefix;
+  }
+
+  /// Whether a function that can fill a vtable slot carries the KCFI type of
+  /// the slot, which a virtual call checks, and a destructor the type the
+  /// runtime calls it through: under function type prefixes with the Itanium
+  /// C++ ABI.
+  bool hasKCFIVTableSlotTypes() const {
+    return LangOpts.FunctionTypePrefix &&
+           getTarget().getCXXABI().isItaniumFamily();
+  }
+
   /// Generate a KCFI type identifier for T.
   llvm::ConstantInt *CreateKCFITypeId(QualType T, StringRef Salt);
+
+  /// Generate the KCFI type identifier of the vtable slot that \p Slot
+  /// introduces: the type of the member function salted by its class, so that
+  /// functions of one signature in unrelated classes differ. A destructor's is
+  /// void(void *) salted "__cxa_dtor", the type the runtime calls one through,
+  /// and salted by the class besides for a deleting destructor, which only a
+  /// virtual call reaches.
+  llvm::ConstantInt *CreateKCFIVTableSlotTypeId(GlobalDecl Slot);
+
+  /// Generate the second KCFI type identifier of a function of type \p FnType
+  /// that can fill a vtable slot: the type salted "__vfn", which a call through
+  /// a member function pointer checks, knowing no class.
+  llvm::ConstantInt *CreateKCFIVfnTypeId(QualType FnType);
+
+  /// Give \p F, which fills the vtable slot that \p Slot introduces, the
+  /// slot's KCFI types.
+  void setKCFIVTableSlotType(GlobalDecl Slot, llvm::Function *F);
 
   /// Create a metadata identifier for the given function type.
   llvm::Metadata *CreateMetadataIdentifierForFnType(QualType T);
@@ -1805,7 +1838,7 @@ public:
   void createCalleeTypeMetadataForIcall(const QualType &QT, llvm::CallBase *CB);
 
   /// Set type metadata to the given function.
-  void setKCFIType(const FunctionDecl *FD, llvm::Function *F);
+  void setKCFIType(GlobalDecl GD, llvm::Function *F);
 
   /// Emit KCFI type identifier constants and remove unused identifiers.
   void finalizeKCFITypes();

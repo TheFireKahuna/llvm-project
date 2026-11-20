@@ -19,6 +19,7 @@
 #include "AArch64Subtarget.h"
 #include "MCTargetDesc/AArch64AddressingModes.h"
 #include "Utils/AArch64BaseInfo.h"
+#include "llvm/CodeGen/KCFI.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -2034,7 +2035,17 @@ bool AArch64ExpandPseudoImpl::expandMBB(MachineBasicBlock &MBB) {
 bool AArch64ExpandPseudoImpl::run(MachineFunction &MF) {
   TII = MF.getSubtarget<AArch64Subtarget>().getInstrInfo();
 
+  // The CFGuard pass checks an indirect call whose target it proved like any
+  // other, and marks the load of the target. Where the target stayed in its
+  // register from that load to the call, the guard check of it in X15 and the
+  // KCFI check prove nothing the table does not, and are dropped.
   bool Modified = false;
+  if (MF.getTarget().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    for (auto &MBB : MF)
+      for (MachineInstr &MI : MBB)
+        if (MI.isCall() && MI.getOperand(0).isReg() &&
+            dropProvenCallCheck(MI, MI.getOperand(0).getReg(), AArch64::X15))
+          Modified = true;
   for (auto &MBB : MF)
     Modified |= expandMBB(MBB);
   return Modified;
