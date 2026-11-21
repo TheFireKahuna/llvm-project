@@ -2213,6 +2213,11 @@ public:
   virtual unsigned
   getMaxPermittedBytesForAlignment(MachineBasicBlock *MBB) const;
 
+  /// Return the alignment a loop takes where its preferred one needs more
+  /// than the permitted bytes. A target with one states each loop's end on
+  /// its alignment, for an assembler that weighs the loop's size.
+  Align getMinLoopAlignment() const { return MinLoopAlignment; }
+
   /// Should loops be aligned even when the function is marked OptSize (but not
   /// MinSize).
   virtual bool alignLoopsWithOptSize() const { return false; }
@@ -3025,6 +3030,7 @@ protected:
   void setMaxBytesForAlignment(unsigned MaxBytes) {
     MaxBytesForAlignment = MaxBytes;
   }
+  void setMinLoopAlignment(Align Alignment) { MinLoopAlignment = Alignment; }
 
   /// Set the minimum stack alignment of an argument.
   void setMinStackArgumentAlignment(Align Alignment) {
@@ -3903,6 +3909,8 @@ private:
   Align PrefLoopAlignment;
   /// The maximum amount of bytes permitted to be emitted for alignment.
   unsigned MaxBytesForAlignment;
+  /// The alignment of a loop whose preferred one needs more bytes than that.
+  Align MinLoopAlignment;
 
   /// Size in bits of the maximum atomics size the backend supports.
   /// Accesses larger than this will be expanded by AtomicExpandPass.

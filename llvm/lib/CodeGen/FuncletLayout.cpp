@@ -133,10 +133,10 @@ static bool runFuncletLayout(MachineFunction &F) {
   // Block placement aligns a loop by how often its function's own code runs,
   // which says nothing of a cleanup, so no block of one stays aligned.
   if (usesCalledCleanups(F.getFunction()))
-    for (MachineBasicBlock &MBB :
-         make_range(find_if(F, [](auto &MBB) { return MBB.isEHFuncletEntry(); }),
-                    F.end()))
-      MBB.setAlignment(Align(1));
+    for (MachineBasicBlock &MBB : make_range(
+             find_if(F, [](auto &MBB) { return MBB.isEHFuncletEntry(); }),
+             F.end()))
+      MBB.setAlignment(Align(1), 0);
 
   // Conservatively assume we changed something.
   return true;

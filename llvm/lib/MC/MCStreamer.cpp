@@ -1551,6 +1551,11 @@ void MCStreamer::emitPrefAlign(Align A, const MCSymbol &End, bool EmitNops,
                                uint8_t Fill, const MCSubtargetInfo &STI) {}
 void MCStreamer::emitCodeAlignment(Align Alignment, const MCSubtargetInfo &STI,
                                    unsigned MaxBytesToEmit) {}
+void MCStreamer::emitLoopAlignment(Align Alignment, const MCSymbol &End,
+                                   const MCSubtargetInfo &STI,
+                                   unsigned MaxBytesToEmit) {
+  emitCodeAlignment(Alignment, STI, MaxBytesToEmit);
+}
 void MCStreamer::emitValueToOffset(const MCExpr *Offset, unsigned char Value,
                                    SMLoc Loc) {}
 static void reportBundlingUnsupported(MCStreamer &S) {

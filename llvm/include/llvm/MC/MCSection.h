@@ -130,8 +130,13 @@ private:
       // The maximum number of bytes to emit; if the alignment
       // cannot be satisfied in this width then this fragment is ignored.
       unsigned MaxBytesToEmit;
-      // Value to use for filling padding bytes.
-      int64_t Fill;
+      union {
+        // Value to use for filling padding bytes.
+        int64_t Fill;
+        // With EmitNops, the end of the loop this alignment is of, where its
+        // size decides its padding, or null.
+        const MCSymbol *LoopEnd;
+      };
     } align;
     struct {
       // Symbol denoting the end of the region; always non-null.
@@ -271,7 +276,7 @@ public:
   }
   int64_t getAlignFill() const {
     assert(Kind == FT_Align);
-    return u.align.Fill;
+    return u.align.EmitNops ? 0 : u.align.Fill;
   }
   uint8_t getAlignFillLen() const {
     assert(Kind == FT_Align);
@@ -284,6 +289,14 @@ public:
   bool hasAlignEmitNops() const {
     assert(Kind == FT_Align);
     return u.align.EmitNops;
+  }
+  const MCSymbol *getAlignLoopEnd() const {
+    assert(Kind == FT_Align);
+    return u.align.EmitNops ? u.align.LoopEnd : nullptr;
+  }
+  void setAlignLoopEnd(const MCSymbol *End) {
+    assert(Kind == FT_Align && u.align.EmitNops);
+    u.align.LoopEnd = End;
   }
 
   //== FT_PrefAlign functions

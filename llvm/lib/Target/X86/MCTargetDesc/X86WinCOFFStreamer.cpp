@@ -63,6 +63,8 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   const MCSymbol *JccTarget = nullptr, *OverTarget = nullptr;
   MCFragment *OverFrag;
   size_t OverFixup;
+  // The fragments that end with a jmp through a pointer that a jcc jumps over.
+  SmallPtrSet<const MCFragment *, 0> OverJumps;
 
 public:
   X86WinCOFFStreamer(MCContext &C, std::unique_ptr<MCAsmBackend> AB,
@@ -88,6 +90,7 @@ public:
     LastLoad = CallLoad = MCRegister();
     JccTarget = OverTarget = nullptr;
     CallLoads.clear();
+    OverJumps.clear();
     PrefixRun = 0;
     AfterTest = false;
     MCWinCOFFStreamer::reset();
@@ -117,6 +120,7 @@ void X86WinCOFFStreamer::emitLabel(MCSymbol *Symbol, SMLoc Loc) {
             MCConstantExpr::create(COFF::JumpOverJcc, getContext()),
             getContext(), Field.getLoc()),
         Field.getKind(), Field.isPCRel());
+    OverJumps.insert(OverFrag);
     OverTarget = nullptr;
   }
   JccTarget = nullptr;
@@ -423,20 +427,67 @@ void X86WinCOFFStreamer::finishImpl() {
   // load and the call through its register, deletes a jmp to another section
   // that ends the section, and writes every other site in its assembled
   // length. So nothing in such a section is the linker's to resize but the
-  // fragments of those loads and of that jmp. The assembler resolves every
-  // distance, chooses every width, and states as a span each value that
-  // spans one of them.
+  // fragments of those loads and of that jmp, and of the jumps whose width
+  // the layout leaves to the linker. The assembler resolves every distance,
+  // chooses every other width, and states as a span each value that spans
+  // one of them.
   for (MCSection &Sec : getAssembler()) {
     if (!MCII || !Sec.isLinkerRelaxable() || MovingSections.contains(&Sec))
       continue;
     MCFragment *Last = nullptr;
     unsigned First = -1u;
+    // The bytes of a fragment that stay in every link, of which no layout
+    // has fewer: a direct call takes five from a load and its call, a direct
+    // jmp of two bytes four from one through a pointer, and padding may go.
+    // A jmp that a jcc jumps over keeps its bytes: bound, the two are one jcc
+    // of 32 bits and a no-operation.
+    auto IsMemJump = [&](const MCFragment &F) {
+      return !F.getFixups().empty() && !OverJumps.contains(&F) &&
+             F.getFixups().back().getOffset() + 4 == F.getSize() &&
+             (F.getFixups().back().getKind() == X86::reloc_riprel_4byte_jump ||
+              F.getFixups().back().getKind() ==
+                  X86::reloc_riprel_4byte_jump_p1 ||
+              F.getFixups().back().getKind() == X86::reloc_riprel_4byte_tail);
+    };
+    auto Stays = [&](const MCFragment &F) -> uint64_t {
+      if (F.getKind() == MCFragment::FT_Align ||
+          F.getKind() == MCFragment::FT_BoundaryAlign)
+        return F.getFixedSize();
+      return F.getSize() - (CallLoads.contains(&F) ? 5 : IsMemJump(F) ? 4 : 0);
+    };
+    uint64_t After = 0;
     for (MCFragment &F : Sec) {
       F.setLinkerRelaxable(CallLoads.contains(&F));
       if (F.isLinkerRelaxable())
         First = std::min(First, F.getLayoutOrder());
       if (F.getKind() != MCFragment::FT_Data || F.getSize())
         Last = &F;
+      After += Stays(F);
+    }
+    // A jump to another section, and one through a pointer that the linker
+    // may bind, reach with 8 bits where the linker lays the target's section
+    // out near enough, which only it knows: its width is the linker's from
+    // where at most their reach stays between the jump and its section's
+    // end.
+    for (MCFragment &F : Sec) {
+      After -= Stays(F);
+      if (After > 127)
+        continue;
+      bool Far = IsMemJump(F);
+      if (F.getKind() == MCFragment::FT_Relaxable &&
+          (F.getOpcode() == X86::JMP_1 || F.getOpcode() == X86::JCC_1)) {
+        const MCOperand &To = F.getInst().getOperand(0);
+        auto *Ref =
+            To.isExpr() ? dyn_cast<MCSymbolRefExpr>(To.getExpr()) : nullptr;
+        Far =
+            Ref && (!Ref->getSymbol().isInSection() ||
+                    (&Ref->getSymbol().getSection() != &Sec &&
+                     Ref->getSymbol().getSection().getName() == Sec.getName()));
+      }
+      if (Far) {
+        F.setLinkerRelaxable();
+        First = std::min(First, F.getLayoutOrder());
+      }
     }
     bool Tail = Last && any_of(Last->getFixups(), [](const MCFixup &Fixup) {
                   return Fixup.getKind() == X86::reloc_tail_4byte_pcrel ||
@@ -455,8 +506,8 @@ void X86WinCOFFStreamer::finishImpl() {
       Last->setLinkerRelaxable();
     Sec.setFirstLinkerRelaxable(Tail ? std::min(First, Last->getLayoutOrder())
                                      : First);
-    if (Sec.isLinkerRelaxable())
-      getWriter().Spans[{&Sec, &Sec}];
+    // A jump to another section may yet be the linker's to narrow.
+    getWriter().Spans[{&Sec, &Sec}];
   }
   emitFrames();
   emitWindowsUnwindTables();

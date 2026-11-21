@@ -1572,8 +1572,20 @@ uint64_t WinCOFFWriter::writeObject() {
         Resizable.push_back(Section->Symbol->getIndex());
     // The dispatches through jump tables follow, counted: for each the
     // labels of its branch, table and base, the count and the type of the
-    // entries, the label of the load and the flags.
-    if (!Resizable.empty() || !SwitchLabels.empty()) {
+    // entries, the label of the load and the flags. Then, counted, each
+    // section with loops that a cache line is to keep: the places within a
+    // line that it is barred from plus sixteen times a count, and that many
+    // loops, each its size less one plus thirty-two times the distance of
+    // its offset from the last one's.
+    using LinePlace = WinCOFFObjectWriter::LinePlace;
+    SmallVector<std::pair<uint32_t, const LinePlace *>, 0> Placed;
+    for (const std::unique_ptr<COFFSection> &Section : Sections) {
+      auto It = OWriter.LinePlaces.find(Section->MCSection);
+      if (It != OWriter.LinePlaces.end() &&
+          (It->second.Places || !It->second.Loops.empty()))
+        Placed.push_back({Section->Symbol->getIndex(), &It->second});
+    }
+    if (!Resizable.empty() || !SwitchLabels.empty() || !Placed.empty()) {
       SmallString<0> Payload;
       raw_svector_ostream PayloadOS(Payload);
       encodeULEB128(Resizable.size(), PayloadOS);
@@ -1589,6 +1601,17 @@ uint64_t WinCOFFWriter::writeObject() {
         encodeULEB128(Table.Type, PayloadOS);
         encodeULEB128((*Label++)->getIndex(), PayloadOS);
         encodeULEB128(Table.Flags, PayloadOS);
+      }
+      if (!Placed.empty())
+        encodeULEB128(Placed.size(), PayloadOS);
+      for (auto [Section, Place] : Placed) {
+        encodeULEB128(Section, PayloadOS);
+        encodeULEB128(Place->Loops.size() << 4 | Place->Places, PayloadOS);
+        uint32_t Last = 0;
+        for (auto [Offset, Size] : Place->Loops) {
+          encodeULEB128((Offset - Last) << 5 | (Size - 1), PayloadOS);
+          Last = Offset;
+        }
       }
       Group(COFF::LinkRecordSections, Payload);
     }
@@ -1700,6 +1723,7 @@ void WinCOFFObjectWriter::reset() {
   FixedSizeSections.clear();
   SwitchTables.clear();
   Spans.clear();
+  LinePlaces.clear();
   LinkRecordsFlags = 0;
   ObjWriter->reset();
   if (DwoWriter)
@@ -1740,37 +1764,54 @@ bool WinCOFFObjectWriter::isSymbolRefDifferenceFullyResolvedImpl(
   return &SymA.getSection() == FB.getParent();
 }
 
-void WinCOFFObjectWriter::executePostLayoutBinding() {
-  // The linker may resize a section with an instruction it may resize in
-  // which every value that depends on the layout is a relocation or CodeView.
-  // Padding before a branch without an ALIGN relocation is not, nor is
-  // alignment without one, an .org or a fill of computed length after the
-  // first such instruction, nor a section with a value that depends on its
-  // layout and no relocation. An AArch64 alignment of at most an instruction
-  // keeps its padding when the linker resizes code. Any other section is no
-  // longer linker-relaxable, so that the assembler resolves what it can in it
-  // and its padding is no ALIGN relocation.
+// The linker may resize a section with an instruction it may resize in which
+// every value that depends on the layout is a relocation or CodeView. Padding
+// before a branch without an ALIGN relocation is not, nor is alignment without
+// one, an .org or a fill of computed length after the first such instruction,
+// nor a section with a value that depends on its layout and no relocation. An
+// AArch64 alignment of at most an instruction keeps its padding when the
+// linker resizes code, and an x86-64 alignment pads nothing in any link where
+// it is of one byte or names the end of its loop after layout, which a cache
+// line keeps. Before layout (Laid false) all of this is known but whether an
+// alignment of code and padding before a branch state their relocations.
+bool WinCOFFObjectWriter::keepsSize(const MCSection &Sec, bool Laid) const {
   bool IsArm64 = COFF::isAnyArm64(TargetObjectWriter->getMachine());
+  return Sec.isLinkerRelaxable() &&
+         (FixedSizeSections.contains(&Sec) ||
+          any_of(Sec, [&](const MCFragment &F) {
+            int64_t Count;
+            if (auto *BF = dyn_cast<MCBoundaryAlignFragment>(&F))
+              return Laid && BF->getLastFragment() && !F.isLinkerRelaxable();
+            if (F.getLayoutOrder() <= Sec.firstLinkerRelaxable())
+              return false;
+            return (F.getKind() == MCFragment::FT_Align &&
+                    (Laid || !F.hasAlignEmitNops()) && !F.isLinkerRelaxable() &&
+                    !(IsArm64 ? F.getAlignment() <= Align(4)
+                              : F.getAlignment() == Align(1) ||
+                                    F.getAlignLoopEnd())) ||
+                   F.getKind() == MCFragment::FT_PrefAlign ||
+                   F.getKind() == MCFragment::FT_Org ||
+                   (F.getKind() == MCFragment::FT_Fill &&
+                    !static_cast<const MCFillFragment &>(F)
+                         .getNumValues()
+                         .evaluateAsAbsolute(Count));
+          }));
+}
+
+void WinCOFFObjectWriter::executePostLayoutBinding() {
+  // A section the linker may not resize, which only its layout showed, is no
+  // longer linker-relaxable, so that the assembler resolves what it can in it
+  // and its padding is no ALIGN relocation. A loop that a cache line keeps
+  // behind its first site was laid out for the linker to keep, which it then
+  // cannot.
   for (MCSection &MCSec : *Asm) {
-    int64_t Count;
-    if (!MCSec.isLinkerRelaxable() ||
-        (!FixedSizeSections.contains(&MCSec) &&
-         none_of(MCSec, [&](const MCFragment &F) {
-           if (auto *BF = dyn_cast<MCBoundaryAlignFragment>(&F))
-             return BF->getLastFragment() && !F.isLinkerRelaxable();
-           if (F.getLayoutOrder() <= MCSec.firstLinkerRelaxable())
-             return false;
-           return (F.getKind() == MCFragment::FT_Align &&
-                   !F.isLinkerRelaxable() &&
-                   !(IsArm64 && F.getAlignment() <= Align(4))) ||
-                  F.getKind() == MCFragment::FT_PrefAlign ||
-                  F.getKind() == MCFragment::FT_Org ||
-                  (F.getKind() == MCFragment::FT_Fill &&
-                   !static_cast<const MCFillFragment &>(F)
-                        .getNumValues()
-                        .evaluateAsAbsolute(Count));
-         })))
+    if (!keepsSize(MCSec, true))
       continue;
+    auto It = LinePlaces.find(&MCSec);
+    if (It != LinePlaces.end() && It->second.Most)
+      getContext().reportError(
+          SMLoc(), "a line cannot keep a loop behind a resizable site in '" +
+                       MCSec.getName() + "', which its layout leaves fixed");
     MCSec.setFirstLinkerRelaxable(-1u);
     for (MCFragment &F : MCSec)
       if (F.getKind() == MCFragment::FT_Align ||

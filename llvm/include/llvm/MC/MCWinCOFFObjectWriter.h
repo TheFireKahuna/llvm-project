@@ -109,9 +109,26 @@ public:
   void addSpan(const MCFragment &F, const MCFixup &Fixup, const MCSection &Code,
                unsigned Kind, int64_t Operand = 0);
 
+  /// What the Sections group states of a section with loops that a cache
+  /// line is to keep: the places 0, 16, 32 and 48 bytes into a line, as bits
+  /// 0 to 3, that the assembler bars it from, and the offset and size of each
+  /// loop the linker bars by. The rest is a layout pass's: the last alignment
+  /// of a loop it met, the most places the loops listed bar, and the end of
+  /// the last loop kept.
+  struct LinePlace {
+    uint8_t Places = 0;
+    SmallVector<std::pair<uint32_t, uint8_t>, 0> Loops;
+    unsigned Order = 0, Most = 0;
+    uint64_t End = 0;
+  };
+  DenseMap<const MCSection *, LinePlace> LinePlaces;
+
   /// Sections with a value that depends on their layout and that no
   /// relocation states. The link records do not list them as resizable.
   SmallPtrSet<const MCSection *, 0> FixedSizeSections;
+  /// Whether the linker may not resize \p Sec, which it otherwise may, as
+  /// far as is known before layout or, with \p Laid, after it.
+  bool keepsSize(const MCSection &Sec, bool Laid) const;
 
   WinCOFFObjectWriter(std::unique_ptr<MCWinCOFFObjectTargetWriter> MOTW,
                       raw_pwrite_stream &OS);

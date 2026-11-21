@@ -705,6 +705,14 @@ void MCObjectStreamer::emitCodeAlignment(Align Alignment,
   F->STI = &STI;
 }
 
+void MCObjectStreamer::emitLoopAlignment(Align Alignment, const MCSymbol &End,
+                                         const MCSubtargetInfo &STI,
+                                         unsigned MaxBytesToEmit) {
+  auto *F = getCurrentFragment();
+  emitCodeAlignment(Alignment, STI, MaxBytesToEmit);
+  F->setAlignLoopEnd(&End);
+}
+
 void MCObjectStreamer::emitPrefAlign(Align Alignment, const MCSymbol &End,
                                      bool EmitNops, uint8_t Fill,
                                      const MCSubtargetInfo &STI) {

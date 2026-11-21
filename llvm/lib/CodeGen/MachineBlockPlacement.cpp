@@ -3021,9 +3021,24 @@ void MachineBlockPlacement::alignBlocks() {
   const BranchProbability ColdProb(1, 5); // 20%
   BlockFrequency EntryFreq = MBFI->getBlockFreq(&F->front());
   BlockFrequency WeightedEntryFreq = EntryFreq * ColdProb;
+  // On a target with a second loop alignment a loop is padded as its size
+  // asks, also where its first block is not aligned: the bytes permitted to
+  // a block that a later one jumps back to state that, of no alignment too.
+  DenseMap<const MachineBasicBlock *, unsigned> Order;
+  if (TLI->getMinLoopAlignment() != Align(1))
+    for (const MachineBasicBlock *ChainBB : FunctionChain)
+      Order[ChainBB] = Order.size();
   for (MachineBasicBlock *ChainBB : FunctionChain) {
     if (ChainBB == *FunctionChain.begin())
       continue;
+
+    if (!Order.empty() &&
+        !llvm::shouldOptimizeForSize(ChainBB, PSI, MBFI.get()) &&
+        any_of(ChainBB->predecessors(), [&](const MachineBasicBlock *Pred) {
+          return Order.lookup(Pred) >= Order.lookup(ChainBB);
+        }))
+      ChainBB->setMaxBytesForAlignment(
+          TLI->getMaxPermittedBytesForAlignment(ChainBB));
 
     // Don't align non-looping basic blocks. These are unlikely to execute
     // enough times to matter in practice. Note that we'll still handle

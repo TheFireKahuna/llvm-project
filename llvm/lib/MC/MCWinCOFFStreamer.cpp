@@ -679,6 +679,10 @@ void MCWinCOFFStreamer::finishImpl() {
     switchSection(Asm.getContext().getCOFFSection(".llvm.call-graph-profile",
                                                   COFF::IMAGE_SCN_LNK_REMOVE));
   }
+  // A section the linker may not resize is laid out as one.
+  for (MCSection &Sec : Asm)
+    if (getWriter().keepsSize(Sec, false))
+      Sec.setFirstLinkerRelaxable(-1u);
 
   MCObjectStreamer::finishImpl();
 }

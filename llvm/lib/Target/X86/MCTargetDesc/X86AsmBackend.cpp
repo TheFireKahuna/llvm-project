@@ -168,7 +168,9 @@ public:
                         const MCSubtargetInfo &STI) const override;
 
   bool relaxAlign(MCFragment &F, unsigned &Size) override;
+  bool keepLoop(MCFragment &F, bool Moves, unsigned &Size);
   void stateAlign(MCFragment &F, Align Alignment, unsigned Mode) const;
+  bool compacts(const MCSection &Sec) const;
 
   bool padInstructionViaRelaxation(MCFragment &RF, MCCodeEmitter &Emitter,
                                    unsigned &RemainingSize) const;
@@ -815,6 +817,16 @@ void X86AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
                           : COFF::SpanRel32 + After);
     return true;
   };
+  // A jump to another section whose width is the linker's keeps its
+  // relocation beside the span, as does one through a pointer that the
+  // linker may write as such a jump.
+  if (!IsResolved && States && F.isLinkerRelaxable() &&
+      (IsJump || Fixup.getKind() == X86::reloc_riprel_4byte_jump ||
+       Fixup.getKind() == X86::reloc_riprel_4byte_jump_p1 ||
+       Fixup.getKind() == X86::reloc_riprel_4byte_tail)) {
+    IsJump = true;
+    StatesSpan();
+  }
   if (IsResolved && Fixup.isPCRel() &&
       (IsJump || !isPCRelFixupResolved(Target.getAddSym(), F)) &&
       !StatesSpan()) {
@@ -878,6 +890,15 @@ void X86AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     Data[i] = uint8_t(Value >> (i * 8));
 }
 
+// Whether Sec is one whose code a Windows Itanium or NT-POSIX linker only
+// compacts, whose object may state spans of it.
+bool X86AsmBackend::compacts(const MCSection &Sec) const {
+  return STI.hasFeature(X86::Is64Bit) &&
+         STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+         static_cast<WinCOFFObjectWriter &>(Asm->getWriter())
+             .Spans.count({&Sec, &Sec});
+}
+
 bool X86AsmBackend::mayNeedRelaxation(unsigned Opcode,
                                       ArrayRef<MCOperand> Operands,
                                       const MCSubtargetInfo &STI) const {
@@ -885,6 +906,42 @@ bool X86AsmBackend::mayNeedRelaxation(unsigned Opcode,
   return isRelaxableBranch(Opcode) ||
          (X86::getOpcodeForLongImmediateForm(Opcode) != Opcode &&
           Operands[Operands.size() - 1 - SkipOperands].isExpr());
+}
+
+// The size of the loop whose alignment F is, from the last alignment stated
+// for it to its end, or 0 where a cache line cannot keep it: one of more than
+// half a line, or one that holds other than instructions whose length is the
+// assembler's or a jump's, or with Compacts the linker's to take from only,
+// as the load of a pointer for a call is in a section that states spans. A
+// loop that ends within it and states its own end is not padded where this
+// one is kept.
+static unsigned getLoopSize(const MCFragment &F, bool Compacts) {
+  const MCSymbol &End = *F.getAlignLoopEnd();
+  const MCFragment *I = F.getNext();
+  while (I != End.getFragment() && I->getKind() == MCFragment::FT_Align &&
+         !I->getFixedSize() && I->getAlignLoopEnd() == &End)
+    I = I->getNext();
+  auto EndsWithin = [&](const MCSymbol *Inner) {
+    if (!Inner->getFragment())
+      return false;
+    unsigned Order = Inner->getFragment()->getLayoutOrder();
+    unsigned EndOrder = End.getFragment()->getLayoutOrder();
+    return Order < EndOrder ||
+           (Order == EndOrder && Inner->getOffset() <= End.getOffset());
+  };
+  uint64_t Size = End.getOffset();
+  for (; I != End.getFragment(); I = I->getNext()) {
+    if (I->getKind() == MCFragment::FT_Align && I->getAlignLoopEnd() &&
+        EndsWithin(I->getAlignLoopEnd()))
+      Size += I->getFixedSize();
+    else if (I->getKind() != MCFragment::FT_Relaxable &&
+             (I->getKind() != MCFragment::FT_Data ||
+              (I->isLinkerRelaxable() && !Compacts)))
+      return 0;
+    else
+      Size += I->getSize();
+  }
+  return Size <= 32 ? Size : 0;
 }
 
 bool X86AsmBackend::fixupNeedsRelaxationAdvanced(const MCFragment &F,
@@ -929,7 +986,8 @@ bool X86AsmBackend::fixupNeedsRelaxationAdvanced(const MCFragment &F,
            I != E && Stay <= 128; I = I->getNext()) {
         int64_t Goes = 0;
         if (I->getKind() == MCFragment::FT_Align) {
-          if (I->isLinkerRelaxable())
+          // The padding of a loop kept within a line only goes.
+          if (I->isLinkerRelaxable() && !I->getAlignLoopEnd())
             Slack += std::min<uint64_t>(I->getAlignment().value() - 1,
                                         I->getAlignMaxBytesToEmit()) -
                      I->getVarSize();
@@ -989,11 +1047,80 @@ void X86AsmBackend::stateAlign(MCFragment &F, Align Alignment,
   F.setLinkerRelaxable();
 }
 
+// Keeps the loop whose alignment F is within a cache line where a line can
+// keep it, in a Windows Itanium or NT-POSIX object. Its section stays 16-byte
+// aligned and is barred from the places 16 bytes apart within a line at which
+// the loop would cross one; the linker places it. Before the first site the
+// linker may resize the assembler bars, and pads only where no place is left,
+// by the least that leaves one. Behind it the linker bars, by the loops the
+// object lists while they leave a place in every link: one of at most 17
+// bytes bars one place and a larger one two. Every later loop takes an ALIGN
+// in line mode, bit 18 of the mode above the loop's size less one: padding of
+// that size, which the linker cuts to the least that leaves a place.
+bool X86AsmBackend::keepLoop(MCFragment &F, bool Moves, unsigned &Size) {
+  MCSection &Sec = *F.getParent();
+  if (!STI.hasFeature(X86::Is64Bit) ||
+      !STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return false;
+  WinCOFFObjectWriter::LinePlace &P =
+      static_cast<WinCOFFObjectWriter &>(Asm->getWriter()).LinePlaces[&Sec];
+  // A layout pass comes to the alignments of a section in their order.
+  if (F.getLayoutOrder() <= P.Order)
+    P = {};
+  P.Order = F.getLayoutOrder();
+  unsigned Loop = getLoopSize(F, compacts(Sec));
+  if (!Loop)
+    return false;
+  Size = 0;
+  // The last alignment of a loop places it, and a loop within one that is
+  // kept is kept with it.
+  uint64_t At = Asm->getFragmentOffset(F) + F.getFixedSize();
+  const MCFragment *Next = F.getNext();
+  if ((Next->getKind() == MCFragment::FT_Align && !Next->getFixedSize() &&
+       Next->getAlignLoopEnd() == F.getAlignLoopEnd()) ||
+      At + Loop <= P.End)
+    return true;
+  // A section aligned to more than 16 bytes never begins at some places.
+  Sec.ensureMinAlignment(Align(16));
+  unsigned Never = Sec.getAlign() > Align(32)   ? 14
+                   : Sec.getAlign() > Align(16) ? 10
+                                                : 0;
+  auto Bars = [&](uint64_t Begin) {
+    unsigned Places = Never;
+    for (unsigned I = 0; I != 4; ++I, Begin += 16)
+      Places |= bool((Begin ^ (Begin + Loop - 1)) >> 6) << I;
+    return Places;
+  };
+  unsigned Most = Loop > 17 ? 2 : 1;
+  if (!Moves) {
+    while ((P.Places | Bars(At + Size)) == 15)
+      ++Size;
+    P.Places |= Bars(At + Size);
+  } else if (popcount(P.Places | Never) + P.Most + Most <= 3) {
+    P.Most += Most;
+    P.Loops.push_back({At, Loop});
+  } else {
+    P.Most = 3;
+    Size = Loop - 1;
+    stateAlign(F, Align(1), 1 << 18 | (Loop - 1) << 13);
+  }
+  P.End = At + Size + Loop;
+  return true;
+}
+
 // In a section the linker resizes, alignment after the first instruction it
-// may resize is the linker's to redo. The mode is the most bytes to skip, 0
-// for any number.
+// may resize is the linker's to redo, but one of a byte, which pads nothing.
+// The mode is the most bytes to skip, 0 for any number.
 bool X86AsmBackend::relaxAlign(MCFragment &F, unsigned &Size) {
-  if (F.getLayoutOrder() <= F.getParent()->firstLinkerRelaxable())
+  bool Moves = F.getLayoutOrder() > F.getParent()->firstLinkerRelaxable();
+  // A layout pass decides a loop's padding anew, as its own ALIGN or none.
+  if (F.getAlignLoopEnd()) {
+    F.clearVarFixups();
+    if (keepLoop(F, Moves, Size))
+      return true;
+    F.setAlignLoopEnd(nullptr);
+  }
+  if (!Moves || F.getAlignment() == Align(1))
     return false;
   unsigned MaxSkip = F.getAlignMaxBytesToEmit() < F.getAlignment().value()
                          ? F.getAlignMaxBytesToEmit()

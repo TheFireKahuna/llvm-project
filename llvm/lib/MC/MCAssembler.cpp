@@ -818,6 +818,16 @@ void MCAssembler::relaxAlign(MCFragment &F) {
   uint64_t Offset = F.Offset + F.getFixedSize();
   unsigned Size = offsetToAlignment(Offset, F.getAlignment());
   bool AlignFixup = false;
+  // A loop ends after its alignment, in the alignment's section.
+  if (const MCSymbol *End = F.getAlignLoopEnd()) {
+    const MCFragment *EndF = End->getFragment();
+    if (!EndF || EndF->getParent() != F.getParent() ||
+        EndF->getLayoutOrder() <= F.getLayoutOrder()) {
+      reportError(SMLoc(), ".p2align loop end symbol '" + End->getName() +
+                               "' must follow it in the current section");
+      F.setAlignLoopEnd(nullptr);
+    }
+  }
   if (F.hasAlignEmitNops()) {
     AlignFixup = getBackend().relaxAlign(F, Size);
     if (!AlignFixup)

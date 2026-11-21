@@ -87,10 +87,11 @@
 // CHECK-NEXT:     0xE IMAGE_REL_LLVM_FUSED_READ __imp_g
 // CHECK-NEXT:   }
 
-// In a section with no such site the linker keeps the length of every site,
-// so the assembler resolves its distances and states no padding. Where it
-// ends in a jmp that the linker may delete, the section is listed and states
-// a value that spans that jmp as a span, with no relocation or label.
+// In a section with no such site the linker keeps the length of every site
+// but a jump out of it from where 8 bits may reach past its end, so the
+// assembler resolves its distances and states no padding before one. The
+// section is listed, and states that jump and a value that spans it as spans,
+// with no label: .text$k's jmp, though a ret follows it, and .text$t's.
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text$k {
 // CHECK-NEXT:     0x4 IMAGE_REL_LLVM_MEM_CALL __imp_g
 // CHECK-NEXT:     0x11 IMAGE_REL_LLVM_BRANCH_TAIL ext
@@ -154,13 +155,20 @@
 // CHECK-NEXT:     ResizableSection: .text$e ({{[0-9]+}})
 // CHECK-NEXT:     ResizableSection: .text$n ({{[0-9]+}})
 // CHECK-NEXT:     ResizableSection: .text$v ({{[0-9]+}})
+// CHECK-NEXT:     ResizableSection: .text$k ({{[0-9]+}})
 // CHECK-NEXT:     ResizableSection: .text$t ({{[0-9]+}})
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Group {
 // CHECK-NEXT:     Kind: Spans (0x5)
 // CHECK-NEXT:     Spans {
+// CHECK-NEXT:       Field: .text$k ({{[0-9]+}})
+// CHECK-NEXT:       Target: .text$k ({{[0-9]+}})
+// CHECK-NEXT:       0x11 JUMP32
+// CHECK-NEXT:     }
+// CHECK-NEXT:     Spans {
 // CHECK-NEXT:       Field: .text$t ({{[0-9]+}})
 // CHECK-NEXT:       Target: .text$t ({{[0-9]+}})
+// CHECK-NEXT:       0x9 JUMP32
 // CHECK-NEXT:     }
 // CHECK-NEXT:     Spans {
 // CHECK-NEXT:       Field: .rdata$t ({{[0-9]+}})

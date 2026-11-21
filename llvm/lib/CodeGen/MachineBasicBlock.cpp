@@ -572,7 +572,7 @@ void MachineBasicBlock::printName(raw_ostream &os, unsigned printNameFlags,
       os << "ehcont-target";
       hasAttributes = true;
     }
-    if (getAlignment() != Align(1)) {
+    if (getAlignment() != Align(1) || getMaxBytesForAlignment()) {
       os << (hasAttributes ? ", " : " (");
       os << "align " << getAlignment().value();
       hasAttributes = true;

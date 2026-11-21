@@ -872,6 +872,12 @@ public:
   virtual void emitCodeAlignment(Align Alignment, const MCSubtargetInfo &STI,
                                  unsigned MaxBytesToEmit = 0);
 
+  /// Emit the code alignment of a loop that begins after it and ends at
+  /// \p End, whose size the target may weigh in place of the alignment.
+  virtual void emitLoopAlignment(Align Alignment, const MCSymbol &End,
+                                 const MCSubtargetInfo &STI,
+                                 unsigned MaxBytesToEmit = 0);
+
   virtual void emitPrefAlign(Align A, const MCSymbol &End, bool EmitNops,
                              uint8_t Fill, const MCSubtargetInfo &STI);
 

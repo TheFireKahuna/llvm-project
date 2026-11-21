@@ -2373,6 +2373,12 @@ void AsmPrinter::emitFunctionBody() {
         OutStreamer->emitLabel(S);
       }
 
+      if (!LoopEnds.empty())
+        if (MCSymbol *S = LoopEnds.lookup(&MI)) {
+          OutStreamer->emitLabel(S);
+          LoopEnds.erase(&MI);
+        }
+
       for (auto &Handler : Handlers)
         Handler->endInstruction();
     }
@@ -4982,10 +4988,47 @@ void AsmPrinter::emitBasicBlockStart(const MachineBasicBlock &MBB) {
   for (auto &Handler : Handlers)
     Handler->beginCodeAlignment(MBB);
 
-  // Emit an alignment directive for this block, if needed.
+  // Emit an alignment directive for this block, if needed. Where the target
+  // has a second alignment for a loop that the first would pad too far, the
+  // block takes both, and each names the end of the loop the block begins:
+  // the last jump back to it, within the most instructions a loop small
+  // enough for its size to matter holds. A block that is permitted padding
+  // and has no alignment states its loop alone.
   const Align Alignment = MBB.getAlignment();
-  if (Alignment != Align(1))
+  const Align MinAlignment =
+      MF->getSubtarget().getTargetLowering()->getMinLoopAlignment();
+  if (MinAlignment != Align(1) && MBB.getMaxBytesForAlignment() &&
+      getCurrentSection()->isText()) {
+    const MachineInstr *Last = nullptr;
+    unsigned Insts = 0;
+    for (auto I = MBB.getIterator();
+         I != MF->end() && I->sameSection(&MBB) && Insts <= 64; ++I)
+      for (const MachineInstr &MI : *I) {
+        Insts += !MI.isMetaInstruction();
+        if (Insts <= 64 && MI.isBranch() &&
+            any_of(MI.operands(), [&](const MachineOperand &MO) {
+              return MO.isMBB() && MO.getMBB() == &MBB;
+            }))
+          Last = &MI;
+      }
+    MCSymbol *End = nullptr;
+    if (Last)
+      End = LoopEnds[Last] = OutContext.createTempSymbol("loop_end");
+    auto Emit = [&](Align A, unsigned MaxBytes) {
+      if (End)
+        OutStreamer->emitLoopAlignment(A, *End, getSubtargetInfo(), MaxBytes);
+      else
+        OutStreamer->emitCodeAlignment(A, getSubtargetInfo(), MaxBytes);
+    };
+    if (Alignment != Align(1))
+      Emit(Alignment, MBB.getMaxBytesForAlignment());
+    else if (End)
+      Emit(Alignment, 0);
+    if (MinAlignment < Alignment)
+      Emit(MinAlignment, 0);
+  } else if (Alignment != Align(1)) {
     emitAlignment(Alignment, nullptr, MBB.getMaxBytesForAlignment());
+  }
 
   // If the block has its address taken, emit any labels that were used to
   // reference the block.  It is possible that there is more than one label

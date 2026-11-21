@@ -2917,6 +2917,15 @@ X86TargetLowering::X86TargetLowering(const X86TargetMachine &TM,
 
   // Default loop alignment, which can be overridden by -align-loops.
   setPrefLoopAlignment(Align(16));
+  // A Windows Itanium loop that a cache line can keep is padded only to stay
+  // within one, which its size in the assembler decides. A larger one is
+  // aligned as GCC aligns for Intel's processors: to 16 bytes where at most 10
+  // do it, and to 8 otherwise.
+  if (Subtarget.is64Bit() &&
+      TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    setMaxBytesForAlignment(10);
+    setMinLoopAlignment(Align(8));
+  }
 
   // An out-of-order CPU can speculatively execute past a predictable branch,
   // but a conditional move could be stalled by an expensive earlier operation.

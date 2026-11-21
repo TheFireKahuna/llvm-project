@@ -20,7 +20,6 @@
 // of the section names the section's symbol instead: the linker maps the
 // offset in an absolute field, and ADDEND32 states what any other field holds
 // besides that offset. JUMP32 is a jmp or jcc that is long as assembled and
-// reaches with 8 bits in some link, whose width is the linker's.
 
 // CHECK:      Relocations [
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text {
@@ -74,6 +73,7 @@
 // CHECK-NEXT:       0x11 REL32_1
 // CHECK-NEXT:       0x22 REL8
 // CHECK-NEXT:       0x40 IMAGE_REL_AMD64_SSPAN32 0x3C
+// CHECK-NEXT:       0x53 JUMP32
 // CHECK-NEXT:     }
 // CHECK-NEXT:     Spans {
 // CHECK-NEXT:       Field: .text$w (
@@ -86,6 +86,7 @@
 // CHECK-NEXT:     Spans {
 // CHECK-NEXT:       Field: .text$t (
 // CHECK-NEXT:       Target: .text$t (
+// CHECK-NEXT:       0x4 JUMP32
 // CHECK-NEXT:     }
 // Each epilogue of unwind data of version 2 is a distance from the function's
 // end.

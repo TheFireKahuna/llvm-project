@@ -153,6 +153,10 @@ public:
   SmallPtrSet<const MachineBasicBlock *, 16> ShrinkWrappedFrame;
   bool InShrinkWrappedFrame = false;
 
+  /// The label after each jump yet to be emitted that ends a loop whose
+  /// alignment names its end.
+  DenseMap<const MachineInstr *, MCSymbol *> LoopEnds;
+
   /// Vector of symbols marking the end of the callsites in the current
   /// function, keyed by their containing basic block.
   /// The callsite symbols of each block are stored in the order they appear

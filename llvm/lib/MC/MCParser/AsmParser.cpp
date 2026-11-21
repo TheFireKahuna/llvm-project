@@ -3395,10 +3395,13 @@ bool AsmParser::parseDirectiveOrg() {
 
 /// parseDirectiveAlign
 ///  ::= {.align, ...} expression [ , expression [ , expression ]]
+///  ::= .p2align expression , , [ expression ] , symbol
 bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
   SMLoc AlignmentLoc = getLexer().getLoc();
   int64_t Alignment;
   SMLoc MaxBytesLoc;
+  SMLoc LoopEndLoc;
+  MCSymbol *LoopEnd = nullptr;
   bool HasFillExpr = false;
   int64_t FillExpr = 0;
   int64_t MaxBytesToFill = 0;
@@ -3416,10 +3419,16 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
         if (parseTokenLoc(FillExprLoc) || parseAbsoluteExpression(FillExpr))
           return true;
       }
-      if (parseOptionalToken(AsmToken::Comma))
-        if (parseTokenLoc(MaxBytesLoc) ||
-            parseAbsoluteExpression(MaxBytesToFill))
+      if (parseOptionalToken(AsmToken::Comma)) {
+        if (getTok().isNot(AsmToken::Comma) &&
+            (parseTokenLoc(MaxBytesLoc) ||
+             parseAbsoluteExpression(MaxBytesToFill)))
           return true;
+        // The alignment of a loop names the loop's end.
+        if (parseOptionalToken(AsmToken::Comma) &&
+            (parseTokenLoc(LoopEndLoc) || parseSymbol(LoopEnd)))
+          return true;
+      }
     }
     return parseEOL();
   };
@@ -3489,7 +3498,16 @@ bool AsmParser::parseDirectiveAlign(bool IsPow2, uint8_t ValueSize) {
 
   // Check whether we should use optimal code alignment for this .align
   // directive.
-  if (MAI.useCodeAlign(*Section) && !HasFillExpr) {
+  if (LoopEnd && (!MAI.useCodeAlign(*Section) || HasFillExpr || !IsPow2 ||
+                  ValueSize != 1)) {
+    ReturnVal |= Error(LoopEndLoc, "only a .p2align of code without a fill "
+                                   "value takes the end of a loop");
+    LoopEnd = nullptr;
+  }
+  if (LoopEnd) {
+    getStreamer().emitLoopAlignment(Align(Alignment), *LoopEnd,
+                                    getTargetParser().getSTI(), MaxBytesToFill);
+  } else if (MAI.useCodeAlign(*Section) && !HasFillExpr) {
     getStreamer().emitCodeAlignment(Align(Alignment),
                                     getTargetParser().getSTI(), MaxBytesToFill);
   } else {

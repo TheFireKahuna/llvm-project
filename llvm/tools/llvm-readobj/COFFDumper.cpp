@@ -2603,6 +2603,23 @@ void COFFDumper::printCOFFLinkRecords() {
                   W.printNumber("Load", getSymbolName(Fields[5]), Fields[5]);
                   W.printNumber("Flags", Fields[6]);
                 }
+                for (uint64_t Count = C && !Data.eof(C) ? Data.getULEB128(C)
+                                                        : 0;
+                     C && Count; --Count) {
+                  uint64_t Section = Data.getULEB128(C);
+                  uint64_t Head = Data.getULEB128(C);
+                  if (C)
+                    W.printNumber("LinePlacesBarred", getSymbolName(Section),
+                                  Head & 15);
+                  for (uint64_t Offset = 0, N = Head >> 4; C && N; --N) {
+                    uint64_t Loop = Data.getULEB128(C);
+                    Offset += Loop >> 5;
+                    if (C)
+                      W.printNumber("Loop",
+                                    ("0x" + Twine::utohexstr(Offset)).str(),
+                                    (Loop & 31) + 1);
+                  }
+                }
                 return C.takeError();
               }
               if (Kind == COFF::LinkRecordSpans) {

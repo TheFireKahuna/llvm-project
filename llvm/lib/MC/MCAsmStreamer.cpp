@@ -392,6 +392,9 @@ public:
 
   void emitCodeAlignment(Align Alignment, const MCSubtargetInfo &STI,
                          unsigned MaxBytesToEmit = 0) override;
+  void emitLoopAlignment(Align Alignment, const MCSymbol &End,
+                         const MCSubtargetInfo &STI,
+                         unsigned MaxBytesToEmit = 0) override;
   void emitPrefAlign(Align Alignment, const MCSymbol &End, bool EmitNops,
                      uint8_t Fill, const MCSubtargetInfo &STI) override;
 
@@ -1726,6 +1729,17 @@ void MCAsmStreamer::emitCodeAlignment(Align Alignment,
                            MaxBytesToEmit);
   else
     emitAlignmentDirective(Alignment.value(), std::nullopt, 1, MaxBytesToEmit);
+}
+
+void MCAsmStreamer::emitLoopAlignment(Align Alignment, const MCSymbol &End,
+                                      const MCSubtargetInfo &STI,
+                                      unsigned MaxBytesToEmit) {
+  OS << "\t.p2align\t" << Log2(Alignment) << ", , ";
+  if (MaxBytesToEmit)
+    OS << MaxBytesToEmit;
+  OS << ", ";
+  End.print(OS, MAI);
+  EmitEOL();
 }
 
 void MCAsmStreamer::emitPrefAlign(Align Alignment, const MCSymbol &End,
