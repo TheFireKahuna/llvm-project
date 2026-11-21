@@ -43,6 +43,8 @@ def color_diagnostics_eq: Joined<["--"], "color-diagnostics=">,
     HelpText<"Use colors in diagnostics (default: auto)">,
     MetaVarName<"[auto,always,never]">;
 def defaultlib : P<"defaultlib", "Add the library to the list of input files">;
+def delay : P<"delay",
+    "Delay-load option: unload (write unload tables) or nobind">;
 def delayload : P<"delayload", "Delay loaded DLL name">;
 def diasdkdir : P<"diasdkdir", "Set the location of the DIA SDK">;
 def discard_section : P<"discard-section", "Discard input sections by name">;
@@ -158,6 +160,8 @@ def defarm64native
 def debug : F<"debug">, HelpText<"Embed a symbol table in the image">;
 def debug_opt : P<"debug", "Embed a symbol table in the image with option">;
 def debugtype : P<"debugtype", "Debug Info Options">;
+def didatownsection : F<"didatownsection">,
+    HelpText<"Protect the delay-load IAT in its own .didat section">;
 def dll : F<"dll">, HelpText<"Create a DLL">;
 def driver : F<"driver">, HelpText<"Generate a Windows NT Kernel Mode Driver">;
 def driver_wdm : F<"driver:wdm">,
@@ -170,6 +174,8 @@ def nodefaultlib_all : F<"nodefaultlib">,
     HelpText<"Remove all default libraries">;
 def noentry : F<"noentry">,
     HelpText<"Don't add reference to DllMainCRTStartup; only valid with /dll">;
+def nooptdidat : F<"nooptdidat">,
+    HelpText<"Leave the delay-load IAT unprotected in .data">;
 def profile : F<"profile">;
 def repro : F<"Brepro">,
     HelpText<"Use a hash of the executable as the PE header timestamp">;
@@ -404,7 +410,6 @@ def nocoffgrpinfo: F<"nocoffgrpinfo">;
 def noexp : F<"noexp">;
 def novcfeature: F<"novcfeature">;
 
-def delay : P_priv<"delay">;
 def errorreport : P_priv<"errorreport">;
 def idlout : P_priv<"idlout">;
 def ilk : P_priv<"ilk">;

@@ -23,7 +23,7 @@ IMPORT-NEXT:     Symbol: ExitProcess (0)
 IMPORT-NEXT:     Address: 0x401029
 IMPORT-NEXT:   }
 IMPORT-NEXT:   Import {
-IMPORT-NEXT:     Symbol: MessageBoxA (0)
+IMPORT-NEXT:     Symbol: MessageBoxA (1)
 IMPORT-NEXT:     Address: 0x401033
 IMPORT-NEXT:   }
 IMPORT-NEXT: }

@@ -35,6 +35,18 @@ public:
   std::vector<Chunk *> auxIatCopy;
 };
 
+// Where the delay-load IAT goes. Each value is the GuardFlags that tell the
+// loader about it.
+enum class DelayIatPlacement : uint32_t {
+  // Unprotected, in .data.
+  Data = 0,
+  // Write-protected, in .idata's output section.
+  Idata = uint32_t(llvm::COFF::GuardFlags::PROTECT_DELAYLOAD_IAT),
+  // Write-protected, at the start of a writable .didat of its own.
+  Didat = Idata |
+          uint32_t(llvm::COFF::GuardFlags::DELAYLOAD_IAT_IN_ITS_OWN_SECTION),
+};
+
 // Windows-specific.
 // DelayLoadContents creates all chunks for the delay-load DLL import table.
 class DelayLoadContents {
@@ -44,7 +56,8 @@ public:
   bool empty() { return imports.empty(); }
   void create();
   std::vector<Chunk *> getChunks();
-  std::vector<Chunk *> getDataChunks();
+  ArrayRef<Chunk *> getModuleHandles() { return moduleHandles; }
+  ArrayRef<Chunk *> getAddresses() { return addresses; }
   ArrayRef<Chunk *> getCodeChunks() { return thunks; }
   ArrayRef<Chunk *> getCodePData() { return pdata; }
   ArrayRef<Chunk *> getCodeUnwindInfo() { return unwindinfo; }
@@ -53,6 +66,7 @@ public:
 
   uint64_t getDirRVA() { return dirs[0]->getRVA(); }
   uint64_t getDirSize();
+  DelayIatPlacement getIatPlacement();
 
 private:
   Chunk *newThunkChunk(DefinedImportData *s, Chunk *tailMerge);
@@ -71,6 +85,7 @@ private:
   std::vector<Chunk *> dllNames;
   std::vector<Chunk *> auxIat;
   std::vector<Chunk *> auxIatCopy;
+  std::vector<Chunk *> unloads;
 
   COFFLinkerContext &ctx;
 };

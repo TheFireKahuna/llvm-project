@@ -16,6 +16,10 @@
 # RUN: env LLD_IN_TEST=1 not lld-link /out:%t.exe /entry:main /subsystem:console /force \
 # RUN:   /merge:.foo=.reloc %t.obj /debug 2>&1 | FileCheck --check-prefix=NO-RELOC %s
 # RUN: env LLD_IN_TEST=1 not lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN:   /merge:.didat=.foo %t.obj /debug 2>&1 | FileCheck --check-prefix=NO-DIDAT %s
+# RUN: env LLD_IN_TEST=1 not lld-link /out:%t.exe /entry:main /subsystem:console /force \
+# RUN:   /merge:.foo=.idata %t.obj /debug 2>&1 | FileCheck --check-prefix=NO-IDATA %s
+# RUN: env LLD_IN_TEST=1 not lld-link /out:%t.exe /entry:main /subsystem:console /force \
 # RUN:   /merge:.foo=.foo1 /merge:.foo1=.foo %t.obj /debug 2>&1 | FileCheck --check-prefix=NO-CYCLE %s
 # RUN: env LLD_IN_TEST=1 not lld-link /out:%t.exe /entry:main /subsystem:console /force \
 # RUN:   /merge:.foo=.foo1 /merge:.foo1=.foo2 /merge:.foo2=.foo1 %t.obj /debug 2>&1 | FileCheck --check-prefix=NO-CYCLE %s
@@ -28,6 +32,10 @@
 # CHECK2-NOT: Name: .bar
 
 # NO-RSRC: /merge: cannot merge '.rsrc' with any section
+
+# NO-DIDAT: /merge: cannot merge '.didat' with any section
+
+# NO-IDATA: /merge: cannot merge '.idata' with any section
 # NO-RELOC: /merge: cannot merge '.reloc' with any section
 
 # NO-CYCLE: /merge: cycle found for section '.foo'

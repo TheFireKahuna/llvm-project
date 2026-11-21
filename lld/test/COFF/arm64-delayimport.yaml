@@ -4,6 +4,7 @@
 # RUN: lld-link /entry:main /subsystem:console /out:%t.exe %t.obj %p/Inputs/library-arm64.lib /alternatename:__delayLoadHelper2=main /delayload:library.dll
 # RUN: llvm-objdump --no-print-imm-hex -d %t.exe | FileCheck %s --check-prefix DISASM
 # RUN: llvm-readobj --coff-imports %t.exe | FileCheck %s -check-prefix IMPORTS
+# RUN: llvm-readobj --unwind %t.exe | FileCheck %s -check-prefix UNWIND
 
 # DISASM:  140001014:      d0000011        adrp    x17, 0x140003000
 # DISASM:  140001018:      91002231        add     x17, x17, #8
@@ -38,6 +39,14 @@
 # DISASM:  14000108c:      a8ce7bfd        ldp     x29, x30, [sp], #224
 # DISASM:  140001090:      d61f0200        br      x16
 
+# The tail merge has a function table entry, packed, through which the
+# exception that __delayLoadHelper2 raises unwinds.
+# UNWIND:      Function: 0x140001020
+# UNWIND-NEXT: Fragment: No
+# UNWIND-NEXT: FunctionLength: 116
+# UNWIND:      CR: 3
+# UNWIND-NEXT: FrameSize: 224
+
 # IMPORTS: Format: COFF-ARM64
 # IMPORTS: Arch: aarch64
 # IMPORTS: AddressSize: 64bit
@@ -50,7 +59,7 @@
 # IMPORTS:   BoundDelayImportTable: 0x0
 # IMPORTS:   UnloadDelayImportTable: 0x0
 # IMPORTS:   Import {
-# IMPORTS:     Symbol: function (0)
+# IMPORTS:     Symbol: function (2)
 # IMPORTS:     Address: 0x140001014
 # IMPORTS:   }
 # IMPORTS: }

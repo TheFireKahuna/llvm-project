@@ -226,12 +226,15 @@ public:
     e->ModuleHandle = moduleHandle->getRVA();
     e->DelayImportAddressTable = addressTab->getRVA();
     e->DelayImportNameTable = nameTab->getRVA();
+    if (unloadTab)
+      e->UnloadDelayImportTable = unloadTab->getRVA();
   }
 
   Chunk *dllName;
   Chunk *moduleHandle;
   Chunk *addressTab;
   Chunk *nameTab;
+  Chunk *unloadTab = nullptr;
 };
 
 // Initial contents for delay-loaded functions.
@@ -351,77 +354,82 @@ static const uint8_t tailMergeARM64[] = {
     0x00, 0x02, 0x1f, 0xd6, // br      x16
 };
 
-// A chunk for the delay import thunk.
-class ThunkChunkX64 : public NonSectionCodeChunk {
-public:
-  ThunkChunkX64(Defined *i, Chunk *tm) : imp(i), tailMerge(tm) {}
+// Its function table entry, packed: 29 instructions, a frame record of 224
+// bytes that x29 points to, and the one epilogue at the end.
+static const uint8_t tailMergePDataARM64[] = {0,    0,    0,    0,
+                                              0x75, 0x00, 0x60, 0x07};
 
-  size_t getSize() const override { return sizeof(thunkX64); }
-  MachineTypes getMachine() const override { return AMD64; }
+// Bytes that the link writes with the fields in them that name other chunks:
+// a stub's code, its unwind information, or its function table entry.
+class StubChunk : public NonSectionChunk {
+public:
+  struct Fixup {
+    // An x86-64 field relative to its own end; the address of the target, or
+    // of its end, relative to the image base; and an ARM64 adrp, the add or
+    // branch that follows one.
+    enum Kind : uint8_t { Rel32, Rva, RvaEnd, Page21, PageOff12, Branch26 };
+    Kind kind;
+    uint16_t offset;
+    // The target, with the symbol where it is one. A fixup with neither
+    // leaves its field as the bytes have it.
+    Chunk *chunk;
+    Defined *sym = nullptr;
+  };
+
+  StubChunk(MachineTypes machine, bool code, ArrayRef<uint8_t> bytes,
+            std::initializer_list<Fixup> fixups)
+      : bytes(bytes), fixups(fixups), machine(machine), code(code) {
+    setAlignment(machine == AMD64 && code ? 1 : 4);
+  }
+
+  size_t getSize() const override { return bytes.size(); }
+  MachineTypes getMachine() const override { return machine; }
+  uint32_t getOutputCharacteristics() const override {
+    return code ? IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_EXECUTE : 0;
+  }
 
   void writeTo(uint8_t *buf) const override {
-    memcpy(buf, thunkX64, sizeof(thunkX64));
-    write32le(buf + 3, imp->getRVA() - rva - 7);
-    write32le(buf + 8, tailMerge->getRVA() - rva - 12);
+    memcpy(buf, bytes.data(), bytes.size());
+    for (const Fixup &f : fixups) {
+      if (!f.chunk && !f.sym)
+        continue;
+      uint64_t s = f.sym ? f.sym->getRVA() : f.chunk->getRVA();
+      uint64_t p = rva + f.offset;
+      uint8_t *loc = buf + f.offset;
+      switch (f.kind) {
+      case Fixup::Rel32:
+        write32le(loc, s - p - 4);
+        break;
+      case Fixup::RvaEnd:
+        s += f.chunk->getSize();
+        [[fallthrough]];
+      case Fixup::Rva:
+        write32le(loc, s);
+        break;
+      case Fixup::Page21:
+        applyArm64Addr(loc, s, p, 12);
+        break;
+      case Fixup::PageOff12:
+        applyArm64Imm(loc, s & 0xfff, 0);
+        break;
+      case Fixup::Branch26:
+        applyArm64Branch26(loc, s - p);
+        break;
+      }
+    }
   }
 
-  Defined *imp = nullptr;
-  Chunk *tailMerge = nullptr;
+private:
+  ArrayRef<uint8_t> bytes;
+  SmallVector<Fixup, 3> fixups;
+  MachineTypes machine;
+  bool code;
 };
 
-class TailMergeChunkX64 : public NonSectionCodeChunk {
-public:
-  TailMergeChunkX64(Chunk *d, Defined *h) : desc(d), helper(h) {}
-
-  size_t getSize() const override { return sizeof(tailMergeX64); }
-  MachineTypes getMachine() const override { return AMD64; }
-
-  void writeTo(uint8_t *buf) const override {
-    memcpy(buf, tailMergeX64, sizeof(tailMergeX64));
-    write32le(buf + 54, desc->getRVA() - rva - 58);
-    write32le(buf + 59, helper->getRVA() - rva - 63);
-  }
-
-  Chunk *desc = nullptr;
-  Defined *helper = nullptr;
-};
-
-class TailMergePDataChunkX64 : public NonSectionChunk {
-public:
-  TailMergePDataChunkX64(Chunk *tm, Chunk *unwind) : tm(tm), unwind(unwind) {
-    // See
-    // https://learn.microsoft.com/en-us/cpp/build/exception-handling-x64#struct-runtime_function
-    setAlignment(4);
-  }
-
-  size_t getSize() const override { return 3 * sizeof(uint32_t); }
-  MachineTypes getMachine() const override { return AMD64; }
-
-  void writeTo(uint8_t *buf) const override {
-    write32le(buf + 0, tm->getRVA()); // TailMergeChunk start RVA
-    write32le(buf + 4, tm->getRVA() + tm->getSize()); // TailMergeChunk stop RVA
-    write32le(buf + 8, unwind->getRVA());             // UnwindInfo RVA
-  }
-
-  Chunk *tm = nullptr;
-  Chunk *unwind = nullptr;
-};
-
-class TailMergeUnwindInfoX64 : public NonSectionChunk {
-public:
-  TailMergeUnwindInfoX64() {
-    // See
-    // https://learn.microsoft.com/en-us/cpp/build/exception-handling-x64#struct-unwind_info
-    setAlignment(4);
-  }
-
-  size_t getSize() const override { return sizeof(tailMergeUnwindInfoX64); }
-  MachineTypes getMachine() const override { return AMD64; }
-
-  void writeTo(uint8_t *buf) const override {
-    memcpy(buf, tailMergeUnwindInfoX64, sizeof(tailMergeUnwindInfoX64));
-  }
-};
+static Chunk *newStub(MachineTypes machine, bool code, ArrayRef<uint8_t> bytes,
+                      std::initializer_list<StubChunk::Fixup> fixups = {}) {
+  return make<StubChunk>(machine, code, bytes, fixups);
+}
 
 class ThunkChunkX86 : public NonSectionCodeChunk {
 public:
@@ -525,49 +533,6 @@ public:
 
 private:
   const COFFLinkerContext &ctx;
-};
-
-class ThunkChunkARM64 : public NonSectionCodeChunk {
-public:
-  ThunkChunkARM64(Defined *i, Chunk *tm) : imp(i), tailMerge(tm) {
-    setAlignment(4);
-  }
-
-  size_t getSize() const override { return sizeof(thunkARM64); }
-  MachineTypes getMachine() const override { return ARM64; }
-
-  void writeTo(uint8_t *buf) const override {
-    memcpy(buf, thunkARM64, sizeof(thunkARM64));
-    applyArm64Addr(buf + 0, imp->getRVA(), rva + 0, 12);
-    applyArm64Imm(buf + 4, imp->getRVA() & 0xfff, 0);
-    applyArm64Branch26(buf + 8, tailMerge->getRVA() - rva - 8);
-  }
-
-  Defined *imp = nullptr;
-  Chunk *tailMerge = nullptr;
-};
-
-class TailMergeChunkARM64 : public NonSectionCodeChunk {
-public:
-  TailMergeChunkARM64(Chunk *d, Defined *h) : desc(d), helper(h) {
-    setAlignment(4);
-  }
-
-  size_t getSize() const override { return sizeof(tailMergeARM64); }
-  MachineTypes getMachine() const override { return ARM64; }
-
-  void writeTo(uint8_t *buf) const override {
-    memcpy(buf, tailMergeARM64, sizeof(tailMergeARM64));
-    applyArm64Addr(buf + 48, desc->getRVA(), rva + 48, 12);
-    applyArm64Imm(buf + 52, desc->getRVA() & 0xfff, 0);
-    if (helper) {
-      applyArm64Addr(buf + 56, helper->getRVA(), rva + 56, 12);
-      applyArm64Imm(buf + 60, helper->getRVA() & 0xfff, 0);
-    }
-  }
-
-  Chunk *desc = nullptr;
-  Defined *helper = nullptr;
 };
 
 // A chunk for the import descriptor table.
@@ -903,14 +868,37 @@ std::vector<Chunk *> DelayLoadContents::getChunks() {
   v.insert(v.end(), names.begin(), names.end());
   v.insert(v.end(), hintNames.begin(), hintNames.end());
   v.insert(v.end(), dllNames.begin(), dllNames.end());
+  v.insert(v.end(), unloads.begin(), unloads.end());
   return v;
 }
 
-std::vector<Chunk *> DelayLoadContents::getDataChunks() {
-  std::vector<Chunk *> v;
-  v.insert(v.end(), moduleHandles.begin(), moduleHandles.end());
-  v.insert(v.end(), addresses.begin(), addresses.end());
-  return v;
+// The delay-load IAT's placement, decided as link.exe does. Only a GUI or
+// console image without /nooptdidat protects it. A helper whose own object
+// defines __MSSafeDelayLoadIAT, for a subsystem above 6.3, has it protected
+// beside the IAT, unless /didatownsection puts it alone in a writable .didat;
+// otherwise /guard:cf puts it there, and else it is unprotected.
+DelayIatPlacement DelayLoadContents::getIatPlacement() {
+  Configuration &config = ctx.config;
+  if (imports.empty() || config.noOptDidat ||
+      (config.subsystem != IMAGE_SUBSYSTEM_WINDOWS_GUI &&
+       config.subsystem != IMAGE_SUBSYSTEM_WINDOWS_CUI))
+    return DelayIatPlacement::Data;
+  bool safe = true;
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    if (!symtab.delayLoadHelper)
+      return;
+    auto *helper = dyn_cast<DefinedCOFF>(symtab.delayLoadHelper);
+    auto *sym = dyn_cast_or_null<DefinedCOFF>(
+        symtab.findUnderscore("__MSSafeDelayLoadIAT"));
+    safe &= helper && sym && helper->getFile() == sym->getFile();
+  });
+  if (safe &&
+      std::make_pair(config.majorSubsystemVersion,
+                     config.minorSubsystemVersion) > std::make_pair(6u, 3u))
+    return config.didatOwnSection ? DelayIatPlacement::Didat
+                                  : DelayIatPlacement::Idata;
+  return config.guardCF != GuardCFLevel::Off ? DelayIatPlacement::Didat
+                                             : DelayIatPlacement::Data;
 }
 
 uint64_t DelayLoadContents::getDirSize() {
@@ -944,6 +932,12 @@ void DelayLoadContents::create() {
               Arm64XRelocVal(dir, offsetof(delay_import_directory_table_entry,
                                            DelayImportNameTable)),
               (addresses.size() - base) * sizeof(uint64_t));
+          if (ctx.config.delayUnload)
+            ctx.dynamicRelocs->add(
+                IMAGE_DVRT_ARM64X_FIXUP_TYPE_DELTA, 0,
+                Arm64XRelocVal(dir, offsetof(delay_import_directory_table_entry,
+                                             UnloadDelayImportTable)),
+                (addresses.size() - base) * sizeof(uint64_t));
         } else {
           base = addresses.size();
         }
@@ -966,13 +960,15 @@ void DelayLoadContents::create() {
         Chunk *t = newThunkChunk(s, tm);
         auto *a = make<DelayAddressChunk>(ctx, t);
         addresses.push_back(a);
+        if (ctx.config.delayUnload)
+          unloads.push_back(make<DelayAddressChunk>(ctx, t));
         s->setLocation(a);
         thunks.push_back(t);
         StringRef extName = s->getExternalName();
         if (extName.empty()) {
           names.push_back(make<OrdinalOnlyChunk>(ctx, s->getOrdinal()));
         } else {
-          auto *c = make<HintNameChunk>(extName, 0);
+          auto *c = make<HintNameChunk>(extName, s->getOrdinal());
           names.push_back(make<LookupChunk>(ctx, c));
           hintNames.push_back(c);
           // Add a synthetic symbol for this load thunk, using the
@@ -1012,6 +1008,8 @@ void DelayLoadContents::create() {
       // Terminate with null values.
       addresses.push_back(make<NullChunk>(ctx, 8));
       names.push_back(make<NullChunk>(ctx, 8));
+      if (ctx.config.delayUnload)
+        unloads.push_back(make<NullChunk>(ctx, 8));
       if (ctx.symtab.isEC()) {
         auxIat.push_back(make<NullChunk>(ctx, 8));
         auxIatCopy.push_back(make<NullChunk>(ctx, 8));
@@ -1025,6 +1023,8 @@ void DelayLoadContents::create() {
     dir->moduleHandle = mh;
     dir->addressTab = addresses[base];
     dir->nameTab = names[base];
+    if (ctx.config.delayUnload)
+      dir->unloadTab = unloads[base];
     dirs.push_back(dir);
   }
 
@@ -1038,17 +1038,24 @@ void DelayLoadContents::create() {
 }
 
 Chunk *DelayLoadContents::newTailMergeChunk(SymbolTable &symtab, Chunk *dir) {
+  using Fixup = StubChunk::Fixup;
   auto helper = cast_or_null<Defined>(symtab.delayLoadHelper);
   switch (symtab.machine) {
   case AMD64:
   case ARM64EC:
-    return make<TailMergeChunkX64>(dir, helper);
+    return newStub(
+        AMD64, true, tailMergeX64,
+        {{Fixup::Rel32, 54, dir}, {Fixup::Rel32, 59, nullptr, helper}});
   case I386:
     return make<TailMergeChunkX86>(ctx, dir, helper);
   case ARMNT:
     return make<TailMergeChunkARM>(ctx, dir, helper);
   case ARM64:
-    return make<TailMergeChunkARM64>(dir, helper);
+    return newStub(ARM64, true, tailMergeARM64,
+                   {{Fixup::Page21, 48, dir},
+                    {Fixup::PageOff12, 52, dir},
+                    {Fixup::Page21, 56, nullptr, helper},
+                    {Fixup::PageOff12, 60, nullptr, helper}});
   default:
     llvm_unreachable("unsupported machine type");
   }
@@ -1056,13 +1063,25 @@ Chunk *DelayLoadContents::newTailMergeChunk(SymbolTable &symtab, Chunk *dir) {
 
 Chunk *DelayLoadContents::newTailMergePDataChunk(SymbolTable &symtab,
                                                  Chunk *tm) {
+  using Fixup = StubChunk::Fixup;
   switch (symtab.machine) {
   case AMD64:
-  case ARM64EC:
+  case ARM64EC: {
+    static const uint8_t entry[12] = {};
     if (!symtab.tailMergeUnwindInfoChunk)
-      symtab.tailMergeUnwindInfoChunk = make<TailMergeUnwindInfoX64>();
-    return make<TailMergePDataChunkX64>(tm, symtab.tailMergeUnwindInfoChunk);
-    // FIXME: Add support for other architectures.
+      symtab.tailMergeUnwindInfoChunk = make<StubChunk>(
+          AMD64, false, tailMergeUnwindInfoX64, std::initializer_list<Fixup>{});
+    return make<StubChunk>(
+        AMD64, false, entry,
+        std::initializer_list<Fixup>{
+            {Fixup::Rva, 0, tm},
+            {Fixup::RvaEnd, 4, tm},
+            {Fixup::Rva, 8, symtab.tailMergeUnwindInfoChunk}});
+  }
+  case ARM64:
+    return make<StubChunk>(ARM64, false, tailMergePDataARM64,
+                           std::initializer_list<StubChunk::Fixup>{
+                               {StubChunk::Fixup::Rva, 0, tm}});
   default:
     return nullptr; // Just don't generate unwind info.
   }
@@ -1070,16 +1089,22 @@ Chunk *DelayLoadContents::newTailMergePDataChunk(SymbolTable &symtab,
 
 Chunk *DelayLoadContents::newThunkChunk(DefinedImportData *s,
                                         Chunk *tailMerge) {
+  using Fixup = StubChunk::Fixup;
   switch (s->file->getMachineType()) {
   case AMD64:
   case ARM64EC:
-    return make<ThunkChunkX64>(s, tailMerge);
+    return newStub(
+        AMD64, true, thunkX64,
+        {{Fixup::Rel32, 3, nullptr, s}, {Fixup::Rel32, 8, tailMerge}});
   case I386:
     return make<ThunkChunkX86>(ctx, s, tailMerge);
   case ARMNT:
     return make<ThunkChunkARM>(ctx, s, tailMerge);
   case ARM64:
-    return make<ThunkChunkARM64>(s, tailMerge);
+    return newStub(ARM64, true, thunkARM64,
+                   {{Fixup::Page21, 0, nullptr, s},
+                    {Fixup::PageOff12, 4, nullptr, s},
+                    {Fixup::Branch26, 8, tailMerge}});
   default:
     llvm_unreachable("unsupported machine type");
   }

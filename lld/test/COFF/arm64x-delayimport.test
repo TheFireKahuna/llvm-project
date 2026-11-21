@@ -176,7 +176,7 @@ NATIVE-IMPORTS-NEXT:   }
 NATIVE-IMPORTS-NEXT: }
 
 RUN: llvm-readobj --hex-dump=.testa out-native.dll | FileCheck --check-prefix=NATIVE-TESTSECA %s
-NATIVE-TESTSECA: 0x180007000 88500000 08100000
+NATIVE-TESTSECA: 0x180008000 88500000 08100000
 
 RUN: llvm-objdump -d out-native.dll | FileCheck --check-prefix=NATIVE-DISASM %s
 NATIVE-DISASM:      0000000180001000 <.text>:
@@ -318,6 +318,54 @@ RUN: llvm-readobj --hex-dump=.rdata out-ec.dll | FileCheck --check-prefix=EC-AUX
 EC-AUXIAT:      0x180005000 00000000 00000000 1c200080 01000000
 EC-AUXIAT-NEXT: 0x180005010 00000000 00000000
 
+
+# Protect the delay-load IAT only when both views' helper objects define
+# __MSSafeDelayLoadIAT. Each view's unload table is its own.
+
+RUN: llvm-mc -filetype=obj -triple=arm64ec-windows arm64ec-safe.s -o arm64ec-safe.obj
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows arm64-safe.s -o arm64-safe.obj
+RUN: lld-link -machine:arm64x -dll -noentry -subsystem:windows,10.0 -out:out-safe.dll \
+RUN:          loadconfig-arm64.obj loadconfig-arm64ec.obj arm64-safe.obj arm64-helper.obj arm64ec-safe.obj arm64ec-helper.obj \
+RUN:          test-arm64.obj test-arm64ec.obj test-arm64.lib test-arm64ec.lib -delayload:test.dll -delay:unload
+RUN: llvm-readobj --coff-imports --coff-load-config out-safe.dll | FileCheck --check-prefix=SAFE %s
+RUN: lld-link -machine:arm64x -dll -noentry -subsystem:windows,10.0 -out:out-unsafe.dll \
+RUN:          loadconfig-arm64.obj loadconfig-arm64ec.obj arm64-safe.obj arm64-helper.obj arm64ec-helper.obj \
+RUN:          test-arm64.obj test-arm64ec.obj test-arm64.lib test-arm64ec.lib -delayload:test.dll
+RUN: llvm-readobj --coff-load-config out-unsafe.dll | FileCheck --check-prefix=UNSAFE %s
+
+SAFE:      UnloadDelayImportTable: 0x[[#%X,UNLOAD:]]
+SAFE:      PROTECT_DELAYLOAD_IAT (0x1000)
+SAFE:      HybridObject {
+SAFE:        UnloadDelayImportTable: 0x[[#%X,UNLOAD+0x10]]
+SAFE:        PROTECT_DELAYLOAD_IAT (0x1000)
+UNSAFE:      GuardFlags [ (0x0)
+UNSAFE:      GuardFlags [ (0x0)
+
+#--- arm64ec-safe.s
+    .section .text,"xr",discard,"#__delayLoadHelper2"
+    .globl "#__delayLoadHelper2"
+    .p2align 2, 0x0
+"#__delayLoadHelper2":
+    mov w0, #3
+    ret
+
+    .data
+    .globl __MSSafeDelayLoadIAT
+__MSSafeDelayLoadIAT:
+    .word 0
+
+#--- arm64-safe.s
+    .section .text,"xr",discard,__delayLoadHelper2
+    .globl __delayLoadHelper2
+    .p2align 2, 0x0
+__delayLoadHelper2:
+    mov w0, #3
+    ret
+
+    .data
+    .globl __MSSafeDelayLoadIAT
+__MSSafeDelayLoadIAT:
+    .word 0
 
 #--- test-arm64ec.s
     .section .test, "rd"

@@ -190,10 +190,9 @@ void LinkerDriver::parseMerge(StringRef s) {
   auto [from, to] = s.split('=');
   if (from.empty() || to.empty())
     Fatal(ctx) << "/merge: invalid argument: " << s;
-  if (from == ".rsrc" || to == ".rsrc")
-    Fatal(ctx) << "/merge: cannot merge '.rsrc' with any section";
-  if (from == ".reloc" || to == ".reloc")
-    Fatal(ctx) << "/merge: cannot merge '.reloc' with any section";
+  for (StringRef name : {".didat", ".idata", ".reloc", ".rsrc"})
+    if (from == name || to == name)
+      Fatal(ctx) << "/merge: cannot merge '" << name << "' with any section";
   auto pair = ctx.config.merge.insert(std::make_pair(from, to));
   bool inserted = pair.second;
   if (!inserted) {

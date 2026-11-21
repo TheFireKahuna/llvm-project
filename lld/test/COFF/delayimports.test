@@ -5,6 +5,17 @@
 # RUN: llvm-readobj --coff-basereloc %t.exe | FileCheck -check-prefix=BASEREL %s
 # RUN: llvm-readobj --unwind %t.exe | FileCheck -check-prefix=UNWIND %s
 
+## /delay:unload adds a relocated copy of each IAT's initial contents.
+# RUN: lld-link /out:%t-unload.exe /entry:main /subsystem:console \
+# RUN:   %p/Inputs/hello64.obj %p/Inputs/std64.lib /delayload:STD64.DLL \
+# RUN:   /alternatename:__delayLoadHelper2=main /delay:unload /delay:nobind
+# RUN: llvm-readobj --coff-imports --coff-basereloc --hex-dump=.rdata \
+# RUN:   %t-unload.exe | FileCheck -check-prefix=UNLOAD %s
+# RUN: not lld-link /out:%t-bad.exe /entry:main /subsystem:console \
+# RUN:   %p/Inputs/hello64.obj %p/Inputs/std64.lib /delayload:STD64.DLL \
+# RUN:   /alternatename:__delayLoadHelper2=main /delay:bind 2>&1 \
+# RUN:   | FileCheck -check-prefix=BADARG %s
+
 IMPORT:      DelayImport {
 IMPORT-NEXT:   Name: std64.dll
 IMPORT-NEXT:   Attributes: 0x1
@@ -22,10 +33,20 @@ IMPORT-NEXT:     Symbol:  (50)
 IMPORT-NEXT:     Address: 0x140001072
 IMPORT-NEXT:   }
 IMPORT-NEXT:   Import {
-IMPORT-NEXT:     Symbol: MessageBoxA (0)
+IMPORT-NEXT:     Symbol: MessageBoxA (1)
 IMPORT-NEXT:     Address: 0x14000107E
 IMPORT-NEXT:   }
 IMPORT-NEXT: }
+
+UNLOAD:      0x140002090 66100040 01000000 72100040 01000000
+UNLOAD-NEXT: 0x1400020a0 7e100040 01000000 00000000 00000000
+UNLOAD:      UnloadDelayImportTable: 0x2090
+UNLOAD:      BaseReloc [
+UNLOAD:        Address: 0x2090
+UNLOAD:        Address: 0x2098
+UNLOAD:        Address: 0x20A0
+
+BADARG: /delay: invalid argument: bind
 
 BASEREL:      BaseReloc [
 BASEREL-NEXT:   Entry {

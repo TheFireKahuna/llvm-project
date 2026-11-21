@@ -167,6 +167,9 @@ struct Configuration {
   StringRef implib;
   bool noimplib = false;
   llvm::StringSet<> delayLoads;
+  bool delayUnload = false;
+  bool didatOwnSection = false;
+  bool noOptDidat = false;
   std::map<std::string, int> dllOrder;
   Symbol *arm64ECIcallHelper = nullptr;
 

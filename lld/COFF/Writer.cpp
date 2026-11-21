@@ -337,6 +337,7 @@ private:
   OutputSection *idataSec;
   OutputSection *edataSec;
   OutputSection *didatSec;
+  DelayIatPlacement delayIatPlacement = DelayIatPlacement::Data;
   OutputSection *a64xrmSec;
   OutputSection *rsrcSec;
   OutputSection *relocSec;
@@ -1107,7 +1108,11 @@ void Writer::createSections() {
   pdataSec = createSection(".pdata", data | r);
   idataSec = createSection(".idata", data | r);
   edataSec = createSection(".edata", data | r);
-  didatSec = createSection(".didat", data | r);
+  // A .didat that holds the IAT stays writable: the delay-load helper fails
+  // otherwise.
+  delayIatPlacement = delayIdata.getIatPlacement();
+  bool iatInDidat = delayIatPlacement == DelayIatPlacement::Didat;
+  didatSec = createSection(".didat", data | r | (iatInDidat ? w : 0));
   if (isArm64EC(ctx.config.machine))
     a64xrmSec = createSection(".a64xrm", data | r);
   rsrcSec = createSection(".rsrc", data | r);
@@ -1141,6 +1146,8 @@ void Writer::createSections() {
 
   fixPartialSectionChars(".rsrc", data | r);
   fixPartialSectionChars(".edata", data | r);
+  if (iatInDidat)
+    fixPartialSectionChars(".didat", data | r | w);
   // Even in non MinGW cases, we might need to link against GNU import
   // libraries.
   bool hasIdata = fixGnuImportChunks();
@@ -1384,10 +1391,25 @@ void Writer::appendImportThunks() {
 
   if (!delayIdata.empty()) {
     delayIdata.create();
+    bool iatInDidat = delayIatPlacement == DelayIatPlacement::Didat;
     for (Chunk *c : delayIdata.getChunks())
-      didatSec->addChunk(c);
-    for (Chunk *c : delayIdata.getDataChunks())
+      (iatInDidat ? rdataSec : didatSec)->addChunk(c);
+    for (Chunk *c : delayIdata.getModuleHandles())
       dataSec->addChunk(c);
+    ArrayRef<Chunk *> iat = delayIdata.getAddresses();
+    if (iatInDidat) {
+      // The loader reopens only the IAT's pages, so it comes first and input
+      // .didat starts on a page of its own.
+      if (!didatSec->chunks.empty())
+        didatSec->chunks.front()->setAlignment(
+            std::max(0x1000u, didatSec->chunks.front()->getAlignment()));
+      didatSec->chunks.insert(didatSec->chunks.begin(), iat.begin(), iat.end());
+    } else {
+      OutputSection *iatSec =
+          delayIatPlacement == DelayIatPlacement::Idata ? idataSec : dataSec;
+      for (Chunk *c : iat)
+        iatSec->addChunk(c);
+    }
     for (Chunk *c : delayIdata.getCodeChunks())
       textSec->addChunk(c);
     for (Chunk *c : delayIdata.getCodePData())
@@ -1721,8 +1743,10 @@ void Writer::mergeSections() {
     }
   }
 
+  // A .didat that holds the IAT stays its own section.
   for (auto &p : ctx.config.merge) {
-    if (p.first != ".bss")
+    if (p.first != ".bss" &&
+        !(p.first == ".didat" && delayIatPlacement == DelayIatPlacement::Didat))
       mergeSection(p);
   }
 
@@ -2321,9 +2345,10 @@ void Writer::createGuardCFTables() {
       config->is64()
           ? offsetof(coff_load_configuration64, GuardLongJumpTargetTable)
           : offsetof(coff_load_configuration32, GuardLongJumpTargetTable);
+  // The flags also tell the loader where the delay-load IAT is.
   auto setGuardFlags = [&](uint32_t flags) {
     ctx.forEachSymtab([&](SymbolTable &symtab) {
-      uint32_t f = flags;
+      uint32_t f = flags | uint32_t(delayIatPlacement);
       if (cf && symtab.loadConfigSize >= iatEnd)
         f |= uint32_t(GuardFlags::CF_EXPORT_SUPPRESSION_INFO_PRESENT);
       cast<DefinedAbsolute>(symtab.findUnderscore("__guard_flags"))->setVA(f);

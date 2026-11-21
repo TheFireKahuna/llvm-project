@@ -2158,8 +2158,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
   // Add default section merging rules after user rules. User rules take
   // precedence, but we will emit a warning if there is a conflict.
-  parseMerge(".idata=.rdata");
-  parseMerge(".didat=.rdata");
+  config->merge.insert({".idata", ".rdata"});
+  config->merge.insert({".didat", ".rdata"});
   parseMerge(".edata=.rdata");
   parseMerge(".xdata=.rdata");
   parseMerge(".00cfg=.rdata");
@@ -2582,6 +2582,15 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         }
       });
     }
+    for (auto *arg : args.filtered(OPT_delay)) {
+      StringRef s = arg->getValue();
+      if (s.equals_insensitive("unload"))
+        config->delayUnload = true;
+      else if (!s.equals_insensitive("nobind"))
+        Err(ctx) << "/delay: invalid argument: " << s;
+    }
+    config->didatOwnSection = args.hasArg(OPT_didatownsection);
+    config->noOptDidat = args.hasArg(OPT_nooptdidat);
   }
 
   // Set default image name if neither /out or /def set it.
