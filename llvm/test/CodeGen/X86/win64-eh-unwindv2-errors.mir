@@ -534,3 +534,66 @@ body:             |
     frame-destroy SEH_EndEpilogue
     RET64
 ...
+
+# The unwinder places each pop of an epilog by the length of a plain pop, so
+# only the last may be the longer pop of a paired push, and a push and its pop
+# are paired or plain together.
+
+;--- paired_pop_not_last.mir
+# RUN: env ASAN_OPTIONS=abort_on_error=1 not --crash llc -mtriple=x86_64-pc-windows-msvc -o - \
+# RUN:    %t/paired_pop_not_last.mir -run-pass=x86-wineh-unwindv2 2>&1 | \
+# RUN:    FileCheck %s --check-prefix=PAIRED-NOT-LAST
+# PAIRED-NOT-LAST: LLVM ERROR: Windows x64 Unwind v2 is required, but LLVM has generated incompatible code in function 'paired_pop_not_last':
+# PAIRED-NOT-LAST-SAME: Only the last pop of the epilog may be a paired one
+
+--- |
+  define dso_local void @paired_pop_not_last() local_unnamed_addr {
+  entry:
+    ret void
+  }
+  !llvm.module.flags = !{!0}
+  !0 = !{i32 1, !"winx64-eh-unwindv2", i32 2}
+...
+---
+name:            paired_pop_not_last
+body:             |
+  bb.0.entry:
+    frame-setup PUSH64r killed $rdi, implicit-def $rsp, implicit $rsp
+    frame-setup SEH_PushReg 55
+    frame-setup PUSHP64r killed $rbx, implicit-def $rsp, implicit $rsp
+    frame-setup SEH_PushReg 53
+    frame-setup SEH_EndPrologue
+    frame-destroy SEH_BeginEpilogue
+    $rbx = frame-destroy POPP64r implicit-def $rsp, implicit $rsp
+    $rdi = frame-destroy POP64r implicit-def $rsp, implicit $rsp
+    frame-destroy SEH_EndEpilogue
+    RET64
+...
+
+;--- unpaired_pop.mir
+# RUN: env ASAN_OPTIONS=abort_on_error=1 not --crash llc -mtriple=x86_64-pc-windows-msvc -o - \
+# RUN:    %t/unpaired_pop.mir -run-pass=x86-wineh-unwindv2 2>&1 | \
+# RUN:    FileCheck %s --check-prefix=UNPAIRED
+# UNPAIRED: LLVM ERROR: Windows x64 Unwind v2 is required, but LLVM has generated incompatible code in function 'unpaired_pop':
+# UNPAIRED-SAME: A push and its pop differ in form
+
+--- |
+  define dso_local void @unpaired_pop() local_unnamed_addr {
+  entry:
+    ret void
+  }
+  !llvm.module.flags = !{!0}
+  !0 = !{i32 1, !"winx64-eh-unwindv2", i32 2}
+...
+---
+name:            unpaired_pop
+body:             |
+  bb.0.entry:
+    frame-setup PUSHP64r killed $rdi, implicit-def $rsp, implicit $rsp
+    frame-setup SEH_PushReg 55
+    frame-setup SEH_EndPrologue
+    frame-destroy SEH_BeginEpilogue
+    $rdi = frame-destroy POP64r implicit-def $rsp, implicit $rsp
+    frame-destroy SEH_EndEpilogue
+    RET64
+...

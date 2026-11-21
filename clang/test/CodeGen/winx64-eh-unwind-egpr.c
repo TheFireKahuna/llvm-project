@@ -9,6 +9,9 @@
 // RUN: %clang_cc1 -triple x86_64-windows-msvc -target-feature +egpr -fwinx64-eh-unwind=v1 -emit-llvm %s -o - | FileCheck %s -check-prefix=EGPR-V1-NOUNWIND
 // RUN: %clang_cc1 -triple x86_64-windows-msvc -emit-llvm %s -o - | FileCheck %s -check-prefix=NO-EGPR
 // RUN: %clang_cc1 -triple x86_64-pc-linux-gnu -target-feature +egpr -emit-llvm %s -o - | FileCheck %s -check-prefix=EGPR-LINUX
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -target-feature +egpr -fexceptions -emit-llvm %s -o - | FileCheck %s -check-prefix=EGPR-V2
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-ntposix -target-feature +egpr -fexceptions -emit-llvm %s -o - | FileCheck %s -check-prefix=EGPR-V2
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -target-feature +egpr -fwinx64-eh-unwind=v2-required -fexceptions -emit-llvm %s -o - | FileCheck %s -check-prefix=EGPR-V2
 
 void g(void);
 void f(void) { g(); }
@@ -33,6 +36,12 @@ void f(void) { g(); }
 
 // Without EGPR on Windows x64, default should be V1 (no flag emitted).
 // NO-EGPR-NOT: "winx64-eh-unwind"
+
+// Windows Itanium and NT-POSIX describe an EGPR function with version 2, the
+// registers it cannot name being reserved: nothing promotes the module to
+// version 3, and version 2 with EGPR is no error.
+// EGPR-V2-NOT: error
+// EGPR-V2-NOT: !"winx64-eh-unwind", i32 3}
 
 // EGPR on non-Windows should not emit the flag.
 // EGPR-LINUX-NOT: "winx64-eh-unwind"

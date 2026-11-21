@@ -1220,8 +1220,14 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
       EnableImportCallOptimization = true;
 
     // Unwind v3 is set for the entire module, not just individual functions.
-    if (M.getWinX64EHUnwindMode() == WinX64EHUnwindMode::V3)
-      OutStreamer->emitWinCFIUnwindVersion(3);
+    // No Windows that Windows Itanium and NT-POSIX support unwinds it.
+    if (M.getWinX64EHUnwindMode() == WinX64EHUnwindMode::V3) {
+      if (TT.isWindowsItaniumOrNTPOSIXEnvironment())
+        M.getContext().emitError("unwind version 3 is not supported on '" +
+                                 TT.str() + "', which takes version 2");
+      else
+        OutStreamer->emitWinCFIUnwindVersion(3);
+    }
   }
 
   // TODO: Support prefixed registers for the Intel syntax.

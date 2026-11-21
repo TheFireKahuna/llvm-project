@@ -293,6 +293,7 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
         break;
 
       case X86::POP64r:
+      case X86::POPP64r:
         if (State == FunctionState::InEpilog) {
           Register Reg = MI.getOperand(0).getReg();
           if (HasStackAlloc && (PoppedRegCount == 0) &&
@@ -328,6 +329,23 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
                   "The epilog is popping a registers in "
                   "a different order than the "
                   "prolog pushed them");
+
+            // The unwinder places each pop by the length of a plain one, so
+            // only the epilog's last may be the longer pop of a paired push.
+            MachineBasicBlock::iterator Push(
+                Pushes[PushedRegs.size() - PoppedRegCount]);
+            MachineBasicBlock::iterator Begin = Push->getParent()->begin();
+            bool PairedPush =
+                Push != Begin &&
+                prev_nodbg(Push, Begin)->getOpcode() == X86::PUSHP64r;
+            bool Paired = MI.getOpcode() == X86::POPP64r;
+            if (Paired != PairedPush)
+              return rejectCurrentFunctionInternalError(
+                  MF, Mode, "A push and its pop differ in form");
+            if (Paired && PoppedRegCount != PushedRegs.size())
+              return rejectCurrentFunctionInternalError(
+                  MF, Mode,
+                  "Only the last pop of the epilog may be a paired one");
 
             // Unwind v2 records the size of the epilog not from where we place
             // SEH_BeginEpilogue (as that contains the instruction to adjust the
@@ -385,10 +403,7 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
 
 bool runX86WinEHUnwindV2(MachineFunction &MF) {
   const X86Options &CLOpts = MF.getSubtarget<X86Subtarget>().getCLOpts();
-  std::optional<unsigned> ForceMode = CLOpts.wineh_unwindv2_force_mode;
-  WinX64EHUnwindMode Mode =
-      ForceMode ? static_cast<WinX64EHUnwindMode>(*ForceMode)
-                : MF.getFunction().getParent()->getWinX64EHUnwindMode();
+  WinX64EHUnwindMode Mode = getWinX64EHUnwindMode(MF);
 
   // Only act on V2 modes; V1 = disabled, V3 handled by the V3 pass.
   if (Mode != WinX64EHUnwindMode::V2BestEffort &&

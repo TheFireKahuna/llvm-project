@@ -442,6 +442,16 @@ FunctionPass *createX86WinEHUnwindV3Pass();
 /// V2/V3 passes so their decisions cannot disagree.
 bool requireWinX64UnwindV3(const MachineFunction &MF);
 
+/// Returns the version of unwind data that \p MF asks for: what the option
+/// forces, else version 2, required, on Windows Itanium and NT-POSIX, where
+/// every function takes it, else what the module states.
+WinX64EHUnwindMode getWinX64EHUnwindMode(const MachineFunction &MF);
+
+/// Returns whether \p MF's frame is one that version 2 unwind data describes
+/// on Windows Itanium and NT-POSIX, where only the register a frame pushes
+/// first and pops last keeps APX's paired push and pop.
+bool pairsOnlyOutermostPush(const MachineFunction &MF);
+
 InstructionSelector *createX86InstructionSelector(const X86TargetMachine &TM,
                                                   const X86Subtarget &,
                                                   const X86RegisterBankInfo &);

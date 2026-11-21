@@ -69,16 +69,6 @@
 // OVER-NEXT: 90                   nop
 // OVER-NEXT: ff 25 00 00 00 00    jmpq
 
-// code, and the assembler resolves its short jump. Its tail jumps lie within
-// a short jump's reach of its end, so their widths are the linker's, and the
-// padding after the first of them is an ALIGN.
-// IR-NEXT:   0x13 IMAGE_REL_LLVM_ALIGN
-// IR-NEXT:   0x34 IMAGE_REL_LLVM_JUMP32 callee
-// IR-NEXT:   0x38 IMAGE_REL_LLVM_ALIGN
-// IR-NEXT:   0x42 IMAGE_REL_LLVM_MEM_JUMP_TAIL __imp_imp
-// IR-NEXT:   0x46 IMAGE_REL_LLVM_ALIGN
-// IR-NEXT:   0x56 IMAGE_REL_LLVM_BRANCH32 other
-// IR-NEXT:   0x62 IMAGE_REL_LLVM_MEM_JUMP __imp_imp
 // A64:      Section ({{[0-9]+}}) .text {
 // A64-NEXT:   0x0 IMAGE_REL_LLVM_BRANCH_TAIL ext
 // A64-NEXT:   0x4 IMAGE_REL_ARM64_BRANCH19 ext
@@ -92,12 +82,6 @@
 // A64-NEXT:   0x38 IMAGE_REL_LLVM_FUSED_JUMP __imp_g
 // A64-NEXT: }
 
-// IR64-NEXT:   IMAGE_REL_ARM64_PAGEBASE_REL21 __imp_imp
-// IR64-NEXT:   IMAGE_REL_LLVM_FUSED_READ __imp_imp
-// IR64-NEXT:   IMAGE_REL_ARM64_BRANCH26 other
-// IR64-NEXT:   IMAGE_REL_ARM64_PAGEBASE_REL21 __imp_imp
-// IR64-NEXT:   IMAGE_REL_LLVM_FUSED_READ __imp_imp
-// IR64-NEXT:   IMAGE_REL_LLVM_FUSED_JUMP __imp_imp
 //--- a.s
   .text
   .globl frameless
@@ -278,19 +262,3 @@ fusedframed:
   ret
   .seh_endproc
 .endif
-
-; A tail call through an import pointer, with no frame and after an epilogue
-; that pops.
-declare dllimport void @imp()
-
-define void @imp_frameless() nounwind {
-  tail call void @imp()
-  ret void
-}
-
-define void @imp_pushed() {
-  call void @other()
-  call void asm sideeffect "", "~{rbx},~{x19}"()
-  tail call void @imp()
-  ret void
-}

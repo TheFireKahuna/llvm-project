@@ -13,6 +13,12 @@
 // RUN: %clang_cl -### --target=x86_64-windows-msvc /d2epilogunwind -- %s 2>&1 | FileCheck --check-prefix=V2BE %s
 // RUN: %clang_cl -### --target=x86_64-windows-msvc /d2epilogunwindrequirev2 -- %s 2>&1 | FileCheck --check-prefix=V2REQ %s
 
+// Windows Itanium and NT-POSIX take version 2: no Windows they support
+// unwinds version 3.
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -fwinx64-eh-unwind=v3 %s 2>&1 | FileCheck --check-prefix=NOV3 %s -DTRIPLE=x86_64-unknown-windows-itanium
+// RUN: not %clang -### --target=x86_64-unknown-windows-ntposix -fwinx64-eh-unwind=v3 %s 2>&1 | FileCheck --check-prefix=NOV3 %s -DTRIPLE=x86_64-unknown-windows-ntposix
+// NOV3: error: unsupported option '-fwinx64-eh-unwind=v3' for target '[[TRIPLE]]'
+
 // V1:          "-fwinx64-eh-unwind=v1"
 // V1DISABLED-NOT: "-fwinx64-eh-unwind=
 // V2BE:        "-fwinx64-eh-unwind=v2-best-effort"

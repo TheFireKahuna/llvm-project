@@ -8024,6 +8024,11 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   // Forward the new unified flag if present, otherwise translate legacy flags.
   if (const Arg *A = Args.getLastArg(options::OPT_winx64_eh_unwind_EQ)) {
     A->claim();
+    // No Windows that Windows Itanium and NT-POSIX support unwinds version 3.
+    if (StringRef(A->getValue()) == "v3" &&
+        Triple.isWindowsItaniumOrNTPOSIXEnvironment())
+      D.Diag(diag::err_drv_unsupported_opt_for_target)
+          << A->getAsString(Args) << TripleStr;
     CmdArgs.push_back(
         Args.MakeArgString(Twine("-fwinx64-eh-unwind=") + A->getValue()));
   } else if (const Arg *A =

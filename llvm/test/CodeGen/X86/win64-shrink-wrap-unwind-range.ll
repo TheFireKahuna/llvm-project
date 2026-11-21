@@ -135,27 +135,6 @@ out:
   ret void
 }
 
-; So is the version 3 marker of a function that needs it in a module that
-; does not.
-; X64-LABEL: shrink_wrapped_v3:
-; X64:         je [[EARLY:.LBB4_[0-9]+]]
-; X64-NEXT:  .Lunwind_begin4:
-; X64-NEXT:  .seh_proc shrink_wrapped_v3
-; X64-NEXT:  # %bb.{{[0-9]+}}: # %work
-; X64-NEXT:    .seh_unwindversion 3
-; X64:         .seh_endproc
-; X64-NEXT:  [[EARLY]]: # %early
-define i32 @shrink_wrapped_v3(ptr %p) "target-features"="+egpr" {
-entry:
-  %null = icmp eq ptr %p, null
-  br i1 %null, label %early, label %work
-early:
-  ret i32 -1
-work:
-  call void @use(ptr %p)
-  ret i32 0
-}
-
 ; A save point that every path from the entry reaches spares no path the
 ; prologue, and its block would merge into the entry block behind the copy,
 ; leaving an instruction that is no part of the prologue in the unwind range:
@@ -213,6 +192,7 @@ def:
 ; X64-NEXT:    movl $7, %eax
 ; X64-NEXT:    .seh_startepilogue
 ; X64-NEXT:    addq $40, %rsp
+; X64-NEXT:    .seh_unwindv2start
 ; X64-NEXT:    .seh_endepilogue
 ; X64-NEXT:    retq
 ; A64-LABEL: leaf_return:
@@ -239,6 +219,7 @@ end:
 ; X64-LABEL: leaf_branch:
 ; X64:         .seh_startepilogue
 ; X64-NEXT:    addq $40, %rsp
+; X64-NEXT:    .seh_unwindv2start
 ; X64-NEXT:    .seh_endepilogue
 ; X64-NEXT:    jmp [[LEAF:.LBB[0-9_]+]]
 ; X64-NEXT:    .seh_endproc

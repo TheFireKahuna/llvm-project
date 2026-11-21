@@ -52,6 +52,12 @@ using namespace llvm;
 bool llvm::requireWinX64UnwindV3(const MachineFunction &MF) {
   const Function &Fn = MF.getFunction();
 
+  // No Windows that Windows Itanium and NT-POSIX support unwinds version 3.
+  // Version 2 describes every function there: R30 and R31, which it cannot
+  // name, are reserved.
+  if (MF.getTarget().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return false;
+
   // Whole module is in V3 mode.
   if (Fn.getParent()->getWinX64EHUnwindMode() == WinX64EHUnwindMode::V3)
     return true;
@@ -64,6 +70,16 @@ bool llvm::requireWinX64UnwindV3(const MachineFunction &MF) {
   // does not need V3: V1/V2 describe a PUSH2 as two SEH_PushReg codes.)
   return Fn.needsUnwindTableEntry() &&
          MF.getSubtarget<X86Subtarget>().hasEGPR();
+}
+
+WinX64EHUnwindMode llvm::getWinX64EHUnwindMode(const MachineFunction &MF) {
+  if (std::optional<unsigned> Force = MF.getSubtarget<X86Subtarget>()
+                                          .getCLOpts()
+                                          .wineh_unwindv2_force_mode)
+    return static_cast<WinX64EHUnwindMode>(*Force);
+  if (MF.getTarget().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return WinX64EHUnwindMode::V2Required;
+  return MF.getFunction().getParent()->getWinX64EHUnwindMode();
 }
 
 static const TargetRegisterClass *
@@ -181,6 +197,27 @@ static unsigned getLEArOpcode(bool IsLP64) {
   return IsLP64 ? X86::LEA64r : X86::LEA32r;
 }
 
+// Returns whether MF's unwind data is version 2's where X86WinEHUnwindV2
+// accepts the function.
+static bool wantsWinX64UnwindV2(const MachineFunction &MF) {
+  WinX64EHUnwindMode Mode = getWinX64EHUnwindMode(MF);
+  return Mode == WinX64EHUnwindMode::V2BestEffort ||
+         Mode == WinX64EHUnwindMode::V2Required;
+}
+
+// Version 2 unwind data places each pop of an epilogue by the length of the
+// plain instruction, which leaves the last pop free to be longer. So on
+// Windows Itanium and NT-POSIX a frame it describes keeps the paired push and
+// pop for the register it pushes first and pops last, and saves every other
+// register by a plain push and pop, one register each: a push of two is never
+// the first, the stack being 8 bytes off 16 where a function begins.
+bool llvm::pairsOnlyOutermostPush(const MachineFunction &MF) {
+  return MF.getTarget()
+             .getTargetTriple()
+             .isWindowsItaniumOrNTPOSIXEnvironment() &&
+         wantsWinX64UnwindV2(MF);
+}
+
 // Push-Pop Acceleration (PPX) hint is used to indicate that the POP reads the
 // value written by the PUSH from the stack. The processor tracks these marked
 // instructions internally and fast-forwards register data between matching PUSH
@@ -198,12 +235,12 @@ static unsigned getLEArOpcode(bool IsLP64) {
 //
 // PUSH2 and POP2 are instructions for (respectively) pushing/popping 2
 // GPRs at a time to/from the stack.
-static unsigned getPUSHOpcode(const X86Subtarget &ST) {
-  return ST.is64Bit() ? (ST.hasPPX() ? X86::PUSHP64r : X86::PUSH64r)
+static unsigned getPUSHOpcode(const X86Subtarget &ST, bool Paired = true) {
+  return ST.is64Bit() ? (Paired && ST.hasPPX() ? X86::PUSHP64r : X86::PUSH64r)
                       : X86::PUSH32r;
 }
-static unsigned getPOPOpcode(const X86Subtarget &ST) {
-  return ST.is64Bit() ? (ST.hasPPX() ? X86::POPP64r : X86::POP64r)
+static unsigned getPOPOpcode(const X86Subtarget &ST, bool Paired = true) {
+  return ST.is64Bit() ? (Paired && ST.hasPPX() ? X86::POPP64r : X86::POP64r)
                       : X86::POP32r;
 }
 static unsigned getPUSH2Opcode(const X86Subtarget &ST) {
@@ -211,6 +248,17 @@ static unsigned getPUSH2Opcode(const X86Subtarget &ST) {
 }
 static unsigned getPOP2Opcode(const X86Subtarget &ST) {
   return ST.hasPPX() ? X86::POP2P : X86::POP2;
+}
+// Returns the callee-saved register of CSI that the frame pushes first and
+// pops last, or none where that is the frame register.
+static MCRegister getOutermostPush(ArrayRef<CalleeSavedInfo> CSI,
+                                   bool FramePtrFirst) {
+  if (!FramePtrFirst)
+    for (const CalleeSavedInfo &I : reverse(CSI))
+      if (X86::GR64RegClass.contains(I.getReg()) ||
+          X86::GR32RegClass.contains(I.getReg()))
+        return I.getReg();
+  return MCRegister();
 }
 
 static bool isEAXLiveIn(MachineBasicBlock &MBB) {
@@ -1408,18 +1456,6 @@ void X86FrameLowering::emitStackProbeCall(
   }
 }
 
-// Returns whether MF's unwind data is version 2's where X86WinEHUnwindV2
-// accepts the function.
-static bool wantsWinX64UnwindV2(const MachineFunction &MF) {
-  std::optional<unsigned> Force =
-      MF.getSubtarget<X86Subtarget>().getCLOpts().wineh_unwindv2_force_mode;
-  WinX64EHUnwindMode Mode =
-      Force ? static_cast<WinX64EHUnwindMode>(*Force)
-            : MF.getFunction().getParent()->getWinX64EHUnwindMode();
-  return Mode == WinX64EHUnwindMode::V2BestEffort ||
-         Mode == WinX64EHUnwindMode::V2Required;
-}
-
 // Returns the frame register's offset from the stack pointer where the
 // prologue sets it, SPAdjust bytes below the pushes being allocated in all.
 static unsigned calculateSetFPREG(const MachineFunction &MF,
@@ -2009,7 +2045,8 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
     };
     EmitSEHBefore(EmitSEHPushFramePtr);
     BuildMI(MBB, MBBI, DL,
-            TII.get(getPUSHOpcode(MF.getSubtarget<X86Subtarget>())))
+            TII.get(getPUSHOpcode(MF.getSubtarget<X86Subtarget>(),
+                                  !PushedLast || !pairsOnlyOutermostPush(MF))))
         .addReg(MachineFramePtr, RegState::Kill)
         .setMIFlag(MachineInstr::FrameSetup);
     EmitSEHAfter(EmitSEHPushFramePtr);
@@ -2992,7 +3029,9 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
                  .setMIFlag(MachineInstr::FrameDestroy)
                  ->getIterator();
     else
-      MBBI = BuildMI(MBB, MBBI, DL, TII.get(getPOPOpcode(STI)), FramePtr)
+      MBBI = BuildMI(MBB, MBBI, DL,
+                     TII.get(getPOPOpcode(STI, !pairsOnlyOutermostPush(MF))),
+                     FramePtr)
                  .setMIFlag(MachineInstr::FrameDestroy)
                  ->getIterator();
   } else if (((TRI->hasStackRealignment(MF)) || MFI.hasVarSizedObjects()) &&
@@ -3361,7 +3400,7 @@ bool X86FrameLowering::assignCalleeSavedSpillSlots(
   std::optional<int> FPLastSlot;
   if (hasFP(MF) && MF.usesWindowsUnwindInfo() &&
       MF.getTarget().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !STI.hasPush2Pop2() && !STI.hasPPX() && !requireWinX64UnwindV3(MF) &&
+      (pairsOnlyOutermostPush(MF) || (!STI.hasPush2Pop2() && !STI.hasPPX())) &&
       !X86FI->getRestoreBasePointer() &&
       (!MF.hasEHFunclets() ||
        (usesCalledCleanups(MF.getFunction()) && !Realigned))) {
@@ -3427,7 +3466,8 @@ bool X86FrameLowering::assignCalleeSavedSpillSlots(
   // 3. When the number of CSR push is even, start to use push2 from the 1st
   //    push and make the stack 16B aligned before the push
   unsigned NumRegsForPush2 = 0;
-  if (STI.hasPush2Pop2() && getStackAlignment() >= 16) {
+  if (STI.hasPush2Pop2() && getStackAlignment() >= 16 &&
+      !pairsOnlyOutermostPush(MF)) {
     unsigned NumCSGPR = llvm::count_if(CSI, [](const CalleeSavedInfo &I) {
       return X86::GR64RegClass.contains(I.getReg());
     });
@@ -3552,6 +3592,9 @@ bool X86FrameLowering::spillCalleeSavedRegisters(
     return getKillRegState(UpdateLiveInCheckCanKill(Reg));
   };
 
+  MCRegister Outermost =
+      getOutermostPush(CSI, hasFP(MF) && !X86FI->getFramePtrPushedLast());
+  bool PairsAll = !pairsOnlyOutermostPush(MF);
   for (auto RI = CSI.rbegin(), RE = CSI.rend(); RI != RE; ++RI) {
     MCRegister Reg = RI->getReg();
     if (!X86::GR64RegClass.contains(Reg) && !X86::GR32RegClass.contains(Reg))
@@ -3564,7 +3607,8 @@ bool X86FrameLowering::spillCalleeSavedRegisters(
           .addReg(Reg2, UpdateLiveInGetKillRegState(Reg2))
           .setMIFlag(MachineInstr::FrameSetup);
     } else {
-      BuildMI(MBB, MI, DL, TII.get(getPUSHOpcode(STI)))
+      BuildMI(MBB, MI, DL,
+              TII.get(getPUSHOpcode(STI, PairsAll || Reg == Outermost)))
           .addReg(Reg, UpdateLiveInGetKillRegState(Reg))
           .setMIFlag(MachineInstr::FrameSetup);
     }
@@ -3685,6 +3729,9 @@ bool X86FrameLowering::restoreCalleeSavedRegisters(
   }
 
   // POP GPRs.
+  MCRegister Outermost =
+      getOutermostPush(CSI, hasFP(MF) && !X86FI->getFramePtrPushedLast());
+  bool PairsAll = !pairsOnlyOutermostPush(MF);
   for (auto I = CSI.begin(), E = CSI.end(); I != E; ++I) {
     MCRegister Reg = I->getReg();
     if (!X86::GR64RegClass.contains(Reg) && !X86::GR32RegClass.contains(Reg))
@@ -3706,7 +3753,8 @@ bool X86FrameLowering::restoreCalleeSavedRegisters(
         BuildMI(MBB, MI, DL, TII.get(X86::SEH_PushReg))
             .addImm(Reg)
             .setMIFlag(MachineInstr::FrameDestroy);
-      BuildMI(MBB, MI, DL, TII.get(getPOPOpcode(STI)), Reg)
+      BuildMI(MBB, MI, DL,
+              TII.get(getPOPOpcode(STI, PairsAll || Reg == Outermost)), Reg)
           .setMIFlag(MachineInstr::FrameDestroy);
     }
   }

@@ -1871,11 +1871,13 @@ void CodeGenModule::Release() {
   // promote to V3 when EGPR is enabled module-wide, since V1/V2 cannot encode
   // R16-R31). The per-function EGPR compatibility check is performed in
   // EmitGlobalFunctionDefinition so that `__attribute__((target("egpr")))`
-  // and `nounwind` are respected.
+  // and `nounwind` are respected. Windows Itanium and NT-POSIX take version 2
+  // for every function and reserve the registers it cannot name.
 
   auto UnwindMode = CodeGenOpts.getWinX64EHUnwind();
   if (UnwindMode == llvm::WinX64EHUnwindMode::Default) {
     if (T.isOSWindows() && T.isX86_64() &&
+        !T.isWindowsItaniumOrNTPOSIXEnvironment() &&
         Context.getTargetInfo().hasFeature("egpr"))
       UnwindMode = llvm::WinX64EHUnwindMode::V3;
     else
@@ -7305,7 +7307,8 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
   // EGPR (R16-R31) requires V3 unwind info on Windows x64 because V1/V2 cannot
   // encode extended register numbers. Check per-function so that `target`
   // attribute and `nounwind`/no-unwind-table functions are respected.
-  if (getTriple().isOSWindows() && getTriple().isX86_64()) {
+  if (getTriple().isOSWindows() && getTriple().isX86_64() &&
+      !getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
     auto UnwindMode = CodeGenOpts.getWinX64EHUnwind();
     if (UnwindMode != llvm::WinX64EHUnwindMode::Default &&
         UnwindMode != llvm::WinX64EHUnwindMode::V3 &&

@@ -154,7 +154,7 @@ entry:
 ; WIN64: pushq %rbx
 ; WIN64: .seh_pushreg %rbx
 ; LEAVE: pushq %rbp
-; LEAVE: .seh_pushreg %rbp
+; LEAVE: .seh_stackalloc 8, large
 ; NORM:  subq  $96, %rsp
 ; ATOM:  leaq -96(%rsp), %rsp
 ; WIN64: .seh_stackalloc 96

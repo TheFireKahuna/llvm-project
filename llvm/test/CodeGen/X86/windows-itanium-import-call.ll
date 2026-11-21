@@ -119,7 +119,7 @@ declare void @sink(ptr) nonlazybind
 define void @guarded(ptr %p) {
 ; X64-LABEL: guarded:
 ; X64-NOT:        pushq
-; X64:            je .LBB2_1
+; X64:            je .LBB
 ; X64:            pushq %r[[S:(si|bx)]]
 ; X64:            movq __imp_chosen@LOAD_CALL(%rip), %rax
 ; X64-NEXT:       callq *%rax

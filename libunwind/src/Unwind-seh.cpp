@@ -185,6 +185,7 @@ asm(R"(
 __unw_seh_call_cleanups:
   .seh_proc __unw_seh_call_cleanups
   .seh_handler __unw_seh_cleanup_handler, @except
+  .seh_unwindversion 2
   pushq %rbp
   .seh_pushreg %rbp
   pushq %rbx
@@ -270,6 +271,7 @@ __unw_seh_call_cleanups:
   movaps 176(%rsp), %xmm15
   .seh_startepilogue
   addq $232, %rsp
+  .seh_unwindv2start
   popq %r15
   popq %r14
   popq %r13

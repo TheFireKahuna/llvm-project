@@ -13,6 +13,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86RegisterInfo.h"
+#include "X86.h"
 #include "X86FrameLowering.h"
 #include "X86InstrInfo.h"
 #include "X86MachineFunctionInfo.h"
@@ -625,7 +626,11 @@ BitVector X86RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Due to specifics of setjmp unwinding in Win64 APX ABI, the unwinder
   // cannot restore R30/R31. Reserve them to prevent register allocation.
   // https://learn.microsoft.com/en-us/cpp/build/x64-calling-convention#setjmplongjmp
-  if (MF.exposesReturnsTwice() && ST.isTargetWin64()) {
+  // Nor can it in any function of Windows Itanium and NT-POSIX, whose unwind
+  // data, version 2, cannot name them.
+  bool NoUnwindV3 =
+      MF.getTarget().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  if ((MF.exposesReturnsTwice() || NoUnwindV3) && ST.isTargetWin64()) {
     unsigned NumReservedCSRs = 0;
     for (unsigned Reg = X86::R16; Reg <= X86::R31; ++Reg)
       if (isCalleeSavedPhysReg(Reg, MF)) {
@@ -633,7 +638,7 @@ BitVector X86RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
         for (const MCPhysReg &SubReg : subregs_inclusive(Reg))
           Reserved.set(SubReg);
       }
-    if (NumReservedCSRs &&
+    if (NumReservedCSRs && MF.exposesReturnsTwice() &&
         MF.size() > ST.getCLOpts().setjmp_csr_warning_threshold &&
         !MF.getRegInfo().reservedRegsFrozen()) {
       MF.getContext().reportWarning(
@@ -1434,9 +1439,10 @@ bool X86RegisterInfo::isNonRex2RegClass(const TargetRegisterClass *RC) const {
 }
 
 unsigned X86RegisterInfo::getCSRFirstUseCost(const MachineFunction &MF) const {
-  // If PPX is implemented, push/pop pairs don't access memory.
+  // If PPX is implemented, push/pop pairs don't access memory, where every
+  // register's are paired.
   const X86Subtarget &ST = MF.getSubtarget<X86Subtarget>();
-  if (ST.is64Bit() && ST.hasPPX())
+  if (ST.is64Bit() && ST.hasPPX() && !pairsOnlyOutermostPush(MF))
     return 0;
 
   // push + pop.

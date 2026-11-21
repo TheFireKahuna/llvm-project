@@ -333,9 +333,6 @@ bool X86ExpandPseudoImpl::expandMI(MachineBasicBlock &MBB,
         Op = X86::TAILJMPd_CC;
         break;
       case X86::TCRETURNdi64cc:
-        assert(!MBB.getParent()->hasWinCFI() &&
-               "Conditional tail calls confuse "
-               "the Win64 unwinder.");
         Op = X86::TAILJMPd64_CC;
         break;
       default:

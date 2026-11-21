@@ -1,16 +1,16 @@
 ; DEFINE: %{llc} = llc -mtriple=x86_64-unknown-windows-itanium
-; DEFINE: %{v2} = -x86-wineh-unwindv2-force-mode=2
+; DEFINE: %{v1} = -x86-wineh-unwindv2-force-mode=0
 ; RUN: split-file %s %t
-; RUN: %{llc} < %t/a.ll | FileCheck %s --check-prefixes=ASM,ASM1
-; RUN: %{llc} %{v2} < %t/a.ll | FileCheck %s --check-prefixes=ASM,ASM2
+; RUN: %{llc} %{v1} < %t/a.ll | FileCheck %s --check-prefixes=ASM,ASM1
+; RUN: %{llc} < %t/a.ll | FileCheck %s --check-prefixes=ASM,ASM2
 ; RUN: llc -mtriple=x86_64-pc-windows-ntposix < %t/a.ll | FileCheck %s --check-prefix=NTP
-; RUN: %{llc} -filetype=obj %t/a.ll -o %t.1.o
+; RUN: %{llc} %{v1} -filetype=obj %t/a.ll -o %t.1.o
 ; RUN: llvm-readobj -r %t.1.o | FileCheck %s --check-prefix=OBJ1
-; RUN: %{llc} %{v2} -filetype=obj %t/a.ll -o %t.2.o
+; RUN: %{llc} -filetype=obj %t/a.ll -o %t.2.o
 ; RUN: llvm-readobj -r --unwind %t.2.o | FileCheck %s --check-prefix=OBJ2
 ; RUN: llc -mtriple=x86_64-pc-windows-msvc < %t/a.ll | FileCheck %s --check-prefix=MSVC \
 ; RUN:   --implicit-check-not=leave --implicit-check-not=large
-; RUN: llc -mtriple=x86_64-pc-windows-msvc %{v2} < %t/a.ll \
+; RUN: llc -mtriple=x86_64-pc-windows-msvc -x86-wineh-unwindv2-force-mode=2 < %t/a.ll \
 ; RUN:   | FileCheck %s --check-prefix=MSVC --implicit-check-not=leave \
 ; RUN:     --implicit-check-not=large
 ; RUN: %{llc} < %t/cleanup.ll | FileCheck %s --check-prefix=CL
@@ -65,6 +65,7 @@ define i64 @fp(i64 %a) "frame-pointer"="all" uwtable {
 ; NTP-NEXT:  .seh_setframe %rbp, 0
 ; NTP:       .seh_startepilogue
 ; NTP-NEXT:  leave
+; NTP-NEXT:  .seh_unwindv2start
 ; NTP-NEXT:  .seh_endepilogue
 ; NTP-NEXT:  jmp tgt
   %b = alloca [24 x i8]
