@@ -390,6 +390,19 @@ void X86AsmPrinter::fuseImportCalls() {
       Plain.insert(Site.Load);
   FusedSites.remove_if(
       [&](const auto &Site) { return Plain.contains(Site.second.Load); });
+  findValueOnlySites(
+      IsPointerLoad, /*IsPage=*/nullptr,
+      // The base of a memory operand that no segment register moves.
+      [](const MachineInstr &MI) -> const MachineOperand * {
+        int Mem = X86II::getMemoryOperandNo(MI.getDesc().TSFlags);
+        if (Mem < 0)
+          return nullptr;
+        Mem += X86II::getOperandBias(MI.getDesc());
+        return MI.getOperand(Mem + X86::AddrSegmentReg).getReg()
+                   ? nullptr
+                   : &MI.getOperand(Mem + X86::AddrBaseReg);
+      },
+      /*IsAccess=*/nullptr);
 }
 
 void X86AsmPrinter::emitFunctionBodyStart() {

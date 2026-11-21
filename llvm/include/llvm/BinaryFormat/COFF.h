@@ -638,6 +638,12 @@ unsigned getFusedIndexOperand(const InstT &I, unsigned Op) {
 /// relocation in the SiteFacts group of its link records, where the
 /// assembler checked its fused relocation types.
 enum SiteFact : uint64_t {
+  /// At a load of the import pointer of a constant that every image defines
+  /// alike, at the instruction that gives it the pointer's page and at the
+  /// marker of its fused sites: the code behaves the same given the address
+  /// of any definition, so the linker may bind these together to the
+  /// image's own.
+  SiteFactValueOnly = 7,
   /// At a FUSED_INDEX: the word of the record that the register holds, its
   /// offset in the record, plus SiteFactViaFirst where the register is the
   /// first of the two that the instruction adds.
@@ -645,6 +651,10 @@ enum SiteFact : uint64_t {
   /// At the marker of a fused access that loads one word of a record: only
   /// fused indexes of the function's code read the register it writes.
   SiteFactIndexedRead = 9,
+  /// At the marker of a fused access that only reads such a constant through
+  /// a load that stays: the linker may bind it alone to the image's own
+  /// definition, which it then reads with no register.
+  SiteFactValueOnlyAccess = 12,
 };
 enum : uint64_t { SiteFactViaFirst = 16 };
 

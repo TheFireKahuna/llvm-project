@@ -449,3 +449,57 @@ void llvm::PointerMayBeCaptured(const Value *V, CaptureTracker *Tracker,
 
   // All uses examined.
 }
+
+/// Whether an instruction of \p F uses \p C, or a constant that holds it. A
+/// variable's initializer is no such constant: what is loaded from the
+/// variable is not known to be based on \p C.
+static bool isUsedIn(const Constant *C, const Function &F) {
+  return any_of(C->users(), [&](const User *U) {
+    if (auto *I = dyn_cast<Instruction>(U))
+      return I->getFunction() == &F;
+    return !isa<GlobalVariable>(U) && isUsedIn(cast<Constant>(U), F);
+  });
+}
+
+namespace {
+struct GlobalAddressTracker final : CaptureTracker {
+  const GlobalValue *GV;
+  const Function &F;
+  bool Captured = false;
+
+  GlobalAddressTracker(const GlobalValue *GV, const Function &F)
+      : GV(GV), F(F) {}
+
+  void tooManyUses() override { Captured = true; }
+
+  bool shouldExplore(const Use *U) override {
+    auto *I = dyn_cast<Instruction>(U->getUser());
+    return !I || I->getFunction() == &F;
+  }
+
+  Action captured(const Use *U, UseCaptureInfo CI) override {
+    const User *Usr = U->getUser();
+    if (auto *Cmp = dyn_cast<ICmpInst>(Usr)) {
+      // A comparison of two addresses in GV tells only their offsets.
+      SmallVector<const Value *, 4> Objects;
+      getUnderlyingObjects(Cmp->getOperand(1 - U->getOperandNo()), Objects);
+      Captured = any_of(Objects, [&](const Value *O) { return O != GV; });
+    } else if (isa<ConstantExpr>(Usr) && Usr->getType()->isPointerTy()) {
+      // A constant address in GV, whose uses are followed as those of GV.
+      PointerMayBeCaptured(Usr, this);
+    } else {
+      // Any other constant holds the address as a value.
+      auto *C = dyn_cast<Constant>(Usr);
+      Captured = !C || (!isa<GlobalVariable>(C) && isUsedIn(C, F));
+    }
+    return Captured ? Stop : ContinueIgnoringReturn;
+  }
+};
+} // namespace
+
+bool llvm::globalAddressMayBeCapturedIn(const GlobalValue *GV,
+                                        const Function &F) {
+  GlobalAddressTracker Tracker(GV, F);
+  PointerMayBeCaptured(GV, &Tracker);
+  return Tracker.Captured;
+}

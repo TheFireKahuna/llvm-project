@@ -486,6 +486,28 @@ public:
 #endif
     }
 
+    findValueOnlySites(
+        IsPointerLoad,
+        [](const MachineInstr &MI) {
+          return MI.getOpcode() == AArch64::ADRP &&
+                 (MI.getOperand(1).getTargetFlags() &
+                  (AArch64II::MO_DLLIMPORT | AArch64II::MO_COFFSTUB));
+        },
+        // The base of an address is the one operand that may be the stack
+        // pointer.
+        [](const MachineInstr &MI) -> const MachineOperand * {
+          const MCInstrDesc &Desc = MI.getDesc();
+          for (unsigned Op = Desc.getNumDefs(); Op != Desc.getNumOperands();
+               ++Op)
+            if (Desc.operands()[Op].RegClass == AArch64::GPR64spRegClassID)
+              return &MI.getOperand(Op);
+          return nullptr;
+        },
+        [](const MachineInstr &MI) {
+          unsigned Op;
+          return AArch64_MC::getFusedUse(MI, Op) == COFF::FusedUse::Access;
+        });
+
     if (STI->isTargetCOFF()) {
       bool Local = MF.getFunction().hasLocalLinkage();
       COFF::SymbolStorageClass Scl =

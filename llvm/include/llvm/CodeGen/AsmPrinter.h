@@ -268,12 +268,17 @@ protected:
   /// nothing. A fused index goes through the pointer of a thread-local
   /// variable's record and reads a word of the record, which Index states as
   /// COFF::SiteFactIndex does; IndexedRead says of an access that loads such
-  /// a word that fused indexes alone read it.
+  /// a word that fused indexes alone read it. ValueOnly is the site fact,
+  /// COFF::SiteFactValueOnly or COFF::SiteFactValueOnlyAccess, that the site
+  /// states, or that a load of a pointer or the instruction that gives one
+  /// its page states, which is then listed with no Load if it is no fused
+  /// read.
   struct FusedSite {
     const MachineInstr *Load = nullptr;
     COFF::FusedUse Use{};
     uint8_t Index = 0;
     bool IndexedRead = false;
+    uint8_t ValueOnly = 0;
   };
   /// The current function's fused reads and sites.
   DenseMap<const MachineInstr *, FusedSite> FusedSites;
@@ -976,6 +981,23 @@ public:
           GetWord,
       function_ref<bool(MachineInstr &, const FusedSiteList &)> Place =
           nullptr);
+
+  /// Finds, in an optimized function whose fused sites were found, what the
+  /// linker may bind to the image's own definition of a constant that every
+  /// image defines alike, by webs: the loads of its import pointer, the pages
+  /// that \p IsPage, if given, says give them their base, and what their
+  /// registers join to them. A web is bound where its loads' registers are
+  /// only the base, as \p GetBase returns it, of reads of memory and its pages
+  /// only those loads' base, and every web is where the function captures the
+  /// constant's address nowhere and names it in nothing else. An access that
+  /// only reads through a load that stays is bound alone where it is a fused
+  /// site, or where \p IsAccess, if given, says that it has the form of one.
+  /// \p IsPointerLoad is as for findFusedSites.
+  void findValueOnlySites(
+      function_ref<bool(const MachineInstr &)> IsPointerLoad,
+      function_ref<bool(const MachineInstr &)> IsPage,
+      function_ref<const MachineOperand *(const MachineInstr &)> GetBase,
+      function_ref<bool(const MachineInstr &)> IsAccess);
 
   /// Emits the relocation that marks the instruction that follows, the fused
   /// site \p Site, and names \p Pointer where its type names one, then the

@@ -22,6 +22,7 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallString.h"
@@ -31,6 +32,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/TinyPtrVector.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Analysis/CaptureTracking.h"
 #include "llvm/Analysis/ConstantFolding.h"
 #include "llvm/Analysis/MemoryLocation.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
@@ -2281,6 +2283,10 @@ void AsmPrinter::emitFunctionBody() {
         break;
       }
       default:
+        // A load or a page that the linker may bind states so by itself.
+        if (FusedSite Site = FusedSites.lookup(&MI);
+            Site.ValueOnly && (!Site.Load || Site.Load == &MI))
+          OutStreamer->emitCOFFSiteFact(Site.ValueOnly, 0);
         emitInstruction(&MI);
 
         auto CountInstruction = [&](const MachineInstr &MI) {
@@ -5672,6 +5678,126 @@ void AsmPrinter::findFusedSites(
 #endif
 }
 
+void AsmPrinter::findValueOnlySites(
+    function_ref<bool(const MachineInstr &)> IsPointerLoad,
+    function_ref<bool(const MachineInstr &)> IsPage,
+    function_ref<const MachineOperand *(const MachineInstr &)> GetBase,
+    function_ref<bool(const MachineInstr &)> IsAccess) {
+  if (!optimizesFusedSites())
+    return;
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  // The constant that an instruction names, where every definition holds the
+  // same bytes for good.
+  auto GetConstant = [](const MachineInstr &MI) -> const GlobalVariable * {
+    for (const MachineOperand &MO : MI.operands())
+      if (MO.isGlobal()) {
+        auto *GV = dyn_cast<GlobalVariable>(MO.getGlobal());
+        return GV && GV->isConstant() && GV->hasDefinitiveInitializer() &&
+                       (GV->isWeakForLinker() ||
+                        GV->hasAvailableExternallyLinkage())
+                   ? GV
+                   : nullptr;
+      }
+    return nullptr;
+  };
+  // The loads of the pointers of such constants and the pages of them; the
+  // constants that the function names in another way; and whether it calls
+  // a function that the outliner made of its instructions, which states
+  // nothing.
+  SmallVector<MachineInstr *, 8> Steps;
+  SmallPtrSet<const GlobalValue *, 8> Named;
+  bool Outlined = false;
+  for (MachineBasicBlock &MBB : *MF)
+    for (MachineInstr &MI : MBB) {
+      if (MI.isDebugInstr())
+        continue;
+      if (const GlobalVariable *GV = GetConstant(MI))
+        if (IsPointerLoad(MI) || (IsPage && IsPage(MI)))
+          Steps.push_back(&MI);
+        else
+          Named.insert(GV);
+      for (const MachineOperand &MO : MI.operands())
+        if (auto *F = MO.isGlobal() ? dyn_cast<Function>(MO.getGlobal())
+                                    : nullptr)
+          if (const MachineFunction *Other = MMI->getMachineFunction(*F))
+            Outlined |= Other->isOutlined();
+    }
+  // Whether I does nothing with Reg but read memory at an address that it is
+  // the base of, so that what Reg holds goes no further.
+  auto IsValueRead = [&](const MachineInstr &I, Register Reg) {
+    const MachineOperand *Base = GetBase(I);
+    return Base && Base->isReg() && Base->getReg() == Reg && !Base->isTied() &&
+           I.mayLoad() && !I.mayStore() && !I.isCall() && !I.isBranch() &&
+           !I.hasUnmodeledSideEffects() && !I.hasOrderedMemoryRef() &&
+           none_of(I.operands(), [&](const MachineOperand &MO) {
+             return &MO != Base && MO.isReg() && MO.isUse() && MO.getReg() &&
+                    TRI->regsOverlap(MO.getReg(), Reg);
+           });
+  };
+  // A web is what the registers of steps join: a page with the loads that
+  // take it as their base, a load with what reads it. It leaks, and is joined
+  // to null, where a page gives anything else its register, or a load gives
+  // one to anything that does not just read values through it.
+  EquivalenceClasses<const MachineInstr *> Webs;
+  SmallVector<MachineInstr *, 2> DebugValues;
+  for (MachineInstr *Step : Steps) {
+    const GlobalVariable *GV = GetConstant(*Step);
+    Register Reg = Step->getOperand(0).getReg();
+    bool Load = IsPointerLoad(*Step), Joined = true;
+    Webs.insert(Step);
+    if (Load && IsPage)
+      Joined = hasOnlySetters(GetBase(*Step)->getReg(), *Step,
+                              [&](const MachineInstr &Page) {
+                                Webs.unionSets(Step, &Page);
+                                return IsPage(Page) && GetConstant(Page) == GV;
+                              });
+    forEachReader(*Step, DebugValues, [&](MachineInstr &I) {
+      Joined &= Load ? IsValueRead(I, Reg)
+                     : IsPointerLoad(I) && GetConstant(I) == GV &&
+                           GetBase(I)->getReg() == Reg;
+      Webs.unionSets(Step, &I);
+    });
+    if (!Joined)
+      Webs.unionSets(Step, nullptr);
+  }
+  // A web that does not leak is bound, wherever the others are. Where the
+  // function lets the constant's address go nowhere it behaves the same with
+  // any definition's, given it wherever it names the constant, so every web
+  // of it is.
+  SmallPtrSet<const GlobalValue *, 8> Free;
+  for (MachineInstr *Step : Steps) {
+    const GlobalVariable *GV = GetConstant(*Step);
+    if (!Outlined && !Named.contains(GV) && !Free.contains(GV))
+      (globalAddressMayBeCapturedIn(GV, MF->getFunction()) ? Named : Free)
+          .insert(GV);
+    if (Free.contains(GV) || !Webs.isEquivalent(Step, nullptr)) {
+      FusedSites[Step].ValueOnly = COFF::SiteFactValueOnly;
+      continue;
+    }
+    if (!IsPointerLoad(*Step))
+      continue;
+    // An access that only reads through a load that stays reads the same
+    // bytes bound or not.
+    Register Reg = Step->getOperand(0).getReg();
+    forEachReader(*Step, DebugValues, [&](MachineInstr &I) {
+      FusedSite Site = FusedSites.lookup(&I);
+      if (IsValueRead(I, Reg) &&
+          (Site.Load ? Site.Use == COFF::FusedUse::Access
+                     : IsAccess && IsAccess(I)) &&
+          hasOnlySetters(Reg, I, [&](const MachineInstr &Setter) {
+            return Setter.isIdenticalTo(*Step);
+          }))
+        FusedSites[&I] = {Step, COFF::FusedUse::Access, 0, false,
+                          COFF::SiteFactValueOnlyAccess};
+    });
+  }
+  // A site of a bound load is bound with it, whatever it is.
+  for (auto &[Site, Fused] : FusedSites)
+    if (Fused.Load && Fused.Load != Site &&
+        FusedSites.lookup(Fused.Load).ValueOnly == COFF::SiteFactValueOnly)
+      Fused.ValueOnly = COFF::SiteFactValueOnly;
+}
+
 // A fused site has no relocation of its own, so one marks it.
 void AsmPrinter::emitFusedSite(const FusedSite &Site, const MCSymbol *Pointer) {
   COFF::FusedUse Use = Site.Use;
@@ -5690,6 +5816,8 @@ void AsmPrinter::emitFusedSite(const FusedSite &Site, const MCSymbol *Pointer) {
     OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndex, Site.Index);
   else if (Site.IndexedRead)
     OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndexedRead, 0);
+  if (Site.ValueOnly && Pointer)
+    OutStreamer->emitCOFFSiteFact(Site.ValueOnly, 0);
 }
 
 std::tuple<const MCSymbol *, uint64_t, const MCSymbol *,
