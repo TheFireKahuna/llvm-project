@@ -1,0 +1,10 @@
+## A function type with a vendor qualifier is a qualified type: the function
+## type without the qualifier and the qualified one are both substitution
+## candidates.
+
+RUN: llvm-cxxfilt -n _Z1fPU6ms_abiFvPvES2_ _Z1gPFvPvEPU6ms_abiS0_ \
+RUN:   _Z1kPU6ms_abiFvPvERS1_ | FileCheck %s
+
+CHECK:      f(void (void*) ms_abi*, void (void*) ms_abi*)
+CHECK-NEXT: g(void (*)(void*), void (void*) ms_abi*)
+CHECK-NEXT: k(void (void*) ms_abi*, void (void*) ms_abi&)

@@ -5490,6 +5490,7 @@ public:
   llvm::Constant *EmitCheckSourceLocation(SourceLocation Loc);
 
   void EmitKCFIOperandBundle(const CGCallee &Callee,
+                             const CallArgList &CallArgs,
                              SmallVectorImpl<llvm::OperandBundleDef> &Bundles);
 
   /// Create a basic block that will either trap or call a handler function in

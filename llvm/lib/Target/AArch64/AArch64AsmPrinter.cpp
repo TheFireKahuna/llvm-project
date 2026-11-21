@@ -699,10 +699,18 @@ void AArch64AsmPrinter::LowerPATCHABLE_EVENT_CALL(const MachineInstr &MI,
 
 void AArch64AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
   Register AddrReg = MI.getOperand(0).getReg();
-  assert(std::next(MI.getIterator())->isCall() &&
-         "KCFI_CHECK not followed by a call instruction");
-  assert(std::next(MI.getIterator())->getOperand(0).getReg() == AddrReg &&
+#ifndef NDEBUG
+  // A tail call's epilogue may lie between the check and the call.
+  const MachineInstr &Call = *find_if(
+      make_range(std::next(MI.getIterator()), MI.getParent()->instr_end()),
+      [](const MachineInstr &I) {
+        return !I.getFlag(MachineInstr::FrameDestroy);
+      });
+  assert(Call.isCall() && "KCFI_CHECK not followed by a call instruction");
+  assert((!Call.getOperand(0).isReg() ||
+          Call.getOperand(0).getReg() == AddrReg) &&
          "KCFI_CHECK call target doesn't match call operand");
+#endif
 
   // Default to using the intra-procedure-call temporary registers for
   // comparing the hashes.
@@ -716,7 +724,7 @@ void AArch64AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
     // If one of the scratch registers is used for the call target (e.g.
     // with AArch64::TCRETURNriBTI), we can clobber another caller-saved
     // temporary register instead (in this case, AArch64::W9) as the check
-    // is immediately followed by the call instruction.
+    // is followed by the call instruction, or a tail call's epilogue.
     for (auto &Reg : ScratchRegs) {
       if (Reg == getWRegFromXReg(AddrReg)) {
         Reg = AArch64::W9;

@@ -1595,6 +1595,11 @@ void CodeGenModule::Release() {
                               1);
   }
 
+  if (CodeGenOpts.SanitizeCfiICallGeneralizePointers) {
+    getModule().addModuleFlag(llvm::Module::Override, "cfi-generalize-pointers",
+                              1);
+  }
+
   if (!CodeGenOpts.UniqueSourceFileIdentifier.empty()) {
     getModule().addModuleFlag(
         llvm::Module::Append, "Unique Source File Identifier",
@@ -3781,13 +3786,26 @@ void CodeGenModule::setKCFIType(const FunctionDecl *FD, llvm::Function *F) {
   llvm::MDBuilder MDB(Ctx);
   llvm::StringRef Salt;
 
-  if (const auto *FP = FD->getType()->getAs<FunctionProtoType>())
+  QualType FnType = FD->getType();
+  if (const auto *FP = FnType->getAs<FunctionProtoType>())
     if (const auto &Info = FP->getExtraAttributeInfo())
       Salt = Info.CFISalt;
 
+  // A definition without a prototype has the type of its parameters after
+  // the default argument promotions, which is what any valid call through a
+  // pointer passes, whether or not the pointer's type has a prototype.
+  const FunctionDecl *Def = nullptr;
+  if (const auto *FNPT = FnType->getAs<FunctionNoProtoType>();
+      FNPT && FD->hasBody(Def)) {
+    SmallVector<QualType, 8> ParamTypes;
+    for (const ParmVarDecl *P : Def->parameters())
+      ParamTypes.push_back(P->getType());
+    FnType = ReconstructCallGraphPrototype(FNPT, ParamTypes);
+  }
+
   F->setMetadata(llvm::LLVMContext::MD_kcfi_type,
-                 llvm::MDNode::get(Ctx, MDB.createConstant(CreateKCFITypeId(
-                                            FD->getType(), Salt))));
+                 llvm::MDNode::get(
+                     Ctx, MDB.createConstant(CreateKCFITypeId(FnType, Salt))));
 }
 
 static bool allowKCFIIdentifier(StringRef Name) {
@@ -5678,6 +5696,14 @@ void CodeGenModule::setMultiVersionResolverAttributes(llvm::Function *Resolver,
   setGlobalVisibility(Resolver, D);
 
   setDSOLocal(Resolver);
+
+  // Without ifuncs the resolver is the function callers reach, and the one
+  // its address names, so an indirect call through that address checks the
+  // resolver's type.
+  if (!getTarget().supportsIFunc() &&
+      LangOpts.Sanitize.has(SanitizerKind::KCFI))
+    if (const auto *FD = dyn_cast_or_null<FunctionDecl>(GD.getDecl()))
+      setKCFIType(FD, Resolver);
 
   // The resolver must be exempt from sanitizer instrumentation, as it can run
   // before the sanitizer is initialized.
@@ -8796,6 +8822,7 @@ QualType CodeGenModule::ReconstructCallGraphPrototype(
   for (QualType PT : ParamTypes)
     PromotedParamTypes.push_back(GetCallGraphPromotedType(PT));
   FunctionProtoType::ExtProtoInfo EPI;
+  EPI.ExtInfo = FNPT->getExtInfo();
   return Context.getFunctionType(FNPT->getReturnType(), PromotedParamTypes,
                                  EPI);
 }

@@ -565,3 +565,11 @@
 // CHECK-UBSAN-FUNCTION-MEXECUTE-ONLY-DAG: error: invalid argument '-fsanitize=function' not allowed with '-mexecute-only'
 // CHECK-UBSAN-FUNCTION-MPURE-CODE-DAG: error: invalid argument '-fsanitize=function' not allowed with '-mpure-code'
 // CHECK-UBSAN-UNDEFINED: "-fsanitize={{((alignment|array-bounds|bool|builtin|enum|float-cast-overflow|integer-divide-by-zero|nonnull-attribute|null|pointer-overflow|return|returns-nonnull-attribute|shift-base|shift-exponent|signed-integer-overflow|unreachable|vla-bound),?){17}"}}
+
+// A hot patch would overwrite the type hash in front of a function's entry.
+// RUN: not %clang --target=x86_64-linux-gnu -fsanitize=kcfi -fms-hotpatch %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-KCFI-HOTPATCH
+// RUN: not %clang_cl --target=x86_64-pc-windows-msvc -fsanitize=kcfi /hotpatch -### -- %s 2>&1 | FileCheck %s --check-prefix=CHECK-KCFI-HOTPATCH-CL
+// RUN: %clang --target=x86_64-linux-gnu -fsanitize=kcfi -fno-sanitize=kcfi -fms-hotpatch %s -### 2>&1 | FileCheck %s --check-prefix=CHECK-KCFI-HOTPATCH-OFF
+// CHECK-KCFI-HOTPATCH: error: invalid argument '-fsanitize=kcfi' not allowed with '-fms-hotpatch'
+// CHECK-KCFI-HOTPATCH-CL: error: invalid argument '-fsanitize=kcfi' not allowed with '/hotpatch'
+// CHECK-KCFI-HOTPATCH-OFF-NOT: error:

@@ -4164,7 +4164,6 @@ def CFISalt : TypeAttr {
   let Args = [StringArgument<"Salt">];
   let Subjects = SubjectList<[FunctionLike], ErrorDiag>;
   let Documentation = [CFISaltDocs];
-  let LangOpts = [COnly];
 }
 
 // C/C++ Thread safety attributes (e.g. for deadlock, data race checking)

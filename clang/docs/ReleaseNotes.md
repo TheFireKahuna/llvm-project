@@ -164,6 +164,13 @@ features cannot lower the translation-unit ABI level;
   destructor or move constructor is now passed and returned indirectly, and
   one with a deleted copy constructor and a trivial move constructor in a
   register. `-fclang-abi-compat=23` restores the previous behavior.
+- A function type with a vendor qualifier, such as a calling convention
+  attribute or `cfi_salt`, is now mangled as a qualified type: the function
+  type without the qualifier and the qualified function type are both
+  substitution candidates, as the Itanium C++ ABI has it for qualified types
+  and as demanglers count them. A name that refers back to such a type, or to
+  the function type without the qualifier, changes.
+  `-fclang-abi-compat=23` restores the previous mangling.
 
 ### AST Dumping Potentially Breaking Changes
 
@@ -463,6 +470,15 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
   A requirement naming a parameter of the pointee, such as
   `void (*unlock)(struct BDev *bdev) UNLOCK_FUNCTION(bdev->lock)`, keeps
   working. Without the flag both forward references remain errors.
+
+- The `cfi_salt` attribute is now accepted in C++. A salted function type is
+  distinct from the unsalted one in overload resolution and template argument
+  deduction, and under the Itanium C++ ABI its salt is mangled as the vendor
+  qualifier `U8cfi_salt`, whose template argument is the salt as a name when
+  it is an identifier and its bytes otherwise, so that names built from the
+  two types differ. The attribute is an error in C++ under the Microsoft C++
+  ABI, which has no way to mangle it. CFI and KCFI type identifiers are
+  unchanged and the same in C and C++.
 
 - `__declspec(guard(suppress))` is supported. Clang names the function to the
   linker as MSVC does, with `/GUARDSYM:<symbol>,S`, so the image's Control Flow
@@ -1440,6 +1456,9 @@ The `alpha.cplusplus.UseAfterLifetimeEnd` checker was renamed to `alpha.core.Use
 (release-notes-sanitizers)=
 
 ### Sanitizers
+
+- `-fms-hotpatch` is now rejected with `-fsanitize=kcfi`: a hot patch writes
+  over the type hash that KCFI places before a function's entry.
 
 - Added the `typefunchash` and `typefunchashpointersplit` token assignment
   modes for `-fsanitize=alloc-token`, selected with

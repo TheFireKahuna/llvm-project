@@ -9469,8 +9469,10 @@ void SelectionDAGBuilder::LowerCallTo(const CallBase &CB, SDValue Callee,
   if (TLI.supportSwiftError() && SwiftErrorVal)
     isTailCall = false;
 
+  // A call through CFG's dispatch or tail-call thunk is checked at its target.
   ConstantInt *CFIType = nullptr;
-  if (CB.isIndirectCall()) {
+  if (CB.isIndirectCall() ||
+      CB.getOperandBundle(LLVMContext::OB_cfguardtarget)) {
     if (auto Bundle = CB.getOperandBundle(LLVMContext::OB_kcfi)) {
       if (!TLI.supportKCFIBundles())
         report_fatal_error(

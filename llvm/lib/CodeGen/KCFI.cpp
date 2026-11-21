@@ -94,9 +94,21 @@ bool KCFI::emitCheck(MachineBasicBlock &MBB,
   if (MBBI->isBundled() && !std::prev(MBBI)->isBundle())
     report_fatal_error("Cannot emit a KCFI check for a bundled call");
 
+  // Windows' unwinder knows an epilogue only up to its terminator, so a tail
+  // call's check goes before the epilogue, while the frame is whole.
+  MachineBasicBlock::instr_iterator Epilogue = MBBI;
+  if (MBBI->isReturn() && !MBBI->isBundled() &&
+      MBB.getParent()->usesWindowsUnwindInfo())
+    while (Epilogue != MBB.instr_begin() &&
+           std::prev(Epilogue)->getFlag(MachineInstr::FrameDestroy))
+      --Epilogue;
+  MachineInstr *EpilogueEnd = Epilogue == MBBI ? nullptr : &*std::prev(MBBI);
+
   // Emit a KCFI check for the call instruction at MBBI. The implementation
   // must unfold memory operands if applicable.
   MachineInstr *Check = TLI->EmitKCFICheck(MBB, MBBI, TII);
+  if (EpilogueEnd)
+    MBB.splice(Epilogue, &MBB, std::next(EpilogueEnd->getIterator()), MBBI);
 
   // Clear the original call's CFI type.
   assert(MBBI->isCall() && "Unexpected instruction type");

@@ -1,0 +1,12 @@
+## A cfi_salt is a vendor qualifier on a function type, with the salt as its
+## template argument: an identifier as a name, anything else as its bytes.
+
+RUN: llvm-cxxfilt -n _Z1fPU8cfi_saltIX6pepperEEFvPvE \
+RUN:   _Z1fPU8cfi_saltIJLh97ELh32ELh98EEEFvPvE \
+RUN:   _ZN1SIPU8cfi_saltIX10__cxa_dtorEEFvPvEE1gEv \
+RUN:   _Z1kPU6ms_abiU8cfi_saltIX6pepperEEFvPvE | FileCheck %s
+
+CHECK:      f(void (void*) cfi_salt<pepper>*)
+CHECK-NEXT: f(void (void*) cfi_salt<(unsigned char)97, (unsigned char)32, (unsigned char)98>*)
+CHECK-NEXT: S<void (void*) cfi_salt<__cxa_dtor>*>::g()
+CHECK-NEXT: k(void (void*) cfi_salt<pepper> ms_abi*)

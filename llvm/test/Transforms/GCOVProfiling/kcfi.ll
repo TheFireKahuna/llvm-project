@@ -6,6 +6,8 @@
 ; RUN: opt < %s -S -passes=insert-gcov-profiling \
 ; RUN:  -mtriple=powerpc64-ibm-aix | FileCheck \
 ; RUN:  --check-prefixes=CHECK,CHECK-RT-INIT %s
+; RUN: sed 's/!{!3, !4, !9}/!{!3, !4, !9, !10}/' %s | opt -S -passes=insert-gcov-profiling \
+; RUN:  -mtriple=x86_64-unknown-linux-gnu | FileCheck --check-prefix=GEN %s
 
 ; Check for gcov initialization function pointers when we initialize
 ; the writeout and reset functions in the runtime.
@@ -29,6 +31,7 @@ entry:
 !7 = !{null}
 !8 = !DILocation(line: 2, column: 1, scope: !5)
 !9 = !{i32 4, !"kcfi", i32 1}
+!10 = !{i32 4, !"cfi-generalize-pointers", i32 1}
 
 ; CHECK: define internal void @__llvm_gcov_writeout()
 ; CHECK-SAME: !kcfi_type ![[#TYPE:]]
@@ -38,3 +41,5 @@ entry:
 ; CHECK-CTOR-INIT-SAME: !kcfi_type ![[#TYPE]]
 
 ; CHECK: ![[#TYPE]] = !{i32 -1522505972}
+; GEN: define internal void @__llvm_gcov_writeout() {{.*}}!kcfi_type ![[#TYPE:]]
+; GEN: ![[#TYPE]] = !{i32 546483497}

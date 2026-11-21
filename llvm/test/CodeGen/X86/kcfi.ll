@@ -163,6 +163,26 @@ err:
   resume { i8*, i32 } %exn
 }
 
+;; An invoke through a register that stays an invoke through isel.
+define void @f10(ptr noundef %x) personality ptr @__gxx_personality_v0 {
+; MIR-LABEL: name: f10
+; MIR: body:
+; ISEL: CALL64r %0, csr_64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp, cfi-type 12345678
+; KCFI:       BUNDLE{{.*}} {
+; KCFI-NEXT:    KCFI_CHECK $rdi, 12345678, implicit-def $r10, implicit-def $r11, implicit-def $eflags
+; KCFI-NEXT:    CALL64r killed $rdi, csr_64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+; KCFI-NEXT:  }
+  invoke void %x() [ "kcfi"(i32 12345678) ]
+    to label %cont
+    unwind label %err
+cont:
+  ret void
+err:
+  %exn = landingpad { ptr, i32 }
+          cleanup
+  resume { ptr, i32 } %exn
+}
+
 attributes #0 = { "target-features"="+retpoline-indirect-branches,+retpoline-indirect-calls" }
 
 !llvm.module.flags = !{!0}

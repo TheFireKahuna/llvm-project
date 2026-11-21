@@ -10486,7 +10486,7 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
 
   AArch64FunctionInfo *FuncInfo = MF.getInfo<AArch64FunctionInfo>();
   bool TailCallOpt = MF.getTarget().Options.GuaranteedTailCallOpt;
-  bool IsCFICall = CLI.CB && CLI.CB->isIndirectCall() && CLI.CFIType;
+  bool IsCFICall = CLI.CB && CLI.CFIType;
   bool IsSibCall = false;
   bool GuardWithBTI = false;
 
@@ -34248,17 +34248,18 @@ AArch64TargetLowering::EmitKCFICheck(MachineBasicBlock &MBB,
   case AArch64::TCRETURNrix16x17:
   case AArch64::TCRETURNrix17:
   case AArch64::TCRETURNrinotx16:
+    MBBI->getOperand(0).setIsRenamable(false);
+    break;
+  case AArch64::TCRETURNdi:
+    // The CFG tail-call thunk, which takes the target in X9.
     break;
   default:
     llvm_unreachable("Unexpected CFI call opcode");
   }
 
-  MachineOperand &Target = MBBI->getOperand(0);
-  assert(Target.isReg() && "Invalid target operand for an indirect call");
-  Target.setIsRenamable(false);
-
+  const MachineOperand &Target = MBBI->getOperand(0);
   return BuildMI(MBB, MBBI, MBBI->getDebugLoc(), TII->get(AArch64::KCFI_CHECK))
-      .addReg(Target.getReg())
+      .addReg(Target.isReg() ? Target.getReg() : Register(AArch64::X9))
       .addImm(MBBI->getCFIType())
       .getInstr();
 }

@@ -914,7 +914,13 @@ void X86AsmPrinter::LowerFENTRY_CALL(const MachineInstr &MI,
 }
 
 void X86AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
-  assert(std::next(MI.getIterator())->isCall() &&
+  // A tail call's epilogue may lie between the check and the call.
+  assert(find_if(make_range(std::next(MI.getIterator()),
+                            MI.getParent()->instr_end()),
+                 [](const MachineInstr &I) {
+                   return !I.getFlag(MachineInstr::FrameDestroy);
+                 })
+             ->isCall() &&
          "KCFI_CHECK not followed by a call instruction");
 
   // Adjust the offset for patchable-function-prefix. X86InstrInfo::getNop()
@@ -932,8 +938,9 @@ void X86AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
   // expected value at the call target.
   const Register AddrReg = MI.getOperand(0).getReg();
   const uint32_t Type = MI.getOperand(1).getImm();
-  // The check is immediately before the call. If the call target is in R10,
-  // we can clobber R11 for the check instead.
+  // The check is immediately before the call, or before a tail call's
+  // epilogue. If the call target is in R10, we can clobber R11 for the check
+  // instead.
   unsigned TempReg = AddrReg == X86::R10 ? X86::R11D : X86::R10D;
   EmitAndCountInstruction(
       MCInstBuilder(X86::MOV32ri).addReg(TempReg).addImm(-MaskKCFIType(Type)));

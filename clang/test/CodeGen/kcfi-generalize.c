@@ -38,6 +38,9 @@ void uni(void (*fn)(union Union), union Union arg1) {
     fn(arg1);
 }
 
+// GENERALIZED: !{i32 4, !"cfi-generalize-pointers", i32 1}
+// UNGENERALIZED-NOT: !"cfi-generalize-pointers"
+
 // UNGENERALIZED: [[TYPE]] = !{i32 1296635908}
 // GENERALIZED: [[TYPE]] = !{i32 -49168686}
 

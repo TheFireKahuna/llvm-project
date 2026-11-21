@@ -28,6 +28,7 @@
 #include "clang/AST/Mangle.h"
 #include "clang/AST/TypeLoc.h"
 #include "clang/Basic/ABI.h"
+#include "clang/Basic/CharInfo.h"
 #include "clang/Basic/DiagnosticAST.h"
 #include "clang/Basic/Module.h"
 #include "clang/Basic/TargetInfo.h"
@@ -221,6 +222,10 @@ class CXXNameMangler {
   /// Normalize integer types for cross-language CFI support with other
   /// languages that can't represent and encode C/C++ integer types.
   bool NormalizeIntegers = false;
+  /// Leave the cfi_salt of function types out, for the canonical type names
+  /// from which CFI and KCFI type identifiers are made, and which apply the
+  /// salt themselves.
+  bool OmitCFISalt = false;
 
   bool NullOut = false;
   /// In the "DisableDerivedAbiTags" mode derived ABI tags are not calculated.
@@ -412,12 +417,14 @@ public:
         AbiTagsRoot(AbiTags) {}
 
   CXXNameMangler(ItaniumMangleContextImpl &C, raw_ostream &Out_,
-                 bool NormalizeIntegers_)
+                 bool NormalizeIntegers_, bool OmitCFISalt_ = false)
       : Context(C), Out(Out_), NormalizeIntegers(NormalizeIntegers_),
-        NullOut(false), Structor(nullptr), AbiTagsRoot(AbiTags) {}
+        OmitCFISalt(OmitCFISalt_), NullOut(false), Structor(nullptr),
+        AbiTagsRoot(AbiTags) {}
   CXXNameMangler(CXXNameMangler &Outer, raw_ostream &Out_)
       : Context(Outer.Context), Out(Out_),
-        NormalizeIntegers(Outer.NormalizeIntegers), Structor(Outer.Structor),
+        NormalizeIntegers(Outer.NormalizeIntegers),
+        OmitCFISalt(Outer.OmitCFISalt), Structor(Outer.Structor),
         StructorType(Outer.StructorType), SeqID(Outer.SeqID),
         FunctionTypeDepth(Outer.FunctionTypeDepth), AbiTagsRoot(AbiTags),
         Substitutions(Outer.Substitutions),
@@ -562,6 +569,7 @@ private:
   static StringRef getCallingConvQualifierName(CallingConv CC);
   void mangleExtParameterInfo(FunctionProtoType::ExtParameterInfo info);
   void mangleExtFunctionInfo(const FunctionType *T);
+  void mangleCFISalt(StringRef Salt);
   void mangleSMEAttrs(unsigned SMEAttrs);
   void mangleBareFunctionType(const FunctionProtoType *T, bool MangleReturnType,
                               const FunctionDecl *FD = nullptr);
@@ -3719,6 +3727,26 @@ void CXXNameMangler::mangleExtFunctionInfo(const FunctionType *T) {
   // FIXME: noreturn
 }
 
+// A salted function type is distinct from the unsalted one, so the salt is a
+// vendor qualifier on it, with the salt as its template argument:
+//
+//   <qualifier> ::= U8cfi_salt I X <source-name> E E  # the salt, an identifier
+//               ::= U8cfi_salt I J (Lh <byte> E)+ E E # the salt's bytes
+void CXXNameMangler::mangleCFISalt(StringRef Salt) {
+  if (Salt.empty() || OmitCFISalt)
+    return;
+  mangleVendorQualifier("cfi_salt");
+  Out << 'I';
+  if (isValidAsciiIdentifier(Salt)) {
+    Out << 'X' << Salt.size() << Salt;
+  } else {
+    Out << 'J';
+    for (unsigned char C : Salt)
+      Out << "Lh" << unsigned(C) << 'E';
+  }
+  Out << "EE";
+}
+
 enum class AAPCSBitmaskSME : unsigned {
   ArmStreamingBit = 1 << 0,
   ArmStreamingCompatibleBit = 1 << 1,
@@ -3827,6 +3855,25 @@ void CXXNameMangler::mangleType(const FunctionProtoType *T) {
     Out << "11__SME_ATTRSI";
 
   mangleExtFunctionInfo(T);
+  mangleCFISalt(T->getExtraAttributeInfo().CFISalt);
+
+  // A vendor qualifier, such as a calling convention or a CFI salt, makes the
+  // function type a qualified type, so the function type without it is a
+  // substitution candidate of its own, which may already stand for it.
+  QualType Base;
+  if (!SMEAttrs &&
+      (!getCallingConvQualifierName(T->getExtInfo().getCC()).empty() ||
+       (!OmitCFISalt && !T->getExtraAttributeInfo().CFISalt.empty())) &&
+      !getASTContext().getLangOpts().isCompatibleWith(
+          LangOptions::ClangABI::Ver23)) {
+    FunctionProtoType::ExtProtoInfo EPI = T->getExtProtoInfo();
+    EPI.ExtInfo = EPI.ExtInfo.withCallingConv(CC_C);
+    EPI.ExtraAttributeInfo = {};
+    Base = getASTContext().getFunctionType(T->getReturnType(),
+                                           T->getParamTypes(), EPI);
+    if (mangleSubstitution(Base))
+      return;
+  }
 
   // Mangle CV-qualifiers, if present.  These are 'this' qualifiers,
   // e.g. "const" in "int (A::*)() const".
@@ -3860,6 +3907,9 @@ void CXXNameMangler::mangleType(const FunctionProtoType *T) {
   mangleRefQualifier(T->getRefQualifier());
 
   Out << 'E';
+
+  if (!Base.isNull())
+    addSubstitution(Base);
 
   mangleSMEAttrs(SMEAttrs);
 }
@@ -7771,7 +7821,9 @@ void ItaniumMangleContextImpl::mangleCXXRTTIName(
 
 void ItaniumMangleContextImpl::mangleCanonicalTypeName(
     QualType Ty, raw_ostream &Out, bool NormalizeIntegers = false) {
-  mangleCXXRTTIName(Ty, Out, NormalizeIntegers);
+  CXXNameMangler Mangler(*this, Out, NormalizeIntegers, /*OmitCFISalt=*/true);
+  Mangler.getStream() << "_ZTS";
+  Mangler.mangleType(Ty);
 }
 
 void ItaniumMangleContextImpl::mangleStringLiteral(const StringLiteral *, raw_ostream &) {

@@ -225,8 +225,10 @@ bool CallLowering::lowerCall(MachineIRBuilder &MIRBuilder, const CallBase &CB,
     }
   }
 
+  // A call through CFG's dispatch or tail-call thunk is checked at its target.
   auto Bundle = CB.getOperandBundle(LLVMContext::OB_kcfi);
-  if (Bundle && CB.isIndirectCall()) {
+  if (Bundle && (CB.isIndirectCall() ||
+                 CB.getOperandBundle(LLVMContext::OB_cfguardtarget))) {
     Info.CFIType = cast<ConstantInt>(Bundle->Inputs[0]);
     assert(Info.CFIType->getType()->isIntegerTy(32) && "Invalid CFI type");
   }
