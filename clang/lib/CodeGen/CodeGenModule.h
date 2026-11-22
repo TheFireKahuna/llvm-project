@@ -1023,6 +1023,16 @@ public:
   bool shouldMapVisibilityToDLLExport(const NamedDecl *D) const {
     return Context.shouldMapVisibilityToDLLExport(D);
   }
+  /// Whether the mapping exports the definition of \p D that has \p Linkage.
+  bool shouldMapDefinitionToDLLExport(
+      const NamedDecl *D, llvm::GlobalValue::LinkageTypes Linkage) const;
+  /// On Windows Itanium and NT-POSIX, name the address \p Offset bytes into
+  /// \p GV "<GV><Kind><Offset>" where another image can reach \p GV.
+  void emitInteriorName(llvm::GlobalVariable *GV, StringRef Kind,
+                        uint64_t Offset);
+  /// Name the subobjects of the definition \p GV of \p D whose offsets its
+  /// type fixes.
+  void emitSubobjectNames(const VarDecl &D, llvm::GlobalVariable *GV);
   void setDLLImportDLLExport(llvm::GlobalValue *GV, GlobalDecl D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, const NamedDecl *D) const;
   /// Set visibility, dllimport/dllexport and dso_local.

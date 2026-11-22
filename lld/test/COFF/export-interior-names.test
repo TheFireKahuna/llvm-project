@@ -1,0 +1,92 @@
+# REQUIRES: x86, aarch64
+
+## A fork object's interior names X$so<K>/X$ap<K> are exported with X from the
+## command line or a .def (as data, under X's export name and privacy); from
+## directives, other shapes, unexported or foreign symbols they add nothing.
+
+# RUN: rm -rf %t && split-file %s %t && cd %t
+
+# DEFINE: %{a} = x64
+# DEFINE: %{t} = x86_64
+# DEFINE: %{link} = lld-link -machine:%{a} -dll -noentry obj.obj foreign.obj
+# DEFINE: %{run} = \
+# DEFINE:   llc -filetype=obj -mtriple=%{t}-windows-itanium obj.ll -o obj.obj && \
+# DEFINE:   llvm-mc -filetype=obj -triple=%{t}-windows-msvc foreign.s \
+# DEFINE:     -o foreign.obj && \
+# DEFINE:   %{link} -out:opt.dll -implib:opt.lib -export:obj -export:other=obj \
+# DEFINE:     -export:vt,EXPORTAS,table -export:foreign -export:fn && \
+# DEFINE:   llvm-readobj --coff-exports opt.dll | \
+# DEFINE:     FileCheck --check-prefix=OPT --implicit-check-not=Name: %s && \
+# DEFINE:   llvm-nm opt.lib | FileCheck --check-prefix=OPTLIB %s && \
+# DEFINE:   %{link} -out:def.dll -implib:def.lib -def:obj.def && \
+# DEFINE:   llvm-readobj --coff-exports def.dll | \
+# DEFINE:     FileCheck --check-prefix=DEF --implicit-check-not=Name: %s && \
+# DEFINE:   llvm-nm def.lib | FileCheck --check-prefix=DEFLIB --allow-empty %s && \
+# DEFINE:   %{link} -out:directive.dll && \
+# DEFINE:   llvm-readobj --coff-exports directive.dll | \
+# DEFINE:     FileCheck --check-prefix=DIRECTIVE --implicit-check-not=Name: %s
+
+# RUN: %{run}
+# REDEFINE: %{a} = arm64
+# REDEFINE: %{t} = aarch64
+# RUN: %{run}
+
+# OPT:      Name: fn
+# OPT:      Name: foreign
+# OPT:      Name: marked
+# OPT:      Name: obj{{$}}
+# OPT-NEXT: RVA: 0x[[#%x,OBJ:]]
+# OPT:      Name: obj$so8
+# OPT-NEXT: RVA: 0x[[#OBJ+8]]
+# OPT:      Name: other
+# OPT-NEXT: RVA: 0x[[#OBJ]]
+# OPT:      Name: other$so8
+# OPT-NEXT: RVA: 0x[[#OBJ+8]]
+# OPT:      Name: table
+# OPT-NEXT: RVA: 0x[[#%x,VT:]]
+# OPT:      Name: table$ap16
+# OPT-NEXT: RVA: 0x[[#VT+16]]
+
+## The import library gives each name as data: __imp_ and no thunk.
+# OPTLIB-DAG: T fn
+# OPTLIB-DAG: D __imp_obj$so8
+# OPTLIB-DAG: D __imp_other$so8
+# OPTLIB-DAG: D __imp_vt$ap16
+# OPTLIB-NOT: T {{.*}}$
+
+# DEF:      Ordinal: 5
+# DEF-NEXT: Name: {{$}}
+# DEF-NEXT: RVA: 0x[[#%x,OBJ:]]
+# DEF:      Name: marked
+# DEF:      Name: {{$}}
+# DEF-NEXT: RVA: 0x[[#OBJ+8]]
+# DEFLIB-NOT: obj
+
+# DIRECTIVE:      Name: marked
+
+#--- obj.def
+EXPORTS
+  obj @5 NONAME PRIVATE DATA
+
+#--- obj.ll
+@obj = global [2 x i64] [i64 1, i64 2]
+@"obj$so8" = alias i8, getelementptr (i8, ptr @obj, i64 8)
+@vt = constant [3 x ptr] zeroinitializer
+@"vt$ap16" = alias i8, getelementptr (i8, ptr @vt, i64 16)
+@marked = dllexport global i64 0
+
+@"obj$so" = alias i8, ptr @obj
+@"obj$sox" = alias i8, ptr @obj
+@"obj$8" = alias i8, ptr @obj
+
+define void @fn() {
+  ret void
+}
+
+#--- foreign.s
+.data
+.globl foreign, "foreign$so8"
+foreign:
+  .quad 0
+"foreign$so8":
+  .quad 0

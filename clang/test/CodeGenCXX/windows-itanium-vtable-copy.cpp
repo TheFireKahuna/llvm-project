@@ -69,12 +69,12 @@ W *w() { return new W; }
 Implicit *m() { return new Implicit; }
 Tmpl<int> *t() { return new Tmpl<int>; }
 
-// USER-DAG: @_ZTV1B = linkonce_odr {{(dllexport )?}}unnamed_addr constant {{.*}} ptr @_ZTI1B, {{.*}}, comdat,
+// USER-DAG: @_ZTV1B = linkonce_odr unnamed_addr constant {{.*}} ptr @_ZTI1B, {{.*}}, comdat,
 // USER-DAG: @_ZTI1B = external {{.*}}constant ptr
 // USER-DAG: @_ZTV1F = external constant
 // USER-DAG: @_ZTV6Hidden = external dso_local constant
 // USER-DAG: declare {{.*}}dllimport void @_ZN8ImportedC1Ev(
-// USER-DAG: @_ZTV1W = linkonce_odr {{(dllexport )?}}unnamed_addr constant
+// USER-DAG: @_ZTV1W = linkonce_odr unnamed_addr constant
 // USER-DAG: @_ZTT1W = linkonce_odr dso_local {{.*}}constant {{.*}}, comdat,
 // USER-DAG: @_ZTC1W0_1V = linkonce_odr dso_local {{.*}}constant {{.*}}, comdat,
 // USER-DAG: @_ZTV8Implicit = linkonce_odr {{.*}} ptr @_ZN8ImplicitD1Ev, ptr @_ZN8ImplicitD0Ev,

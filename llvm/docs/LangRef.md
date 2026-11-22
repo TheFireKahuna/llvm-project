@@ -2974,8 +2974,9 @@ fn -> other_fn -> other_fn ; fn is norecurse
     that a reference to the function binds to when nothing defines it. On COFF
     the declaration is emitted as a weak external of characteristic
     `IMAGE_WEAK_EXTERN_SEARCH_ALIAS` whose alternate is `<symbol>`, which need
-    not be defined in the module, as an alias's must. Other object formats
-    have no such symbol.
+    not be defined in the module, as an alias's must, and a `dllexport`
+    declaration is exported as a definition is. Other object formats have no
+    such symbol.
 
 `vscale_range(<min>[, <max>])`
 :   This function attribute indicates `vscale` is a power-of-two within a

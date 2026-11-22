@@ -10,9 +10,10 @@
 // REQUIRES: windows-dll
 // UNSUPPORTED: no-exceptions, no-rtti, c++03
 
-// objects point at them. Each copy is libc++abi's vtable word for word, which
-// the DLL exports and the program finds by name at run time, since the name
-// binds the copy at link time.
+// A program linking the DLL holds its own word-for-word copies of libc++abi's
+// type_info vtables, from the import library, which its type_info objects
+// point at. The vtable's name binds the copy, so the program finds the DLL's
+// by its exported address-point name.
 
 #include <cassert>
 #include <cstddef>
@@ -47,7 +48,8 @@ static void check(const void* const* copy, const char* name, std::size_t words) 
       GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS, reinterpret_cast<const char*>(&typeid(int)), &dll);
   assert(found);
   const void* const* owner = reinterpret_cast<const void* const*>(GetProcAddress(dll, name));
-  assert(owner && owner != copy);
+  assert(owner && owner - 2 != copy);
+  owner -= 2;
   for (std::size_t i = 0; i != words; ++i)
     assert(copy[i] == owner[i]);
 }
@@ -63,15 +65,15 @@ struct Multiple : Base, Second {};
 enum Enum {};
 
 int main(int, char**) {
-  check(fundamental, "_ZTVN10__cxxabiv123__fundamental_type_infoE", leaf);
-  check(array, "_ZTVN10__cxxabiv117__array_type_infoE", leaf);
-  check(function, "_ZTVN10__cxxabiv120__function_type_infoE", leaf);
-  check(enumeration, "_ZTVN10__cxxabiv116__enum_type_infoE", leaf);
-  check(pointer, "_ZTVN10__cxxabiv119__pointer_type_infoE", leaf);
-  check(pointer_to_member, "_ZTVN10__cxxabiv129__pointer_to_member_type_infoE", leaf);
-  check(class_, "_ZTVN10__cxxabiv117__class_type_infoE", class_words);
-  check(si_class, "_ZTVN10__cxxabiv120__si_class_type_infoE", class_words);
-  check(vmi_class, "_ZTVN10__cxxabiv121__vmi_class_type_infoE", class_words);
+  check(fundamental, "_ZTVN10__cxxabiv123__fundamental_type_infoE$ap16", leaf);
+  check(array, "_ZTVN10__cxxabiv117__array_type_infoE$ap16", leaf);
+  check(function, "_ZTVN10__cxxabiv120__function_type_infoE$ap16", leaf);
+  check(enumeration, "_ZTVN10__cxxabiv116__enum_type_infoE$ap16", leaf);
+  check(pointer, "_ZTVN10__cxxabiv119__pointer_type_infoE$ap16", leaf);
+  check(pointer_to_member, "_ZTVN10__cxxabiv129__pointer_to_member_type_infoE$ap16", leaf);
+  check(class_, "_ZTVN10__cxxabiv117__class_type_infoE$ap16", class_words);
+  check(si_class, "_ZTVN10__cxxabiv120__si_class_type_infoE$ap16", class_words);
+  check(vmi_class, "_ZTVN10__cxxabiv121__vmi_class_type_infoE$ap16", class_words);
 
   // The type_info of a fundamental type is the DLL's, with the DLL's vtable.
   assert(vtable(typeid(int)) != fundamental);

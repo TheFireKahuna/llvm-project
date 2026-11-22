@@ -447,6 +447,7 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   }
 
   var->setAlignment(alignment.getAsAlign());
+  CGM.emitSubobjectNames(D, var);
 
   if (D.hasAttr<AnnotateAttr>())
     CGM.AddGlobalAnnotations(&D, var);

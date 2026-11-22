@@ -3591,7 +3591,7 @@ bool ASTContext::shouldMapVisibilityToDLLExport(const NamedDecl *D) const {
   LinkageInfo LV = D->getLinkageAndVisibility();
   return LV.getVisibility() == DefaultVisibility &&
          (LangOpts.isAllDefaultVisibilityExportMapping() ||
-          LV.isVisibilityExplicit());
+          D->isVisibilityMarked());
 }
 
 bool ASTContext::mayVTableBeCopied(const CXXRecordDecl *RD) const {

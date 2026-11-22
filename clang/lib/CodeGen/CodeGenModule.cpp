@@ -2489,6 +2489,43 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
   setDLLImportDLLExport(GV, D);
 }
 
+bool CodeGenModule::shouldMapDefinitionToDLLExport(
+    const NamedDecl *D, llvm::GlobalValue::LinkageTypes Linkage) const {
+  if (!getTriple().isOSBinFormatCOFF())
+    return shouldMapVisibilityToDLLExport(D);
+  if (!LangOpts.hasDefaultVisibilityExportMapping() || !D)
+    return false;
+  // A protected definition is exported as a default one is, as on ELF.
+  LinkageInfo LV = D->getLinkageAndVisibility();
+  if (LV.getVisibility() == HiddenVisibility ||
+      !(LangOpts.isAllDefaultVisibilityExportMapping() ||
+        D->isVisibilityMarked()))
+    return false;
+  // A DLL holds a discardable definition only where it used it, and every
+  // importer emits its own copy, so an export of one promises nothing. A
+  // variable the source declared is one object across images whatever its
+  // linkage, but a native thread-local one has no address to export.
+  if (const auto *VD = dyn_cast<VarDecl>(D))
+    return VD->getTLSKind() == VarDecl::TLS_None;
+  return !llvm::GlobalValue::isLinkOnceLinkage(Linkage);
+}
+
+/// Whether the mapping makes a declaration of \p D an import: a marked
+/// default visibility says that a shared library defines it, as it says on a
+/// definition that the library exports it. A vtable or type_info object,
+/// named by its class, and a thread-local variable are reached otherwise.
+static bool shouldMapVisibilityToDLLImport(const CodeGenModule &CGM,
+                                           const NamedDecl *D) {
+  if (!CGM.getTriple().isOSBinFormatCOFF() ||
+      !CGM.getLangOpts().hasDefaultVisibilityExportMapping() ||
+      !isa<FunctionDecl, VarDecl>(D) || D->hasAttr<DLLExportAttr>())
+    return false;
+  if (const auto *VD = dyn_cast<VarDecl>(D);
+      VD && VD->getTLSKind() != VarDecl::TLS_None)
+    return false;
+  return D->getVisibility() == DefaultVisibility && D->isVisibilityMarked();
+}
+
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
                                           const NamedDecl *D) const {
   // A global can be local although its declaration is visible: the
@@ -2497,10 +2534,112 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
     if (D->hasAttr<DLLImportAttr>())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
     else if ((D->hasAttr<DLLExportAttr>() ||
-              shouldMapVisibilityToDLLExport(D)) &&
+              shouldMapDefinitionToDLLExport(D, GV->getLinkage())) &&
              !GV->isDeclarationForLinker())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
+    // An extern_weak declaration may resolve to zero, which an import cannot,
+    // and a definition may follow a declaration that was an import.
+    else if (shouldMapVisibilityToDLLImport(*this, D) &&
+             !GV->hasExternalWeakLinkage())
+      GV->setDLLStorageClass(GV->isDeclarationForLinker()
+                                 ? llvm::GlobalVariable::DLLImportStorageClass
+                                 : llvm::GlobalVariable::DefaultStorageClass);
   }
+}
+
+// The loader writes an imported address into the static data that holds it
+// but adds no offset, so the image that defines a vtable or a variable names
+// each interior address that another image's constant can hold, and the
+// linker binds a word holding the definition plus the offset to the name.
+// A weak definition outside a COMDAT yields to another, which a name could
+// not: COFF has no weak alias at an offset, and nothing discards a strong one
+// with the definition.
+static bool hasInteriorNames(const CodeGenModule &CGM,
+                             const llvm::GlobalVariable *GV) {
+  return CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+         !GV->isDeclarationForLinker() && !GV->hasLocalLinkage() &&
+         !GV->hasCommonLinkage() && !GV->hasHiddenVisibility() &&
+         !GV->isThreadLocal() && !(GV->isWeakForLinker() && !GV->hasComdat());
+}
+
+void CodeGenModule::emitInteriorName(llvm::GlobalVariable *GV, StringRef Kind,
+                                     uint64_t Offset) {
+  if (!hasInteriorNames(*this, GV))
+    return;
+  // '$' cannot occur in a mangled name.
+  std::string Name = (GV->getName() + Kind + Twine(Offset)).str();
+  llvm::GlobalValue *Entry = getModule().getNamedValue(Name);
+  auto *Alias = dyn_cast_or_null<llvm::GlobalAlias>(Entry);
+  if (Entry && !Alias)
+    return;
+  // The alias is in the COMDAT of what it points into, kept and discarded
+  // with it. It is external, since COFF has no weak alias at an offset.
+  if (!Alias)
+    Alias = llvm::GlobalAlias::create(
+        Int8Ty, GV->getAddressSpace(), llvm::GlobalValue::ExternalLinkage, Name,
+        llvm::ConstantExpr::getInBoundsPtrAdd(
+            GV, llvm::ConstantInt::get(Int64Ty, Offset)),
+        &getModule());
+  Alias->setVisibility(GV->getVisibility());
+  Alias->setDLLStorageClass(GV->getDLLStorageClass());
+  Alias->setUnnamedAddr(GV->getUnnamedAddr());
+  Alias->setDSOLocal(GV->isDSOLocal());
+}
+
+// Append the offsets of the subobjects of RD at Offset that the type fixes:
+// its data members and base classes, recursively, but nothing inside an
+// array. A member is a complete object and holds its virtual bases.
+static void collectSubobjectOffsets(const ASTContext &Ctx, const RecordDecl *RD,
+                                    CharUnits Offset, bool Complete,
+                                    SmallVectorImpl<CharUnits> &Offsets) {
+  RD = RD->getDefinition();
+  if (!RD || RD->isInvalidDecl())
+    return;
+  const ASTRecordLayout &Layout = Ctx.getASTRecordLayout(RD);
+  for (const FieldDecl *F : RD->fields()) {
+    // No lvalue designates the storage of a bit-field or of a reference.
+    if (F->isBitField() || F->getType()->isReferenceType())
+      continue;
+    Offsets.push_back(Offset + Ctx.toCharUnitsFromBits(
+                                   Layout.getFieldOffset(F->getFieldIndex())));
+    if (const RecordDecl *Member = F->getType()->getAsRecordDecl())
+      collectSubobjectOffsets(Ctx, Member, Offsets.back(), /*Complete=*/true,
+                              Offsets);
+  }
+  const auto *Class = dyn_cast<CXXRecordDecl>(RD);
+  if (!Class)
+    return;
+  auto AddBase = [&](const CXXBaseSpecifier &B, bool Virtual) {
+    const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+    Offsets.push_back(Offset + (Virtual ? Layout.getVBaseClassOffset(Base)
+                                        : Layout.getBaseClassOffset(Base)));
+    collectSubobjectOffsets(Ctx, Base, Offsets.back(), /*Complete=*/false,
+                            Offsets);
+  };
+  for (const CXXBaseSpecifier &B : Class->bases())
+    if (!B.isVirtual())
+      AddBase(B, /*Virtual=*/false);
+  if (Complete)
+    for (const CXXBaseSpecifier &B : Class->vbases())
+      AddBase(B, /*Virtual=*/true);
+}
+
+void CodeGenModule::emitSubobjectNames(const VarDecl &D,
+                                       llvm::GlobalVariable *GV) {
+  const RecordDecl *RD = D.getType()->getAsRecordDecl();
+  if (!RD || !hasInteriorNames(*this, GV))
+    return;
+  SmallVector<CharUnits, 16> Offsets;
+  collectSubobjectOffsets(getContext(), RD, CharUnits::Zero(),
+                          /*Complete=*/true, Offsets);
+  llvm::sort(Offsets);
+  Offsets.erase(llvm::unique(Offsets), Offsets.end());
+  // The variable's start is its own name, and an empty subobject at its end
+  // is no address inside it.
+  CharUnits Size = getContext().getTypeSizeInChars(D.getType());
+  for (CharUnits Offset : Offsets)
+    if (!Offset.isZero() && Offset < Size)
+      emitInteriorName(GV, "$so", Offset.getQuantity());
 }
 
 void CodeGenModule::setGVProperties(llvm::GlobalValue *GV,
@@ -5846,7 +5985,8 @@ bool CodeGenModule::shouldDropDLLAttribute(const Decl *D,
             !MRD->hasAttr<DLLImportAttr>()) ||
            (SC == llvm::GlobalValue::DLLExportStorageClass &&
             !MRD->hasAttr<DLLExportAttr>())) &&
-          !shouldMapVisibilityToDLLExport(cast<NamedDecl>(MRD)));
+          !shouldMapDefinitionToDLLExport(cast<NamedDecl>(MRD),
+                                          GV->getLinkage()));
 }
 
 /// GetOrCreateLLVMFunction - If the specified mangled name is not in the
@@ -7008,6 +7148,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
   }
 
   maybeSetTrivialComdat(*D, *GV);
+  emitSubobjectNames(*D, GV);
 
   // Emit the initializer function if necessary.
   if (NeedsGlobalCtor || NeedsGlobalDtor)

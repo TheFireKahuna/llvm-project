@@ -9,6 +9,17 @@
 #define UNIQ(name) JOIN(name, __LINE__)
 #define USEMEMFUNC(class, func) void (class::*UNIQ(use)())() { return &class::func; }
 
+/// A dllexport class exports its vtable, its type_info and its type name.
+struct __declspec(dllexport) key {
+  virtual ~key();
+};
+key::~key() {}
+
+// CHECK-DAG: @_ZTV3key = {{.*}}dllexport constant
+// CHECK-DAG: @_ZTI3key = {{.*}}dllexport constant
+// WI-DAG: @_ZTS3key = dso_local dllexport constant
+// PS-DAG: @_ZTS3key = constant
+
 /// A dllimport inline function is the DLL's, and so is its static local.
 __declspec(dllimport) inline int imp() {
   static int x;

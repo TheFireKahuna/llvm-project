@@ -29,6 +29,81 @@ using namespace clang;
 using namespace CodeGen;
 
 
+/// The destructor of the one base class that the base destructor of \p D
+/// does nothing beyond calling, if there is one.
+static const CXXDestructorDecl *
+getForwardedBaseDestructor(CodeGenModule &CGM, const CXXDestructorDecl *D) {
+  // If sanitizing memory to check for use-after-dtor, do not emit as
+  //  an alias, unless this class owns no members.
+  if (CGM.getCodeGenOpts().SanitizeMemoryUseAfterDtor &&
+      !D->getParent()->field_empty())
+    return nullptr;
+
+  // If the destructor doesn't have a trivial body, we have to emit it
+  // separately.
+  if (!D->hasTrivialBody())
+    return nullptr;
+
+  const CXXRecordDecl *Class = D->getParent();
+
+  // We are going to instrument this destructor, so give up even if it is
+  // currently empty.
+  if (Class->mayInsertExtraPadding())
+    return nullptr;
+
+  // If we need to manipulate a VTT parameter, give up.
+  if (Class->getNumVBases()) {
+    // Extra Credit:  passing extra parameters is perfectly safe
+    // in many calling conventions, so only bail out if the ctor's
+    // calling convention is nonstandard.
+    return nullptr;
+  }
+
+  // If any field has a non-trivial destructor, we have to emit the
+  // destructor separately.
+  for (const auto *I : Class->fields())
+    if (I->getType().isDestructedType())
+      return nullptr;
+
+  // Try to find a unique base class with a non-trivial destructor.
+  const CXXRecordDecl *UniqueBase = nullptr;
+  for (const auto &I : Class->bases()) {
+
+    // We're in the base destructor, so skip virtual bases.
+    if (I.isVirtual()) continue;
+
+    // Skip base classes with trivial destructors.
+    const auto *Base = I.getType()->castAsCXXRecordDecl();
+    if (Base->hasTrivialDestructor()) continue;
+
+    // If we've already found a base class with a non-trivial
+    // destructor, give up.
+    if (UniqueBase) return nullptr;
+    UniqueBase = Base;
+  }
+
+  // If we didn't find any bases with a non-trivial destructor, then
+  // the base destructor is actually effectively trivial, which can
+  // happen if it was needlessly user-defined or if there are virtual
+  // bases with non-trivial destructors.
+  if (!UniqueBase)
+    return nullptr;
+
+  // If the base is at a non-zero offset, give up.
+  const ASTRecordLayout &ClassLayout =
+      CGM.getContext().getASTRecordLayout(Class);
+  if (!ClassLayout.getBaseClassOffset(UniqueBase).isZero())
+    return nullptr;
+
+  // Give up if the calling conventions don't match. We could update the call,
+  // but it is probably not worth it.
+  const CXXDestructorDecl *BaseD = UniqueBase->getDestructor();
+  if (BaseD->getType()->castAs<FunctionType>()->getCallConv() !=
+      D->getType()->castAs<FunctionType>()->getCallConv())
+    return nullptr;
+  return BaseD;
+}
+
 /// Try to emit a base destructor as an alias to its primary
 /// base-class destructor.
 bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
@@ -45,72 +120,8 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   if (getTarget().getTriple().isWindowsArm64EC())
     return true;
 
-  // If sanitizing memory to check for use-after-dtor, do not emit as
-  //  an alias, unless this class owns no members.
-  if (getCodeGenOpts().SanitizeMemoryUseAfterDtor &&
-      !D->getParent()->field_empty())
-    return true;
-
-  // If the destructor doesn't have a trivial body, we have to emit it
-  // separately.
-  if (!D->hasTrivialBody())
-    return true;
-
-  const CXXRecordDecl *Class = D->getParent();
-
-  // We are going to instrument this destructor, so give up even if it is
-  // currently empty.
-  if (Class->mayInsertExtraPadding())
-    return true;
-
-  // If we need to manipulate a VTT parameter, give up.
-  if (Class->getNumVBases()) {
-    // Extra Credit:  passing extra parameters is perfectly safe
-    // in many calling conventions, so only bail out if the ctor's
-    // calling convention is nonstandard.
-    return true;
-  }
-
-  // If any field has a non-trivial destructor, we have to emit the
-  // destructor separately.
-  for (const auto *I : Class->fields())
-    if (I->getType().isDestructedType())
-      return true;
-
-  // Try to find a unique base class with a non-trivial destructor.
-  const CXXRecordDecl *UniqueBase = nullptr;
-  for (const auto &I : Class->bases()) {
-
-    // We're in the base destructor, so skip virtual bases.
-    if (I.isVirtual()) continue;
-
-    // Skip base classes with trivial destructors.
-    const auto *Base = I.getType()->castAsCXXRecordDecl();
-    if (Base->hasTrivialDestructor()) continue;
-
-    // If we've already found a base class with a non-trivial
-    // destructor, give up.
-    if (UniqueBase) return true;
-    UniqueBase = Base;
-  }
-
-  // If we didn't find any bases with a non-trivial destructor, then
-  // the base destructor is actually effectively trivial, which can
-  // happen if it was needlessly user-defined or if there are virtual
-  // bases with non-trivial destructors.
-  if (!UniqueBase)
-    return true;
-
-  // If the base is at a non-zero offset, give up.
-  const ASTRecordLayout &ClassLayout = Context.getASTRecordLayout(Class);
-  if (!ClassLayout.getBaseClassOffset(UniqueBase).isZero())
-    return true;
-
-  // Give up if the calling conventions don't match. We could update the call,
-  // but it is probably not worth it.
-  const CXXDestructorDecl *BaseD = UniqueBase->getDestructor();
-  if (BaseD->getType()->castAs<FunctionType>()->getCallConv() !=
-      D->getType()->castAs<FunctionType>()->getCallConv())
+  const CXXDestructorDecl *BaseD = getForwardedBaseDestructor(*this, D);
+  if (!BaseD)
     return true;
 
   GlobalDecl AliasDecl(D, Dtor_Base);
@@ -154,15 +165,39 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
     return false;
   }
 
-  // On Windows Itanium and NT-POSIX a base destructor that another image may
-  // define cannot be aliased, and a body that only calls it would cost every
-  // destruction a jump. The destructor is a weak external instead, which the
-  // linker binds to the base destructor wherever that is defined.
-  if (Aliasee->hasDLLImportStorageClass() &&
-      getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
-    EmitDestructorAsWeakExternal(AliasDecl, Aliasee->getName());
-    return false;
+  // On Windows Itanium and NT-POSIX a base destructor that the unit does not
+  // define may be in any image, cannot be aliased, and a body that only calls
+  // it would cost every destruction a jump. The destructor is a weak external
+  // instead, which the linker binds wherever the base destructor is defined.
+  // Its alternate is the last destructor down the hierarchy that the others
+  // only call and that is defined once, which the declarations decide
+  // whatever the unit has emitted, so that no forward goes through another.
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    const CXXDestructorDecl *Final = nullptr;
+    for (const CXXDestructorDecl *Next = BaseD; Next;
+         Next = getForwardedBaseDestructor(*this, Next)) {
+      llvm::GlobalValue::LinkageTypes L =
+          getFunctionLinkage(GlobalDecl(Next, Dtor_Base));
+      if (!llvm::GlobalValue::isLinkOnceLinkage(L) &&
+          !llvm::GlobalValue::isLocalLinkage(L))
+        Final = Next;
+    }
+    auto *Target = !Final || Final == BaseD
+                       ? Aliasee
+                       : cast<llvm::GlobalValue>(
+                             GetAddrOfGlobal(GlobalDecl(Final, Dtor_Base)));
+    if (Final && (Aliasee->isDeclarationForLinker() ||
+                  Target->isDeclarationForLinker())) {
+      EmitDestructorAsWeakExternal(AliasDecl, Target->getName());
+      return false;
+    }
   }
+
+  // On Windows Itanium and NT-POSIX a weak alias is a weak external whose
+  // alternate is its target, which binds every reference by name and is in no
+  // COMDAT, so it may alias a linker-weak target.
+  bool IsWeakExternal = llvm::GlobalValue::isWeakForLinker(Linkage) &&
+                        getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
 
   // If we have a weak, non-discardable alias (weak, weak_odr), like an extern
   // template instantiation or a dllexported class, avoid forming it on COFF.
@@ -170,7 +205,7 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   // reference from another TU. The other TU must also mark the referenced
   // symbol as weak, which we cannot rely on.
   if (llvm::GlobalValue::isWeakForLinker(Linkage) &&
-      getTriple().isOSBinFormatCOFF()) {
+      getTriple().isOSBinFormatCOFF() && !IsWeakExternal) {
     return true;
   }
 
@@ -184,7 +219,7 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   // different COMDATs in different TUs. Another option would be to
   // output the alias both for weak_odr and linkonce_odr, but that
   // requires explicit comdat support in the IL.
-  if (llvm::GlobalValue::isWeakForLinker(TargetLinkage))
+  if (llvm::GlobalValue::isWeakForLinker(TargetLinkage) && !IsWeakExternal)
     return true;
   // Create the alias with no name.
   auto *Alias = llvm::GlobalAlias::create(AliasValueType, 0, Linkage, "",
@@ -216,6 +251,14 @@ void CodeGenModule::EmitDestructorAsWeakExternal(GlobalDecl GD,
   auto *Fn = cast<llvm::Function>(getAddrOfCXXStructor(
       GD, /*FnInfo=*/nullptr, /*FnType=*/nullptr, /*DontDefer=*/true));
   Fn->setLinkage(llvm::Function::ExternalWeakLinkage);
+  // The weak external is the image's definition of the destructor: it is
+  // exported where a definition would be, and never an import.
+  const auto *D = cast<CXXDestructorDecl>(GD.getDecl());
+  Fn->setDLLStorageClass(
+      D->hasAttr<DLLExportAttr>() ||
+              shouldMapDefinitionToDLLExport(D, getFunctionLinkage(GD))
+          ? llvm::GlobalValue::DLLExportStorageClass
+          : llvm::GlobalValue::DefaultStorageClass);
   setDSOLocal(Fn);
   Fn->addFnAttr("weak-alternate", Alternate);
   // Other units refer to the destructor by this name, used here or not.

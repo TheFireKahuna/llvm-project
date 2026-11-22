@@ -1275,6 +1275,10 @@ Symbol *SymbolTable::addRegular(InputFile *f, StringRef n,
                                   /*IsExternal*/ true, sym, c, isWeak);
   else if (!isWeak)
     reportDuplicate(s, f, c, sectionOffset);
+  // Only an object for Windows Itanium or NT-POSIX states an export in the
+  // name of a definition, X$so<K> or X$ap<K> for an address inside X.
+  if (f->forkObject && n.contains('$'))
+    namedExports.push_back(s);
   return s;
 }
 
@@ -1699,6 +1703,51 @@ void SymbolTable::fixupExports() {
   llvm::sort(exports, [](const Export &a, const Export &b) {
     return a.exportName < b.exportName;
   });
+}
+
+// An export of X that the command line or a module-definition file states
+// names no address inside X, where one that an object's directives state
+// comes with the directives of X$so<K> and X$ap<K>. The interior names the
+// objects define since the last call are exported with each such X: under its
+// export name, as data, and as private as it is.
+void SymbolTable::addNamedExports() {
+  DenseMap<StringRef, SmallVector<Symbol *, 2>> interiors;
+  for (Symbol *s : namedExports) {
+    auto [base, offset] = s->getName().rsplit('$');
+    if (isa<DefinedRegular>(s) && !base.empty() &&
+        (offset.consume_front("so") || offset.consume_front("ap")) &&
+        !offset.empty() && all_of(offset, isDigit))
+      interiors[base].push_back(s);
+  }
+  namedExports.clear();
+  if (interiors.empty())
+    return;
+  for (size_t i = 0, end = exports.size(); i != end; ++i) {
+    if (exports[i].source == ExportSource::Directives ||
+        !exports[i].forwardTo.empty())
+      continue;
+    StringRef base =
+        exports[i].symbolName.empty() ? exports[i].name : exports[i].symbolName;
+    auto it = interiors.find(base);
+    if (it == interiors.end())
+      continue;
+    for (Symbol *s : it->second) {
+      StringRef suffix = s->getName().substr(base.size());
+      auto suffixed = [&](StringRef name) {
+        return name.empty() ? name : saver().save(name + suffix);
+      };
+      Export e;
+      e.name = e.symbolName = s->getName();
+      e.extName = suffixed(exports[i].extName);
+      e.exportAs = suffixed(exports[i].exportAs);
+      e.sym = addGCRoot(e.name);
+      e.noname = exports[i].noname;
+      e.data = true;
+      e.isPrivate = exports[i].isPrivate;
+      e.source = exports[i].source;
+      exports.push_back(e);
+    }
+  }
 }
 
 void SymbolTable::assignExportOrdinals() {

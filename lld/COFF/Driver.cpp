@@ -2885,6 +2885,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
           if (e.source != ExportSource::Directives)
             e.symbolName = symtab.mangleMaybe(e.sym);
         }
+        symtab.addNamedExports();
 
         symtab.resolveAlternateNames();
       });

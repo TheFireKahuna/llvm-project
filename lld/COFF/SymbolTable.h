@@ -210,6 +210,8 @@ public:
   std::vector<Export> exportAsAliases;
   llvm::DenseSet<StringRef> directivesExports;
   bool hadExplicitExports;
+  // Definitions whose names state an export, until addNamedExports reads them.
+  std::vector<Symbol *> namedExports;
 
   Chunk *edataStart = nullptr;
   Chunk *edataEnd = nullptr;
@@ -230,6 +232,7 @@ public:
   // Used for /aligncomm.
   std::map<std::string, int> alignComm;
 
+  void addNamedExports();
   void fixupExports();
   void assignExportOrdinals();
   void parseModuleDefs(StringRef path);

@@ -468,6 +468,12 @@ public:
   std::optional<Visibility>
   getExplicitVisibility(ExplicitVisibilityKind kind) const;
 
+  /// Whether a visibility attribute or pragma on this declaration, its
+  /// template, or a class, function or namespace enclosing it gives it its
+  /// visibility. A type or template argument can make the computed visibility
+  /// explicit, but only by restricting it, as it does under -fvisibility=hidden.
+  bool isVisibilityMarked() const;
+
   /// True if the computed linkage is valid. Used for consistency
   /// checking. Should always return true.
   bool isLinkageValid() const;

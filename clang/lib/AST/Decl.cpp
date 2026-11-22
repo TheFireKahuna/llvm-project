@@ -1335,6 +1335,19 @@ NamedDecl::getExplicitVisibility(ExplicitVisibilityKind kind) const {
   return getExplicitVisibilityAux(this, kind, false);
 }
 
+bool NamedDecl::isVisibilityMarked() const {
+  if (getASTContext().getLangOpts().IgnoreXCOFFVisibility)
+    return false;
+  ExplicitVisibilityKind Kind =
+      usesTypeVisibility(this) ? VisibilityForType : VisibilityForValue;
+  for (const Decl *D = this; !isa<TranslationUnitDecl>(D);
+       D = cast<Decl>(D->getDeclContext()))
+    if (const auto *ND = dyn_cast<NamedDecl>(D);
+        ND && ND->getExplicitVisibility(Kind))
+      return true;
+  return false;
+}
+
 LinkageInfo LinkageComputer::getLVForClosure(const DeclContext *DC,
                                              Decl *ContextDecl,
                                              LVComputationKind computation) {

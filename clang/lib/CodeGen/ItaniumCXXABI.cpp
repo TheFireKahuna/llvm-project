@@ -2126,6 +2126,16 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   if (CGVT.isVTableCopied(RD))
     VTable->setDSOLocal(false);
 
+  // Name the address point of each vtable of the group, in bytes from the
+  // start of the group.
+  uint64_t ComponentSize =
+      CGM.getDataLayout().getTypeAllocSize(CGM.getVTableComponentType());
+  for (size_t I = 0, E = VTLayout.getNumVTables(); I != E; ++I)
+    CGM.emitInteriorName(
+        VTable, "$ap",
+        (VTLayout.getVTableOffset(I) + VTLayout.getAddressPointIndices()[I]) *
+            ComponentSize);
+
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
   // we will emit the typeinfo for the fundamental types. This is the
   // same behaviour as GCC.
@@ -4326,11 +4336,11 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
   llvm::GlobalValue::DLLStorageClassTypes DLLStorageClass =
       llvm::GlobalValue::DefaultStorageClass;
   if (auto RD = Ty->getAsCXXRecordDecl()) {
-    if ((CGM.getTriple().isWindowsItaniumEnvironment() &&
+    if ((CGM.getTriple().isWindowsItaniumABIEnvironment() &&
          RD->hasAttr<DLLExportAttr>()) ||
-        (CGM.shouldMapVisibilityToDLLExport(RD) &&
+        (CGM.shouldMapDefinitionToDLLExport(RD, Linkage) &&
          !llvm::GlobalValue::isLocalLinkage(Linkage) &&
-         llvmVisibility == llvm::GlobalValue::DefaultVisibility))
+         llvmVisibility != llvm::GlobalValue::HiddenVisibility))
       DLLStorageClass = llvm::GlobalValue::DLLExportStorageClass;
   }
   llvmVisibility = getRTTIVisibility(llvmVisibility, DLLStorageClass);
@@ -4754,7 +4764,9 @@ void ItaniumCXXABI::EmitFundamentalRTTIDescriptors(const CXXRecordDecl *RD) {
       getContext().Char32Ty
   };
   llvm::GlobalValue::DLLStorageClassTypes DLLStorageClass =
-      RD->hasAttr<DLLExportAttr>() || CGM.shouldMapVisibilityToDLLExport(RD)
+      RD->hasAttr<DLLExportAttr>() ||
+              CGM.shouldMapDefinitionToDLLExport(
+                  RD, llvm::GlobalValue::ExternalLinkage)
           ? llvm::GlobalValue::DLLExportStorageClass
           : llvm::GlobalValue::DefaultStorageClass;
   llvm::GlobalValue::VisibilityTypes Visibility = getRTTIVisibility(

@@ -215,7 +215,10 @@ static bool canBeUnquotedInDirective(StringRef Name) {
 
 void llvm::emitLinkerFlagsForGlobalCOFF(raw_ostream &OS, const GlobalValue *GV,
                                         const Triple &TT, Mangler &Mangler) {
-  if (GV->hasDLLExportStorageClass() && !GV->isDeclaration()) {
+  // A function declaration that names its alternate is a weak definition.
+  const auto *F = dyn_cast<Function>(GV);
+  if (GV->hasDLLExportStorageClass() &&
+      (!GV->isDeclaration() || (F && F->hasFnAttribute("weak-alternate")))) {
 
     if (TT.isWindowsMSVCEnvironment() || TT.isUEFI())
       OS << " /EXPORT:";
