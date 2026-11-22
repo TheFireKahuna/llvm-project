@@ -26,8 +26,11 @@
 // the "base definition" of the function (the one we want to check whether it has been
 // overridden) to be defined using the OVERRIDABLE_FUNCTION macro.
 //
-// This currently works with Mach-O files (used on Darwin) and with ELF files (used on Linux
-// and others). On platforms where we know how to implement this detection, the macro
+// This currently works with Mach-O files (used on Darwin), with ELF files (used on Linux
+// and others), and with COFF files on the targets that have the overridable_default
+// attribute (Windows Itanium and NT-POSIX), whose linker gives `f` the program's address in
+// every image but a local name the address of what it names, as ELF does. On platforms
+// where we know how to implement this detection, the macro
 // _LIBCPP_CAN_DETECT_OVERRIDDEN_FUNCTION is defined to 1, and it is defined to 0 on
 // other platforms. The OVERRIDABLE_FUNCTION macro is defined to perform a normal
 // function definition on unsupported platforms so that it can be used to define functions
@@ -59,7 +62,8 @@
 // want to be defining special sections inside user's executables which use our headers.
 //
 
-#if defined(_LIBCPP_OBJECT_FORMAT_MACHO) || (defined(_LIBCPP_OBJECT_FORMAT_ELF) && !defined(__NVPTX__))
+#if defined(_LIBCPP_OBJECT_FORMAT_MACHO) || (defined(_LIBCPP_OBJECT_FORMAT_ELF) && !defined(__NVPTX__)) ||           \
+    __has_attribute(__overridable_default__)
 
 #  define _LIBCPP_CAN_DETECT_OVERRIDDEN_FUNCTION 1
 
@@ -160,5 +164,18 @@ _LIBCPP_END_NAMESPACE_STD
 #  define OVERRIDABLE_FUNCTION [[gnu::weak]]
 
 #endif // defined(_LIBCPP_OBJECT_FORMAT_MACHO) || (defined(_LIBCPP_OBJECT_FORMAT_ELF) && !defined(__NVPTX__))
+
+// On Windows Itanium and NT-POSIX a program replaces an overridable default for every image through the table its
+// executable carries, in which each default has the slot its overridable_default attribute states, and then the
+// slot of the default it is specified as calling and whether that one takes its arguments without the second.
+// Slots are never reused. Where the table forwards a default to a replacement of the one it calls, the default
+// is not run, so a default that is run runs the other's body rather than calling it again through its check.
+#if __has_attribute(__overridable_default__)
+#  define _LIBCPP_OVERRIDABLE_SLOT(...) __attribute__((__overridable_default__(__VA_ARGS__)))
+#  define _LIBCPP_OVERRIDABLE_FORWARD(__call, __body) __body
+#else
+#  define _LIBCPP_OVERRIDABLE_SLOT(...)
+#  define _LIBCPP_OVERRIDABLE_FORWARD(__call, __body) __call
+#endif
 
 #endif // _LIBCPP_SRC_INCLUDE_OVERRIDABLE_FUNCTION_H

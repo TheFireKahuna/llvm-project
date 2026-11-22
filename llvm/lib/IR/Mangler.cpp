@@ -335,6 +335,24 @@ void llvm::emitLinkFactsForGlobalCOFF(
          {F->hasMetadata("kcfi_vfn_type") ? COFF::LinkFactVfnType
                                           : COFF::LinkFactNoSecondWord});
 
+  // A function that a program replaces for every image says so under each of
+  // its names, as does a definition that replaces one. A default's own name
+  // states its slot. Any other weak definition that another image may see is
+  // replaced by its name.
+  auto *Fn = dyn_cast_or_null<Function>(GV->getAliaseeObject());
+  if (const MDNode *Slots = Fn ? Fn->getMetadata("overridable") : nullptr) {
+    SmallVector<LinkFactOperand, 3> Operands;
+    if (Fn == GV)
+      for (const MDOperand &Slot : Slots->operands())
+        Operands.push_back(
+            mdconst::extract<ConstantInt>(Slot)->getZExtValue());
+    Fact(COFF::LinkFactVisibility, {State});
+    Fact(COFF::LinkFactOverridable, Operands);
+  } else if (Fn == GV && Fn->hasWeakAnyLinkage() &&
+             State == COFF::LinkFactDefault) {
+    Fact(COFF::LinkFactOverridableByName, {});
+  }
+
   // A thread-local variable that has a record states its guard. One that
   // lost its guard states none, which fails a link that needs the record.
   // Images share a vague one by its record, so the record is stated before

@@ -2825,7 +2825,7 @@ Error object::readCOFFLinkImages(StringRef Payload,
         E.Size = Data.getULEB128(C);
         uint64_t Log2Align = Data.getULEB128(C);
         E.CheckSum = Flags & COFF::LinkImageEntityCheckSum ? Data.getU32(C) : 0;
-        if (C && (Flags > 0xFF || Log2Align > 13 ||
+        if (C && (Flags > 0x1FF || Log2Align > 13 ||
                   (Flags >> COFF::LinkImageEntityInitShift & 7) >
                       COFF::LinkFactTLSDynamic))
           return createStringError(object_error::parse_failed,
@@ -2883,5 +2883,60 @@ void object::writeCOFFLinkImages(raw_ostream &OS,
     encodeULEB128(COFF::LinkImageKept, OS);
     encodeULEB128(Kept.size(), OS);
     OS << Kept;
+  }
+}
+
+Error object::readCOFFLinkOverrides(StringRef Payload,
+                                    COFFLinkOverrides &Overrides) {
+  DataExtractor Data(Payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor C(0);
+  auto Bytes = [&] { return Data.getBytes(C, Data.getULEB128(C)); };
+  Overrides.PrefixKey = Bytes();
+  uint64_t Next = 0;
+  for (uint64_t N = Data.getULEB128(C); C && N; --N) {
+    COFFLinkOverrides::Default D;
+    D.Name = Bytes();
+    uint64_t Slot = Data.getULEB128(C), Forward = Data.getULEB128(C);
+    uint64_t Flags = Data.getULEB128(C);
+    if (Flags & 4)
+      D.TypeId = Data.getU32(C);
+    if (!C)
+      break;
+    if (D.Name.empty() || Slot < Next || Slot > COFF::LinkFactMaxOverrideSlot ||
+        Forward > COFF::LinkFactMaxOverrideSlot + 1 || Forward == Slot + 1 ||
+        Flags > 6 || (Flags & 3) == 3 || (!Forward && (Flags & 3)))
+      return createStringError(object_error::parse_failed,
+                               "overridable default " + D.Name +
+                                   " is out of range");
+    D.Forward = int(Forward) - 1;
+    D.Drops = Flags & 3;
+    Overrides.Slots[Slot] = D;
+    Next = Slot + 1;
+  }
+  if (C && !Data.eof(C))
+    return createStringError(object_error::parse_failed,
+                             "bytes after the last overridable default");
+  return C.takeError();
+}
+
+void object::writeCOFFLinkOverrides(raw_ostream &OS,
+                                    const COFFLinkOverrides &Overrides) {
+  auto Bytes = [&](StringRef Bytes) {
+    encodeULEB128(Bytes.size(), OS);
+    OS << Bytes;
+  };
+  Bytes(Overrides.PrefixKey);
+  encodeULEB128(count_if(Overrides.Slots,
+                         [](const auto &D) { return !D.Name.empty(); }),
+                OS);
+  for (const auto &[Slot, D] : enumerate(Overrides.Slots)) {
+    if (D.Name.empty())
+      continue;
+    Bytes(D.Name);
+    encodeULEB128(Slot, OS);
+    encodeULEB128(D.Forward + 1, OS);
+    encodeULEB128(D.Drops | D.TypeId.has_value() << 2, OS);
+    if (D.TypeId)
+      support::endian::write(OS, *D.TypeId, llvm::endianness::little);
   }
 }

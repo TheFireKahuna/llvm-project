@@ -20,8 +20,9 @@
 // REQUIRES: has-unix-headers
 // UNSUPPORTED: c++03
 
-// We only know how to diagnose this on platforms that use the ELF or Mach-O object file formats.
-// XFAIL: target={{.+}}-windows-{{.+}}
+// We only know how to diagnose this on platforms that use the ELF or Mach-O object file formats,
+// and on Windows Itanium and NT-POSIX.
+// XFAIL: target={{.+}}-windows-{{.+}} && !target={{.+}}-windows-{{itanium|ntposix}}
 
 // TODO: We currently don't have a way to express that the built library was
 //       compiled with -fno-exceptions, so if the library was built with support

@@ -1576,7 +1576,7 @@ struct COFFLinkImage {
   struct Entity {
     StringRef Name;
     /// COFF::LinkImageEntityFlags.
-    uint8_t Flags;
+    uint16_t Flags;
     uint8_t Log2Align;
     uint32_t CheckSum;
     uint64_t Size;
@@ -1597,6 +1597,35 @@ LLVM_ABI Error readCOFFLinkImages(StringRef Payload,
 /// Writes the payload of an Images group.
 LLVM_ABI void writeCOFFLinkImages(raw_ostream &OS,
                                   ArrayRef<COFFLinkImage> Images);
+
+/// The overridable defaults that an Overrides group of link records states,
+/// by their slots in the override table.
+struct COFFLinkOverrides {
+  struct Default {
+    StringRef Name;
+    /// The slot of the default that this one is specified as calling, or -1.
+    int8_t Forward = -1;
+    /// Whether that one takes this one's arguments without the second: 1
+    /// where the second is the last, 2 where others follow it, which move.
+    uint8_t Drops = 0;
+    /// The type ID that the default's type prefix holds, as stored there.
+    std::optional<uint32_t> TypeId;
+  };
+  /// The value of the type prefix key of the images that define the
+  /// defaults, or nothing where they have no type prefix.
+  StringRef PrefixKey;
+  /// A default with no name is none.
+  Default Slots[COFF::LinkFactMaxOverrideSlot + 1];
+};
+
+/// Reads the payload of an Overrides group. A default that is not well
+/// formed is the error.
+LLVM_ABI Error readCOFFLinkOverrides(StringRef Payload,
+                                     COFFLinkOverrides &Overrides);
+
+/// Writes the payload of an Overrides group.
+LLVM_ABI void writeCOFFLinkOverrides(raw_ostream &OS,
+                                     const COFFLinkOverrides &Overrides);
 
 } // end namespace object
 

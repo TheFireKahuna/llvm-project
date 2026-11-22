@@ -3399,6 +3399,8 @@ def err_musttail_no_return : Error<
 
 def err_nsobject_attribute : Error<
   "'NSObject' attribute is for pointer types only">;
+def err_overridable_default_forwards_to_itself : Error<
+  "an overridable default cannot forward to its own slot">;
 def err_attributes_are_not_compatible : Error<
   "%0 and %1%select{ attributes|}2 are not compatible">;
 def err_attribute_invalid_argument : Error<

@@ -360,6 +360,26 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols) {
                   e.function |= tag == LinkFactAddressSignificant;
                 }
                 return Error::success();
+              case LinkFactOverridable:
+              case LinkFactOverridableByName: {
+                // A default states its slot, then the slot it forwards to,
+                // then one where the forward drops an argument.
+                DataExtractor data(operands, /*IsLittleEndian=*/true);
+                DataExtractor::Cursor c(0);
+                uint64_t n = 0, slots[3];
+                while (c && !data.eof(c) && n != 3)
+                  slots[n++] = data.getULEB128(c);
+                if (!c)
+                  return c.takeError();
+                if (!data.eof(c) || (n && tag == LinkFactOverridableByName) ||
+                    (n && slots[0] > LinkFactMaxOverrideSlot) ||
+                    (n > 1 && (slots[1] > LinkFactMaxOverrideSlot ||
+                               slots[1] == slots[0])) ||
+                    (n > 2 && slots[2] != 1))
+                  return createStringError("overridable default of symbol " +
+                                           Twine(index) + " is out of range");
+                return Error::success();
+              }
               default:
                 if (tag & LinkRecordCritical)
                   return createStringError("unknown critical tag " +

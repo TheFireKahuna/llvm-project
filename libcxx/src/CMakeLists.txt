@@ -291,6 +291,12 @@ set_target_properties(cxx_static
 )
 cxx_add_common_build_flags(cxx_static)
 
+# On Windows Itanium and NT-POSIX the static library's operators are its image's
+# own: they replace no other image's and are offered to none.
+if (LIBCXX_ENABLE_NEW_DELETE_DEFINITIONS AND (WIN32_ITANIUM OR WIN32_NTPOSIX))
+  target_add_compile_flags_if_supported(cxx_static PRIVATE -fvisibility-global-new-delete=force-hidden)
+endif()
+
 if (LIBCXX_HERMETIC_STATIC_LIBRARY)
   # If the hermetic library doesn't define the operator new/delete functions
   # then its code shouldn't declare them with hidden visibility.  They might

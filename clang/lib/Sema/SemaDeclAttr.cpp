@@ -65,6 +65,7 @@
 #include "llvm/ADT/APSInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Demangle/Demangle.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/MC/MCSectionMachO.h"
@@ -3869,6 +3870,86 @@ static void handleMinVectorWidthAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   }
 
   D->addAttr(::new (S.Context) MinVectorWidthAttr(S.Context, AL, VecWidth));
+}
+
+// Diagnoses From, an overridable default whose attribute A forwards it to
+// the default To, where To does not take From's arguments, without the
+// second where Drops: the default of a slot other than the one meant.
+static void checkOverridableForward(Sema &S, const AttributeCommonInfo &A,
+                                    SourceLocation Loc,
+                                    const FunctionDecl *From,
+                                    const FunctionDecl *To, bool Drops) {
+  for (unsigned I = 0, E = To->getNumParams(); I != E; ++I) {
+    unsigned J = I + (Drops && I);
+    if (J >= From->getNumParams()) {
+      S.Diag(Loc, diag::err_attribute_bounds_for_function)
+          << A << J + 1 << From << From->getNumParams();
+      return;
+    }
+    QualType T1 = To->getParamDecl(I)->getType();
+    QualType T2 = From->getParamDecl(J)->getType();
+    if (!S.Context.hasSameType(T1, T2)) {
+      S.Diag(Loc, diag::err_attribute_parameter_types)
+          << A << J + 1 << From << T2 << I + 1 << To << T1;
+      return;
+    }
+  }
+}
+
+static void handleOverridableDefaultAttr(Sema &S, Decl *D,
+                                         const ParsedAttr &AL) {
+  // The arguments are a slot, the slot of the default that this one is
+  // specified as calling, and whether that one takes this one's arguments
+  // without the second.
+  uint32_t Args[3] = {0, 0, 0};
+  for (unsigned I = 0, E = AL.getNumArgs(); I != E; ++I) {
+    Expr *Arg = AL.getArgAsExpr(I);
+    uint32_t Max = I == 2 ? 1 : llvm::COFF::LinkFactMaxOverrideSlot;
+    if (!S.checkUInt32Argument(AL, Arg, Args[I], I + 1))
+      return;
+    if (Args[I] > Max) {
+      S.Diag(Arg->getExprLoc(), diag::err_attribute_argument_out_of_range)
+          << AL << 0 << Max;
+      return;
+    }
+  }
+  if (AL.getNumArgs() > 1 && Args[1] == Args[0]) {
+    S.Diag(AL.getArgAsExpr(1)->getExprLoc(),
+           diag::err_overridable_default_forwards_to_itself);
+    return;
+  }
+  // The linker sees no types, so a forward is checked here against each
+  // default of the other slot that the unit declares.
+  const auto *FD = cast<FunctionDecl>(D);
+  for (const Decl *Other : S.Context.getTranslationUnitDecl()->decls()) {
+    const auto *OF = dyn_cast<FunctionDecl>(Other);
+    const auto *OA = OF && OF == OF->getMostRecentDecl()
+                         ? OF->getAttr<OverridableDefaultAttr>()
+                         : nullptr;
+    if (!OA)
+      continue;
+    if (AL.getNumArgs() > 1 && OA->getSlot() == Args[1])
+      checkOverridableForward(S, AL, AL.getLoc(), FD, OF, Args[2]);
+    if (OA->getForward() == int(Args[0]))
+      checkOverridableForward(S, *OA, AL.getLoc(), OF, FD, OA->getDrops());
+  }
+  auto *New = ::new (S.Context) OverridableDefaultAttr(
+      S.Context, AL, Args[0], AL.getNumArgs() > 1 ? int(Args[1]) : -1,
+      Args[2]);
+  if (const auto *Old = D->getAttr<OverridableDefaultAttr>())
+    S.checkOverridableDefaultAttr(*Old, *New);
+  else
+    D->addAttr(New);
+}
+
+void Sema::checkOverridableDefaultAttr(const OverridableDefaultAttr &Old,
+                                       const OverridableDefaultAttr &New) {
+  if (Old.getSlot() == New.getSlot() && Old.getForward() == New.getForward() &&
+      Old.getDrops() == New.getDrops())
+    return;
+  Diag(New.getLocation(), diag::err_attributes_are_not_compatible)
+      << &New << &Old << /*attributes*/ 0;
+  Diag(Old.getLocation(), diag::note_conflicting_attribute);
 }
 
 static void handleCleanupAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
@@ -8147,6 +8228,9 @@ ProcessDeclAttribute(Sema &S, Decl *D, const ParsedAttr &AL,
     break;
   case ParsedAttr::AT_MinVectorWidth:
     handleMinVectorWidthAttr(S, D, AL);
+    break;
+  case ParsedAttr::AT_OverridableDefault:
+    handleOverridableDefaultAttr(S, D, AL);
     break;
   case ParsedAttr::AT_Unavailable:
     handleAttrWithMessage<UnavailableAttr>(S, D, AL);

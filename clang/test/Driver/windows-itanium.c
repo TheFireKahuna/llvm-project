@@ -6,7 +6,8 @@
 // DEFINE: %{cl-x64} = %clang_cl -### --target=x86_64-unknown-windows-itanium /c
 // DEFINE: %{cl-a64} = %clang_cl -### --target=aarch64-unknown-windows-itanium /c
 // DEFINE: %{itanium} = --implicit-check-not=-fno-use-cxa-atexit \
-// DEFINE:   --implicit-check-not=-fvisibility-global-new-delete --implicit-check-not=-fno-dllexport-inlines
+// DEFINE:   --implicit-check-not=-fvisibility-global-new-delete --implicit-check-not=-fno-dllexport-inlines \
+// DEFINE:   --implicit-check-not=semantic-interposition
 
 // The defaults. The AArch64 hardware floor is a feature set, which -march=
 // only tunes above.
@@ -83,6 +84,15 @@
 // ACCEPT-DAG: "-cfguard-no-checks"
 // ACCEPT-DAG: "-fsanitize-cfi-icall-generalize-pointers"
 // ACCEPT-DAG: "-fsanitize-kcfi-hash=xxHash64"
+
+// -fsemantic-interposition reaches the compiler, as on ELF, and the last of it
+// and -fno-semantic-interposition wins.
+// RUN: %{a64} -fno-semantic-interposition -fsemantic-interposition 2>&1 \
+// RUN:   | FileCheck --check-prefix=INTERPOSE %s
+// RUN: %{x64} -fsemantic-interposition -fno-semantic-interposition 2>&1 \
+// RUN:   | FileCheck --check-prefix=CC1 %s --implicit-check-not=semantic-interposition \
+// RUN:   --implicit-check-not="argument unused"
+// INTERPOSE: "-fsemantic-interposition"
 
 // Separate sections and unwind tables are not optional, so the options that
 // would turn them off are ignored, and -ffreestanding keeps the tables.

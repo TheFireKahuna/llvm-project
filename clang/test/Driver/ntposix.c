@@ -29,11 +29,13 @@
 // CC1-DAG:     "-mdefault-visibility-export-mapping=explicit"
 // CC1-A64-DAG: "-target-feature" "+lse2"
 
-// A user's frame-pointer options still apply; Control Flow Guard's checks are
-// not yet a default; build systems written for POSIX pass -fPIC.
-// RUN: %{x64} -mno-omit-leaf-frame-pointer -mguard=cf -fPIC 2>&1 | FileCheck --check-prefix=USER %s \
-// RUN:   --implicit-check-not=error:
+// A user's frame-pointer options and -fsemantic-interposition still apply;
+// Control Flow Guard's checks are not yet a default; build systems written for
+// POSIX pass -fPIC.
+// RUN: %{x64} -mno-omit-leaf-frame-pointer -mguard=cf -fPIC -fsemantic-interposition 2>&1 \
+// RUN:   | FileCheck --check-prefix=USER %s --implicit-check-not=error:
 // USER-DAG: "-mframe-pointer=all"
+// USER-DAG: "-fsemantic-interposition"
 // USER-DAG: "-cfguard"
 // USER-DAG: "-pic-level" "2"
 

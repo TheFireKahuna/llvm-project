@@ -2566,6 +2566,8 @@ constexpr EnumStringDef<COFF::LinkFactTag> LinkFactTagDefs[] = {
     {{"Descriptor"}, COFF::LinkFactDescriptor},
     {{"AddressSignificant"}, COFF::LinkFactAddressSignificant},
     {{"TlsRecord"}, COFF::LinkFactTlsRecord},
+    {{"Overridable"}, COFF::LinkFactOverridable},
+    {{"OverridableByName"}, COFF::LinkFactOverridableByName},
 };
 constexpr auto LinkFactTags = BUILD_ENUM_STRINGS(LinkFactTagDefs);
 
@@ -2700,7 +2702,9 @@ void COFFDumper::printCOFFLinkRecords() {
                     W.printString("Name", E.Name);
                     W.printString("Visibility",
                                   LinkVisibilityNames[E.Flags % 4]);
-                    if (E.Flags & COFF::LinkImageEntityFunction)
+                    if (E.Flags & COFF::LinkImageEntityOverride)
+                      W.printString("Kind", "Override");
+                    else if (E.Flags & COFF::LinkImageEntityFunction)
                       W.printString("Kind", "Function");
                     else
                       W.printNumber("Init",
@@ -2713,6 +2717,27 @@ void COFFDumper::printCOFFLinkRecords() {
                     if (E.Flags & COFF::LinkImageEntityCheckSum)
                       W.printHex("CheckSum", E.CheckSum);
                   }
+                }
+                return Error::success();
+              }
+              if (Kind == COFF::LinkRecordOverrides) {
+                COFFLinkOverrides Overrides;
+                if (Error E = readCOFFLinkOverrides(Payload, Overrides))
+                  return E;
+                W.printString("PrefixKey", Overrides.PrefixKey);
+                for (const auto &[Slot, D] : enumerate(Overrides.Slots)) {
+                  if (D.Name.empty())
+                    continue;
+                  DictScope S(W, "Default");
+                  W.printString("Name", D.Name);
+                  W.printNumber("Slot", Slot);
+                  if (D.Forward >= 0)
+                    W.printNumber(D.Drops == 2   ? "ForwardDropsMiddle"
+                                  : D.Drops == 1 ? "ForwardDropsLast"
+                                                 : "Forward",
+                                  D.Forward);
+                  if (D.TypeId)
+                    W.printHex("TypeId", *D.TypeId);
                 }
                 return Error::success();
               }

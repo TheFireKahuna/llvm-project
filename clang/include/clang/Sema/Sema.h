@@ -5213,6 +5213,11 @@ public:
                                           const AttributeCommonInfo &CI,
                                           const IdentifierInfo *Ident);
   MinSizeAttr *mergeMinSizeAttr(Decl *D, const AttributeCommonInfo &CI);
+
+  /// Diagnoses \p New where it does not state the slot and the forwarding
+  /// that \p Old, an attribute of the same function, states.
+  void checkOverridableDefaultAttr(const OverridableDefaultAttr &Old,
+                                   const OverridableDefaultAttr &New);
   OptimizeNoneAttr *mergeOptimizeNoneAttr(Decl *D,
                                           const AttributeCommonInfo &CI);
   InternalLinkageAttr *mergeInternalLinkageAttr(Decl *D, const ParsedAttr &AL);

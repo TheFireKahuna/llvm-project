@@ -1235,7 +1235,8 @@ enum LinkFactTag : uint64_t {
   /// of a process share, each image binding the one that an image it imports
   /// from keeps, of an alias of one and of what shares its COMDAT. So does a
   /// weak reference whose visibility is not default, which no other image's
-  /// definition satisfies.
+  /// definition satisfies, and each name of a function that states
+  /// LinkFactOverridable.
   LinkFactVisibility = 1,
   /// The symbol is a variable that is a name of a vague entity. The operand
   /// is how it is initialized, a LinkFactInitKind.
@@ -1251,7 +1252,20 @@ enum LinkFactTag : uint64_t {
   /// The operand is the symbol of the thread-local byte that is not zero once
   /// the variable is initialized in a thread. Critical.
   LinkFactTlsRecord = 7,
+  /// The function is an overridable default, which a program replaces for
+  /// every image, or a replacement of one. A default states its slot in the
+  /// executable's override table, then, where it is specified as calling
+  /// another default, that one's slot, then where that one takes its
+  /// arguments without the second, 1 where the second is the last and 2
+  /// where others follow it. A replacement states no operand. Critical.
+  LinkFactOverridable = 9,
+  /// The function is a weak definition with no slot, which a definition
+  /// elsewhere in the program replaces by its name. Critical.
+  LinkFactOverridableByName = 11,
 };
+
+/// The highest slot of the override table.
+enum : uint64_t { LinkFactMaxOverrideSlot = 31 };
 
 /// The states are in the order of constraint: the copies of one name have
 /// the greatest state that one of them states.
@@ -1367,7 +1381,60 @@ enum LinkImageEntityFlags : uint64_t {
   /// A constant that an image may read in its own copy, whose bytes the
   /// checksum that follows the entity tells.
   LinkImageEntityCheckSum = 0x80,
+  /// A function with which the image replaces an overridable default, which
+  /// it exports as the default's name after LinkOverrideOfferPrefix. The
+  /// executable of a program takes the first that the images it loads offer,
+  /// in breadth-first order.
+  LinkImageEntityOverride = 0x100,
 };
+
+static const char LinkOverrideOfferPrefix[] = "__ovr_offer$";
+/// The name, after this, of an overridable default's entry for the calls and
+/// jumps of its own image: it checks the default's word, enters the default
+/// past its own check where the word holds the default and otherwise jumps
+/// through the word.
+static const char LinkOverrideOwnPrefix[] = "__ovr_own$";
+/// The name, after this, of a DLL's second import of an overridable default
+/// whose address it takes, through which its calls of the default go.
+static const char LinkOverrideCallPrefix[] = "__ovr_call$";
+
+/// The payload of an Overrides group is the overridable defaults that have a
+/// slot and that the DLL or an image loaded with it defines: the value of
+/// the type prefix key of the images that define them, which is empty where
+/// they have no type prefix, a count and that many defaults in the order of
+/// their slots. Each is its name, its slot, one more than the slot of the
+/// default that it is specified as calling, or zero, its flags, whose low two
+/// bits are 1 where that one takes its arguments without the second, which
+/// is the last, and 2 where others follow the second, and whose 4 is set
+/// where the default has a type prefix, and then, with 4, the 32-bit type ID
+/// that the prefix holds. A name is a size and that many bytes.
+
+/// A program that replaces an overridable default has an override table in
+/// the header page of its executable, which the link of the executable
+/// writes and the images of the process read once. A slot is two 32-bit
+/// words: OverrideTableSlotTag exclusive-or the slot's index, and the RVA of
+/// what stands for the slot's default, or zeros where the default stands. The
+/// first eight slots are at OverrideTableOffset; then come the header, which
+/// is OverrideTableMagic, OverrideTableFormat and the number of slots as
+/// 16-bit words, the RVA of the anchor and twelve bytes of zeros; and then
+/// the other slots.
+///
+/// The anchor is the section OverrideAnchorSection, which the image names
+/// __ovr_anchor: the magic, the format and the number of slots again, a mask
+/// of the slots that a definition replaces rather than one that the slot's
+/// default forwards to, the RVA of the image's table of offers, the number
+/// of defaults it replaces by their names and a word of zeros, and then the
+/// address of what stands for each slot's default, or null.
+enum : uint32_t {
+  OverrideTableMagic = 0x7B3AC2D5,
+  OverrideTableFormat = 1,
+  OverrideTableSlotTag = 0xC5E1A7F3,
+  OverrideTableOffset = 0x40,
+  OverrideTableHeaderOffset = 0x80,
+  OverrideTableHeaderSize = 0x18,
+  OverrideAnchorHeaderSize = 0x18,
+};
+static const char OverrideAnchorSection[] = ".ovra";
 
 /// Returns whether a definition named \p Name, in a COMDAT of its own, may be
 /// a vague entity. A name of the Microsoft C++ ABI or one that starts with a

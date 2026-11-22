@@ -502,6 +502,11 @@ def TargetHasDLLImportExport : TargetSpec {
 def TargetItaniumCXXABI : TargetSpec {
   let CustomCode = [{ Target.getCXXABI().isItaniumFamily() }];
 }
+def TargetWindowsItaniumOrNTPOSIX : TargetArch<["x86_64", "aarch64"]> {
+  let CustomCode = [{
+    Target.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()
+  }];
+}
 
 def TargetMicrosoftCXXABI : TargetArch<["x86", "x86_64", "arm", "thumb", "aarch64"]> {
   let CustomCode = [{ Target.getCXXABI().isMicrosoft() }];
@@ -3839,6 +3844,15 @@ def MinVectorWidth : InheritableAttr {
   let Args = [UnsignedArgument<"VectorWidth">];
   let Subjects = SubjectList<[Function], ErrorDiag>;
   let Documentation = [MinVectorWidthDocs];
+}
+
+def OverridableDefault : InheritableAttr,
+                         TargetSpecificAttr<TargetWindowsItaniumOrNTPOSIX> {
+  let Spellings = [Clang<"overridable_default">];
+  let Args = [UnsignedArgument<"Slot">, DefaultIntArgument<"Forward", -1>,
+              DefaultBoolArgument<"Drops", 0>];
+  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Documentation = [OverridableDefaultDocs];
 }
 
 def TransparentUnion : InheritableAttr {

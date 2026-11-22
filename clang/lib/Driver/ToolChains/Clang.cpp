@@ -6068,6 +6068,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
       else if (!SupportsLocalAlias)
         CmdArgs.push_back("-fhalf-no-semantic-interposition");
     }
+  } else if (Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+             Args.hasFlag(options::OPT_fsemantic_interposition,
+                          options::OPT_fno_semantic_interposition, false)) {
+    // Windows Itanium and NT-POSIX bind a function in its own image unless
+    // asked not to.
+    CmdArgs.push_back("-fsemantic-interposition");
   }
 
   {

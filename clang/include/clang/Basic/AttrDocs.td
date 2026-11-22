@@ -3545,6 +3545,39 @@ non-FMV. The resolver and the function clones are given internal linkage.
 }];
 }
 
+def OverridableDefaultDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+On Windows Itanium and NT-POSIX, ``__attribute__((overridable_default(N)))``
+marks a function that a runtime DLL defines as the default of a function that
+a program may replace for every image, such as a replaceable ``operator new``.
+``N`` is the default's slot in the table that the link of an executable with a
+replacement writes into the executable's header page, from 0 to 31. The
+compiler states the slot in the object of the definition, for the link of the
+image that defines the default and for the import library which that link
+writes.
+
+.. code-block:: c++
+
+  [[gnu::weak, clang::overridable_default(0)]] void *operator new(size_t n) {
+    // The default, which runs unless the program replaces it.
+  }
+
+A default that is specified as calling another, as the default ``operator
+new[]`` calls ``operator new``, names that default's slot as a second
+argument, so that a program which replaces that one alone replaces both. A
+third argument, true, says that the other default takes this one's arguments
+without the second, as the default aligned sized ``operator delete`` calls the
+aligned unsized one.
+
+.. code-block:: c++
+
+  [[gnu::weak, clang::overridable_default(1, 0)]] void *operator new[](size_t n) {
+    return ::operator new(n);
+  }
+}];
+}
+
 def MinVectorWidthDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{

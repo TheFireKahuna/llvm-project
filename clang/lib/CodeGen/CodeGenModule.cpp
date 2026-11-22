@@ -2408,6 +2408,13 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
        (isa<llvm::GlobalVariable>(GV) && !GV->isThreadLocal() &&
         !CGOpts.DirectAccessExternalData)))
     return false;
+  // Under -fsemantic-interposition another image's definition may preempt a
+  // function that the module defines too, as on ELF, unless every definition
+  // is the same one.
+  if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
+      CGM.getLangOpts().SemanticInterposition && isa<llvm::Function>(GV) &&
+      GV->hasExternalLinkage())
+    return false;
 
   // On COFF, don't mark 'extern_weak' symbols as DSO local. If these symbols
   // remain unresolved in the link, they can be resolved to zero, which is
@@ -2740,9 +2747,11 @@ void CodeGenModule::setGVPropertiesAux(llvm::GlobalValue *GV,
       getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     GV->setDSOLocal(false);
   // On Windows Itanium and NT-POSIX a function or variable that is declared
-  // dllexport is defined in this image.
+  // dllexport is defined in this image, which binds it unless another may
+  // preempt a function.
   if (isa_and_nonnull<DeclaratorDecl>(D) && D->hasAttr<DLLExportAttr>() &&
       !GV->hasExternalWeakLinkage() &&
+      !(isa<llvm::Function>(GV) && getLangOpts().SemanticInterposition) &&
       getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     GV->setDSOLocal(true);
   GV->setPartition(CodeGenOpts.SymbolPartition);
@@ -7581,6 +7590,38 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
 
   if (!tryEmitCUDADeviceInvalidFunctionBody(GD, Fn))
     CodeGenFunction(*this).GenerateCode(GD, Fn, FI);
+
+  // A definition of a function that a program replaces for every image says
+  // that it is one, and a default says its slot and its forwarding. An asm
+  // label names a function that no other image calls by this name, and an
+  // allocation function that takes a hint is not replaceable.
+  if (const auto *OD = D->getAttr<OverridableDefaultAttr>();
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !D->hasAttr<AsmLabelAttr>() &&
+      (OD ||
+       (D->isReplaceableGlobalAllocationFunction() &&
+        llvm::none_of(D->parameters(),
+                      [](const ParmVarDecl *P) {
+                        QualType T = P->getType();
+                        return T->isEnumeralType() && !T->isAlignValT();
+                      })) ||
+       (D->isInStdNamespace() && D->getIdentifier() &&
+        D->getName() == "__libcpp_verbose_abort"))) {
+    SmallVector<llvm::Metadata *, 3> Slots;
+    auto Add = [&](unsigned N) {
+      Slots.push_back(
+          llvm::ConstantAsMetadata::get(llvm::ConstantInt::get(Int32Ty, N)));
+    };
+    if (OD) {
+      Add(OD->getSlot());
+      if (OD->getForward() >= 0)
+        Add(OD->getForward());
+      // 1 where the second argument is the last, 2 where others follow it.
+      if (OD->getDrops())
+        Add(D->getNumParams() > 2 ? 2 : 1);
+    }
+    Fn->setMetadata("overridable", llvm::MDNode::get(getLLVMContext(), Slots));
+  }
 
   setNonAliasAttributes(GD, Fn);
 

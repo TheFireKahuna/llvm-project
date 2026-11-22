@@ -48,13 +48,14 @@
 ; OBJ:          0000: 00
 ; OBJ:        Symbol: f4 ({{.*}})
 ; OBJ:          0000: 01
-;; A function whose address is not significant, a hidden function and a weak
-;; function that is not ODR state nothing; a weak reference states a
-;; visibility that is not default.
+;; A function whose address is not significant and a hidden function state
+;; nothing, and a weak function that is not ODR is no vague entity; a weak
+;; reference states a visibility that is not default.
 ; VAGUE:      .link_fact g1, 1, 1
 ; VAGUE-NEXT: .link_fact g1, 5
 ; VAGUE-NEXT: .link_fact g4, 1, 2
 ; VAGUE-NEXT: .link_fact g4, 5
+; VAGUE-NEXT: .link_fact g5, 11
 ; VAGUE-NEXT: .link_fact w3, 1, 2
 ;; Default and neither constant nor dynamically initialized; hidden and
 ;; constant; protected, which unique does not change, and initialized where
