@@ -4,3 +4,6 @@ endfunction()
 
 add_subdirectory(AsLibAll)
 add_subdirectory(AsLibELF)
+if("X86" IN_LIST LLVM_TARGETS_TO_BUILD)
+  add_subdirectory(COFF)
+endif()

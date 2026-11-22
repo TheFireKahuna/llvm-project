@@ -16,6 +16,7 @@
 #include "InputFiles.h"
 #include "PDB.h"
 #include "SymbolTable.h"
+#include "Walker.h"
 #include "Writer.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/Timer.h"
@@ -61,6 +62,8 @@ public:
   }
 
   std::vector<ObjFile *> objFileInstances;
+  // Classifies the references of code that its object does not type.
+  Walker walker;
   // True once a file with InputFile::forkObject is part of the link.
   bool hasForkObject = false;
   // The first file a link fact of which gives a function a type prefix.

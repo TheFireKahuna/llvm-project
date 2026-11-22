@@ -20,6 +20,7 @@ add_lld_library(lldCOFF
   PDB.cpp
   SymbolTable.cpp
   Symbols.cpp
+  Walker.cpp
   Writer.cpp
 
   LINK_COMPONENTS
@@ -36,6 +37,7 @@ add_lld_library(lldCOFF
   LibDriver
   LTO
   MC
+  MCDisassembler
   Object
   Option
   Passes
