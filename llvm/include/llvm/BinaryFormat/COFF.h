@@ -1361,10 +1361,9 @@ static const char LinkRecordsMemberSymbol[] = "__llvm_link_records$lib";
 /// is a tag, the size of its payload and the payload, and a reader skips one
 /// whose tag it does not know, unless the tag is critical.
 enum LinkImageField : uint64_t {
-  /// The vague entities that the image keeps, type_info objects apart: a
-  /// count, then each as its name, its LinkImageEntityFlags, its size in
-  /// bytes, the logarithm of its alignment and, where the flags say so, the
-  /// 32 bits of its section's checksum. Critical.
+  /// The vague entities that the image keeps: a count, then each as its
+  /// name, its LinkImageEntityFlags, its size in bytes, the logarithm of its
+  /// alignment and, where the flags say so, 32 bits of a checksum. Critical.
   LinkImageKept = 1,
   /// The image is an executable, so that an image that imports from it binds
   /// the running executable by name, whatever its file. Empty. Critical.
@@ -1400,22 +1399,34 @@ enum LinkImageEntityFlags : uint64_t {
   /// replaces, exports no name of the entity: an image linked against that
   /// release may keep its own instance, to which the DLL yields.
   LinkImageEntityAddition = 0x1000,
+  /// A type_info object whose name word holds the non-unique bit: its size
+  /// is that of the blob that the word names, the name, its NUL and the
+  /// layout shape after it, and the checksum is the low 32 bits of the blob's
+  /// xxh3 hash. A DLL that keeps it preemptible binds its name word to the
+  /// owner's where the blobs are one.
+  LinkImageEntityDescriptor = 0x2000,
   /// What two copies of one entity agree on besides size and alignment:
-  /// whether it is a function, and whether a guard initializes it. A
-  /// function's alignment is 0.
-  LinkImageEntityShape =
-      LinkImageEntityFunction | 2 << LinkImageEntityInitShift,
+  /// whether it is a function, whether a guard initializes it and whether
+  /// it is a type_info object, whose checksum is agreed on too. A function's
+  /// alignment is 0.
+  LinkImageEntityShape = LinkImageEntityFunction |
+                         2 << LinkImageEntityInitShift |
+                         LinkImageEntityDescriptor,
 };
 
 /// An image's offer table, whose RVA the 32-bit word at OfferTableHeaderWord
 /// of its DOS header holds: OfferTableMagic, the base-two logarithm of the
-/// number of buckets, the number of entries and a zero word; the entries in
+/// number of buckets, the number of entries and OfferTableFlags; the entries in
 /// the order of their keys, each 24 bytes, the key of the name, the size, the
 /// RVA, the LinkImageEntityFlags as 16 bits, the logarithm of the alignment
 /// as 8 bits and a zero byte; then for each bucket, which the top bits of a
 /// key index, the index of its first entry as 32 bits, and the number of
 /// entries.
 enum : uint32_t { OfferTableMagic = 0x4F7A1D2B, OfferTableHeaderWord = 0x38 };
+enum OfferTableFlags : uint32_t {
+  /// An entry is of a type_info object.
+  OfferTableDescriptors = 1,
+};
 
 static const char LinkOverrideOfferPrefix[] = "__ovr_offer$";
 /// The name, after this, of an overridable default's entry for the calls and

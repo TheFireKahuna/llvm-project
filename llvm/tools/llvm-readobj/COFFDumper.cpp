@@ -2704,6 +2704,8 @@ void COFFDumper::printCOFFLinkRecords() {
                                   LinkVisibilityNames[E.Flags % 4]);
                     if (E.Flags & COFF::LinkImageEntityOverride)
                       W.printString("Kind", "Override");
+                    else if (E.Flags & COFF::LinkImageEntityDescriptor)
+                      W.printString("Kind", "Descriptor");
                     else if (E.Flags & COFF::LinkImageEntityFunction)
                       W.printString("Kind", "Function");
                     else
@@ -2718,7 +2720,7 @@ void COFFDumper::printCOFFLinkRecords() {
                       W.printString("Added", "Yes");
                     W.printNumber("Size", E.Size);
                     W.printNumber("Alignment", 1u << E.Log2Align);
-                    if (E.Flags & COFF::LinkImageEntityCheckSum)
+                    if (E.hasCheckSum())
                       W.printHex("CheckSum", E.CheckSum);
                   }
                 }

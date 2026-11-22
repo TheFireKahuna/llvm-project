@@ -1580,11 +1580,19 @@ struct COFFLinkImage {
     uint8_t Log2Align;
     uint32_t CheckSum;
     uint64_t Size;
+    /// Whether the record states CheckSum.
+    bool hasCheckSum() const {
+      return Flags &
+             (COFF::LinkImageEntityCheckSum | COFF::LinkImageEntityDescriptor);
+    }
     /// Whether two copies may be one instance: the same size, alignment and
-    /// COFF::LinkImageEntityShape flags, as a fill's search compares them.
+    /// COFF::LinkImageEntityShape flags, as a fill's search compares them,
+    /// and for a type_info object the same blob.
     bool sameShape(const Entity &O) const {
       return Size == O.Size && Log2Align == O.Log2Align &&
-             !((Flags ^ O.Flags) & COFF::LinkImageEntityShape);
+             !((Flags ^ O.Flags) & COFF::LinkImageEntityShape) &&
+             (!(Flags & COFF::LinkImageEntityDescriptor) ||
+              CheckSum == O.CheckSum);
     }
   };
   StringRef Name;

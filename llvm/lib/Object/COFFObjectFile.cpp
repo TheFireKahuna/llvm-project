@@ -2824,14 +2824,14 @@ Error object::readCOFFLinkImages(StringRef Payload,
         uint64_t Flags = Data.getULEB128(C);
         E.Size = Data.getULEB128(C);
         uint64_t Log2Align = Data.getULEB128(C);
-        E.CheckSum = Flags & COFF::LinkImageEntityCheckSum ? Data.getU32(C) : 0;
-        if (C && ((Flags & ~uint64_t(0x13FF)) || Log2Align > 13 ||
+        E.Flags = Flags;
+        E.CheckSum = E.hasCheckSum() ? Data.getU32(C) : 0;
+        if (C && ((Flags & ~uint64_t(0x33FF)) || Log2Align > 13 ||
                   (Flags >> COFF::LinkImageEntityInitShift & 7) >
                       COFF::LinkFactTLSDynamic))
           return createStringError(object_error::parse_failed,
                                    "entity " + E.Name + " of " + Image.Name +
                                        " is out of range");
-        E.Flags = Flags;
         E.Log2Align = Log2Align;
         Image.Kept.push_back(E);
       }
@@ -2877,7 +2877,7 @@ void object::writeCOFFLinkImages(raw_ostream &OS,
       encodeULEB128(E.Flags, KeptOS);
       encodeULEB128(E.Size, KeptOS);
       encodeULEB128(E.Log2Align, KeptOS);
-      if (E.Flags & COFF::LinkImageEntityCheckSum)
+      if (E.hasCheckSum())
         support::endian::write(KeptOS, E.CheckSum, llvm::endianness::little);
     }
     encodeULEB128(COFF::LinkImageKept, OS);
