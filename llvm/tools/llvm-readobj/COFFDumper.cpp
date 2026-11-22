@@ -2712,6 +2712,10 @@ void COFFDumper::printCOFFLinkRecords() {
                                         7);
                     if (E.Flags & COFF::LinkImageEntityForeign)
                       W.printString("Provenance", "Foreign");
+                    if (E.Flags & COFF::LinkImageEntityPreemptible)
+                      W.printString("Binding", "Preemptible");
+                    if (E.Flags & COFF::LinkImageEntityAddition)
+                      W.printString("Added", "Yes");
                     W.printNumber("Size", E.Size);
                     W.printNumber("Alignment", 1u << E.Log2Align);
                     if (E.Flags & COFF::LinkImageEntityCheckSum)

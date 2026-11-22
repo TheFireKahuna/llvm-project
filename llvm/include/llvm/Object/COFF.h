@@ -1580,6 +1580,12 @@ struct COFFLinkImage {
     uint8_t Log2Align;
     uint32_t CheckSum;
     uint64_t Size;
+    /// Whether two copies may be one instance: the same size, alignment and
+    /// COFF::LinkImageEntityShape flags, as a fill's search compares them.
+    bool sameShape(const Entity &O) const {
+      return Size == O.Size && Log2Align == O.Log2Align &&
+             !((Flags ^ O.Flags) & COFF::LinkImageEntityShape);
+    }
   };
   StringRef Name;
   /// Twice the index in the group of each image that this one imports from,

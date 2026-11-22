@@ -1386,7 +1386,36 @@ enum LinkImageEntityFlags : uint64_t {
   /// executable of a program takes the first that the images it loads offer,
   /// in breadth-first order.
   LinkImageEntityOverride = 0x100,
+  /// The image reaches the entity through a cell that its fill binds to the
+  /// instance that the executable's offer table names.
+  LinkImageEntityPreemptible = 0x200,
+  /// In an offer table: the entry names a word that holds the address of the
+  /// instance, not the instance.
+  LinkImageEntityIndirect = 0x400,
+  /// In an offer table: the entry names an image by its file name, and has
+  /// no instance. An executable's names each image that its link sees loaded
+  /// with it, and a DLL's the DLL itself.
+  LinkImageEntityImage = 0x800,
+  /// The DLL's baseline, the import library of a release that the image
+  /// replaces, exports no name of the entity: an image linked against that
+  /// release may keep its own instance, to which the DLL yields.
+  LinkImageEntityAddition = 0x1000,
+  /// What two copies of one entity agree on besides size and alignment:
+  /// whether it is a function, and whether a guard initializes it. A
+  /// function's alignment is 0.
+  LinkImageEntityShape =
+      LinkImageEntityFunction | 2 << LinkImageEntityInitShift,
 };
+
+/// An image's offer table, whose RVA the 32-bit word at OfferTableHeaderWord
+/// of its DOS header holds: OfferTableMagic, the base-two logarithm of the
+/// number of buckets, the number of entries and a zero word; the entries in
+/// the order of their keys, each 24 bytes, the key of the name, the size, the
+/// RVA, the LinkImageEntityFlags as 16 bits, the logarithm of the alignment
+/// as 8 bits and a zero byte; then for each bucket, which the top bits of a
+/// key index, the index of its first entry as 32 bits, and the number of
+/// entries.
+enum : uint32_t { OfferTableMagic = 0x4F7A1D2B, OfferTableHeaderWord = 0x38 };
 
 static const char LinkOverrideOfferPrefix[] = "__ovr_offer$";
 /// The name, after this, of an overridable default's entry for the calls and

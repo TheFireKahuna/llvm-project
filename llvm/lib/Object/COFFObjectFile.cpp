@@ -2825,7 +2825,7 @@ Error object::readCOFFLinkImages(StringRef Payload,
         E.Size = Data.getULEB128(C);
         uint64_t Log2Align = Data.getULEB128(C);
         E.CheckSum = Flags & COFF::LinkImageEntityCheckSum ? Data.getU32(C) : 0;
-        if (C && (Flags > 0x1FF || Log2Align > 13 ||
+        if (C && ((Flags & ~uint64_t(0x13FF)) || Log2Align > 13 ||
                   (Flags >> COFF::LinkImageEntityInitShift & 7) >
                       COFF::LinkFactTLSDynamic))
           return createStringError(object_error::parse_failed,
