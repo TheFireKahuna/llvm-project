@@ -7,7 +7,8 @@
 // DEFINE: %{cl-a64} = %clang_cl -### --target=aarch64-unknown-windows-itanium /c
 // DEFINE: %{itanium} = --implicit-check-not=-fno-use-cxa-atexit \
 // DEFINE:   --implicit-check-not=-fvisibility-global-new-delete --implicit-check-not=-fno-dllexport-inlines \
-// DEFINE:   --implicit-check-not=semantic-interposition
+// DEFINE:   --implicit-check-not=semantic-interposition \
+// DEFINE:   --implicit-check-not=-flto-visibility-public-std
 
 // The defaults. The AArch64 hardware floor is a feature set, which -march=
 // only tunes above.
@@ -93,6 +94,12 @@
 // RUN:   | FileCheck --check-prefix=CC1 %s --implicit-check-not=semantic-interposition \
 // RUN:   --implicit-check-not="argument unused"
 // INTERPOSE: "-fsemantic-interposition"
+
+// -static links the C++ runtime into the image, so the compiler does not take
+// the runtime's functions for another image's.
+// RUN: %{x64} -static 2>&1 | FileCheck --check-prefix=STATIC %s
+// RUN: %{a64} -static 2>&1 | FileCheck --check-prefix=STATIC %s
+// STATIC: "-flto-visibility-public-std"
 
 // Separate sections and unwind tables are not optional, so the options that
 // would turn them off are ignored, and -ffreestanding keeps the tables.

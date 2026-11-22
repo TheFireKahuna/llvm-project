@@ -360,6 +360,11 @@ void WindowsItaniumBase::addClangTargetOptions(
   DriverArgs.AddLastArg(CC1Args,
                         options::OPT_mdefault_visibility_export_mapping_EQ);
 
+  // -static links the C++ runtime into the image, so its functions are not
+  // another image's, as under MSVC's static runtime.
+  if (DriverArgs.hasArg(options::OPT_static))
+    CC1Args.push_back("-flto-visibility-public-std");
+
   // Every function is preceded by its type id, whether or not KCFI checks
   // calls. The id ignores pointee types, so that a unit without the checks can
   // be called from one with them, and an option that would compute or encode
