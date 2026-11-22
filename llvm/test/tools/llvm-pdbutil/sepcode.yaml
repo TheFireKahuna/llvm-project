@@ -1,0 +1,50 @@
+# RUN: llvm-pdbutil yaml2pdb %s --pdb=%t.pdb
+# RUN: llvm-pdbutil dump --symbols %t.pdb | FileCheck --check-prefix=YAML2PDB %s
+
+# RUN: llvm-pdbutil pdb2yaml --module-syms %t.pdb > %t.yaml
+# RUN: FileCheck --input-file=%t.yaml --check-prefix=PDB2YAML %s
+
+# YAML2PDB:      4 | S_SEPCODE [size = 32]
+# YAML2PDB-NEXT:     parent = 0, end = 36
+# YAML2PDB-NEXT:     code size = 142, addr = 0001:442704, parent addr = 0002:0080
+# YAML2PDB-NEXT:     flags = lexical scope | returns to parent
+# YAML2PDB-NEXT: 36 | S_END [size = 4]
+
+# PDB2YAML:      - Kind:            S_SEPCODE
+# PDB2YAML-NEXT:   SepCodeSym:
+# PDB2YAML-NEXT:     PtrParent:       0
+# PDB2YAML-NEXT:     PtrEnd:          36
+# PDB2YAML-NEXT:     CodeSize:        142
+# PDB2YAML-NEXT:     Flags:           [ IsLexicalScope, ReturnsToParent ]
+# PDB2YAML-NEXT:     Offset:          442704
+# PDB2YAML-NEXT:     ParentOffset:    80
+# PDB2YAML-NEXT:     Segment:         1
+# PDB2YAML-NEXT:     ParentSegment:   2
+
+---
+DbiStream:
+  VerHeader:       V70
+  Age:             1
+  BuildNumber:     36363
+  PdbDllVersion:   0
+  PdbDllRbld:      0
+  Flags:           0
+  MachineType:     Amd64
+  Modules:
+    - Module:          'a.obj'
+      ObjFile:         'a.obj'
+      Modi:
+        Signature:       4
+        Records:
+          - Kind:            S_SEPCODE
+            SepCodeSym:
+              PtrEnd:          36
+              CodeSize:        142
+              Flags:           [ IsLexicalScope, ReturnsToParent ]
+              Offset:          442704
+              ParentOffset:    80
+              Segment:         1
+              ParentSegment:   2
+          - Kind:            S_END
+            ScopeEndSym:     {}
+...

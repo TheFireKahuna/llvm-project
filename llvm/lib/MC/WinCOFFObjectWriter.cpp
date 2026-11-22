@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -173,6 +174,8 @@ private:
   MCContext &getContext() const { return OWriter.getContext(); }
   COFFSymbol *createSymbol(StringRef Name);
   COFFSymbol *getOrCreateSecRelSymbol(const MCSymbol &Sym, uint64_t Offset);
+  void recordSpan(const MCFragment &F, const MCFixup &Fixup, const MCSymbol &A,
+                  const MCSymbol &B, int64_t Constant, uint64_t &FixedValue);
   COFFSymbol *getOrCreateCOFFSymbol(const MCSymbol &Sym);
   COFFSection *createSection(StringRef Name);
 
@@ -908,6 +911,18 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     // Offset of the symbol in the section
     int64_t OffsetOfB = Asm->getSymbolOffset(*B);
 
+    // REL32 below writes A - B only when B lies in the field's section.
+    // Elsewhere, x86-64 writes 32 bits of A - B as SSPAN32 and PAIR.
+    if (&B->getSection() != MCSec) {
+      if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
+          Asm->getBackend().getFixupKindInfo(Fixup.getKind()).TargetSize == 32)
+        recordSpan(F, Fixup, A, *B, Target.getConstant(), FixedValue);
+      else
+        getContext().reportError(
+            Fixup.getLoc(), "Cannot represent a difference across sections");
+      return;
+    }
+
     // Offset of the relocation in the section
     int64_t OffsetOfRelocation = Asm->getFragmentOffset(F) + Fixup.getOffset();
 
@@ -953,6 +968,11 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     }
     Reloc.Symb = getOrCreateSecRelSymbol(A, SecRelSymbolOffset);
     FixedValue = 0;
+  } else if (UseSectionSymbol && COFF::isAnyArm64(Header.Machine) &&
+             Reloc.Data.Type == COFF::IMAGE_REL_ARM64_BRANCH26) {
+    // The field of an ARM64 branch holds no offset from a symbol, so a target
+    // in another section, a part of the branch's function there, is a label.
+    Reloc.Symb = getOrCreateSecRelSymbol(A, Asm->getSymbolOffset(A));
   } else if (UseSectionSymbol) {
     MCSection *TargetSection = &A.getSection();
     assert(
@@ -987,15 +1007,17 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   Reloc.Data.VirtualAddress += Fixup.getOffset();
 
   // The *_REL32 relocations are relative to the end of the relocation,
-  // not to the start.
-  if ((Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
-       Reloc.Data.Type == COFF::IMAGE_REL_AMD64_REL32) ||
-      (Header.Machine == COFF::IMAGE_FILE_MACHINE_I386 &&
-       Reloc.Data.Type == COFF::IMAGE_REL_I386_REL32) ||
-      (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT &&
-       Reloc.Data.Type == COFF::IMAGE_REL_ARM_REL32) ||
-      (COFF::isAnyArm64(Header.Machine) &&
-       Reloc.Data.Type == COFF::IMAGE_REL_ARM64_REL32))
+  // not to the start; AMD64's REL32_1 to REL32_5 to 1 to 5 bytes after it.
+  if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
+      Reloc.Data.Type >= COFF::IMAGE_REL_AMD64_REL32 &&
+      Reloc.Data.Type <= COFF::IMAGE_REL_AMD64_REL32_5)
+    FixedValue += 4 + Reloc.Data.Type - COFF::IMAGE_REL_AMD64_REL32;
+  else if ((Header.Machine == COFF::IMAGE_FILE_MACHINE_I386 &&
+            Reloc.Data.Type == COFF::IMAGE_REL_I386_REL32) ||
+           (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT &&
+            Reloc.Data.Type == COFF::IMAGE_REL_ARM_REL32) ||
+           (COFF::isAnyArm64(Header.Machine) &&
+            Reloc.Data.Type == COFF::IMAGE_REL_ARM64_REL32))
     FixedValue += 4;
 
   if (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT) {
@@ -1052,6 +1074,60 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
       Sec->Relocations.push_back(RelocPair);
     }
   }
+}
+
+// Writes A + Constant - B as SSPAN32 naming A and PAIR naming B, at the field.
+// Both are local, as linkers resolve an external one to a thunk, and B lies in
+// A's section or in one associative to it, so that B lives while A does.
+void WinCOFFWriter::recordSpan(const MCFragment &F, const MCFixup &Fixup,
+                               const MCSymbol &A, const MCSymbol &B,
+                               int64_t Constant, uint64_t &FixedValue) {
+  if (!A.isInSection() || static_cast<const MCSymbolCOFF &>(A).isExternal() ||
+      static_cast<const MCSymbolCOFF &>(B).isExternal())
+    return getContext().reportError(
+        Fixup.getLoc(), "cross-section difference needs local symbols");
+  auto *BSec = static_cast<const MCSectionCOFF *>(&B.getSection());
+  while (BSec != &A.getSection() &&
+         BSec->getSelection() == COFF::IMAGE_COMDAT_SELECT_ASSOCIATIVE)
+    BSec = static_cast<const MCSectionCOFF *>(
+        &BSec->getCOMDATSymbol()->getSection());
+  if (BSec != &A.getSection())
+    return getContext().reportError(
+        Fixup.getLoc(),
+        "cross-section difference needs B in A's section or in one "
+        "associative to it");
+  // A span has no addend: a label at A + Constant carries it or, where that
+  // lies outside A's section, one at B - Constant.
+  uint64_t OffsetOfA = Asm->getSymbolOffset(A);
+  uint64_t OffsetOfB = Asm->getSymbolOffset(B);
+  if (OffsetOfA + Constant <= Asm->getSectionAddressSize(A.getSection()))
+    OffsetOfA += Constant;
+  else if (OffsetOfB - Constant <= Asm->getSectionAddressSize(B.getSection()))
+    OffsetOfB -= Constant;
+  else
+    return getContext().reportError(
+        Fixup.getLoc(),
+        "cross-section difference puts its labels outside their sections");
+  auto Label = [&](const MCSymbol &S, uint64_t Offset) {
+    COFFSymbol *Sym = SymbolMap.lookup(&S);
+    Sym = Sym && Offset == Asm->getSymbolOffset(S)
+              ? Sym
+              : getOrCreateSecRelSymbol(S, Offset);
+    ++Sym->Relocations;
+    return Sym;
+  };
+  COFFRelocation Span;
+  Span.Data.VirtualAddress = Asm->getFragmentOffset(F) + Fixup.getOffset();
+  Span.Data.Type = COFF::IMAGE_REL_AMD64_SSPAN32;
+  Span.Symb = Label(A, OffsetOfA);
+  COFFRelocation Pair = Span;
+  Pair.Data.Type = COFF::IMAGE_REL_AMD64_PAIR;
+  Pair.Symb = Label(B, OffsetOfB);
+  COFFSection *Sec = SectionMap[F.getParent()];
+  Sec->Relocations.push_back(Span);
+  Sec->Relocations.push_back(Pair);
+  // The linker overwrites the field; it holds A - B where that is known.
+  FixedValue = &A.getSection() == &B.getSection() ? OffsetOfA - OffsetOfB : 0;
 }
 
 static std::time_t getTime() {

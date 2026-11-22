@@ -36,6 +36,8 @@ uint32_t llvm::codeview::getScopeEndOffset(const CVSymbol &Sym) {
     BlockSym Block = createRecord<BlockSym>(Sym);
     return Block.End;
   }
+  case SymbolKind::S_SEPCODE:
+    return createRecord<SepCodeSym>(Sym).End;
   case SymbolKind::S_THUNK32: {
     Thunk32Sym Thunk = createRecord<Thunk32Sym>(Sym);
     return Thunk.End;
@@ -67,6 +69,8 @@ llvm::codeview::getScopeParentOffset(const llvm::codeview::CVSymbol &Sym) {
     BlockSym Block = createRecord<BlockSym>(Sym);
     return Block.Parent;
   }
+  case SymbolKind::S_SEPCODE:
+    return createRecord<SepCodeSym>(Sym).Parent;
   case SymbolKind::S_THUNK32: {
     Thunk32Sym Thunk = createRecord<Thunk32Sym>(Sym);
     return Thunk.Parent;

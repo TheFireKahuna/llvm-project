@@ -451,6 +451,21 @@ Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR, BlockSym &Block) {
   return Error::success();
 }
 
+Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR,
+                                            SepCodeSym &SepCode) {
+  AutoIndent Indent(P, 7);
+  P.formatLine("parent = {0}, end = {1}", SepCode.Parent, SepCode.End);
+  P.formatLine(
+      "code size = {0}, addr = {1}, parent addr = {2}", SepCode.CodeSize,
+      formatSegmentOffset(SepCode.Segment, SepCode.CodeOffset),
+      formatSegmentOffset(SepCode.ParentSegment, SepCode.ParentCodeOffset));
+  std::vector<std::string> Opts;
+  PUSH_FLAG(SepCodeFlags, IsLexicalScope, SepCode.Flags, "lexical scope");
+  PUSH_FLAG(SepCodeFlags, ReturnsToParent, SepCode.Flags, "returns to parent");
+  P.formatLine("flags = {0}", Opts.empty() ? "none" : join(Opts, " | "));
+  return Error::success();
+}
+
 Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR, Thunk32Sym &Thunk) {
   P.format(" `{0}`", Thunk.Name);
   AutoIndent Indent(P, 7);
@@ -808,11 +823,14 @@ Error MinimalSymbolDumper::visitKnownRecord(CVSymbol &CVR, InlineSiteSym &IS) {
       break;
     }
 
+    // Code offsets count from the start of the procedure's nth separated
+    // code from here on.
+    case BinaryAnnotationsOpCode::ChangeCodeOffsetBase:
+      CodeOffset = 0;
+      P.format(" code base {0}", Annot.U1);
+      break;
     // The rest of these are hard to convince MSVC to emit, so they are not as
     // well understood.
-    case BinaryAnnotationsOpCode::ChangeCodeOffsetBase:
-      formatCodeOffset(Annot.U1);
-      break;
     case BinaryAnnotationsOpCode::ChangeLineEndDelta:
     case BinaryAnnotationsOpCode::ChangeRangeKind:
     case BinaryAnnotationsOpCode::ChangeColumnStart:

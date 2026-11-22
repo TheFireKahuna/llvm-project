@@ -188,7 +188,8 @@ class Decoder {
                               const object::SectionRef Section, unsigned Entry,
                               ArrayRef<uint8_t> Contents);
   void dumpProcedureData(const object::COFFObjectFile &COFF,
-                         const object::SectionRef Section);
+                         const object::SectionRef Section, uint64_t Begin,
+                         uint64_t End);
 
 public:
   Decoder(ScopedPrinter &SW, bool isAArch64) : SW(SW),

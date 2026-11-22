@@ -23,6 +23,7 @@ LLVM_ABI EnumStrings<TypeLeafKind, 1> getTypeLeafNames();
 LLVM_ABI EnumStrings<uint16_t, 1> getRegisterNames(CPUType Cpu);
 LLVM_ABI EnumStrings<uint32_t, 1> getPublicSymFlagNames();
 LLVM_ABI EnumStrings<uint8_t, 1> getProcSymFlagNames();
+LLVM_ABI EnumStrings<uint32_t, 1> getSepCodeFlagNames();
 LLVM_ABI EnumStrings<uint16_t, 1> getLocalFlagNames();
 LLVM_ABI EnumStrings<uint8_t, 1> getFrameCookieKindNames();
 LLVM_ABI EnumStrings<SourceLanguage, 1> getSourceLanguageNames();

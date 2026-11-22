@@ -644,6 +644,9 @@ MCFixupKindInfo X86AsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
       {"reloc_signed_4byte_relax", 0, 32, 0},
       {"reloc_global_offset_table", 0, 32, 0},
       {"reloc_branch_4byte_pcrel", 0, 32, 0},
+      {"reloc_riprel_4byte_imm1", 0, 32, 0},
+      {"reloc_riprel_4byte_imm2", 0, 32, 0},
+      {"reloc_riprel_4byte_imm4", 0, 32, 0},
       // clang-format on
   };
 
@@ -674,6 +677,9 @@ static unsigned getFixupKindSize(unsigned Kind) {
   case FK_Data_2:
     return 2;
   case X86::reloc_riprel_4byte:
+  case X86::reloc_riprel_4byte_imm1:
+  case X86::reloc_riprel_4byte_imm2:
+  case X86::reloc_riprel_4byte_imm4:
   case X86::reloc_riprel_4byte_relax:
   case X86::reloc_riprel_4byte_relax_rex:
   case X86::reloc_riprel_4byte_relax_rex2:

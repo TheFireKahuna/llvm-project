@@ -3182,10 +3182,17 @@ bool AsmPrinter::doFinalization(Module &M) {
     OutStreamer->emitAddrsig();
     for (const GlobalValue &GV : M.global_values()) {
       if (!GV.use_empty() && !GV.isThreadLocal() &&
-          !GV.hasDLLImportStorageClass() &&
           !GV.getName().starts_with("llvm.") &&
-          !GV.hasAtLeastLocalUnnamedAddr())
-        OutStreamer->emitAddrsigSym(getSymbol(&GV));
+          !GV.hasAtLeastLocalUnnamedAddr()) {
+        // An imported global is listed by the __imp_ pointer the code loads,
+        // so the entry adds no symbol; a COFF import defines it for code and
+        // data alike.
+        MCSymbol *Sym = getSymbol(&GV);
+        if (GV.hasDLLImportStorageClass())
+          Sym = OutContext.lookupSymbol("__imp_" + Sym->getName());
+        if (Sym)
+          OutStreamer->emitAddrsigSym(Sym);
+      }
     }
   }
 

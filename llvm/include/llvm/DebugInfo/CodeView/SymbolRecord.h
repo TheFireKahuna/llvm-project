@@ -695,6 +695,33 @@ public:
   uint32_t RecordOffset = 0;
 };
 
+// S_SEPCODE: code of a procedure, block or separated code that lies apart
+// from it, as a compiler lays out code it found cold.
+class SepCodeSym : public SymbolRecord {
+  static constexpr uint32_t RelocationOffset = 16;
+
+public:
+  explicit SepCodeSym(SymbolRecordKind Kind) : SymbolRecord(Kind) {}
+  explicit SepCodeSym(uint32_t RecordOffset)
+      : SymbolRecord(SymbolRecordKind::SepCodeSym), RecordOffset(RecordOffset) {
+  }
+
+  uint32_t getRelocationOffset() const {
+    return RecordOffset + RelocationOffset;
+  }
+
+  uint32_t Parent = 0;
+  uint32_t End = 0;
+  uint32_t CodeSize = 0;
+  SepCodeFlags Flags = SepCodeFlags::None;
+  uint32_t CodeOffset = 0;
+  uint32_t ParentCodeOffset = 0;
+  uint16_t Segment = 0;
+  uint16_t ParentSegment = 0;
+
+  uint32_t RecordOffset = 0;
+};
+
 // S_LABEL32
 class LabelSym : public SymbolRecord {
   static constexpr uint32_t RelocationOffset = 4;

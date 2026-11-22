@@ -109,6 +109,16 @@ EnumStrings<uint8_t> getProcSymFlagNames() {
   return ProcSymFlagNames;
 }
 
+EnumStrings<uint32_t> getSepCodeFlagNames() {
+  constexpr EnumStringDef<uint32_t> SepCodeFlagNameDefs[] = {
+      CV_ENUM_CLASS_ENT(SepCodeFlags, IsLexicalScope),
+      CV_ENUM_CLASS_ENT(SepCodeFlags, ReturnsToParent),
+  };
+  static constexpr auto SepCodeFlagNames =
+      BUILD_ENUM_STRINGS(SepCodeFlagNameDefs);
+  return SepCodeFlagNames;
+}
+
 EnumStrings<uint16_t> getLocalFlagNames() {
   constexpr EnumStringDef<uint16_t> LocalFlagDefs[] = {
       CV_ENUM_CLASS_ENT(LocalSymFlags, IsParameter),

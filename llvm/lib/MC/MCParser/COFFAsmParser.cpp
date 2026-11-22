@@ -287,26 +287,14 @@ bool COFFAsmParser::parseDirectiveSymbolAttribute(StringRef Directive, SMLoc) {
     .Case(".weak_anti_dep", MCSA_WeakAntiDep)
     .Default(MCSA_Invalid);
   assert(Attr != MCSA_Invalid && "unexpected symbol attribute directive!");
-  if (getLexer().isNot(AsmToken::EndOfStatement)) {
-    while (true) {
-      MCSymbol *Sym;
-
-      if (getParser().parseSymbol(Sym))
-        return TokError("expected identifier in directive");
-
-      getStreamer().emitSymbolAttribute(Sym, Attr);
-
-      if (getLexer().is(AsmToken::EndOfStatement))
-        break;
-
-      if (getLexer().isNot(AsmToken::Comma))
-        return TokError("unexpected token in directive");
-      Lex();
-    }
-  }
-
-  Lex();
-  return false;
+  return getParser().parseMany([&] {
+    StringRef Name;
+    if (getParser().parseIdentifier(Name))
+      return TokError("expected identifier in directive");
+    if (!getParser().discardLTOSymbol(Name))
+      getStreamer().emitSymbolAttribute(getContext().parseSymbol(Name), Attr);
+    return false;
+  });
 }
 
 bool COFFAsmParser::parseDirectiveCGProfile(StringRef S, SMLoc Loc) {

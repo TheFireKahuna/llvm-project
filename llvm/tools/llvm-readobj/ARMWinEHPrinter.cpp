@@ -1497,6 +1497,29 @@ bool Decoder::dumpProcedureDataEntry(const COFFObjectFile &COFF,
   DictScope RFS(SW, "RuntimeFunction");
   if (Entry.Flag() == RuntimeFunctionFlag::RFF_Unpacked)
     return dumpUnpackedEntry(COFF, Section, Offset, Index, Entry);
+  if (Entry.Flag() == RuntimeFunctionFlag::RFF_Reserved) {
+    if (!isAArch64)
+      return false;
+    // ARM64 Windows gives a 12-byte range-extension stub this flag: the
+    // remaining bits are the RVA of the entry whose unwind data it shares.
+    uint64_t Address, SymbolOffset;
+    ErrorOr<SymbolRef> Function =
+        getSymbolForLocation(COFF, Section, Offset, Entry.BeginAddress,
+                             Address, SymbolOffset, /*FunctionOnly=*/true);
+    Expected<StringRef> Name = Function ? Function->getName() : StringRef();
+    if (!Name)
+      reportFatalUsageError(Name.takeError());
+    SW.printString("Function", formatSymbol(*Name, Address, SymbolOffset));
+    uint32_t Shared = Entry.UnwindData & ~3u;
+    SW.printHex("SharedEntry", Shared);
+    uint64_t SharedOffset =
+        COFF.getImageBase() + Shared - Section.getAddress();
+    if (SharedOffset % PDataEntrySize || SharedOffset >= Contents.size() ||
+        (Contents[SharedOffset + 4] & 3) == 3)
+      return false;
+    return dumpProcedureDataEntry(COFF, Section, SharedOffset / PDataEntrySize,
+                                  Contents);
+  }
   if (isAArch64) {
     const RuntimeFunctionARM64 EntryARM64(Data);
     return dumpPackedARM64Entry(COFF, Section, Offset, Index, EntryARM64);
@@ -1505,22 +1528,41 @@ bool Decoder::dumpProcedureDataEntry(const COFFObjectFile &COFF,
 }
 
 void Decoder::dumpProcedureData(const COFFObjectFile &COFF,
-                                const SectionRef Section) {
+                                const SectionRef Section, uint64_t Begin,
+                                uint64_t End) {
   ArrayRef<uint8_t> Contents;
   if (COFF.getSectionContents(COFF.getCOFFSection(Section), Contents))
     return;
 
-  if (Contents.size() % PDataEntrySize) {
+  uint64_t Address = Section.getAddress();
+  uint64_t First = Begin > Address ? Begin - Address : 0;
+  uint64_t Last = std::min<uint64_t>(Contents.size(),
+                                     End > Address ? End - Address : 0);
+  if (First < Last && (Last - First) % PDataEntrySize) {
     errs() << ".pdata content is not " << PDataEntrySize << "-byte aligned\n";
     return;
   }
 
-  for (unsigned EI = 0, EE = Contents.size() / PDataEntrySize; EI < EE; ++EI)
+  for (unsigned EI = First / PDataEntrySize, EE = Last / PDataEntrySize;
+       EI < EE; ++EI)
     if (!dumpProcedureDataEntry(COFF, Section, EI, Contents))
       break;
 }
 
 Error Decoder::dumpProcedureData(const COFFObjectFile &COFF) {
+  // An image's unwinder reads only its exception table, and an ARM64X image's
+  // .pdata also holds the x64 entries of its ARM64EC view, which names its own
+  // ARM64 entries in its CHPE metadata.
+  uint64_t Begin = 0, End = UINT64_MAX;
+  const chpe_metadata *CHPE = COFF.getCHPEMetadata();
+  const data_directory *Table = COFF.getDataDirectory(COFF::EXCEPTION_TABLE);
+  if (COFF.getMachine() == COFF::IMAGE_FILE_MACHINE_ARM64EC && CHPE) {
+    Begin = COFF.getImageBase() + CHPE->ExtraRFETable;
+    End = Begin + CHPE->ExtraRFETableSize;
+  } else if (Table && Table->Size) {
+    Begin = COFF.getImageBase() + Table->RelativeVirtualAddress;
+    End = Begin + Table->Size;
+  }
   for (const auto &Section : COFF.sections()) {
     Expected<StringRef> NameOrErr =
         COFF.getSectionName(COFF.getCOFFSection(Section));
@@ -1528,7 +1570,7 @@ Error Decoder::dumpProcedureData(const COFFObjectFile &COFF) {
       return NameOrErr.takeError();
 
     if (NameOrErr->starts_with(".pdata"))
-      dumpProcedureData(COFF, Section);
+      dumpProcedureData(COFF, Section, Begin, End);
   }
   return Error::success();
 }

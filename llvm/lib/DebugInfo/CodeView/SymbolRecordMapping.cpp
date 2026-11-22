@@ -56,6 +56,20 @@ Error SymbolRecordMapping::visitKnownRecord(CVSymbol &CVR, BlockSym &Block) {
   return Error::success();
 }
 
+Error SymbolRecordMapping::visitKnownRecord(CVSymbol &CVR,
+                                            SepCodeSym &SepCode) {
+  error(IO.mapInteger(SepCode.Parent));
+  error(IO.mapInteger(SepCode.End));
+  error(IO.mapInteger(SepCode.CodeSize));
+  error(IO.mapEnum(SepCode.Flags));
+  error(IO.mapInteger(SepCode.CodeOffset));
+  error(IO.mapInteger(SepCode.ParentCodeOffset));
+  error(IO.mapInteger(SepCode.Segment));
+  error(IO.mapInteger(SepCode.ParentSegment));
+
+  return Error::success();
+}
+
 Error SymbolRecordMapping::visitKnownRecord(CVSymbol &CVR, Thunk32Sym &Thunk) {
 
   error(IO.mapInteger(Thunk.Parent));

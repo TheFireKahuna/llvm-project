@@ -667,6 +667,12 @@ void X86MCCodeEmitter::emitMemModRMByte(
     int ImmSize = !Disp.isImm() && X86II::hasImm(TSFlags)
                       ? X86II::getSizeOfImm(TSFlags)
                       : 0;
+    // COFF states the immediate's size in the relocation type instead.
+    if (ImmSize && FixupKind == X86::reloc_riprel_4byte &&
+        STI.getTargetTriple().isOSBinFormatCOFF())
+      FixupKind = ImmSize == 1   ? X86::reloc_riprel_4byte_imm1
+                  : ImmSize == 2 ? X86::reloc_riprel_4byte_imm2
+                                 : X86::reloc_riprel_4byte_imm4;
 
     emitImmediate(Disp, MI.getLoc(), FixupKind, true, StartByte, CB, Fixups,
                   -ImmSize);
@@ -1309,7 +1315,7 @@ PrefixKind X86MCCodeEmitter::emitREXPrefix(int MemOperand, const MCInst &MI,
   X86OpcodePrefixHelper Prefix(*Ctx.getRegisterInfo());
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   uint64_t TSFlags = Desc.TSFlags;
-  Prefix.setW(TSFlags & X86II::REX_W);
+  Prefix.setW((TSFlags & X86II::REX_W) || (MI.getFlags() & X86::IP_HAS_REX_W));
   unsigned NumOps = MI.getNumOperands();
   bool UsesHighByteReg = false;
 #ifndef NDEBUG

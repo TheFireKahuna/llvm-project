@@ -130,6 +130,27 @@ Error CVSymbolDumperImpl::visitKnownRecord(CVSymbol &CVR, BlockSym &Block) {
   return Error::success();
 }
 
+Error CVSymbolDumperImpl::visitKnownRecord(CVSymbol &CVR, SepCodeSym &SepCode) {
+  StringRef LinkageName;
+  W.printHex("PtrParent", SepCode.Parent);
+  W.printHex("PtrEnd", SepCode.End);
+  W.printHex("CodeSize", SepCode.CodeSize);
+  W.printFlags("Flags", uint32_t(SepCode.Flags), getSepCodeFlagNames());
+  if (ObjDelegate)
+    ObjDelegate->printRelocatedField("CodeOffset",
+                                     SepCode.getRelocationOffset(),
+                                     SepCode.CodeOffset, &LinkageName);
+  W.printHex("Segment", SepCode.Segment);
+  W.printString("LinkageName", LinkageName);
+  if (ObjDelegate)
+    ObjDelegate->printRelocatedField("ParentCodeOffset",
+                                     SepCode.getRelocationOffset() + 4,
+                                     SepCode.ParentCodeOffset, &LinkageName);
+  W.printHex("ParentSegment", SepCode.ParentSegment);
+  W.printString("ParentLinkageName", LinkageName);
+  return Error::success();
+}
+
 Error CVSymbolDumperImpl::visitKnownRecord(CVSymbol &CVR, Thunk32Sym &Thunk) {
   W.printString("Name", Thunk.Name);
   W.printNumber("Parent", Thunk.Parent);

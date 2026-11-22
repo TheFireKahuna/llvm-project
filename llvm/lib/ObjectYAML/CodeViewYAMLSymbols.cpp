@@ -56,6 +56,7 @@ LLVM_YAML_DECLARE_BITSET_TRAITS(ExportFlags)
 LLVM_YAML_DECLARE_BITSET_TRAITS(PublicSymFlags)
 LLVM_YAML_DECLARE_BITSET_TRAITS(LocalSymFlags)
 LLVM_YAML_DECLARE_BITSET_TRAITS(ProcSymFlags)
+LLVM_YAML_DECLARE_BITSET_TRAITS(SepCodeFlags)
 LLVM_YAML_DECLARE_BITSET_TRAITS(FrameProcedureOptions)
 LLVM_YAML_DECLARE_ENUM_TRAITS(CPUType)
 LLVM_YAML_DECLARE_ENUM_TRAITS(RegisterId)
@@ -129,6 +130,11 @@ void ScalarBitSetTraits<ProcSymFlags>::bitset(IO &io, ProcSymFlags &Flags) {
   for (const auto &E : FlagNames) {
     io.bitSetCase(Flags, E.name(), static_cast<ProcSymFlags>(E.value()));
   }
+}
+
+void ScalarBitSetTraits<SepCodeFlags>::bitset(IO &io, SepCodeFlags &Flags) {
+  for (const auto &E : getSepCodeFlagNames())
+    io.bitSetCase(Flags, E.name(), static_cast<SepCodeFlags>(E.value()));
 }
 
 void ScalarBitSetTraits<FrameProcedureOptions>::bitset(
@@ -486,6 +492,17 @@ template <> void SymbolRecordImpl<BlockSym>::map(IO &IO) {
   IO.mapOptional("Offset", Symbol.CodeOffset, 0U);
   IO.mapOptional("Segment", Symbol.Segment, uint16_t(0));
   IO.mapRequired("BlockName", Symbol.Name);
+}
+
+template <> void SymbolRecordImpl<SepCodeSym>::map(IO &IO) {
+  IO.mapOptional("PtrParent", Symbol.Parent, 0U);
+  IO.mapOptional("PtrEnd", Symbol.End, 0U);
+  IO.mapRequired("CodeSize", Symbol.CodeSize);
+  IO.mapRequired("Flags", Symbol.Flags);
+  IO.mapOptional("Offset", Symbol.CodeOffset, 0U);
+  IO.mapOptional("ParentOffset", Symbol.ParentCodeOffset, 0U);
+  IO.mapOptional("Segment", Symbol.Segment, uint16_t(0));
+  IO.mapOptional("ParentSegment", Symbol.ParentSegment, uint16_t(0));
 }
 
 template <> void SymbolRecordImpl<LabelSym>::map(IO &IO) {

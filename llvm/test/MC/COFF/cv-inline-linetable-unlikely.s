@@ -23,12 +23,12 @@
 
 # ASM:      0000000000000000 <g>:
 # ASM-NEXT:        0: 48 83 ec 28                   subq    $40, %rsp
-# ASM-NEXT:        4: c7 05 fc ff ff ff 00 00 00 00 movl    $0, -4(%rip)
+# ASM-NEXT:        4: c7 05 00 00 00 00 00 00 00 00 movl    $0, (%rip)
 #  Begin inline loc (matches cv_loc below)
-# ASM-NEXT:        e: 83 3d ff ff ff ff 00          cmpl    $0, -1(%rip)
+# ASM-NEXT:        e: 83 3d 00 00 00 00 00          cmpl    $0, (%rip)
 # ASM-NEXT:       15: 75 0f                         jne     0x26 <g+0x26>
 #  End inline loc
-# ASM-NEXT:       17: c7 05 fc ff ff ff 00 00 00 00 movl    $0, -4(%rip)
+# ASM-NEXT:       17: c7 05 00 00 00 00 00 00 00 00 movl    $0, (%rip)
 # ASM-NEXT:       21: 48 83 c4 28                   addq    $40, %rsp
 # ASM-NEXT:       25: c3                            retq
 #  Begin inline loc (matches cv_loc below)

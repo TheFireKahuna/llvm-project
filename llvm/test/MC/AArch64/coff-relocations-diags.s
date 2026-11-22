@@ -49,3 +49,8 @@ table:
   // CHECK: error: Cannot represent this expression
   // CHECK-NEXT: .short label - table
   // CHECK-NEXT: ^
+
+  .word table - label
+  // CHECK: error: Cannot represent a difference across sections
+  // CHECK-NEXT: .word table - label
+  // CHECK-NEXT: ^

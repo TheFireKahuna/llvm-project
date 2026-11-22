@@ -413,6 +413,14 @@ enum class PublicSymFlags : uint32_t {
 };
 CV_DEFINE_ENUM_CLASS_FLAGS_OPERATORS(PublicSymFlags)
 
+/// Corresponds to the CV_SEPCODEFLAGS bitfield.
+enum class SepCodeFlags : uint32_t {
+  None = 0,
+  IsLexicalScope = 1 << 0,
+  ReturnsToParent = 1 << 1,
+};
+CV_DEFINE_ENUM_CLASS_FLAGS_OPERATORS(SepCodeFlags)
+
 /// Corresponds to the CV_PROCFLAGS bitfield.
 enum class ProcSymFlags : uint8_t {
   None = 0,
