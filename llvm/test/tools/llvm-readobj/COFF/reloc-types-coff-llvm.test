@@ -17,9 +17,10 @@
 # RUN:   FileCheck %s --check-prefixes=CHECK,A64
 # RUN: llvm-objdump -r %t.x1 %t.x2 | FileCheck %s --check-prefix=OBJDUMP
 # RUN: not yaml2obj --docnum=2 -DM=ARM64 %s 2>&1 | FileCheck %s --check-prefix=OTHER
-# RUN: not yaml2obj --docnum=3 -DM=AMD64 %s 2>&1 | FileCheck %s --check-prefix=OTHER
+# RUN: not yaml2obj --docnum=3 -DM=AMD64 %s 2>&1 | FileCheck %s --check-prefix=OTHER64
 
 # OTHER: error: unknown enumerated scalar
+# OTHER64: error: invalid hex16 number
 
 # OBJDUMP: 0000000000000000 IMAGE_REL_LLVM_ALIGN {{$}}
 # OBJDUMP: 0000000000000000 IMAGE_REL_LLVM_TLS_SCALE {{$}}

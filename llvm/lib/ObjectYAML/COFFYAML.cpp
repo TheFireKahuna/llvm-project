@@ -222,6 +222,8 @@ void ScalarEnumerationTraits<COFF::RelocationTypeAMD64>::enumeration(
   ECaseLLVM(IMAGE_REL_LLVM_FUSED_TEST_REG);
   ECaseLLVM(IMAGE_REL_LLVM_TPOFF32);
   ECaseLLVM(IMAGE_REL_LLVM_TLS_SCALE);
+  // A type of IMAGE_REL_LLVM_REL32_INSN is its number, which states its kind.
+  IO.enumFallback<Hex16>(Value);
 }
 
 void ScalarEnumerationTraits<COFF::RelocationTypesMips>::enumeration(
