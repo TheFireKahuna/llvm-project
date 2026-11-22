@@ -348,6 +348,10 @@ enum GlobalValueSummarySymtabCodes {
   //  nummib x alloc type,
   //  numver x version]
   FS_COMBINED_ALLOC_INFO_NO_CONTEXT = 33,
+  // The values without a summary that the linker resolved to a definition in
+  // the linkage unit, so that references to them can be dso_local.
+  // [n x valueguid]
+  FS_DSO_LOCAL_WITHOUT_SUMMARY = 34,
 };
 
 enum MetadataCodes {

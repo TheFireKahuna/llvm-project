@@ -36,6 +36,7 @@ namespace lld::coff {
 
 class BitcodeFile;
 class InputFile;
+class Symbol;
 class COFFLinkerContext;
 
 class BitcodeCompiler {
@@ -55,6 +56,7 @@ private:
   std::vector<std::string> file_names;
   std::unique_ptr<llvm::raw_fd_ostream> indexFile;
   llvm::DenseSet<StringRef> thinIndices;
+  std::vector<Symbol *> prevailingSyms;
 
   std::string getThinLTOOutputFile(StringRef path);
   llvm::lto::Config createConfig();

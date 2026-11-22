@@ -1048,6 +1048,22 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
     Skip();
 
     if (GlobalValue *GV = dyn_cast_if_present<GlobalValue *>(Msym)) {
+      // The copies of a global in a COMDAT that selects by exact match must be
+      // equal: those that meet here are compared here, and the first stays a
+      // definition, so that the linker compares it with one it prevails over.
+      auto *Var = dyn_cast<GlobalVariable>(GV);
+      bool FirstCopy = false;
+      if (Var && Var->hasInitializer() && Var->hasComdat() &&
+          Var->getComdat()->getSelectionKind() == Comdat::ExactMatch) {
+        auto [I, New] = RegularLTO.ExactMatchCopies.try_emplace(
+            Var->getName(), Var->getInitializer(), Input.getName());
+        if (!New && I->second.first != Var->getInitializer())
+          return make_error<StringError>(
+              "COMDAT '" + Var->getName() + "' differs between " +
+                  I->second.second + " and " + Input.getName(),
+              inconvertibleErrorCode());
+        FirstCopy = New;
+      }
       if (R.Prevailing) {
         if (Sym.isUndefined())
           continue;
@@ -1072,6 +1088,10 @@ LTO::addRegularLTO(InputFile &Input, ArrayRef<SymbolResolution> InputRes,
         // linkage. We will decide later whether to do that when we link this
         // module (in linkRegularLTO), based on whether it is undefined.
         Mod.Keep.push_back(GV);
+        if (FirstCopy) {
+          GV->setLinkage(GlobalValue::WeakODRLinkage);
+          continue;
+        }
         GV->setLinkage(GlobalValue::AvailableExternallyLinkage);
         if (GV->hasComdat())
           NonPrevailingComdats.insert(GV->getComdat());
@@ -1237,6 +1257,16 @@ LTO::addThinLTO(BitcodeModule BM, ArrayRef<InputFile::Symbol> Syms,
           S->setDSOLocal(true);
         }
       }
+    }
+    // A reference has no summary to carry its resolution, which matters when
+    // no summary describes the definition either, such as one in a native
+    // object.
+    if (Sym.isUndefined() && !Sym.getIRName().empty()) {
+      auto It = ThinLTO.UndefinedFinality
+                    .try_emplace(GUID, R.FinalDefinitionInLinkageUnit)
+                    .first;
+      if (!R.FinalDefinitionInLinkageUnit)
+        It->second = false;
     }
   }
 
@@ -2063,6 +2093,16 @@ Error LTO::runThinLTO(AddStreamFn AddStream, FileCache Cache,
   });
   if (ThinLTO.ModuleMap.empty())
     return Error::success();
+
+  // A value that no summary describes is dso_local in the backends, and in
+  // the indexes written for distributed backends, if the linker resolved every
+  // reference to it to a definition in the linkage unit.
+  for (auto &[GUID, Final] : ThinLTO.UndefinedFinality)
+    if (Final)
+      if (ValueInfo VI = ThinLTO.CombinedIndex.getValueInfo(GUID);
+          VI && VI.getSummaryList().empty())
+        ThinLTO.CombinedIndex.setDSOLocalWithoutSummary(GUID);
+  ThinLTO.UndefinedFinality = DenseMap<GlobalValue::GUID, bool>();
 
   if (ThinLTO.ModulesToCompile && ThinLTO.ModulesToCompile->empty()) {
     llvm::errs() << "warning: [ThinLTO] No module compiled\n";

@@ -15,14 +15,14 @@ target triple = "x86_64-pc-windows-msvc"
 
 ; CHECK-DAG: # -- Begin function f1
 ; CHECK-DAG: f1:
-; OPT: define void @f1()
+; OPT: define dso_local void @f1()
 define void @f1() {
   ret void
 }
 
 ; CHECK-DAG: # -- Begin function f2
 ; CHECK-DAG: f2:
-; OPT: define void @f2()
+; OPT: define dso_local void @f2()
 define void @f2() {
   ret void
 }

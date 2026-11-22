@@ -8384,6 +8384,11 @@ Error ModuleSummaryIndexBitcodeReader::parseEntireSummary(unsigned ID) {
       break;
     }
 
+    case bitc::FS_DSO_LOCAL_WITHOUT_SUMMARY:
+      for (uint64_t GUID : Record)
+        TheIndex.setDSOLocalWithoutSummary(GUID);
+      break;
+
     case bitc::FS_TYPE_ID:
       parseTypeIdSummaryRecord(Record, Strtab, TheIndex);
       break;

@@ -10,6 +10,7 @@
 #include "COFFLinkerContext.h"
 #include "Config.h"
 #include "InputFiles.h"
+#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Args.h"
 #include "lld/Common/CommonLinkerContext.h"
@@ -170,6 +171,28 @@ void BitcodeCompiler::waitForLTOCleanup() {
 
 static void undefine(Symbol *s) { replaceSymbol<Undefined>(s, s->getName()); }
 
+// A PE image has no symbol preemption, so a reference is final when it
+// resolves to a definition in the image, other than an import, an absolute
+// symbol or one -wrap redirects after LTO. An undefined __imp_X without a weak
+// alias is a dllimport reference that a local import of X resolves, so it is
+// final where X is; a defined __imp_X is a pointer whatever X is.
+static bool isFinalInImage(SymbolTable &symtab, Symbol *sym) {
+  // ARM64EC binds symbols through anti-dependencies and thunks, some of which
+  // are created only after LTO.
+  if (symtab.isEC())
+    return false;
+  StringRef name = sym->getName();
+  if (name.consume_front("__imp_")) {
+    auto *u = dyn_cast<Undefined>(sym);
+    if (!u || u->getWeakAlias())
+      return false;
+    sym = symtab.find(name);
+  }
+  Defined *d = sym ? sym->getDefined() : nullptr;
+  return d && sym->canInline &&
+         !isa<DefinedAbsolute, DefinedImportData, DefinedImportThunk>(d);
+}
+
 void BitcodeCompiler::add(BitcodeFile &f) {
   lto::InputFile &obj = *f.obj;
   unsigned symNum = 0;
@@ -192,8 +215,11 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // be removed.
     r.Prevailing = !objSym.isUndefined() && sym->getFile() == &f;
     r.VisibleToRegularObj = sym->isUsedInRegularObj;
+    r.FinalDefinitionInLinkageUnit = isFinalInImage(f.symtab, sym);
+    // The object LTO generates defines the symbol again. It is undefined only
+    // once every file is added, so that later files still see the definition.
     if (r.Prevailing)
-      undefine(sym);
+      prevailingSyms.push_back(sym);
 
     // We tell LTO to not apply interprocedural optimization for wrapped
     // (with -wrap) symbols because otherwise LTO would inline them while
@@ -207,6 +233,9 @@ void BitcodeCompiler::add(BitcodeFile &f) {
 // and return the resulting objects.
 std::vector<InputFile *> BitcodeCompiler::compile() {
   llvm::TimeTraceScope timeScope("Bitcode compile");
+  for (Symbol *sym : prevailingSyms)
+    undefine(sym);
+
   unsigned maxTasks = ltoObj->getMaxTasks();
   buf.resize(maxTasks);
   files.resize(maxTasks);
@@ -289,7 +318,7 @@ std::vector<InputFile *> BitcodeCompiler::compile() {
       ltoObjName = saver().save(path.str());
     }
     if (llvm::is_contained(ctx.config.saveTempsArgs, "prelink") || emitASM)
-      saveBuffer(buf[i].second, ltoObjName);
+      saveBuffer(objBuf, ltoObjName);
     if (!emitASM)
       ret.push_back(ObjFile::create(ctx, MemoryBufferRef(objBuf, ltoObjName)));
   }

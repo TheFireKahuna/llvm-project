@@ -238,6 +238,9 @@ public:
   }
 
   std::vector<BitcodeFile *> bitcodeFileInstances;
+  // The copies of exact-match COMDATs that met a bitcode leader, compared with
+  // the leader once LTO has compiled it.
+  std::vector<std::pair<Symbol *, SectionChunk *>> exactMatchCopies;
 
   DefinedRegular *loadConfigSym = nullptr;
   uint32_t loadConfigSize = 0;

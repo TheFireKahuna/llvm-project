@@ -103,6 +103,16 @@
 ; RUN: ld.lld --thinlto-cache-dir=cache -o out b.bc a.bc -mllvm -emit-dwarf-unwind=default -mllvm -enable-ml-inliner=default
 ; RUN: ls cache | count 9
 
+;; A module served from the cache is written out under --lto-emit-asm as it is
+;; when compiled.
+; RUN: rm -rf cache && mkdir cache
+; RUN: ld.lld --thinlto-cache-dir=cache --lto-emit-asm -o out b.bc a.bc
+; RUN: rm out.lto.a.s
+; RUN: ld.lld --thinlto-cache-dir=cache --lto-emit-asm -o out b.bc a.bc
+; RUN: FileCheck %s --check-prefix=ASM < out.lto.a.s
+
+; ASM: globalfunc:
+
 target datalayout = "e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 

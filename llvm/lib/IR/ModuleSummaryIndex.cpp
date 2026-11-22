@@ -58,6 +58,9 @@ GlobalValue::VisibilityTypes ValueInfo::getELFVisibility() const {
 }
 
 bool ValueInfo::isDSOLocal(bool WithDSOLocalPropagation) const {
+  // A value without a summary is local only if the linker said so.
+  if (getSummaryList().empty())
+    return getRef()->second.isDSOLocalWithoutSummary();
   // With DSOLocal propagation done, the flag in evey summary is the same.
   // Check the first one is enough.
   return WithDSOLocalPropagation

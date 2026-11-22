@@ -475,6 +475,9 @@ protected:
       bool Prevailing = false;
     };
     std::map<std::string, CommonResolution> Commons;
+    /// The initializer of the first copy of each global in a COMDAT that
+    /// selects by exact match, and the file that held it.
+    StringMap<std::pair<const Constant *, StringRef>> ExactMatchCopies;
 
     unsigned ParallelCodeGenParallelismLevel;
     LTOLLVMContext Ctx;
@@ -504,6 +507,10 @@ protected:
     ModuleMapType ModuleMap;
     // The bitcode modules to compile, if specified by the LTO Config.
     std::optional<ModuleMapType> ModulesToCompile;
+    // For each value that modules reference without defining it, whether the
+    // linker resolved every such reference to a definition in the linkage
+    // unit.
+    DenseMap<GlobalValue::GUID, bool> UndefinedFinality;
 
     void setPrevailingModuleForGUID(GlobalValue::GUID GUID, StringRef Module) {
       PrevailingModuleForGUID[GUID] = Module;

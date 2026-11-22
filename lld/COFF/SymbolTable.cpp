@@ -1641,6 +1641,10 @@ void SymbolTable::compileBitcodeFiles() {
     obj->parse();
     ctx.objFileInstances.push_back(obj);
   }
+  for (auto [sym, copy] : exactMatchCopies)
+    if (auto *leader = dyn_cast<DefinedRegular>(sym))
+      if (leader->getChunk()->getContents() != copy->getContents())
+        reportDuplicate(leader, copy->file, copy);
 }
 
 void SymbolTable::waitForLTOCleanup() {

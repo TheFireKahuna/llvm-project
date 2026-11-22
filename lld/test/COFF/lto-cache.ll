@@ -59,6 +59,18 @@
 ; RUN: lld-link /lldltocache:%t.cache /entry:main /out:%t3 %t2.o %t.o /mllvm:-emit-dwarf-unwind=default /mllvm:-enable-ml-inliner=default
 ; RUN: ls %t.cache | count 9
 
+;; A module served from the cache is written out under /lldemit:asm as it is
+;; when compiled.
+; RUN: rm -rf %t.dir && mkdir -p %t.dir/cache && cd %t.dir
+; RUN: opt -module-hash -module-summary %s -o a.obj
+; RUN: opt -module-hash -module-summary %p/Inputs/lto-cache.ll -o b.obj
+; RUN: lld-link /lldltocache:cache /lldemit:asm /entry:main /out:out.exe b.obj a.obj
+; RUN: rm out.exe.lto.a.s
+; RUN: lld-link /lldltocache:cache /lldemit:asm /entry:main /out:out.exe b.obj a.obj
+; RUN: FileCheck %s --check-prefix=ASM < out.exe.lto.a.s
+
+; ASM: globalfunc:
+
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-windows-msvc"
 

@@ -21,12 +21,12 @@
 
 ; THUNK1: <_f1>:
 ; THUNK1-NEXT: adrp x1,
-; THUNK1-NEXT: ldr x1, [x1]
+; THUNK1-NEXT: add x1, x1,
 ; THUNK1-NEXT: b
 
 ; THUNK2: <_f2>:
 ; THUNK2-NEXT: adrp x1,
-; THUNK2-NEXT: ldr x1, [x1]
+; THUNK2-NEXT: add x1, x1,
 ; THUNK2-NEXT: b
 
 ;--- foo.ll

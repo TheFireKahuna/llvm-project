@@ -12,11 +12,11 @@
 ; RUN: FileCheck %s < %t.dir/thinlto-archives/main.exe.resolution.txt
 
 ; CHECK: {{/thinlto-archives/main.obj$}}
-; CHECK: {{^-r=.*/thinlto-archives/main.obj,main,px$}}
+; CHECK: {{^-r=.*/thinlto-archives/main.obj,main,plx$}}
 ; CHECK: {{/thinlto-archives/a.libbar.obj[0-9]+$}}
-; CHECK-NEXT: {{^-r=.*/thinlto-archives/a.libbar.obj[0-9]+,foo,p$}}
+; CHECK-NEXT: {{^-r=.*/thinlto-archives/a.libbar.obj[0-9]+,foo,pl$}}
 ; CHECK-NEXT: {{/thinlto-archives/b.libbar.obj[0-9]+$}}
-; CHECK-NEXT: {{^-r=.*/thinlto-archives/b.libbar.obj[0-9]+,bar,p$}}
+; CHECK-NEXT: {{^-r=.*/thinlto-archives/b.libbar.obj[0-9]+,bar,pl$}}
 
 target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-pc-windows-msvc"

@@ -1901,6 +1901,16 @@ void llvm::thinLTOFinalizeInModule(Module &TheModule,
     if (NewLinkage == GV.getLinkage())
       return;
 
+    // A copy in a COMDAT that selects by exact match stays a definition, so
+    // that the linker compares it with the copy that prevails.
+    if (GlobalValue::isAvailableExternallyLinkage(NewLinkage) &&
+        GV.hasComdat() &&
+        GV.getComdat()->getSelectionKind() == Comdat::ExactMatch) {
+      if (GV.hasLinkOnceLinkage())
+        GV.setLinkage(GlobalValue::getWeakLinkage(GV.hasLinkOnceODRLinkage()));
+      return;
+    }
+
     // Check for a non-prevailing def that has interposable linkage
     // (e.g. non-odr weak or linkonce). In that case we can't simply
     // convert to available_externally, since it would lose the

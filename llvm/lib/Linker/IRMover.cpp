@@ -654,6 +654,11 @@ GlobalValue *IRLinker::copyGlobalValueProto(const GlobalValue *SGV,
                              /*init*/ nullptr, SGV->getName(),
                              /*insertbefore*/ nullptr,
                              SGV->getThreadLocalMode(), SGV->getAddressSpace());
+    // The declaration that stands for an alias is as local as the alias.
+    if (!ForDefinition) {
+      NewGV->setVisibility(SGV->getVisibility());
+      NewGV->setDSOLocal(SGV->isDSOLocal());
+    }
   }
 
   if (ForDefinition)

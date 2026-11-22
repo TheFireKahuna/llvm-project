@@ -777,6 +777,9 @@ void ObjFile::handleComdatSelection(
   if (isa<BitcodeFile>(leader->file)) {
     // If the leader is only a LTO symbol, we don't know e.g. its final size
     // yet, so we can't do the full strict comdat selection checking yet.
+    if (selection == IMAGE_COMDAT_SELECT_EXACT_MATCH)
+      symtab.exactMatchCopies.push_back(
+          {leader, make<SectionChunk>(this, getSection(sym))});
     selection = leaderSelection = IMAGE_COMDAT_SELECT_ANY;
   }
 
