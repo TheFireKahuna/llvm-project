@@ -92,13 +92,6 @@ static void addWeakAlias(Symbol *source, Symbol *target,
     u->setWeakAlias(target, kind);
 }
 
-// A strong reference drops a NOLIBRARY or LIBRARY weak alias.
-static void addStrongReference(Symbol *s) {
-  auto *u = dyn_cast<Undefined>(s);
-  if (u && (u->weakKind == Symbol::NoLibrary || u->weakKind == Symbol::Library))
-    u->setWeakAlias(nullptr);
-}
-
 // link.exe takes a weak external with a section number as a definition.
 static bool isDefinedWeakExternal(COFFSymbolRef sym) {
   return sym.isWeakExternal() && sym.getSectionNumber() != IMAGE_SYM_UNDEFINED;
@@ -672,7 +665,8 @@ void ObjFile::initializeSymbols() {
           break;
         }
         kind = Symbol::NoLibrary;
-        sets = !priorUndef || priorUndef->weakAlias;
+        // A bitcode file's weak reference defers the undefined symbol.
+        sets = !priorUndef || priorUndef->weakAlias || prior->deferUndefined;
         break;
       case IMAGE_WEAK_EXTERN_SEARCH_LIBRARY:
         kind = Symbol::Library;
@@ -734,7 +728,7 @@ Symbol *ObjFile::createUndefined(COFFSymbolRef sym, bool overrideLazy) {
   StringRef name = check(coffObj->getSymbolName(sym));
   Symbol *s = symtab.addUndefined(name, this, overrideLazy);
   if (!sym.isWeakExternal())
-    addStrongReference(s);
+    symtab.addStrongReference(s);
 
   // Add an anti-dependency alias for undefined AMD64 symbols on the ARM64EC
   // target.
@@ -1461,7 +1455,7 @@ void BitcodeFile::parse() {
       if (objSym.isWeak())
         sym->deferUndefined = true;
       else
-        addStrongReference(sym);
+        symtab.addStrongReference(sym);
       // If one LTO object file references (i.e. has an undefined reference to)
       // a symbol with an __imp_ prefix, the LTO compilation itself sees it
       // as unprefixed but with a dllimport attribute instead, and doesn't

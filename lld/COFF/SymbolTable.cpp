@@ -954,12 +954,39 @@ Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
                                   bool overrideLazy) {
   auto [s, wasInserted] = insert(name, f);
   if (wasInserted || (s->isLazy() && overrideLazy)) {
+    // A strong reference to a weak external still finds the archive symbol.
+    if (auto *l = dyn_cast<LazyArchive>(s))
+      archiveSymbols.try_emplace(CachedHashStringRef(l->sym.getName()), l->file,
+                                 l->sym);
+    else if (auto *l = dyn_cast<LazyObject>(s))
+      lazyObjects.try_emplace(CachedHashStringRef(l->getName()), l->file);
     replaceSymbol<Undefined>(s, name);
     return s;
   }
   if (s->isLazy())
     forceLazy(s);
   return s;
+}
+
+// A strong reference drops a NOLIBRARY or LIBRARY weak alias and loads the
+// archive member or lazy object the weak external kept out.
+void SymbolTable::addStrongReference(Symbol *s) {
+  auto *u = dyn_cast<Undefined>(s);
+  if (!u || !u->weakAlias ||
+      (u->weakKind != Symbol::NoLibrary && u->weakKind != Symbol::Library))
+    return;
+  u->setWeakAlias(nullptr);
+  if (s->pendingArchiveLoad)
+    return;
+  CachedHashStringRef key(s->getName());
+  if (auto it = archiveSymbols.find(key); it != archiveSymbols.end()) {
+    s->pendingArchiveLoad = true;
+    it->second.first->addMember(it->second.second);
+  } else if (InputFile *f = lazyObjects.lookup(key); f && f->lazy) {
+    s->pendingArchiveLoad = true;
+    f->lazy = false;
+    ctx.driver.addFile(f);
+  }
 }
 
 Symbol *SymbolTable::addGCRoot(StringRef name, bool aliasEC) {
@@ -1066,8 +1093,12 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
     return;
   }
   Symbol *s = symVector[it->second];
-  if (!loadsLazy(s, f))
+  if (!loadsLazy(s, f)) {
+    // A later strong reference to a weak external finds the member.
+    if (isa<Undefined>(s))
+      archiveSymbols.try_emplace(key, f, sym);
     return;
+  }
   s->pendingArchiveLoad = true;
   f->addMember(sym);
 }
@@ -1081,8 +1112,11 @@ void SymbolTable::addLazyObject(InputFile *f, StringRef n) {
     replaceSymbol<LazyObject>(s, f, n);
     return;
   }
-  if (!loadsLazy(s, f))
+  if (!loadsLazy(s, f)) {
+    if (isa<Undefined>(s))
+      lazyObjects.try_emplace(CachedHashStringRef(n), f);
     return;
+  }
   s->pendingArchiveLoad = true;
   f->lazy = false;
   ctx.driver.addFile(f);

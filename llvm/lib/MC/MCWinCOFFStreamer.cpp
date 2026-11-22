@@ -176,6 +176,12 @@ bool MCWinCOFFStreamer::emitSymbolAttribute(MCSymbol *S,
     Symbol->setWeakExternalCharacteristics(COFF::IMAGE_WEAK_EXTERN_SEARCH_ALIAS);
     Symbol->setExternal(true);
     break;
+  case MCSA_WeakDefinition:
+    // GNU as's form of a weak definition.
+    Symbol->setWeakExternalCharacteristics(
+        COFF::IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY);
+    Symbol->setExternal(true);
+    break;
   case MCSA_WeakAntiDep:
     Symbol->setWeakExternalCharacteristics(COFF::IMAGE_WEAK_EXTERN_ANTI_DEPENDENCY);
     Symbol->setExternal(true);

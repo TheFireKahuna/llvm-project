@@ -444,6 +444,13 @@ void WinCOFFWriter::defineSymbol(const MCSymbolCOFF &MCSym) {
     Sym->Aux[0].Aux.WeakExternal.Characteristics =
         static_cast<const MCSymbolCOFF &>(MCSym)
             .getWeakExternalCharacteristics();
+    // Windows Itanium and NT-POSIX bind a weak reference as ELF binds a weak
+    // undefined symbol: a strong reference from another object prevails. An
+    // absolute value is a definition.
+    if (Local && !Sec && !MCSym.isVariable() &&
+        getContext().getTargetTriple().isWindowsItaniumABIEnvironment())
+      Sym->Aux[0].Aux.WeakExternal.Characteristics =
+          COFF::IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY;
   } else {
     if (!Base)
       Sym->Data.SectionNumber = COFF::IMAGE_SYM_ABSOLUTE;

@@ -41,6 +41,24 @@ RUN: not lld-link -dll -noentry -out:out9.dll nolib.obj test.obj 2>&1 | FileChec
 RUN: not lld-link -dll -noentry -out:out9.dll test.obj lib.obj 2>&1 | FileCheck --check-prefix=UNDEF %s
 RUN: %{link} lib.obj def.lib && %{dump} --check-prefix=CHECK3
 
+A weak reference, a NOLIBRARY weak external whose default is null, binds as an
+ELF weak undefined does: it loads no archive member, and a strong reference in
+either order drops its default and loads the member, also one of an archive
+read before the weak external, or after it and before the strong reference,
+and a lazy object as an archive's member.
+
+RUN: yaml2obj -DCH=IMAGE_WEAK_EXTERN_SEARCH_NOLIBRARY -DDNAME=null -DDVAL=0 search.yaml -o wref.obj
+RUN: %{link} wref.obj def.lib && %{dump} --check-prefix=CHECK0
+RUN: %{link} wref.obj test.obj def.lib && %{dump} --check-prefix=CHECK3
+RUN: %{link} test.obj wref.obj def.lib && %{dump} --check-prefix=CHECK3
+RUN: %{link} def.lib wref.obj test.obj && %{dump} --check-prefix=CHECK3
+RUN: %{link} wref.obj def.lib test.obj && %{dump} --check-prefix=CHECK3
+RUN: %{link} wref.obj -start-lib def.obj -end-lib && %{dump} --check-prefix=CHECK0
+RUN: %{link} wref.obj -start-lib def.obj -end-lib test.obj && %{dump} --check-prefix=CHECK3
+RUN: %{link} -start-lib def.obj -end-lib wref.obj test.obj && %{dump} --check-prefix=CHECK3
+RUN: %{link} test.obj wref.obj -start-lib def.obj -end-lib && %{dump} --check-prefix=CHECK3
+RUN: %{link} -machine:x64 def.lib wref.obj test.obj && %{dump} --check-prefix=CHECK3
+
 A weak external with a section number is a definition.
 
 RUN: yaml2obj -DCH=IMAGE_WEAK_EXTERN_SEARCH_ALIAS -DSEC=-1 -DVAL=3 search.yaml -o defined.obj
@@ -59,6 +77,7 @@ RUN: %{link} alias3.obj nolib.obj && %{dump} --check-prefix=CHECK3
 RUN: %{link} ref.obj nolib.obj && %{dump} --check-prefix=CHECK2
 RUN: %{link} alias3.obj ref.obj && %{dump} --check-prefix=CHECK3
 
+CHECK0: 00000000
 CHECK1: 01000000
 CHECK2: 02000000
 CHECK3: 03000000

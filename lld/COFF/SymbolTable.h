@@ -142,6 +142,7 @@ public:
   Symbol *addAbsolute(StringRef n, uint64_t va);
 
   Symbol *addUndefined(StringRef name, InputFile *f, bool overrideLazy);
+  void addStrongReference(Symbol *s);
   bool loadsLazy(Symbol *s, InputFile *f);
   void warnWeakDefinition(Symbol *s, InputFile *lazy, InputFile *weak);
   void addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym);
@@ -283,6 +284,8 @@ private:
   llvm::DenseMap<llvm::CachedHashStringRef,
                  std::pair<ArchiveFile *, Archive::Symbol>>
       archiveSymbols;
+  // The lazy objects that a weak external kept out, by the names they define.
+  llvm::DenseMap<llvm::CachedHashStringRef, InputFile *> lazyObjects;
   std::unique_ptr<BitcodeCompiler> lto;
   std::vector<std::pair<Symbol *, Symbol *>> entryThunks;
   llvm::DenseMap<Symbol *, Symbol *> exitThunks;
