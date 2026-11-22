@@ -253,18 +253,21 @@ void ICF::run() {
     if (auto *d = dyn_cast<Defined>(s))
       suppressed.insert(d->getChunk());
   // A program enumerates a run of sections through its bounds, so folding one
-  // away would drop an entry.
-  DenseSet<SectionChunk *> bounded;
+  // away would drop an entry. A function override's body keeps its own, so
+  // that branches to two of them stay apart, each a site of its own record.
+  DenseSet<SectionChunk *> distinct;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (SymbolTable::SectionRun &run : symtab.sectionRuns)
-      bounded.insert_range(run.chunks);
+      distinct.insert_range(run.chunks);
+    for (FunctionOverride *fo : symtab.functionOverrides)
+      distinct.insert(fo->body->getChunk());
   });
 
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;
   for (Chunk *c : ctx.driver.getChunks()) {
     if (auto *sc = dyn_cast<SectionChunk>(c)) {
-      if (isEligible(sc) && !bounded.contains(sc))
+      if (isEligible(sc) && !distinct.contains(sc))
         chunks.push_back(sc);
       else
         sc->eqClass[0] = nextId++;

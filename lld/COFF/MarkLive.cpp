@@ -84,6 +84,14 @@ void markLive(COFFLinkerContext &ctx) {
     } else if (isa<DefinedSynthetic>(b)) {
       for (SectionChunk *c : runs.lookup(b))
         enqueue(c);
+      // A function override's stub branches to its body or a candidate.
+      if (FunctionOverrideThunk *t = FunctionOverrideThunk::get(b);
+          t && !t->live) {
+        t->live = true;
+        addSym(t->fo.body);
+        for (Defined *c : t->fo.candidates)
+          addSym(c);
+      }
     }
   };
 

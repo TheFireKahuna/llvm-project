@@ -31,6 +31,7 @@ class COFFLinkerContext;
 class Defined;
 class DefinedAbsolute;
 class DefinedRegular;
+struct FunctionOverride;
 class ImportThunkChunk;
 class LazyArchive;
 class SameAddressThunkARM64EC;
@@ -251,6 +252,12 @@ public:
   DefinedRegular *loadConfigSym = nullptr;
   uint32_t loadConfigSize = 0;
   void initializeLoadConfig();
+
+  // Under /funcoverride, the X_$fo_bdd$ sections of the objects read, and the
+  // function overrides they make.
+  std::vector<SectionChunk *> functionOverrideDiagrams;
+  std::vector<FunctionOverride *> functionOverrides;
+  void initializeFunctionOverrides();
 
   std::string printSymbol(Symbol *sym) const;
 

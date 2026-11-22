@@ -89,6 +89,8 @@ bool Symbol::isLive() const {
     return imp->getChunk()->live;
   if (auto *imp = dyn_cast<DefinedLocalImport>(this))
     return imp->getChunk()->isLive();
+  if (FunctionOverrideThunk *t = FunctionOverrideThunk::get(this))
+    return t->live;
   // Assume any other kind of symbol is live.
   return true;
 }

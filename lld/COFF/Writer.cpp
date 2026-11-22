@@ -285,6 +285,8 @@ private:
   void addBaserels();
   void addBaserelBlocks(std::vector<Baserel> &v);
   void createDynamicRelocs();
+  void createFunctionOverrides();
+  void checkFunctionOverrides();
 
   uint32_t getSizeOfInitializedData();
 
@@ -810,8 +812,9 @@ void Writer::run() {
     createImportTables();
     createSections();
     appendImportThunks();
-    // Import thunks must be added before the Control Flow Guard tables are
-    // added.
+    createFunctionOverrides();
+    // Import thunks and function-override stubs must be added before the
+    // Control Flow Guard tables are added.
     createMiscChunks();
     createExportTable();
     mergeSections();
@@ -821,6 +824,7 @@ void Writer::run() {
     removeUnusedSections();
     layoutSections();
     finalizeAddresses();
+    checkFunctionOverrides();
     removeEmptySections();
     assignOutputSectionIndices();
     placeStartStopSymbols();
@@ -1837,6 +1841,10 @@ void Writer::assignAddresses() {
       sec->chunks.clear();
       addBaserels();
       if (ctx.dynamicRelocs) {
+        // Windows reads no table at offset 0, so it follows an empty block
+        // where there are no base relocations, as link.exe writes.
+        if (sec->chunks.empty())
+          sec->addChunk(make<BaserelChunk>(0, nullptr, nullptr));
         ctx.dynamicRelocs->finalize();
         relocSec->addChunk(ctx.dynamicRelocs);
       }
@@ -2188,11 +2196,14 @@ static void maybeAddAddressTakenFunction(SymbolRVASet &addressTakenSyms,
     // determinable.
     break;
   case Symbol::DefinedSyntheticKind:
-    // For EC export thunks, mark both the thunk itself and its target.
+    // For EC export thunks, mark both the thunk itself and its target. A
+    // function override's stub is the function.
     if (auto expChunk = dyn_cast_or_null<ECExportThunkChunk>(
             cast<Defined>(s)->getChunk())) {
       addSymbolToRVASet(addressTakenSyms, cast<Defined>(s));
       addSymbolToRVASet(addressTakenSyms, expChunk->target);
+    } else if (FunctionOverrideThunk::get(s)) {
+      addSymbolToRVASet(addressTakenSyms, cast<Defined>(s));
     }
     break;
   case Symbol::LazyArchiveKind:
@@ -3171,8 +3182,61 @@ void Writer::addBaserelBlocks(std::vector<Baserel> &v) {
   relocSec->addChunk(make<BaserelChunk>(page, &v[i], &v[0] + j));
 }
 
-void Writer::createDynamicRelocs() {
+// Lays out each live function override's stub and lists the function in the
+// dynamic value relocation table with its sites: the stub's branch, and on
+// ARM64 each BRANCH26 to the function, which as a branch it states.
+void Writer::createFunctionOverrides() {
+  std::vector<FunctionOverride *> fos;
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    for (FunctionOverride *fo : symtab.functionOverrides) {
+      if (!fo->stub->live)
+        continue;
+      textSec->addChunk(fo->stub);
+      fo->sites.emplace_back(fo->stub, fo->stub->prefix.size() +
+                                           (fo->stub->machine == AMD64));
+      // A candidate that is itself a function override means its body.
+      for (Defined *&c : fo->candidates)
+        if (FunctionOverrideThunk *t = FunctionOverrideThunk::get(c))
+          c = t->fo.body;
+      fos.push_back(fo);
+    }
+  });
+  if (fos.empty())
+    return;
   if (!ctx.dynamicRelocs)
+    ctx.dynamicRelocs = make<DynamicRelocsChunk>();
+  ctx.dynamicRelocs->functionOverrides = std::move(fos);
+  if (ctx.config.machine != ARM64)
+    return;
+  for (OutputSection *sec : ctx.outputSections)
+    for (Chunk *c : sec->chunks)
+      if (auto *sc = dyn_cast<SectionChunk>(c))
+        for (const coff_relocation &rel : sc->getRelocs())
+          if (FunctionOverrideThunk *t =
+                  rel.Type == IMAGE_REL_ARM64_BRANCH26
+                      ? FunctionOverrideThunk::get(sc->getRelocTarget(rel))
+                      : nullptr;
+              t &&
+              !(read32le(&sc->getContents()[rel.VirtualAddress]) & 0x3ffffff))
+            t->fo.sites.emplace_back(sc, rel.VirtualAddress);
+}
+
+// Windows writes an ARM64 site's displacement without checking its range.
+void Writer::checkFunctionOverrides() {
+  if (!ctx.dynamicRelocs || ctx.config.machine != ARM64)
+    return;
+  for (FunctionOverride *fo : ctx.dynamicRelocs->functionOverrides)
+    for (auto [c, off] : fo->sites)
+      for (Defined *d : fo->candidates)
+        if (!isInt<28>(int64_t(d->getRVA()) - int64_t(c->getRVA() + off)))
+          Err(ctx) << "function override " << fo->body->getName()
+                   << ": candidate " << d->getName()
+                   << " is out of range of the branch at RVA 0x"
+                   << Twine::utohexstr(c->getRVA() + off);
+}
+
+void Writer::createDynamicRelocs() {
+  if (ctx.config.machine != ARM64X)
     return;
 
   // Adjust the Machine field in the COFF header to AMD64.

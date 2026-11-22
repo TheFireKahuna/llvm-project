@@ -1126,7 +1126,7 @@ static pdb::BulkPublic createPublic(COFFLinkerContext &ctx, Defined *def) {
   if (auto *d = dyn_cast<DefinedCOFF>(def)) {
     if (d->getCOFFSymbol().isFunctionDefinition())
       flags = PublicSymFlags::Function;
-  } else if (isa<DefinedImportThunk>(def)) {
+  } else if (isa<DefinedImportThunk>(def) || FunctionOverrideThunk::get(def)) {
     flags = PublicSymFlags::Function;
   }
   pub.setFlags(flags);
@@ -1517,6 +1517,34 @@ static void addLinkerModuleSectionSymbol(pdb::DbiModuleDescriptorBuilder &mod,
   }
 }
 
+// Adds an S_THUNK32 for the thunk in chunk c that starts at offset in it.
+static void addThunkSymbol(COFFLinkerContext &ctx,
+                           pdb::DbiModuleDescriptorBuilder &mod, StringRef name,
+                           Chunk *c, uint32_t offset) {
+  OutputSection *os = ctx.getOutputSection(c);
+  Thunk32Sym ts(SymbolRecordKind::Thunk32Sym);
+  ScopeEndSym es(SymbolRecordKind::ScopeEndSym);
+  ts.Name = name;
+  ts.Parent = 0;
+  ts.End = 0;
+  ts.Next = 0;
+  ts.Thunk = ThunkOrdinal::Standard;
+  ts.Length = c->getSize() - offset;
+  ts.Segment = os->sectionIndex;
+  ts.Offset = c->getRVA() + offset - os->getRVA();
+
+  CVSymbol newSym = codeview::SymbolSerializer::writeOneSymbol(
+      ts, bAlloc(), CodeViewContainer::Pdb);
+  // Write ptrEnd for the S_THUNK32.
+  ScopeRecord *thunkSymScope =
+      getSymbolScopeFields(const_cast<uint8_t *>(newSym.data().data()));
+  mod.addSymbol(newSym);
+  newSym = codeview::SymbolSerializer::writeOneSymbol(es, bAlloc(),
+                                                      CodeViewContainer::Pdb);
+  thunkSymScope->ptrEnd = mod.getNextSymbolOffset();
+  mod.addSymbol(newSym);
+}
+
 // Add all import files as modules to the PDB.
 void PDBLinker::addImportFilesToPDB() {
   if (ctx.importFileInstances.empty())
@@ -1559,48 +1587,21 @@ void PDBLinker::addImportFilesToPDB() {
     }
 
     DefinedImportThunk *thunk = cast<DefinedImportThunk>(file->thunkSym);
-    Chunk *thunkChunk = thunk->getChunk();
-    OutputSection *thunkOS = ctx.getOutputSection(thunkChunk);
 
     ObjNameSym ons(SymbolRecordKind::ObjNameSym);
     Compile3Sym cs(SymbolRecordKind::Compile3Sym);
-    Thunk32Sym ts(SymbolRecordKind::Thunk32Sym);
-    ScopeEndSym es(SymbolRecordKind::ScopeEndSym);
 
     ons.Name = file->dllName;
     ons.Signature = 0;
 
     fillLinkerVerRecord(cs, ctx.config.machine);
 
-    ts.Name = thunk->getName();
-    ts.Parent = 0;
-    ts.End = 0;
-    ts.Next = 0;
-    ts.Thunk = ThunkOrdinal::Standard;
-    ts.Length = thunkChunk->getSize();
-    ts.Segment = thunkOS->sectionIndex;
-    ts.Offset = thunkChunk->getRVA() - thunkOS->getRVA();
-
     llvm::BumpPtrAllocator &bAlloc = lld::bAlloc();
     mod->addSymbol(codeview::SymbolSerializer::writeOneSymbol(
         ons, bAlloc, CodeViewContainer::Pdb));
     mod->addSymbol(codeview::SymbolSerializer::writeOneSymbol(
         cs, bAlloc, CodeViewContainer::Pdb));
-
-    CVSymbol newSym = codeview::SymbolSerializer::writeOneSymbol(
-        ts, bAlloc, CodeViewContainer::Pdb);
-
-    // Write ptrEnd for the S_THUNK32.
-    ScopeRecord *thunkSymScope =
-        getSymbolScopeFields(const_cast<uint8_t *>(newSym.data().data()));
-
-    mod->addSymbol(newSym);
-
-    newSym = codeview::SymbolSerializer::writeOneSymbol(es, bAlloc,
-                                                        CodeViewContainer::Pdb);
-    thunkSymScope->ptrEnd = mod->getNextSymbolOffset();
-
-    mod->addSymbol(newSym);
+    addThunkSymbol(ctx, *mod, thunk->getName(), thunk->getChunk(), 0);
 
     pdb::SectionContrib sc =
         createSectionContrib(ctx, thunk->getChunk(), mod->getModuleIndex());
@@ -1700,6 +1701,10 @@ void PDBLinker::addSections(ArrayRef<uint8_t> sectionTable) {
       builder.getDbiBuilder().addSectionContrib(sc);
     }
   }
+  if (ctx.dynamicRelocs)
+    for (FunctionOverride *fo : ctx.dynamicRelocs->functionOverrides)
+      addThunkSymbol(ctx, linkerModule, fo->body->getName(), fo->stub,
+                     fo->stub->prefix.size());
 
   // The * Linker * first section contrib is only used along with /INCREMENTAL,
   // to provide trampolines thunks for incremental function patching. Set this

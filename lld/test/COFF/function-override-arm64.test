@@ -1,0 +1,105 @@
+REQUIRES: aarch64
+RUN: split-file %s %t.dir && cd %t.dir
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows fo.s -o fo.obj
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows main.s -o main.obj
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows %S/Inputs/loadconfig-arm64.s -o loadconfig.obj
+
+A BRANCH26 states a branch, so each to X is a site of X's record, as the
+stub's own branch is, and branches to the default body; other references
+take the stub, unless they have an addend.
+Microsoft's ARM64 objects define X_$fo_default$ as an absolute 0, and the
+record's original RVA is X's body.
+
+RUN: lld-link -machine:arm64 -funcoverride -entry:main -out:out.exe main.obj fo.obj loadconfig.obj
+RUN: llvm-readobj --coff-load-config out.exe | FileCheck %s
+RUN: llvm-objdump -d -s --no-show-raw-insn out.exe | FileCheck --check-prefix=DISASM %s
+
+CHECK:      FunctionOverride [
+CHECK-NEXT:   Entry {
+CHECK-NEXT:     OriginalRVA: 0x1020
+CHECK-NEXT:     RVAs [
+CHECK-NEXT:       RVA: 0x1030
+CHECK-NEXT:     ]
+CHECK-NEXT:     Fixups [
+CHECK-NEXT:       Fixup {
+CHECK-NEXT:         Type: ARM64_BRANCH26
+CHECK-NEXT:         RVA: 0x1000
+CHECK-NEXT:       }
+CHECK-NEXT:       Fixup {
+CHECK-NEXT:         Type: ARM64_BRANCH26
+CHECK-NEXT:         RVA: 0x1004
+CHECK-NEXT:       }
+CHECK-NEXT:       Fixup {
+CHECK-NEXT:         Type: ARM64_BRANCH26
+CHECK-NEXT:         RVA: 0x1040
+CHECK-NEXT:       }
+CHECK-NEXT:     ]
+
+DISASM:      Contents of section .data:
+DISASM-NEXT:  140003000 40100040 01000000
+DISASM:      140001000: bl 0x140001020
+DISASM-NEXT: 140001004: b 0x140001020
+DISASM-NEXT: 140001008: adrp x0, 0x140001000
+DISASM-NEXT: 14000100c: add x0, x0, #0x40
+DISASM-NEXT: 140001010: adrp x1, 0x140001000
+DISASM-NEXT: 140001014: add x1, x1, #0x28
+DISASM:      140001040: b 0x140001020
+
+Windows writes a site's displacement without checking its range.
+
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows fo.s --defsym FAR=1 -o far.obj
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows --defsym FAR=1 main.s -o mainfar.obj
+RUN: not lld-link -machine:arm64 -funcoverride -entry:main -out:err.exe mainfar.obj far.obj loadconfig.obj 2>&1 \
+RUN:   | FileCheck --check-prefix=RANGE %s
+RANGE: error: function override X: candidate far is out of range of the branch at RVA 0x1000
+
+#--- main.s
+  .text
+  .globl main
+main:
+  bl X
+  b X
+  adrp x0, X
+  add x0, x0, :lo12:X
+  adrp x1, X + 8
+  add x1, x1, :lo12:X + 8
+
+  .section .text$mn,"xr",one_only,X
+  .globl X
+  .p2align 4
+X:
+  mov w0, #1
+  ret
+  .globl "X_$fo_default$"
+  .set "X_$fo_default$", 0
+
+  .section .text$mn,"xr",one_only,c1
+  .globl c1
+  .p2align 4
+c1:
+  mov w0, #2
+  ret
+
+  .data
+  .xword X
+
+.ifdef FAR
+  .section .text2,"xr"
+  .space 0x8000000
+  .globl far
+far:
+  ret
+.endif
+
+#--- fo.s
+  .section "X_$fo_bdd$","dr"
+  .long 1, 0x18
+  .short 2, 1, 0xc, 1, 1, 1
+  .zero 12
+  .section "X_$fo_rvas$","dr"
+  .globl "X_$fo_rvas$"
+.ifdef FAR
+  .rva far
+.else
+  .rva c1
+.endif

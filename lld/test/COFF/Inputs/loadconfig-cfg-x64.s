@@ -1,6 +1,7 @@
 # This is the _load_config_used definition needed for /guard:cf tests.
 
         .section .00cfg,"dr"
+        .p2align 3
 .globl _load_config_used
 _load_config_used:
         .long 256

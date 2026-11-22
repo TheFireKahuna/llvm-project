@@ -2366,6 +2366,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   config->integrityCheck =
       args.hasFlag(OPT_integritycheck, OPT_integritycheck_no, false);
   config->cetCompat = args.hasFlag(OPT_cetcompat, OPT_cetcompat_no, false);
+  config->functionOverride = args.hasArg(OPT_funcoverride);
   config->cetCompatStrict =
       args.hasFlag(OPT_cetcompatstrict, OPT_cetcompatstrict_no, false);
   config->cetCompatIpValidationRelaxed = args.hasFlag(
@@ -3023,6 +3024,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachActiveSymtab([](SymbolTable &symtab) {
     symtab.initializeECThunks();
     symtab.initializeLoadConfig();
+    symtab.initializeFunctionOverrides();
   });
 
   // Identify unreferenced COMDAT sections.

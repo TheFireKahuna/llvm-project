@@ -475,7 +475,14 @@ SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
     MergeChunk::addSection(symtab.ctx, c);
   else if (name == ".rsrc" || name.starts_with(".rsrc$"))
     resourceChunks.push_back(c);
-  else if (!(sec->Characteristics & llvm::COFF::IMAGE_SCN_LNK_INFO))
+  else if (symtab.ctx.config.functionOverride &&
+           (name.ends_with("_$fo_bdd$") || name.ends_with("_$fo_rvas$"))) {
+    // A function override's diagram and candidates are read by name, never
+    // laid out.
+    c->live = false;
+    if (name.ends_with("_$fo_bdd$"))
+      symtab.functionOverrideDiagrams.push_back(c);
+  } else if (!(sec->Characteristics & llvm::COFF::IMAGE_SCN_LNK_INFO))
     chunks.push_back(c);
 
   return c;

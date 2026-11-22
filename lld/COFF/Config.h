@@ -342,6 +342,7 @@ struct Configuration {
   bool cetCompatStrict = false;
   bool cetCompatIpValidationRelaxed = false;
   bool cetCompatDynamicApisInProcOnly = false;
+  bool functionOverride = false;
   bool hotpatchCompat = false;
   bool nxCompat = true;
   bool allowIsolation = true;

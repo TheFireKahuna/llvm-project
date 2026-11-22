@@ -173,6 +173,8 @@ def didatownsection : F<"didatownsection">,
     HelpText<"Protect the delay-load IAT in its own .didat section">;
 def dll : F<"dll">, HelpText<"Create a DLL">;
 def driver : F<"driver">, HelpText<"Generate a Windows NT Kernel Mode Driver">;
+def funcoverride : F<"funcoverride">,
+    HelpText<"Let Windows select function bodies as it maps the image">;
 def driver_wdm : F<"driver:wdm">,
     HelpText<"Set IMAGE_FILE_UP_SYSTEM_ONLY bit in PE header">;
 def driver_uponly : F<"driver:uponly">,

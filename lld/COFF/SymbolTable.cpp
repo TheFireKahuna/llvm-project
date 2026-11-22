@@ -768,6 +768,106 @@ void SymbolTable::initializeLoadConfig() {
   loadConfigSym = sym;
 }
 
+// X_$fo_bdd$ holds the binary decision diagram by which Windows selects a body
+// for X as it maps the image, and X_$fo_rvas$ the candidates its leaves index.
+// X becomes a stub that branches to the default body, a branch Windows
+// rewrites to the selected one.
+void SymbolTable::initializeFunctionOverrides() {
+  for (SectionChunk *bdd : functionOverrideDiagrams) {
+    StringRef name = bdd->getSectionName().drop_back(strlen("_$fo_bdd$"));
+    auto fail = [&](const Twine &msg) {
+      Err(ctx) << bdd->file << ": function override " << name << ": " << msg;
+    };
+    // An object may hold the records of functions the image does not have,
+    // but a function defined other than in a section cannot take a stub.
+    Symbol *sym = find(name);
+    auto *x = dyn_cast_or_null<DefinedRegular>(sym);
+    if (!x) {
+      if (isa_and_nonnull<Defined>(sym))
+        Warn(ctx) << bdd->file << ": function override " << name << ": " << name
+                  << " is "
+                  << (isa<DefinedImportThunk>(sym) ? "an import"
+                      : isa<DefinedAbsolute>(sym)  ? "absolute"
+                      : isa<DefinedCommon>(sym)    ? "a common symbol"
+                                                   : "linker-defined")
+                  << "; ignoring the record";
+      continue;
+    }
+    MachineTypes machine = ctx.config.machine;
+    if (machine != AMD64 && machine != ARM64) {
+      fail("not supported on this machine");
+      continue;
+    }
+    auto *rvas =
+        dyn_cast_or_null<DefinedRegular>(find((name + "_$fo_rvas$").str()));
+    if (!rvas) {
+      fail("needs " + name + "_$fo_rvas$");
+      continue;
+    }
+    std::vector<Defined *> candidates;
+    for (Symbol *s : rvas->getChunk()->symbols())
+      candidates.push_back(dyn_cast_or_null<Defined>(s));
+    if (llvm::is_contained(candidates, nullptr)) {
+      fail("undefined candidate");
+      continue;
+    }
+
+    // A node is the terminal, a leaf selecting a candidate, or a test whose
+    // edges both lead forward, so that every walk ends.
+    ArrayRef<uint8_t> diagram = bdd->getContents();
+    auto *info = reinterpret_cast<const coff_bdd_info *>(diagram.data());
+    if (diagram.size() < sizeof(*info) || info->Version != 1) {
+      fail("unsupported diagram version");
+      continue;
+    }
+    if (info->BDDSize % sizeof(coff_bdd_dynamic_relocation) ||
+        info->BDDSize > diagram.size() - sizeof(*info)) {
+      fail("invalid diagram size " + Twine(info->BDDSize));
+      continue;
+    }
+    diagram = diagram.take_front(sizeof(*info) + info->BDDSize);
+    ArrayRef<coff_bdd_dynamic_relocation> nodes(
+        reinterpret_cast<const coff_bdd_dynamic_relocation *>(info + 1),
+        info->BDDSize / sizeof(coff_bdd_dynamic_relocation));
+    auto isValid = [&](size_t i) {
+      uint16_t l = nodes[i].Left, r = nodes[i].Right;
+      return (l == 0 && r == 0) ||
+             (l == i && r == i && nodes[i].Value < candidates.size()) ||
+             (l > i && r > i && l < nodes.size() && r < nodes.size());
+    };
+    size_t bad = 0;
+    while (bad != nodes.size() && isValid(bad))
+      ++bad;
+    if (bad != nodes.size()) {
+      fail("diagram node " + Twine(bad) +
+           " has an edge that does not lead forward or an index out of range");
+      continue;
+    }
+
+    // The stub begins with a copy of what the compiler wrote before X from
+    // __cfi_X, its KCFI prefix.
+    ArrayRef<uint8_t> prefix;
+    for (Symbol *s : cast<ObjFile>(x->getFile())->getSymbols())
+      if (auto *cfi = dyn_cast_or_null<DefinedRegular>(s);
+          cfi && cfi->getChunk() == x->getChunk() &&
+          cfi->getValue() <= x->getValue() &&
+          cfi->getName() == ("__cfi_" + name).str())
+        prefix = x->getChunk()->getContents().slice(
+            cfi->getValue(), x->getValue() - cfi->getValue());
+
+    auto *fo = make<FunctionOverride>();
+    fo->body = make<DefinedRegular>(*x);
+    fo->diagram = diagram;
+    fo->candidates = std::move(candidates);
+    fo->stub =
+        make<FunctionOverrideThunk>(*fo, prefix, machine, !ctx.config.doGC);
+    if (x->getChunk()->sym == x)
+      x->getChunk()->sym = fo->body;
+    replaceSymbol<DefinedSynthetic>(x, x->getName(), fo->stub, prefix.size());
+    functionOverrides.push_back(fo);
+  }
+}
+
 void SymbolTable::addEntryThunk(Symbol *from, Symbol *to) {
   entryThunks.push_back({from, to});
 }

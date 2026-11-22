@@ -60,7 +60,8 @@ public:
     SectionECKind,
     OtherKind,
     ImportThunkKind,
-    ECExportThunkKind
+    ECExportThunkKind,
+    FunctionOverrideKind
   };
   Kind kind() const { return chunkKind; }
 
@@ -917,7 +918,50 @@ private:
   uint8_t size;
 };
 
-// Dynamic relocation chunk containing ARM64X relocations for the hybrid image.
+class FunctionOverrideThunk;
+
+// A function whose body Windows selects as it maps the image: its default
+// body, the binary decision diagram that selects one of the candidates, the
+// stub that stands for the function, and the sites, branches to the default
+// body that Windows rewrites to the selected one.
+struct FunctionOverride {
+  DefinedRegular *body;
+  ArrayRef<uint8_t> diagram;
+  std::vector<Defined *> candidates;
+  FunctionOverrideThunk *stub;
+  std::vector<std::pair<const Chunk *, uint32_t>> sites;
+};
+
+// A function override's stub: a copy of the body's prefix [__cfi_X, X), so
+// that a KCFI check of the stub passes, then a branch to the default body.
+class FunctionOverrideThunk : public NonSectionCodeChunk {
+public:
+  FunctionOverrideThunk(FunctionOverride &fo, ArrayRef<uint8_t> prefix,
+                        MachineTypes machine, bool live)
+      : NonSectionCodeChunk(FunctionOverrideKind), fo(fo), prefix(prefix),
+        machine(machine), live(live) {
+    setAlignment(16);
+  }
+  static bool classof(const Chunk *c) {
+    return c->kind() == FunctionOverrideKind;
+  }
+  // Returns the stub that s stands for, if s is a function override.
+  static FunctionOverrideThunk *get(const Symbol *s);
+
+  size_t getSize() const override {
+    return prefix.size() + (machine == AMD64 ? 5 : 4);
+  }
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override { return machine; }
+
+  FunctionOverride &fo;
+  ArrayRef<uint8_t> prefix;
+  MachineTypes machine;
+  bool live;
+};
+
+// The dynamic value relocation table: the ARM64X relocations of a hybrid
+// image, then the function-override record.
 class DynamicRelocsChunk : public NonSectionChunk {
 public:
   DynamicRelocsChunk() {}
@@ -932,8 +976,12 @@ public:
 
   void set(Arm64XRelocVal offset, Arm64XRelocVal value);
 
+  std::vector<FunctionOverride *> functionOverrides;
+
 private:
   std::vector<Arm64XDynamicRelocEntry> arm64xRelocs;
+  // The function-override record, built once the sites have RVAs.
+  std::string functionOverrideRecord;
   size_t size;
 };
 

@@ -19,6 +19,7 @@
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/Endian.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <iterator>
@@ -509,6 +510,39 @@ Symbol *SectionChunk::getRelocTarget(const coff_relocation &rel) const {
   return file->getSymbol(rel.SymbolTableIndex);
 }
 
+// Returns whether a relocation of the given type at off in sc, naming a
+// function override, takes the stub rather than the body: debug info and
+// unwind data describe the body, an ARM64 BRANCH26 is a site, which branches
+// to the default body as linked, and an addend points into the body.
+static bool referencesStub(const SectionChunk *sc, uint16_t type,
+                           const uint8_t *off) {
+  StringRef name = sc->getSectionName();
+  if (name.starts_with(".debug") || name.starts_with(".pdata") ||
+      name.starts_with(".xdata"))
+    return false;
+  if (sc->getArch() != Triple::aarch64)
+    return (type == IMAGE_REL_AMD64_ADDR64 ? read64le(off) : read32le(off)) ==
+           0;
+  switch (type) {
+  case IMAGE_REL_ARM64_BRANCH26:
+    return false;
+  case IMAGE_REL_ARM64_ADDR64:
+    return read64le(off) == 0;
+  case IMAGE_REL_ARM64_PAGEBASE_REL21:
+  case IMAGE_REL_ARM64_REL21:
+    return (read32le(off) & 0x60ffffe0) == 0;
+  case IMAGE_REL_ARM64_PAGEOFFSET_12A:
+  case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+    return (read32le(off) & 0x3ffc00) == 0;
+  case IMAGE_REL_ARM64_BRANCH19:
+    return (read32le(off) & 0xffffe0) == 0;
+  case IMAGE_REL_ARM64_BRANCH14:
+    return (read32le(off) & 0x7ffe0) == 0;
+  default:
+    return read32le(off) == 0;
+  }
+}
+
 void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
   // ABSOLUTE writes nothing; a PAIR is applied with the relocation before it.
@@ -544,6 +578,9 @@ void SectionChunk::applyRelocation(uint8_t *off,
       type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
     }
   }
+  if (FunctionOverrideThunk *t = FunctionOverrideThunk::get(sym))
+    if (!referencesStub(this, type, off))
+      sym = t->fo.body;
   const coff_relocation *pair = getPair(rel);
   auto *b =
       pair ? dyn_cast_or_null<Defined>(file->getSymbol(pair->SymbolTableIndex))
@@ -1360,6 +1397,24 @@ uint32_t ImportThunkChunkARM64EC::extendRanges() {
   return sizeof(arm64Thunk) - sizeof(uint32_t);
 }
 
+FunctionOverrideThunk *FunctionOverrideThunk::get(const Symbol *s) {
+  auto *d = dyn_cast_or_null<DefinedSynthetic>(s);
+  return d ? dyn_cast_or_null<FunctionOverrideThunk>(d->getChunk()) : nullptr;
+}
+
+void FunctionOverrideThunk::writeTo(uint8_t *buf) const {
+  memcpy(buf, prefix.data(), prefix.size());
+  buf += prefix.size();
+  int64_t disp = fo.body->getRVA() - (getRVA() + prefix.size());
+  if (machine == AMD64) {
+    buf[0] = 0xe9; // jmp rel32
+    write32le(buf + 1, disp - 5);
+  } else {
+    write32le(buf, 0x14000000); // b imm26
+    applyArm64Branch26(buf, disp);
+  }
+}
+
 uint64_t Arm64XRelocVal::get() const {
   return (sym ? sym->getRVA() : 0) + (chunk ? chunk->getRVA() : 0) + value;
 }
@@ -1427,7 +1482,9 @@ void DynamicRelocsChunk::finalize() {
     return a.offset.get() < b.offset.get();
   });
 
-  size = sizeof(coff_dynamic_reloc_table) + sizeof(coff_dynamic_relocation64);
+  size = sizeof(coff_dynamic_reloc_table);
+  if (!arm64xRelocs.empty())
+    size += sizeof(coff_dynamic_relocation64);
   uint32_t prevPage = 0xfff;
 
   for (const Arm64XDynamicRelocEntry &entry : arm64xRelocs) {
@@ -1441,6 +1498,57 @@ void DynamicRelocsChunk::finalize() {
   }
 
   size = alignTo(size, sizeof(uint32_t));
+
+  // The function-override record: its header, each function's entry with
+  // its candidates' RVAs and its sites' blocks, then the diagrams, of which
+  // equal ones are written once.
+  functionOverrideRecord.clear();
+  if (functionOverrides.empty())
+    return;
+  std::string entries, diagrams;
+  raw_string_ostream eos(entries), dos(diagrams);
+  endian::Writer e(eos, llvm::endianness::little);
+  DenseMap<ArrayRef<uint8_t>, uint32_t> diagramOffsets;
+  for (const FunctionOverride *fo : functionOverrides) {
+    auto [it, inserted] =
+        diagramOffsets.try_emplace(fo->diagram, diagrams.size());
+    if (inserted)
+      dos << toStringRef(fo->diagram);
+    uint8_t type = fo->stub->getMachine() == AMD64
+                       ? IMAGE_FUNCTION_OVERRIDE_X64_REL32
+                       : IMAGE_FUNCTION_OVERRIDE_ARM64_BRANCH26;
+    std::vector<Baserel> sites;
+    for (auto [c, off] : fo->sites)
+      sites.emplace_back(c->getRVA() + off, type);
+    llvm::sort(sites, [](const Baserel &x, const Baserel &y) {
+      return x.rva < y.rva;
+    });
+    std::string blocks;
+    for (size_t i = 0, j; i != sites.size(); i = j) {
+      uint32_t page = sites[i].rva & ~0xfffu;
+      for (j = i + 1; j != sites.size() && (sites[j].rva & ~0xfffu) == page;)
+        ++j;
+      BaserelChunk block(page, sites.data() + i, sites.data() + j);
+      size_t n = blocks.size();
+      blocks.resize(n + block.getSize());
+      block.writeTo(reinterpret_cast<uint8_t *>(&blocks[n]));
+    }
+    e.write<uint32_t>(fo->body->getRVA());
+    e.write<uint32_t>(it->second);
+    e.write<uint32_t>(fo->candidates.size() * sizeof(uint32_t));
+    e.write<uint32_t>(blocks.size());
+    for (Defined *c : fo->candidates)
+      e.write<uint32_t>(c->getRVA());
+    eos << blocks;
+  }
+  raw_string_ostream os(functionOverrideRecord);
+  endian::Writer w(os, llvm::endianness::little);
+  w.write<uint64_t>(IMAGE_DYNAMIC_RELOCATION_FUNCTION_OVERRIDE);
+  w.write<uint32_t>(sizeof(coff_function_override_header) + entries.size() +
+                    diagrams.size());
+  w.write<uint32_t>(entries.size());
+  os << entries << diagrams;
+  size += functionOverrideRecord.size();
 }
 
 // Set the reloc value. The reloc entry must be allocated beforehand.
@@ -1458,38 +1566,40 @@ void DynamicRelocsChunk::set(Arm64XRelocVal offset, Arm64XRelocVal value) {
 void DynamicRelocsChunk::writeTo(uint8_t *buf) const {
   auto table = reinterpret_cast<coff_dynamic_reloc_table *>(buf);
   table->Version = 1;
-  table->Size = sizeof(coff_dynamic_relocation64);
+  table->Size = size - sizeof(*table);
   buf += sizeof(*table);
 
-  auto header = reinterpret_cast<coff_dynamic_relocation64 *>(buf);
-  header->Symbol = IMAGE_DYNAMIC_RELOCATION_ARM64X;
-  buf += sizeof(*header);
+  if (!arm64xRelocs.empty()) {
+    auto header = reinterpret_cast<coff_dynamic_relocation64 *>(buf);
+    header->Symbol = IMAGE_DYNAMIC_RELOCATION_ARM64X;
+    buf += sizeof(*header);
 
-  coff_base_reloc_block_header *pageHeader = nullptr;
-  size_t relocSize = 0;
-  for (const Arm64XDynamicRelocEntry &entry : arm64xRelocs) {
-    uint32_t page = entry.offset.get() & ~0xfff;
-    if (!pageHeader || page != pageHeader->PageRVA) {
-      relocSize = alignTo(relocSize, sizeof(uint32_t));
-      if (pageHeader)
-        pageHeader->BlockSize =
-            buf + relocSize - reinterpret_cast<uint8_t *>(pageHeader);
-      pageHeader =
-          reinterpret_cast<coff_base_reloc_block_header *>(buf + relocSize);
-      pageHeader->PageRVA = page;
-      relocSize += sizeof(*pageHeader);
+    coff_base_reloc_block_header *pageHeader = nullptr;
+    size_t relocSize = 0;
+    for (const Arm64XDynamicRelocEntry &entry : arm64xRelocs) {
+      uint32_t page = entry.offset.get() & ~0xfff;
+      if (!pageHeader || page != pageHeader->PageRVA) {
+        relocSize = alignTo(relocSize, sizeof(uint32_t));
+        if (pageHeader)
+          pageHeader->BlockSize =
+              buf + relocSize - reinterpret_cast<uint8_t *>(pageHeader);
+        pageHeader =
+            reinterpret_cast<coff_base_reloc_block_header *>(buf + relocSize);
+        pageHeader->PageRVA = page;
+        relocSize += sizeof(*pageHeader);
+      }
+
+      entry.writeTo(buf + relocSize);
+      relocSize += entry.getSize();
     }
+    relocSize = alignTo(relocSize, sizeof(uint32_t));
+    pageHeader->BlockSize =
+        buf + relocSize - reinterpret_cast<uint8_t *>(pageHeader);
 
-    entry.writeTo(buf + relocSize);
-    relocSize += entry.getSize();
+    header->BaseRelocSize = relocSize;
+    buf += relocSize;
   }
-  relocSize = alignTo(relocSize, sizeof(uint32_t));
-  pageHeader->BlockSize =
-      buf + relocSize - reinterpret_cast<uint8_t *>(pageHeader);
-
-  header->BaseRelocSize = relocSize;
-  table->Size += relocSize;
-  assert(size == sizeof(*table) + sizeof(*header) + relocSize);
+  memcpy(buf, functionOverrideRecord.data(), functionOverrideRecord.size());
 }
 
 } // namespace lld::coff

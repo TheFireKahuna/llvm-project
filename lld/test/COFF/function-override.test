@@ -1,0 +1,297 @@
+REQUIRES: x86
+RUN: split-file %s %t.dir && cd %t.dir
+DEFINE: %{fo} = llvm-mc -filetype=obj -triple=x86_64-windows fo.s
+RUN: %{fo} -o fo.obj
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows main.s -o main.obj
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows %S/Inputs/loadconfig-cfg-x64.s -o loadconfig.obj
+
+Under /funcoverride, the records of Microsoft's object convention become the
+function-override record (DVRT symbol 7). X, Y and Z are stubs that branch to
+their default bodies, and every reference to them other than debug info,
+unwind data and one with an addend takes the stub, which the export and the
+CFG table list too.
+
+RUN: lld-link -funcoverride -entry:main -export:X -opt:ref,icf -debug:dwarf \
+RUN:   -guard:cf -out:out.exe main.obj fo.obj loadconfig.obj
+RUN: llvm-readobj --coff-load-config --coff-exports out.exe | FileCheck %s
+RUN: llvm-objdump -d -s --no-show-raw-insn out.exe | FileCheck --check-prefix=DISASM %s
+
+CHECK:      Name: X
+CHECK-NEXT: RVA: 0x1080
+CHECK:      DynamicValueRelocTableOffset: 0x18
+CHECK-NEXT: DynamicValueRelocTableSection: 5
+CHECK:      GuardFidTable [
+CHECK-NEXT:   0x140001080
+CHECK-NEXT:   0x140001090
+CHECK-NEXT:   0x1400010A0
+CHECK-NEXT: ]
+CHECK:      DynamicRelocations [
+CHECK-NEXT:   Version: 0x1
+CHECK-NEXT:   FunctionOverride [
+CHECK-NEXT:     Entry {
+CHECK-NEXT:       OriginalRVA: 0x1030
+CHECK-NEXT:       RVAs [
+CHECK-NEXT:         RVA: 0x1060
+CHECK-NEXT:         RVA: 0x1030
+CHECK-NEXT:       ]
+CHECK-NEXT:       Fixups [
+CHECK-NEXT:         Fixup {
+CHECK-NEXT:           Type: X64_REL32
+CHECK-NEXT:           RVA: 0x1081
+CHECK-NEXT:         }
+CHECK-NEXT:       ]
+CHECK-NEXT:       BDD [
+CHECK:            ]
+CHECK-NEXT:     }
+CHECK-NEXT:     Entry {
+CHECK-NEXT:       OriginalRVA: 0x1040
+CHECK-NEXT:       RVAs [
+CHECK-NEXT:         RVA: 0x1060
+CHECK-NEXT:       ]
+CHECK-NEXT:       Fixups [
+CHECK-NEXT:         Fixup {
+CHECK-NEXT:           Type: X64_REL32
+CHECK-NEXT:           RVA: 0x1091
+CHECK-NEXT:         }
+CHECK-NEXT:       ]
+CHECK-NEXT:       BDD [
+CHECK-NEXT:         Offset: 0x0
+CHECK:          Entry {
+CHECK-NEXT:       OriginalRVA: 0x1050
+CHECK-NEXT:       RVAs [
+CHECK-NEXT:         RVA: 0x1060
+CHECK-NEXT:       ]
+CHECK-NEXT:       Fixups [
+CHECK-NEXT:         Fixup {
+CHECK-NEXT:           Type: X64_REL32
+CHECK-NEXT:           RVA: 0x10A1
+CHECK-NEXT:         }
+CHECK-NEXT:       ]
+CHECK-NEXT:       BDD [
+CHECK-NEXT:         Offset: 0x0
+CHECK:            ]
+CHECK-NEXT:     }
+CHECK-NEXT:   ]
+CHECK-NEXT: ]
+
+The stub of X copies the prefix the compiler wrote before X.
+
+DISASM:      Contents of section .text:
+DISASM:       140001070 90909090 90909090 909090b8 78563412
+DISASM-NEXT:  140001080 e9abffff ffcccccc cccccccc cccccccc
+DISASM-NEXT:  140001090 e9abffff ffcccccc cccccccc cccccccc
+DISASM-NEXT:  1400010a0 e9abffff ff
+DISASM:      Contents of section .data:
+DISASM-NEXT:  140003000 80100040 01000000 38100040 01000000
+DISASM:      Contents of section .pdata:
+DISASM-NEXT:  140004000 30100000 36100000
+DISASM:      Contents of section .debug_info:
+DISASM-NEXT:  140006000 30100040 01000000
+DISASM:      <main>:
+DISASM-NEXT: callq 0x140001080 <X>
+DISASM-NEXT: leaq 0x74(%rip), %rax # 0x140001080 <X>
+DISASM-NEXT: callq 0x140001090 <Y>
+DISASM-NEXT: callq 0x1400010a0 <Z>
+
+The PDB has a thunk record for each stub, and the public X is the stub.
+
+RUN: lld-link -funcoverride -entry:main -debug -out:pdb.exe main.obj fo.obj loadconfig.obj
+RUN: llvm-pdbutil dump -publics -symbols pdb.pdb | FileCheck --check-prefix=PDB %s
+PDB:      S_PUB32 [size = 16] `X`
+PDB-NEXT:   flags = function, addr = 0001:0144
+PDB:      S_THUNK32 [size = 28] `X`
+PDB-NEXT:   parent = 0, end = {{[0-9]+}}, next = 0
+PDB-NEXT:   kind = thunk, size = 5, addr = 0001:0144
+
+Without /funcoverride the records are ignored.
+
+RUN: lld-link -entry:main -out:plain.exe main.obj fo.obj loadconfig.obj
+RUN: llvm-readobj --coff-load-config plain.exe | FileCheck --check-prefix=PLAIN %s
+PLAIN-NOT: DynamicRelocations
+
+DEFINE: %{err} = not lld-link -funcoverride -entry:main -out:err.exe main.obj loadconfig.obj
+RUN: %{fo} --defsym BAD=1 -o version.obj
+RUN: %{err} version.obj 2>&1 | FileCheck --check-prefix=VERSION %s
+RUN: %{fo} --defsym BAD=2 -o size.obj
+RUN: %{err} size.obj 2>&1 | FileCheck --check-prefix=SIZE %s
+RUN: %{fo} --defsym BAD=3 -o edge.obj
+RUN: %{err} edge.obj 2>&1 | FileCheck --check-prefix=EDGE %s
+RUN: %{fo} --defsym BAD=4 -o leaf.obj
+RUN: %{err} leaf.obj 2>&1 | FileCheck --check-prefix=LEAF %s
+RUN: %{fo} --defsym BAD=5 -o rvas.obj
+RUN: %{err} rvas.obj 2>&1 | FileCheck --check-prefix=RVAS %s
+VERSION: version.obj: function override X: unsupported diagram version
+SIZE: size.obj: function override X: invalid diagram size 20
+EDGE: edge.obj: function override X: diagram node 0 has an edge that does not lead forward or an index out of range
+LEAF: leaf.obj: function override X: diagram node 1 has an edge that does not lead forward or an index out of range
+RVAS: rvas.obj: function override X: needs X_$fo_rvas$
+
+A record whose function is defined other than in a section is ignored.
+
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows abs.s -o abs.obj
+RUN: lld-link -funcoverride -entry:main -out:abs.exe abs.obj fo.obj loadconfig.obj 2>&1 \
+RUN:   | FileCheck --check-prefix=ABS %s
+ABS: warning: fo.obj: function override X: X is absolute; ignoring the record
+
+X and the candidates may come from bitcode. An image with no base relocations
+has an empty block before the table, which Windows does not read at offset 0.
+
+RUN: llvm-as lto.ll -o lto.bc
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows lto-main.s -o lto-main.obj
+RUN: lld-link -funcoverride -entry:main -out:lto.exe lto-main.obj lto.bc fo.obj
+RUN: llvm-readobj --file-headers --coff-load-config lto.exe | FileCheck --check-prefix=LTO %s
+RUN: llvm-objdump -d --no-show-raw-insn lto.exe | FileCheck --check-prefix=LTO-DISASM %s
+
+LTO:      BaseRelocationTableRVA: 0x3000
+LTO-NEXT: BaseRelocationTableSize: 0x8
+LTO:      DynamicValueRelocTableOffset: 0x8
+LTO-NEXT: DynamicValueRelocTableSection: 3
+LTO:      OriginalRVA: 0x1010
+LTO-NEXT: RVAs [
+LTO-NEXT:   RVA: 0x1020
+LTO-NEXT:   RVA: 0x1010
+LTO-NEXT: ]
+LTO-NEXT: Fixups [
+LTO-NEXT:   Fixup {
+LTO-NEXT:     Type: X64_REL32
+LTO-NEXT:     RVA: 0x1031
+
+LTO-DISASM:      140001000: jmp 0x140001030
+LTO-DISASM:      140001030: jmp 0x140001010
+
+#--- main.s
+  .text
+  .globl main
+main:
+  callq X
+  leaq X(%rip), %rax
+  callq Y
+  callq Z
+  retq
+
+  .section .text$mn,"xr",one_only,X
+  .globl X
+  .p2align 4
+__cfi_X:
+  .fill 11, 1, 0x90
+  movl $0x12345678, %eax
+X:
+  .globl "X_$fo_default$"
+"X_$fo_default$":
+  movl $1, %eax
+  retq
+
+## Y and Z are identical, but a function override's body never folds.
+  .section .text$mn,"xr",one_only,Y
+  .globl Y, "Y_$fo_default$"
+  .p2align 4
+Y:
+"Y_$fo_default$":
+  movl $2, %eax
+  retq
+
+  .section .text$mn,"xr",one_only,Z
+  .globl Z, "Z_$fo_default$"
+  .p2align 4
+Z:
+"Z_$fo_default$":
+  movl $2, %eax
+  retq
+
+## Candidates are kept by their functions and fold freely.
+  .section .text$mn,"xr",one_only,c1
+  .globl c1
+  .p2align 4
+c1:
+  movl $3, %eax
+  retq
+
+  .section .text$mn,"xr",one_only,c2
+  .globl c2
+  .p2align 4
+c2:
+  movl $3, %eax
+  retq
+
+  .data
+  .quad X
+  .quad X + 8
+
+  .section .pdata,"dr"
+  .rva X
+  .rva X + 6
+  .rva unwind
+
+  .section .xdata,"dr"
+unwind:
+  .long 1
+
+  .section .debug_info,"dr"
+  .quad X
+
+## X, Y and Z share one diagram, which BAD breaks. W is not in the image, so
+## its record is not either. Only the sections' names mark the records.
+#--- fo.s
+.ifndef BAD
+BAD = 0
+.endif
+.irp f, X, Y, Z, W
+  .section "\f\()_$fo_bdd$","dr"
+  .long 1 - (BAD == 1), 0x18 + 4 * (BAD == 2)
+  .short 2 + 2 * (BAD == 3), 1
+  .long 0x13d
+  .short 1, 1
+  .long -2 * (BAD == 4)
+  .quad 0
+.endr
+  .section "X_$fo_rvas$","dr"
+.if BAD != 5
+  .globl "X_$fo_rvas$"
+.endif
+  .rva c1, X
+  .section "Y_$fo_rvas$","dr"
+  .globl "Y_$fo_rvas$"
+  .rva c1
+  .section "Z_$fo_rvas$","dr"
+  .globl "Z_$fo_rvas$"
+  .rva c2
+  .section "W_$fo_rvas$","dr"
+  .globl "W_$fo_rvas$"
+  .rva c1
+
+#--- abs.s
+  .globl main, X, c1, c2
+  .set X, 0x1234
+main:
+c1:
+c2:
+  retq
+
+#--- lto.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-pc-windows-msvc"
+
+define i32 @X() {
+  ret i32 1
+}
+
+define i32 @c1() {
+  ret i32 3
+}
+
+define i32 @c2() {
+  ret i32 3
+}
+
+#--- lto-main.s
+  .text
+  .globl main
+main:
+  jmp X
+
+  .section .rdata,"dr"
+  .globl _load_config_used
+  .p2align 3
+_load_config_used:
+  .long 0x148
+  .zero 0x144
