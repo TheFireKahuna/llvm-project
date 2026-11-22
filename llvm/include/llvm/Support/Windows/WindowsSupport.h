@@ -49,7 +49,7 @@
 #include <windows.h>
 
 // Must be included after windows.h
-#include <wincrypt.h>
+#include <bcrypt.h>
 
 namespace llvm {
 
@@ -141,22 +141,6 @@ struct JobHandleTraits : CommonHandleTraits {
   }
 };
 
-struct CryptContextTraits : CommonHandleTraits {
-  typedef HCRYPTPROV handle_type;
-
-  static handle_type GetInvalid() {
-    return 0;
-  }
-
-  static void Close(handle_type h) {
-    ::CryptReleaseContext(h, 0);
-  }
-
-  static bool IsValid(handle_type h) {
-    return h != GetInvalid();
-  }
-};
-
 struct RegTraits : CommonHandleTraits {
   typedef HKEY handle_type;
 
@@ -183,7 +167,6 @@ struct FileHandleTraits : CommonHandleTraits {};
 
 typedef ScopedHandle<CommonHandleTraits> ScopedCommonHandle;
 typedef ScopedHandle<FileHandleTraits>   ScopedFileHandle;
-typedef ScopedHandle<CryptContextTraits> ScopedCryptContext;
 typedef ScopedHandle<RegTraits>          ScopedRegHandle;
 typedef ScopedHandle<FindHandleTraits>   ScopedFindHandle;
 typedef ScopedHandle<JobHandleTraits>    ScopedJobHandle;

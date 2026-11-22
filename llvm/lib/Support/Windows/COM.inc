@@ -28,9 +28,15 @@ InitializeCOMRAII::InitializeCOMRAII(COMThreadingMode Threading,
     Coinit |= COINIT_MULTITHREADED;
   if (SpeedOverMemory)
     Coinit |= COINIT_SPEED_OVER_MEMORY;
-  ::CoInitializeEx(nullptr, Coinit);
+  // On failure, typically RPC_E_CHANGED_MODE because the thread is already in
+  // an apartment of the other kind, COM is still usable through that
+  // apartment, but this object must not uninitialize it.
+  Initialized = SUCCEEDED(::CoInitializeEx(nullptr, Coinit));
 }
 
-InitializeCOMRAII::~InitializeCOMRAII() { ::CoUninitialize(); }
+InitializeCOMRAII::~InitializeCOMRAII() {
+  if (Initialized)
+    ::CoUninitialize();
+}
 } // namespace sys
 } // namespace llvm

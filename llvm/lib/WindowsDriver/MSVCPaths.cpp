@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/WindowsDriver/MSVCPaths.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -41,8 +42,9 @@
 // Don't support SetupApi on MinGW.
 #define USE_MSVC_SETUP_API
 
-// Make sure this comes before MSVCSetupApi.h
-#include <comdef.h>
+// Make sure these come before MSVCSetupApi.h
+#include <objbase.h>
+#include <oleauto.h>
 
 #include "llvm/Support/COM.h"
 #ifdef __clang__
@@ -53,12 +55,6 @@
 #ifdef __clang__
 #pragma clang diagnostic pop
 #endif
-_COM_SMARTPTR_TYPEDEF(ISetupConfiguration, __uuidof(ISetupConfiguration));
-_COM_SMARTPTR_TYPEDEF(ISetupConfiguration2, __uuidof(ISetupConfiguration2));
-_COM_SMARTPTR_TYPEDEF(ISetupHelper, __uuidof(ISetupHelper));
-_COM_SMARTPTR_TYPEDEF(IEnumSetupInstances, __uuidof(IEnumSetupInstances));
-_COM_SMARTPTR_TYPEDEF(ISetupInstance, __uuidof(ISetupInstance));
-_COM_SMARTPTR_TYPEDEF(ISetupInstance2, __uuidof(ISetupInstance2));
 #endif
 
 static std::string
@@ -639,68 +635,70 @@ bool llvm::findVCToolChainViaSetupConfig(
 #if !defined(USE_MSVC_SETUP_API)
   return false;
 #else
+  // The Setup Configuration server works in either kind of apartment, so a
+  // multithreaded one serves it without the hidden window that a
+  // single-threaded apartment creates. If the thread is already in a
+  // single-threaded apartment, the query runs there.
   // FIXME: This really should be done once in the top-level program's main
   // function, as it may have already been initialized with a different
   // threading model otherwise.
-  sys::InitializeCOMRAII COM(sys::COMThreadingMode::SingleThreaded);
+  sys::InitializeCOMRAII COM(sys::COMThreadingMode::MultiThreaded);
   HRESULT HR;
 
-  // _com_ptr_t will throw a _com_error if a COM calls fail.
-  // The LLVM coding standards forbid exception handling, so we'll have to
-  // stop them from being thrown in the first place.
-  // The destructor will put the regular error handler back when we leave
-  // this scope.
-  struct SuppressCOMErrorsRAII {
-    static void __stdcall handler(HRESULT hr, IErrorInfo *perrinfo) {}
-
-    SuppressCOMErrorsRAII() { _set_com_error_handler(handler); }
-
-    ~SuppressCOMErrorsRAII() { _set_com_error_handler(_com_raise_error); }
-
-  } COMErrorSuppressor;
-
-  ISetupConfigurationPtr Query;
-  HR = Query.CreateInstance(__uuidof(SetupConfiguration));
+  ISetupConfiguration2 *Query = nullptr;
+  HR = CoCreateInstance(__uuidof(SetupConfiguration), nullptr, CLSCTX_ALL,
+                        __uuidof(ISetupConfiguration2),
+                        reinterpret_cast<void **>(&Query));
   if (FAILED(HR))
     return false;
+  scope_exit ReleaseQuery([&] { Query->Release(); });
 
-  IEnumSetupInstancesPtr EnumInstances;
-  HR = ISetupConfiguration2Ptr(Query)->EnumAllInstances(&EnumInstances);
+  ISetupHelper *Helper = nullptr;
+  HR = Query->QueryInterface(__uuidof(ISetupHelper),
+                             reinterpret_cast<void **>(&Helper));
   if (FAILED(HR))
     return false;
+  scope_exit ReleaseHelper([&] { Helper->Release(); });
 
-  ISetupInstancePtr Instance;
-  HR = EnumInstances->Next(1, &Instance, nullptr);
-  if (HR != S_OK)
+  IEnumSetupInstances *EnumInstances = nullptr;
+  HR = Query->EnumAllInstances(&EnumInstances);
+  if (FAILED(HR))
     return false;
+  scope_exit ReleaseEnumInstances([&] { EnumInstances->Release(); });
 
-  ISetupInstancePtr NewestInstance;
+  ISetupInstance *NewestInstance = nullptr;
+  scope_exit ReleaseNewestInstance([&] {
+    if (NewestInstance)
+      NewestInstance->Release();
+  });
   std::optional<uint64_t> NewestVersionNum;
-  do {
-    bstr_t VersionString;
+  ISetupInstance *Instance;
+  while (EnumInstances->Next(1, &Instance, nullptr) == S_OK) {
+    BSTR VersionString = nullptr;
     uint64_t VersionNum;
-    HR = Instance->GetInstallationVersion(VersionString.GetAddress());
-    if (FAILED(HR))
-      continue;
-    HR = ISetupHelperPtr(Query)->ParseVersion(VersionString, &VersionNum);
-    if (FAILED(HR))
-      continue;
-    if (!NewestVersionNum || (VersionNum > NewestVersionNum)) {
-      NewestInstance = Instance;
+    HR = Instance->GetInstallationVersion(&VersionString);
+    if (SUCCEEDED(HR))
+      HR = Helper->ParseVersion(VersionString, &VersionNum);
+    SysFreeString(VersionString);
+    if (SUCCEEDED(HR) && (!NewestVersionNum || VersionNum > NewestVersionNum)) {
+      std::swap(NewestInstance, Instance);
       NewestVersionNum = VersionNum;
     }
-  } while ((HR = EnumInstances->Next(1, &Instance, nullptr)) == S_OK);
+    if (Instance)
+      Instance->Release();
+  }
 
   if (!NewestInstance)
     return false;
 
-  bstr_t VCPathWide;
-  HR = NewestInstance->ResolvePath(L"VC", VCPathWide.GetAddress());
-  if (FAILED(HR))
+  BSTR VCPathWide = nullptr;
+  HR = NewestInstance->ResolvePath(L"VC", &VCPathWide);
+  if (FAILED(HR) || !VCPathWide)
     return false;
 
   std::string VCRootPath;
   convertWideToUTF8(std::wstring(VCPathWide), VCRootPath);
+  SysFreeString(VCPathWide);
 
   std::string ToolsVersion;
   if (VCToolsVersion.has_value()) {

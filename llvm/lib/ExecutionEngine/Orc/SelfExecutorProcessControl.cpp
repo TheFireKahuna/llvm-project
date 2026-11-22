@@ -113,8 +113,11 @@ SelfExecutorProcessControl::createDefaultMemoryManager() {
 
 Expected<std::unique_ptr<DylibManager>>
 SelfExecutorProcessControl::createDefaultDylibMgr() {
-  char Prefix = TargetTriple.isOSBinFormatMachO() ? '_' : '\0';
-  return std::make_unique<InProcessDylibManager>(Prefix);
+  // DataLayout prefixes global names on Mach-O and on 32-bit x86 COFF.
+  bool HasPrefix =
+      TargetTriple.isOSBinFormatMachO() ||
+      (TargetTriple.isOSBinFormatCOFF() && TargetTriple.isX86_32());
+  return std::make_unique<InProcessDylibManager>(HasPrefix ? '_' : '\0');
 }
 
 Expected<std::unique_ptr<MemoryAccess>>
@@ -168,8 +171,11 @@ void SelfExecutorProcessControl::InProcessDylibManager::lookupSymbolsAsync(
   sys::DynamicLibrary Dylib(H.toPtr<void *>());
   for (auto &KV : Symbols) {
     auto &Sym = KV.first;
-    std::string Tmp((*Sym).data() + !!GlobalManglingPrefix,
-                    (*Sym).size() - !!GlobalManglingPrefix);
+    // 32-bit x86 COFF leaves some names, a C++ name among them, unprefixed.
+    StringRef Name = *Sym;
+    Name.consume_front(
+        StringRef(&GlobalManglingPrefix, !!GlobalManglingPrefix));
+    std::string Tmp = Name.str();
     void *Addr = Dylib.getAddressOfSymbol(Tmp.c_str());
     if (!Addr && KV.second == SymbolLookupFlags::RequiredSymbol)
       R.emplace_back();

@@ -14,8 +14,15 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/Config/config.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Program.h"
+#include "llvm/Support/raw_ostream.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+
+#ifdef _WIN32
+#include "llvm/Support/Windows/WindowsSupport.h"
+#endif
 
 using namespace llvm;
 using namespace llvm::sys;
@@ -67,3 +74,33 @@ TEST(SignalsTest, SymbolizerMarkupDisabled) {
 }
 
 #endif // defined(HAVE_BACKTRACE) && ...
+
+#ifdef _WIN32
+extern const char *TestMainArgv0;
+static int SignalsTestAnchor;
+
+// The test main registers the crash handlers, which load dbghelp.dll only for
+// a stack trace. Check in a child process, which has done nothing else.
+TEST(SignalsTest, LoadsDbgHelpOnFirstStackTrace) {
+  if (getenv("LLVM_SIGNALS_TEST_CHILD")) {
+    if (::GetModuleHandleW(L"dbghelp.dll"))
+      exit(1);
+    std::string Res;
+    raw_string_ostream OS(Res);
+    PrintStackTrace(OS);
+    // Success is 3, which a filter that selects no test cannot return.
+    exit(!::GetModuleHandleW(L"dbghelp.dll") || Res.empty() ? 1 : 3);
+  }
+
+  std::string Exe = fs::getMainExecutable(TestMainArgv0, &SignalsTestAnchor);
+  StringRef Args[] = {
+      Exe, "--gtest_filter=SignalsTest.LoadsDbgHelpOnFirstStackTrace"};
+  ASSERT_TRUE(::SetEnvironmentVariableW(L"LLVM_SIGNALS_TEST_CHILD", L"1"));
+  // The child runs its one test only outside a lit shard.
+  ::SetEnvironmentVariableW(L"GTEST_SHARD_INDEX", nullptr);
+  ::SetEnvironmentVariableW(L"GTEST_TOTAL_SHARDS", nullptr);
+  int RC = ExecuteAndWait(Exe, Args);
+  ::SetEnvironmentVariableW(L"LLVM_SIGNALS_TEST_CHILD", nullptr);
+  EXPECT_EQ(3, RC);
+}
+#endif // _WIN32

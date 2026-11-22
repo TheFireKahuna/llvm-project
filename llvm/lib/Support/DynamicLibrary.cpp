@@ -16,6 +16,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Config/config.h"
 #include "llvm/Support/Mutex.h"
+#include <atomic>
 #include <vector>
 
 using namespace llvm;
@@ -134,6 +135,10 @@ Globals &getGlobals() {
   return G;
 }
 
+// Read without SymbolsMutex, because a search of the program handle through
+// getAddressOfSymbol does not take it.
+std::atomic<void *(*)(const char *)> ProcessSymbolFallback;
+
 } // namespace
 
 #ifdef _WIN32
@@ -160,6 +165,11 @@ void DynamicLibrary::AddSymbol(StringRef SymbolName, void *SymbolValue) {
   auto &G = getGlobals();
   SmartScopedLock<true> Lock(G.SymbolsMutex);
   G.ExplicitSymbols[SymbolName] = SymbolValue;
+}
+
+void DynamicLibrary::setProcessSymbolFallback(
+    void *(*Fallback)(const char *SymbolName)) {
+  ProcessSymbolFallback = Fallback;
 }
 
 DynamicLibrary DynamicLibrary::getPermanentLibrary(const char *FileName,

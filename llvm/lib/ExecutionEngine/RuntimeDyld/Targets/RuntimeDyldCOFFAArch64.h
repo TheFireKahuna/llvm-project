@@ -243,8 +243,13 @@ public:
       Addend = read64le(Displacement);
       break;
     }
-    default:
+    case COFF::IMAGE_REL_ARM64_ABSOLUTE:
+    case COFF::IMAGE_REL_ARM64_SECTION:
       break;
+    default:
+      return make_error<RuntimeDyldError>(("COFF AArch64 relocation type " +
+                                           Twine(RelType) + " is not supported")
+                                              .str());
     }
 
 #if !defined(NDEBUG)

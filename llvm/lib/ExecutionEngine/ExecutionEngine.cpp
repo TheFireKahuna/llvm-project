@@ -19,6 +19,7 @@
 #include "llvm/ExecutionEngine/GenericValue.h"
 #include "llvm/ExecutionEngine/JITEventListener.h"
 #include "llvm/ExecutionEngine/ObjectCache.h"
+#include "llvm/ExecutionEngine/Orc/TargetProcess/TargetExecutionUtils.h"
 #include "llvm/ExecutionEngine/RTDyldMemoryManager.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
@@ -507,6 +508,7 @@ ExecutionEngine *EngineBuilder::create(TargetMachine *TM) {
 
   // Make sure we can resolve symbols in the program as well. The zero arg
   // to the function tells DynamicLibrary to load the program, not a library.
+  orc::registerInlineCRTFunctions();
   if (sys::DynamicLibrary::LoadLibraryPermanently(nullptr, ErrorStr))
     return nullptr;
 

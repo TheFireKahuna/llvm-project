@@ -41,9 +41,9 @@ protected:
       GTEST_SKIP();
     }
 
-    // COFF-ARM64 is not supported yet
+    // JITLink links COFF for x86-64 only.
     auto Triple = JTMB->getTargetTriple();
-    if (Triple.isOSBinFormatCOFF() && Triple.isAArch64())
+    if (Triple.isOSBinFormatCOFF() && !Triple.isX86_64())
       GTEST_SKIP();
 
     if (Triple.isPPC())

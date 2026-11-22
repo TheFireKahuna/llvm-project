@@ -15,6 +15,10 @@
 
 #include "PipSqueak.h"
 
+#ifdef _WIN32
+#include "llvm/Support/Windows/WindowsSupport.h"
+#endif
+
 // FIXME: Missing globals/DSO https://github.com/llvm/llvm-project/issues/57206.
 #if !LLVM_HWADDRESS_SANITIZER_BUILD
 
@@ -114,6 +118,51 @@ LLVM_NO_SANITIZE("cfi-icall")
     EXPECT_EQ(StdString(GS()), "OverloadCall");
   }
 }
+
+static int FallbackTarget;
+
+static void *ProcessFallback(const char *SymbolName) {
+  return StringRef(SymbolName) == "NoModuleDefinesThis" ? &FallbackTarget
+                                                        : nullptr;
+}
+
+// A search of the program handle ends with the fallback, which a search of a
+// library handle never consults.
+TEST(DynamicLibrary, ProcessSymbolFallback) {
+  std::string Err;
+  DynamicLibrary DL = DynamicLibrary::getPermanentLibrary(nullptr, &Err);
+  ASSERT_TRUE(DL.isValid()) << Err;
+  EXPECT_EQ(DL.getAddressOfSymbol("NoModuleDefinesThis"), nullptr);
+
+  DynamicLibrary::setProcessSymbolFallback(ProcessFallback);
+  EXPECT_EQ(DL.getAddressOfSymbol("NoModuleDefinesThis"), &FallbackTarget);
+  EXPECT_EQ(DynamicLibrary::SearchForAddressOfSymbol("NoModuleDefinesThis"),
+            &FallbackTarget);
+  EXPECT_EQ(DL.getAddressOfSymbol("NorThis"), nullptr);
+
+  DynamicLibrary Lib = DynamicLibrary::getLibrary(LibPath().c_str(), &Err);
+  ASSERT_TRUE(Lib.isValid()) << Err;
+  EXPECT_EQ(Lib.getAddressOfSymbol("NoModuleDefinesThis"), nullptr);
+  DynamicLibrary::closeLibrary(Lib);
+
+  DynamicLibrary::setProcessSymbolFallback(nullptr);
+  EXPECT_EQ(DL.getAddressOfSymbol("NoModuleDefinesThis"), nullptr);
+}
+
+#if defined(_MSC_VER) && !defined(_DLL)
+// A static C runtime exports nothing, so the program handle gives JIT'd code
+// the system's, which the process leaves through this image's exit.
+TEST(DynamicLibrary, StaticCRTHost) {
+  std::string Err;
+  DynamicLibrary DL = DynamicLibrary::getPermanentLibrary(nullptr, &Err);
+  ASSERT_TRUE(DL.isValid()) << Err;
+  void *Puts = DL.getAddressOfSymbol("puts");
+  ASSERT_NE(Puts, nullptr);
+  EXPECT_EQ(Puts,
+            (void *)GetProcAddress(GetModuleHandleW(L"ucrtbase.dll"), "puts"));
+  EXPECT_EQ(DL.getAddressOfSymbol("exit"), (void *)&exit);
+}
+#endif
 
 #else
 

@@ -35,9 +35,7 @@
 #endif
 #include <psapi.h>
 
-#ifdef _MSC_VER
-#pragma comment(lib, "psapi.lib")
-#elif __MINGW32__
+#ifdef __MINGW32__
 // The version of g++ that comes with MinGW does *not* properly understand
 // the ll format specifier for printf. However, MinGW passes the format
 // specifiers on to the MSVCRT entirely, and the CRT understands the ll
@@ -110,7 +108,11 @@ static bool isDebugHelpInitialized() {
   return fStackWalk64 && fSymInitialize && fSymSetOptions && fMiniDumpWriteDump;
 }
 
+// Loads dbghelp.dll on first use. Only the crash and stack trace paths need it,
+// and loading it at start-up would cost every process the DLLs it imports.
 static bool load64BitDebugHelp(void) {
+  if (isDebugHelpInitialized())
+    return true;
   HMODULE hLib =
       ::LoadLibraryExA("Dbghelp.dll", NULL, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (hLib) {
@@ -258,10 +260,8 @@ static bool printMarkupContext(llvm::raw_ostream &OS,
 static void PrintStackTraceForThread(llvm::raw_ostream &OS, HANDLE hProcess,
                                      HANDLE hThread, STACKFRAME64 &StackFrame,
                                      CONTEXT *Context) {
-  // It's possible that DbgHelp.dll hasn't been loaded yet (e.g. if this
-  // function is called before the main program called `llvm::InitLLVM`).
-  // In this case just return, not stacktrace will be printed.
-  if (!isDebugHelpInitialized())
+  // If DbgHelp.dll cannot be loaded, no stack trace is printed.
+  if (!load64BitDebugHelp())
     return;
 
   // Initialize the symbol handler.
@@ -384,14 +384,6 @@ static void InitializeThreading() {
 }
 
 static void RegisterHandler() {
-  // If we cannot load up the APIs (which would be unexpected as they should
-  // exist on every version of Windows we support), we will bail out since
-  // there would be nothing to report.
-  if (!load64BitDebugHelp()) {
-    assert(false && "These APIs should always be available");
-    return;
-  }
-
   if (RegisteredUnhandledExceptionFilter) {
     EnterCriticalSection(&CriticalSection);
     return;
@@ -706,6 +698,9 @@ WriteWindowsDumpFile(PMINIDUMP_EXCEPTION_INFORMATION ExceptionInfo) {
 
   using namespace llvm;
   using namespace llvm::sys;
+
+  if (!load64BitDebugHelp())
+    return mapWindowsError(::GetLastError());
 
   std::string MainExecutableName = fs::getMainExecutable(nullptr, nullptr);
   StringRef ProgramName;

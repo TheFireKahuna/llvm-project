@@ -14,6 +14,7 @@
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/JITLoaderGDB.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/RegisterEHFrames.h"
+#include "llvm/ExecutionEngine/Orc/TargetProcess/TargetExecutionUtils.h"
 
 #ifdef __APPLE__
 #include <dlfcn.h>
@@ -37,6 +38,9 @@ void addDefaultBootstrapValuesForHostProcess(
   BootstrapSymbols[Mangle.mangledCopy(
       rt::RegisterJITLoaderGDBAllocActionName)] =
       ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBAllocAction);
+
+  // JIT'd code looks up the C runtime's functions in this process.
+  registerInlineCRTFunctions();
 
 #ifdef __APPLE__
   if (!dlsym(RTLD_DEFAULT, "__unw_add_find_dynamic_unwind_sections"))

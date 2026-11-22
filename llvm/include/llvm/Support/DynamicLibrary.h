@@ -146,6 +146,12 @@ public:
   /// Add searchable symbol/value pair.
   LLVM_ABI static void AddSymbol(StringRef symbolName, void *symbolValue);
 
+  /// Sets a function that a search of the program handle calls for a symbol
+  /// that neither the program nor any library loaded into it defines. It
+  /// returns the symbol's address, or null. Passing null removes it.
+  LLVM_ABI static void
+  setProcessSymbolFallback(void *(*Fallback)(const char *SymbolName));
+
   class HandleSet;
 };
 

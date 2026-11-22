@@ -35,6 +35,13 @@ LLVM_ABI int runAsMain(int (*Main)(int, char *[]), ArrayRef<std::string> Args,
 LLVM_ABI int runAsVoidFunction(int (*Func)(void));
 LLVM_ABI int runAsIntFunction(int (*Func)(int), int Arg);
 
+/// Lets a search of this process find the C runtime functions that the host's
+/// headers define inline and no library exports, such as the Universal CRT's
+/// printf, so that code compiled at run time can call them. It sets the
+/// process symbol fallback of sys::DynamicLibrary on hosts that need one, and
+/// calling it again does nothing.
+LLVM_ABI void registerInlineCRTFunctions();
+
 } // end namespace orc
 } // end namespace llvm
 

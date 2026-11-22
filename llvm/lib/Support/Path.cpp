@@ -21,6 +21,7 @@
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/IOSandbox.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/RandomNumberGenerator.h"
 #include "llvm/Support/Signals.h"
 #include <cctype>
 
@@ -881,10 +882,25 @@ void createUniquePath(const Twine &Model, SmallVectorImpl<char> &ResultPath,
   ResultPath.push_back(0);
   ResultPath.pop_back();
 
-  // Replace '%' with random chars.
+  // Replace '%' with random hex digits. One 64-bit random value supplies
+  // sixteen of them, so that a name costs one request for random bytes rather
+  // than one per digit.
+  uint64_t Bits = 0;
+  unsigned BitsLeft = 0;
   for (unsigned i = 0, e = ModelStorage.size(); i != e; ++i) {
-    if (ModelStorage[i] == '%')
-      ResultPath[i] = "0123456789abcdef"[sys::Process::GetRandomNumber() & 15];
+    if (ModelStorage[i] != '%')
+      continue;
+    if (BitsLeft == 0) {
+      if (getRandomBytes(&Bits, sizeof(Bits))) {
+        Bits = sys::Process::GetRandomNumber();
+        BitsLeft = 4;
+      } else {
+        BitsLeft = 64;
+      }
+    }
+    ResultPath[i] = "0123456789abcdef"[Bits & 15];
+    Bits >>= 4;
+    BitsLeft -= 4;
   }
 }
 

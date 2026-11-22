@@ -1,0 +1,26 @@
+# RUN: yaml2obj %s -o %t.o
+# RUN: not llvm-rtdyld -triple=aarch64-windows -verify %t.o 2>&1 | FileCheck %s
+
+# CHECK: COFF AArch64 relocation type 9 is not supported
+
+--- !COFF
+header:
+  Machine:         IMAGE_FILE_MACHINE_ARM64
+  Characteristics: [  ]
+sections:
+  - Name:            .text
+    Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
+    Alignment:       4
+    SectionData:     '00000000'
+    Relocations:
+      - VirtualAddress:  0
+        SymbolName:      .text
+        Type:            IMAGE_REL_ARM64_SECREL_LOW12A
+symbols:
+  - Name:            .text
+    Value:           0
+    SectionNumber:   1
+    SimpleType:      IMAGE_SYM_TYPE_NULL
+    ComplexType:     IMAGE_SYM_DTYPE_NULL
+    StorageClass:    IMAGE_SYM_CLASS_STATIC
+...

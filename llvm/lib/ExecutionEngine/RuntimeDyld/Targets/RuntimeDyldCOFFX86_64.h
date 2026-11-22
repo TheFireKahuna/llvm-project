@@ -272,8 +272,13 @@ public:
       break;
     }
 
-    default:
+    case COFF::IMAGE_REL_AMD64_SECTION:
       break;
+
+    default:
+      return make_error<RuntimeDyldError>(("COFF x86_64 relocation type " +
+                                           Twine(RelType) + " is not supported")
+                                              .str());
     }
 
     LLVM_DEBUG(dbgs() << "\t\tIn Section " << SectionID << " Offset " << Offset
