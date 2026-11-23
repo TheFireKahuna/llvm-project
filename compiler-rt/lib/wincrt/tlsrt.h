@@ -25,6 +25,14 @@
 // so that a later copy can trust it (tlsrt.cpp).
 #define WINCRT_TLS_API __declspec(dllexport)
 
+// The runtime never derives a thread pointer inside itself: its entries and
+// what its assembly calls run with none.
+#if __has_attribute(thread_pointer)
+#define WINCRT_NO_TP __attribute__((thread_pointer("none")))
+#else
+#define WINCRT_NO_TP
+#endif
+
 extern "C" {
 // Exported by ntdll; no SDK header declares them.
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemoryEx(HANDLE, PVOID *, SIZE_T *,
@@ -34,6 +42,8 @@ NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemoryEx(HANDLE, PVOID *, SIZE_T *,
 NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG);
 NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG,
                                                ULONG *);
+NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE,
+                                          ACCESS_MASK, ULONG, ULONG);
 
 // The no-thread header: what the thread pointer names on a thread with no
 // block. Read-only, its thread-pointer words naming itself.
@@ -104,6 +114,18 @@ enum : uint64_t {
 };
 constexpr uint64_t FullBits = 0x7FFFFFFFFFFF0000;
 
+// The block's header: the words outside code addresses, then the runtime's.
+struct Header {
+  uintptr_t TcbSelf;
+  uint64_t Reserved0;
+  uintptr_t Self;
+  uint64_t Reserved1[3];
+  uint64_t PointerGuard;
+};
+static_assert(offsetof(Header, Self) == TP_SELF &&
+              offsetof(Header, PointerGuard) == TP_POINTER_GUARD &&
+              sizeof(Header) <= TP_H);
+
 // The process's runtime, which every copy of it in the process shares: it
 // lives behind the chunk entries in the runtime's reservation.
 struct State {
@@ -164,6 +186,18 @@ uint32_t claim(uint32_t Tid);
 void release(uint32_t Index);
 void park(uint32_t C);
 void *planeRun(uint32_t C, unsigned P);
+
+// The thread pointer of the thread with client id Tid, whose handle Thread
+// is, adopting it where it has no block: the calling thread, or one the
+// caller created suspended. A negative errno where it is refused.
+intptr_t adopt(uint32_t Tid, HANDLE Thread);
+// The calling thread's block header, adopting the thread where Adopt is set;
+// null where it has none, or it is released.
+Header *header(bool Adopt);
+// Moves the caller's own record to State.
+bool advance(Record &R, uint64_t State);
+// Seeds the block of record Index before its thread runs code of the model.
+void seed(uint32_t Index);
 
 // Writes a word of read-only image memory under the fill's bracket.
 bool bracket(volatile const uint64_t *Word, uint64_t Value);

@@ -25,6 +25,8 @@
 
 #pragma comment(lib, "ntdll")
 
+#include <errno.h>
+
 using namespace wincrt::tls;
 
 // The exports, alone on their own read-only section.
@@ -384,6 +386,99 @@ void wincrt::tls::release(uint32_t Index) {
     park(Index / 64);
 }
 
+bool wincrt::tls::advance(Record &R, uint64_t State) {
+  for (uint64_t W = load(&R.Word);;) {
+    if (stateOf(W) == Finishing || stateOf(W) == Free)
+      return false;
+    if (cas(&R.Word, W, recordWord(State, tidOf(W), W)))
+      return true;
+  }
+}
+
+//===----------------------------------------------------------------------===//
+// Adoption
+//===----------------------------------------------------------------------===//
+
+// Zeroes the block and its slot of every open plane.
+void wincrt::tls::seed(uint32_t Index) {
+  char *Tp = blockAt(Index);
+  uint64_t Planes = load(&shared().Planes);
+  __builtin_memset(Tp, 0, TP_BLOCK);
+  for (unsigned P = 1; P <= TP_PLANES; ++P)
+    if (Planes >> P & 1)
+      __builtin_memset(Tp + P * TP_PLANE, 0, TP_BLOCK);
+  auto &H = *reinterpret_cast<Header *>(Tp);
+  H.TcbSelf = H.Self = reinterpret_cast<uintptr_t>(Tp);
+}
+
+// Each resource is in the record before the next is taken: the client id by
+// the claim, then the pin, the system call's output, then the block, so that
+// a kill anywhere leaves the record what the rotating check finishes. The
+// TID map's entry, published last, is the adoption's linearization point.
+intptr_t wincrt::tls::adopt(uint32_t Tid, HANDLE Thread) {
+  uint32_t Entry = lookup(Tid);
+  if (Entry & TP_SLOT_TEST)
+    return reinterpret_cast<intptr_t>(blockAt(Entry & TP_MASK));
+  if (Entry == TP_TOMBSTONE)
+    return -ESRCH;
+  uint32_t Index = claim(Tid);
+  if (!Index)
+    return -EAGAIN;
+  Record &R = recordAt(Index);
+  bool Adopted =
+      NtDuplicateObject(GetCurrentProcess(), Thread, GetCurrentProcess(),
+                        &R.Pin, SYNCHRONIZE, 0, 0) >= 0;
+  if (Adopted) {
+    seed(Index);
+    Adopted = advance(R, Live) && publish(Tid, Index);
+  }
+  // A refused adoption leaves its record to the thread's finisher.
+  if (!Adopted) {
+    advance(R, Releasing);
+    return -EAGAIN;
+  }
+  return reinterpret_cast<intptr_t>(blockAt(Index));
+}
+
+Header *wincrt::tls::header(bool Adopt) {
+  uint32_t Entry = lookup(currentTid());
+  if (Entry & TP_SLOT_TEST)
+    return reinterpret_cast<Header *>(blockAt(Entry & TP_MASK));
+  intptr_t Tp = Adopt && Entry != TP_TOMBSTONE
+                    ? adopt(currentTid(), GetCurrentThread())
+                    : -1;
+  return Tp < 0 ? nullptr : reinterpret_cast<Header *>(Tp);
+}
+
+// The cold calls' one body, which the assembly entries call having saved
+// every register but the answer's: How is 0 for __tp_slow, 1 for __tp_try and
+// 2 for __tp_probe, which never adopts.
+extern "C" WINCRT_NO_TP uintptr_t __wincrt_tp_cold(const uintptr_t *Map,
+                                                   unsigned How) {
+  uint32_t Entry = lookup(currentTid());
+  if (Entry & TP_SLOT_TEST)
+    return reinterpret_cast<uintptr_t>(blockAt(Entry & TP_MASK));
+  if (How == 2)
+    return reinterpret_cast<uintptr_t>(__tp_none);
+  // A released thread's: the closed thread pointer, which the pin keeps its
+  // own while the tombstone stands, and every access through which faults.
+  if (Entry == TP_TOMBSTONE)
+    return How ? uintptr_t(-ESRCH)
+               : reinterpret_cast<uintptr_t>(area()) +
+                     TP_CLOSED_SLOT * TP_BLOCK;
+  // Only the executable's code runs before its own fill: a DLL's entry that
+  // finds its map unwritten fails closed.
+  auto *Exe = static_cast<char *>(
+      NtCurrentTeb()->ProcessEnvironmentBlock->Reserved3[1]);
+  intptr_t Tp = !*Map && uintptr_t(reinterpret_cast<const char *>(Map) - Exe) >=
+                             wincrt::imageSize(reinterpret_cast<HMODULE>(Exe))
+                    ? -ENOEXEC
+                    : adopt(currentTid(), GetCurrentThread());
+  if (Tp < 0 && !How)
+    __fastfail(FAST_FAIL_FATAL_APP_EXIT);
+  return Tp;
+}
+
 //===----------------------------------------------------------------------===//
 // Founding
 //===----------------------------------------------------------------------===//
@@ -570,7 +665,7 @@ static int rendezvous() {
   MEMORY_BASIC_INFORMATION Info;
   bool Trusted = VirtualQuery(Other, &Info, sizeof(Info)) &&
                  Info.Type == MEM_IMAGE && Info.AllocationBase == Other;
-  const char *Names[] = {"__tp_map", "__tp_base"};
+  const char *Names[] = {"__tp_map", "__tp_base", "__tp_slow"};
   for (const char *Name : Names)
     Trusted = Trusted && GetProcAddress(Other, Name);
 
