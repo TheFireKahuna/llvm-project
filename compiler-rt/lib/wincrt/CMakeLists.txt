@@ -40,6 +40,7 @@ set(WINCRT_PROCESS_SOURCES
   formatted_io.c
   rand_s.cpp
   thread.cpp
+  tlsplace.cpp
   tlsrt.cpp
   tp.S
   )

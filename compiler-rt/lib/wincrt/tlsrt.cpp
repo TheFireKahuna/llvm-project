@@ -399,16 +399,25 @@ bool wincrt::tls::advance(Record &R, uint64_t State) {
 // Adoption
 //===----------------------------------------------------------------------===//
 
-// Zeroes the block and its slot of every open plane.
+// Zeroes the block and its slot of every open plane, then copies every
+// registered image's template, again while a registration's generation moves:
+// either the registration's walk reaches the block, or the seed reads the
+// raised generation.
 void wincrt::tls::seed(uint32_t Index) {
   char *Tp = blockAt(Index);
-  uint64_t Planes = load(&shared().Planes);
-  __builtin_memset(Tp, 0, TP_BLOCK);
-  for (unsigned P = 1; P <= TP_PLANES; ++P)
-    if (Planes >> P & 1)
-      __builtin_memset(Tp + P * TP_PLANE, 0, TP_BLOCK);
-  auto &H = *reinterpret_cast<Header *>(Tp);
-  H.TcbSelf = H.Self = reinterpret_cast<uintptr_t>(Tp);
+  for (uint64_t Gen = load(&shared().CreateGen);;
+       Gen = load(&shared().CreateGen)) {
+    uint64_t Planes = load(&shared().Planes);
+    __builtin_memset(Tp, 0, TP_BLOCK);
+    for (unsigned P = 1; P <= TP_PLANES; ++P)
+      if (Planes >> P & 1)
+        __builtin_memset(Tp + P * TP_PLANE, 0, TP_BLOCK);
+    auto &H = *reinterpret_cast<Header *>(Tp);
+    H.TcbSelf = H.Self = reinterpret_cast<uintptr_t>(Tp);
+    seedImages(Index);
+    if (load(&shared().CreateGen) == Gen)
+      return;
+  }
 }
 
 // Each resource is in the record before the next is taken: the client id by
@@ -665,7 +674,8 @@ static int rendezvous() {
   MEMORY_BASIC_INFORMATION Info;
   bool Trusted = VirtualQuery(Other, &Info, sizeof(Info)) &&
                  Info.Type == MEM_IMAGE && Info.AllocationBase == Other;
-  const char *Names[] = {"__tp_map", "__tp_base", "__tp_slow"};
+  const char *Names[] = {"__tp_map", "__tp_base", "__tp_slow",
+                         "__tp_register"};
   for (const char *Name : Names)
     Trusted = Trusted && GetProcAddress(Other, Name);
 
@@ -694,7 +704,9 @@ bool wincrt::tls::found() {
       !commit(Meta + StateAt, Page) || !seal(uintptr_t(Meta), uintptr_t(Area)))
     return false;
   shared() = {StateVersion, sizeof(State)};
-  return AddVectoredExceptionHandler(1, recoverProbe);
+
+  shared().Taken[0] = (uint64_t(1) << TP_EXE_PLACE / Granule) - 1;
+  return AddVectoredExceptionHandler(1, recoverProbe) && foundImages();
 }
 
 #ifndef COMPILER_RT_SHARED_LIB

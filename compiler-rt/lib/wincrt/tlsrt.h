@@ -133,8 +133,11 @@ struct State {
   uint32_t Top; // the chunks ever published
   uint32_t Hint;
   uint64_t Planes; // the open planes, and Change while one opens or closes
+  uint64_t CreateGen;
 
   uint64_t ControlCommitted[MapPages / 8 / 64];
+  uint64_t Taken[3]; // the granules of the block's, plane 1's and plane 2's
+  void *Set;         // the image set's first page
 };
 constexpr uint32_t StateVersion = 1;
 constexpr uintptr_t StateAt =
@@ -199,6 +202,11 @@ bool advance(Record &R, uint64_t State);
 // Seeds the block of record Index before its thread runs code of the model.
 void seed(uint32_t Index);
 
+// Writes every registered image's template into the block of record Index,
+// being seeded.
+void seedImages(uint32_t Index);
+// Registers the executable, and has the loader notify unloads.
+bool foundImages();
 // Writes a word of read-only image memory under the fill's bracket.
 bool bracket(volatile const uint64_t *Word, uint64_t Value);
 
