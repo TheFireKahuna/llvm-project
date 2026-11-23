@@ -378,6 +378,12 @@ bool ShrinkWrapImpl::useOrDefCSROrFI(const MachineInstr &MI, RegScavenger *RS,
       return PSV->isJumpTable() || PSV->isConstantPool() || PSV->isGOT();
     return false;
   };
+  // A fault probe's landing is found from the unwind information of the frame
+  // it is in.
+  if (any_of(MI.memoperands(),
+             [](const MachineMemOperand *Op) { return Op->isFaultProbe(); }))
+    return true;
+
   // Load/store operations may access the stack indirectly when we previously
   // computed an address to a stack location.
   if (StackAddressUsed && FrameAddressMayEscape && MI.mayLoadOrStore() &&

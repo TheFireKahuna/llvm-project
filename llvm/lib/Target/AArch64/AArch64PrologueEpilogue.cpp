@@ -1036,7 +1036,19 @@ void AArch64PrologueEmitter::emitEmptyStackFramePrologue(
   // All of the stack allocation is for locals.
   AFI->setLocalStackSize(NumBytes);
   if (!NumBytes) {
-    if (NeedsWinCFI && HasWinCFI) {
+    // A fault probe's landing is found through the function's unwind
+    // information, which a leaf has only where it has a prologue.
+    auto HasFaultProbe = [&] {
+      return any_of(MF, [](const MachineBasicBlock &B) {
+        return any_of(B, [](const MachineInstr &MI) {
+          return any_of(MI.memoperands(), [](const MachineMemOperand *MMO) {
+            return MMO->isFaultProbe();
+          });
+        });
+      });
+    };
+    if (NeedsWinCFI && (HasWinCFI || HasFaultProbe())) {
+      HasWinCFI = true;
       BuildMI(MBB, MBBI, DL, TII->get(AArch64::SEH_PrologEnd))
           .setMIFlag(MachineInstr::FrameSetup);
     }

@@ -1,0 +1,11 @@
+# RUN: llc -mtriple=x86_64-windows-ntposix -run-pass=none -o - %s | FileCheck %s
+
+# CHECK: MOV32rm {{.*}} :: (volatile fault-probe load (s32), addrspace 280)
+---
+name: f
+body: |
+  bb.0:
+    liveins: $rdi
+    $eax = MOV32rm $rdi, 1, $noreg, 0, $noreg :: (volatile fault-probe load (s32), addrspace 280)
+    RET 0, $eax
+...

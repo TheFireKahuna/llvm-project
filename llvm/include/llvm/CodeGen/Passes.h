@@ -507,6 +507,10 @@ createGlobalMergePass(const TargetMachine *TM, unsigned MaximalOffset,
 /// protect against stack-based overflow vulnerabilities.
 LLVM_ABI FunctionPass *createSafeStackPass();
 
+/// Gives each fault probe a landing and records it in the function's
+/// exception table.
+LLVM_ABI extern char &FaultProbeLoweringID;
+
 /// This pass detects subregister lanes in a virtual register that are used
 /// independently of other lanes and splits them into separate virtual
 /// registers.

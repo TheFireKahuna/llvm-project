@@ -2170,6 +2170,16 @@ public:
     return StackPointerRegisterToSaveRestore;
   }
 
+  /// The address space whose 32-bit loads are fault probes (MOFaultProbe):
+  /// one that faults reads zero and execution continues at the next
+  /// instruction, through a landing FaultProbeLowering gives it.
+  LLVM_ABI std::optional<unsigned> getFaultProbeAddressSpace() const;
+
+  /// MOFaultProbe and MOVolatile for an access through \p AddrSpace where it
+  /// is the fault-probe address space.
+  LLVM_ABI MachineMemOperand::Flags
+  getFaultProbeFlags(unsigned AddrSpace) const;
+
   /// If a physical register, this returns the register in which a function
   /// that carries "thread-pointer-argument" is passed its thread pointer.
   virtual MCRegister getThreadPointerRegister() const { return MCRegister(); }

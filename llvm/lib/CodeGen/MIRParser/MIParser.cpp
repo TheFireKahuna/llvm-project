@@ -3487,6 +3487,9 @@ bool MIParser::parseMemoryOperandFlag(MachineMemOperand::Flags &Flags) {
   case MIToken::kw_cfguard_proven:
     Flags |= MachineMemOperand::MOCFGuardProven;
     break;
+  case MIToken::kw_fault_probe:
+    Flags |= MachineMemOperand::MOFaultProbe;
+    break;
   case MIToken::StringConstant: {
     MachineMemOperand::Flags TF;
     if (PFS.Target.getMMOTargetFlag(Token.stringValue(), TF))

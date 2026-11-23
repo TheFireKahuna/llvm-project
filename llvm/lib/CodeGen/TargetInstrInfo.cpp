@@ -831,6 +831,12 @@ TargetInstrInfo::foldMemoryOperand(MachineInstr &MI, ArrayRef<unsigned> Ops,
   MachineBasicBlock &MBB = *MI.getParent();
   MachineFunction &MF = *MBB.getParent();
 
+  // A fault probe is its own instruction, whose landing restarts after it.
+  if (llvm::any_of(LoadMI.memoperands(), [](const MachineMemOperand *MMO) {
+        return MMO->isFaultProbe();
+      }))
+    return nullptr;
+
   // Ask the target to do the actual folding.
   MachineInstr *NewMI = nullptr;
   int FrameIndex = 0;

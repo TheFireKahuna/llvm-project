@@ -120,6 +120,7 @@ struct MIToken {
     kw_non_temporal,
     kw_invariant,
     kw_cfguard_proven,
+    kw_fault_probe,
     kw_align,
     kw_basealign,
     kw_addrspace,
@@ -243,7 +244,8 @@ public:
   bool isMemoryOperandFlag() const {
     return Kind == kw_volatile || Kind == kw_non_temporal ||
            Kind == kw_dereferenceable || Kind == kw_invariant ||
-           Kind == kw_cfguard_proven || Kind == StringConstant;
+           Kind == kw_cfguard_proven || Kind == kw_fault_probe ||
+           Kind == StringConstant;
   }
 
   bool is(TokenKind K) const { return Kind == K; }

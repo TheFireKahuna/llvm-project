@@ -172,7 +172,12 @@ public:
     /// proved to be one of a fixed set of functions.
     MOCFGuardProven = 1u << 12,
 
-    LLVM_MARK_AS_BITMASK_ENUM(/* LargestFlag = */ MOCFGuardProven)
+    /// The access is a fault probe: where it faults it reads zero and
+    /// execution continues after it
+    /// (TargetLowering::getFaultProbeAddressSpace).
+    MOFaultProbe = 1u << 13,
+
+    LLVM_MARK_AS_BITMASK_ENUM(/* LargestFlag = */ MOFaultProbe)
   };
 
 private:
@@ -321,6 +326,7 @@ public:
   bool isNonTemporal() const { return FlagVals & MONonTemporal; }
   bool isDereferenceable() const { return FlagVals & MODereferenceable; }
   bool isInvariant() const { return FlagVals & MOInvariant; }
+  bool isFaultProbe() const { return FlagVals & MOFaultProbe; }
 
   /// Returns true if this operation has an atomic ordering requirement of
   /// unordered or higher, false otherwise.

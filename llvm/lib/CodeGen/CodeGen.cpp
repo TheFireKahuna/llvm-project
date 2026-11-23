@@ -144,6 +144,7 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeReplaceWithVeclibLegacyPass(Registry);
   initializeSSAMachineSchedulerLegacyPass(Registry);
   initializeSafeStackLegacyPassPass(Registry);
+  initializeFaultProbeLoweringPass(Registry);
   initializeSelectOptimizePass(Registry);
   initializeShadowStackGCLoweringPass(Registry);
   initializeShrinkWrapLegacyPass(Registry);

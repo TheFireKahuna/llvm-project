@@ -1085,6 +1085,11 @@ void TargetPassConfig::addMachinePasses() {
   addPass(&XRayInstrumentationID);
   addPass(&PatchableFunctionID);
 
+  // A fault probe's landing is placed once nothing moves the probe, before the
+  // target's pre-emit passes mark the landing pads as continuation targets.
+  if (TM->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    addPass(&FaultProbeLoweringID);
+
   addPreEmitPass();
 
   if (TM->Options.EnableIPRA)

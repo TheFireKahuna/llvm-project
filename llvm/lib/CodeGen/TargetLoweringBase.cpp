@@ -2143,6 +2143,21 @@ Value *TargetLoweringBase::getSafeStackPointerLocation(
 
 /// isLegalAddressingMode - Return true if the addressing mode represented
 /// by AM is legal for this target, for a load/store of the specified type.
+MachineMemOperand::Flags
+TargetLoweringBase::getFaultProbeFlags(unsigned AddrSpace) const {
+  return AddrSpace == getFaultProbeAddressSpace()
+             ? MachineMemOperand::MOFaultProbe | MachineMemOperand::MOVolatile
+             : MachineMemOperand::MONone;
+}
+
+std::optional<unsigned> TargetLoweringBase::getFaultProbeAddressSpace() const {
+  const Triple &TT = TM.getTargetTriple();
+  if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
+      (TT.isX86_64() || TT.isAArch64()))
+    return 280;
+  return std::nullopt;
+}
+
 bool TargetLoweringBase::isLegalAddressingMode(const DataLayout &DL,
                                                const AddrMode &AM, Type *Ty,
                                                unsigned AS, Instruction *I) const {
@@ -2539,6 +2554,8 @@ MachineMemOperand::Flags TargetLoweringBase::getLoadMemOperandFlags(
       LI.hasMetadata(LLVMContext::MD_cfguard_proven))
     Flags |= MachineMemOperand::MOCFGuardProven;
 
+  Flags |= getFaultProbeFlags(LI.getPointerAddressSpace());
+
   // Dereferenceability analysis is expensive, skip at O0.
   if (OptLevel != CodeGenOptLevel::None &&
       isDereferenceableAndAlignedPointer(
@@ -2561,6 +2578,8 @@ TargetLoweringBase::getStoreMemOperandFlags(const StoreInst &SI,
   if (SI.hasMetadata(LLVMContext::MD_nontemporal))
     Flags |= MachineMemOperand::MONonTemporal;
 
+  Flags |= getFaultProbeFlags(SI.getPointerAddressSpace());
+
   // FIXME: Not preserving dereferenceable
   Flags |= getTargetMMOFlags(SI);
   return Flags;
@@ -2579,6 +2598,10 @@ TargetLoweringBase::getAtomicMemOperandFlags(const Instruction &AI,
       Flags |= MachineMemOperand::MOVolatile;
   } else
     llvm_unreachable("not an atomic instruction");
+
+  // The pointer is the first operand of either.
+  Flags |=
+      getFaultProbeFlags(AI.getOperand(0)->getType()->getPointerAddressSpace());
 
   // FIXME: Not preserving dereferenceable
   Flags |= getTargetMMOFlags(AI);
