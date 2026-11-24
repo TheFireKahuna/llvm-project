@@ -90,8 +90,11 @@ int main(void) {
 // IMPORTS-DAG: Symbol: memset (
 // IMPORTS-DAG: Symbol: strlen (
 
-// The names of ntdllp.lib that the program uses are all the C library's.
-// NTDLL-NOT: Name: ntdll.dll
+// The C library's names that the DLL uses are none of ntdll.dll's, which its
+// start-up imports from.
+// NTDLL:     Name: ntdll.dll
+// NTDLL-NOT: Symbol: {{.*printf|.*scanf|memset|strlen|__C_specific_handler}}
+// NTDLL:     Import {
 
 // STATIC:     Name: ntdll.dll
 // STATIC-NOT: Symbol: {{.*printf|.*scanf|memset|strlen|__C_specific_handler}}

@@ -37,25 +37,31 @@ extern "C" BOOL WINAPI _CRT_INIT(HINSTANCE, DWORD Reason, LPVOID Reserved) {
   return TRUE;
 }
 
-// Not exported: each DLL links its own from the archive. It returns after it
-// sets the cookie, so the cookie cannot protect its own frame.
-extern "C" __attribute__((no_stack_protector)) BOOL WINAPI
-_DllMainCRTStartup(HINSTANCE Instance, DWORD Reason, LPVOID Reserved) {
-  if (Reason == DLL_PROCESS_ATTACH) {
-    __security_init_cookie();
-    if (!_CRT_INIT(Instance, Reason, Reserved))
+// Not exported: each DLL links its own from the archive. The loader takes
+// every exception that leaves it, so an Itanium one's raise resumes here.
+extern "C" BOOL WINAPI _DllMainCRTStartup(HINSTANCE Instance, DWORD Reason,
+                                          LPVOID Reserved) {
+  __try {
+    if (Reason == DLL_PROCESS_ATTACH) {
+      if (!_CRT_INIT(Instance, Reason, Reserved))
+        return FALSE;
+    } else if (Reason == DLL_PROCESS_DETACH && !Attached) {
+      // The loader sends a detach after a failed attach, which was undone
+      // then.
       return FALSE;
-  } else if (Reason == DLL_PROCESS_DETACH && !Attached) {
-    // The loader sends a detach after a failed attach, which was undone then.
-    return FALSE;
+    }
+    BOOL Result = DllMain(Instance, Reason, Reserved);
+    if (Reason == DLL_PROCESS_ATTACH && !Result) {
+      DllMain(Instance, DLL_PROCESS_DETACH, Reserved);
+      Reason = DLL_PROCESS_DETACH;
+    }
+    // After the user's DllMain, which may still use the image's static
+    // objects.
+    if (Reason == DLL_PROCESS_DETACH)
+      _CRT_INIT(Instance, Reason, Reserved);
+    return Result;
+  } __except (wincrt::terminateFilter(GetExceptionInformation())) {
+    // The filter never selects this handler.
+    __builtin_unreachable();
   }
-  BOOL Result = DllMain(Instance, Reason, Reserved);
-  if (Reason == DLL_PROCESS_ATTACH && !Result) {
-    DllMain(Instance, DLL_PROCESS_DETACH, Reserved);
-    Reason = DLL_PROCESS_DETACH;
-  }
-  // After the user's DllMain, which may still use the image's static objects.
-  if (Reason == DLL_PROCESS_DETACH)
-    _CRT_INIT(Instance, Reason, Reserved);
-  return Result;
 }

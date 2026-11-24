@@ -13,6 +13,11 @@
 // initializer could give a symbol's value only to a pointer-sized field, and
 // GuardFlags has 32 bits, so the directory is assembled.
 //
+// The security cookie is a read-only word holding MSVC's default, the only
+// value the loader replaces, which it does before any code of the image runs.
+// The directory follows it, so it is never in the image's last eight bytes,
+// where the loader refuses it.
+//
 // The Control Flow Guard pointers are here too. Code built with the guard
 // checks the target of an indirect call through __guard_check_icall_fptr,
 // target in X15 on AArch64, or makes the call through
@@ -26,8 +31,10 @@
 //===----------------------------------------------------------------------===//
 
         .section .rdata,"dr"
-        .globl _load_config_used
+        .globl __security_cookie, _load_config_used
         .p2align 3
+__security_cookie:
+        .quad 0x00002B992DDFA232
 _load_config_used:
         .long 1f - _load_config_used    // Size
         .zero 0x54

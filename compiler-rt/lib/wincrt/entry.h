@@ -35,11 +35,9 @@ inline int showWindowMode() {
 }
 
 // The body of an executable's entry point, which instantiates it with the call
-// of its own main function, so that the call is direct. It never returns, so
-// no epilogue checks the cookie that it replaces.
+// of its own main function, so that the call is direct.
 template <_crt_app_type Type, bool Wide, int (*Main)()>
 [[noreturn]] void runExecutable() {
-  __security_init_cookie();
   __try {
     _set_app_type(Type);
     if (Wide ? _configure_wide_argv(_crt_argv_unexpanded_arguments) ||

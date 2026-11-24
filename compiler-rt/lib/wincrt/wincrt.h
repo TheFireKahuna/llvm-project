@@ -71,8 +71,7 @@ extern void *__dso_handle;
 // The image's own header, defined by the linker.
 extern IMAGE_DOS_HEADER __ImageBase;
 
-extern uintptr_t __security_cookie;
-void __cdecl __security_init_cookie(void);
+extern const uintptr_t __security_cookie;
 }
 
 // The parts of wincrt that serve the whole process: the termination
@@ -119,6 +118,27 @@ void initializeExecutable();
 void finalizeImage(bool Terminating);
 // Reports a start-up failure and exits without running any terminator.
 [[noreturn, gnu::cold]] void fatal(const char *Message);
+
+// The code of the exception that the unwinder raises to search for the
+// handler of an Itanium exception, its one parameter: "GCC".
+constexpr DWORD ItaniumThrow = 0x20474343;
+
+// Whether Record is that raise, by _Unwind_RaiseException or
+// _Unwind_Resume_or_Rethrow of the image that holds its address. No frame took
+// an exception that reaches a filter, and the raise, resumed, returns to the
+// thrower's runtime, which calls std::terminate with nothing unwound.
+bool raisedByUnwinder(const EXCEPTION_RECORD *Record);
+
+// The filter of a frame that an exception must not pass: the loader takes
+// every exception that leaves DllMain, and one that leaves a registered
+// function terminates the program ([basic.start.term]). It resumes the
+// unwinder's raise, so that the thrower's runtime terminates with nothing
+// unwound, and never selects its handler.
+inline int terminateFilter(EXCEPTION_POINTERS *Exception) {
+  return raisedByUnwinder(Exception->ExceptionRecord)
+             ? EXCEPTION_CONTINUE_EXECUTION
+             : EXCEPTION_CONTINUE_SEARCH;
+}
 
 struct ExitImage;
 
@@ -220,10 +240,13 @@ inline void callVoid(void *Function) WINCRT_DTOR_SALT {
 // Calls a registered destructor. Salted says whether it was registered as
 // carrying the salted type.
 inline void invokeCallback(Destructor Function, void *Object, bool Salted) {
-  if (Salted)
-    reinterpret_cast<SaltedDestructor>(Function)(Object);
-  else
-    Function(Object);
+  __try {
+    if (Salted)
+      reinterpret_cast<SaltedDestructor>(Function)(Object);
+    else
+      Function(Object);
+  } __except (terminateFilter(GetExceptionInformation())) {
+  }
 }
 
 // The size of the image whose handle Module is.

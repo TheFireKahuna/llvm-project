@@ -222,7 +222,11 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
 /// This is a wrapper that calls the real SEH handler function, which in
 /// turn (at least, for Itanium-style frames) calls the real Itanium
 /// personality function (see \c _GCC_specific_handler()).
-extern "C" _Unwind_Reason_Code
+///
+/// A language handler is called as the system's dispatcher calls it,
+/// unchecked: Control Flow Guard does not list it as a target of indirect
+/// calls, and a foreign one carries no KCFI type.
+extern "C" __attribute__((guard(nocf), no_sanitize("kcfi"))) _Unwind_Reason_Code
 __libunwind_seh_personality(int version, _Unwind_Action state,
                             uint64_t klass, _Unwind_Exception *exc,
                             struct _Unwind_Context *context) {
@@ -410,13 +414,30 @@ _Unwind_RaiseException(_Unwind_Exception *exception_object) {
   memset(exception_object->private_, 0, sizeof(exception_object->private_));
 
   // phase 1: the search phase
-  // We'll let the system do that for us.
-  RaiseException(STATUS_GCC_THROW, 0, 1, (ULONG_PTR *)&exception_object);
+  // We'll let the system do that for us. RtlRaiseException(), unlike
+  // RaiseException(), records this function as the exception's address, by
+  // which an unhandled-exception filter knows a raise that it can resume.
+  EXCEPTION_RECORD ms_exc;
+  memset(&ms_exc, 0, sizeof(ms_exc));
+  ms_exc.ExceptionCode = STATUS_GCC_THROW;
+  ms_exc.NumberParameters = 1;
+  ms_exc.ExceptionInformation[0] = (ULONG_PTR)exception_object;
+  RtlRaiseException(&ms_exc);
 
   // If we get here, either something went horribly wrong or we reached the
   // top of the stack. Either way, let libc++abi call std::terminate().
   return _URC_END_OF_STACK;
 }
+
+#if defined(_WIN32_ITANIUM)
+/// The functions that raise an exception's search, for the start-up library's
+/// unhandled-exception filter, which resumes a raise by either so that the
+/// thrower calls std::terminate(). It finds them here when libunwind is linked
+/// into the executable, which exports neither.
+extern "C" _LIBUNWIND_HIDDEN const void *const __unw_seh_raise_functions[2] = {
+    reinterpret_cast<const void *>(&_Unwind_RaiseException),
+    reinterpret_cast<const void *>(&_Unwind_Resume_or_Rethrow)};
+#endif
 
 /// When \c _Unwind_RaiseException() is in phase2, it hands control
 /// to the personality function at each frame.  The personality

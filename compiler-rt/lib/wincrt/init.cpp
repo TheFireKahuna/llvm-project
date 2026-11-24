@@ -10,8 +10,19 @@
 
 struct _exception;
 
+extern "C" {
 // A program's own math error handler, if it defines one.
-extern "C" int __cdecl _matherr(struct _exception *) __attribute__((weak));
+int __cdecl _matherr(struct _exception *) __attribute__((weak));
+
+// Exported by ntdll; no SDK header declares it.
+NTSYSAPI void NTAPI RtlSetUnhandledExceptionFilter(PTOP_LEVEL_EXCEPTION_FILTER);
+
+// libunwind's two functions that raise an exception's search, where it is
+// linked into the image, which then exports neither. The table is hidden, so
+// no other image's stands in for it.
+extern const void *const __unw_seh_raise_functions[2]
+    __attribute__((weak, visibility("hidden")));
+}
 
 // Call the entries of the table [First, Last), skipping the null entries that
 // the linker may pad it with, as the Universal CRT's _initterm does; the _PIFV
@@ -45,7 +56,34 @@ static void __cdecl runTerminators() {
   runTable(__xt_a, __xt_z);
 }
 
+// The filter ntdll runs for an exception that no frame of its thread took.
+// Every exception but the unwinder's raise goes where it went without this
+// filter: to the program's SetUnhandledExceptionFilter filter, then to Windows
+// Error Reporting.
+static LONG WINAPI unhandledExceptionFilter(EXCEPTION_POINTERS *Exception) {
+  return wincrt::raisedByUnwinder(Exception->ExceptionRecord)
+             ? EXCEPTION_CONTINUE_EXECUTION
+             : UnhandledExceptionFilter(Exception);
+}
+
 namespace wincrt {
+
+bool raisedByUnwinder(const EXCEPTION_RECORD *Record) {
+  if (Record->ExceptionCode != ItaniumThrow || Record->NumberParameters != 1)
+    return false;
+  DWORD64 Base;
+  const RUNTIME_FUNCTION *Entry = RtlLookupFunctionEntry(
+      reinterpret_cast<DWORD64>(Record->ExceptionAddress), &Base, nullptr);
+  if (!Entry)
+    return false;
+  auto *Function = reinterpret_cast<const void *>(Base + Entry->BeginAddress);
+  if (__unw_seh_raise_functions && (Function == __unw_seh_raise_functions[0] ||
+                                    Function == __unw_seh_raise_functions[1]))
+    return true;
+  auto Module = reinterpret_cast<HMODULE>(Base);
+  return Function == GetProcAddress(Module, "_Unwind_RaiseException") ||
+         Function == GetProcAddress(Module, "_Unwind_Resume_or_Rethrow");
+}
 
 // Start-up is single-threaded: a DLL's runs under the loader lock, and an
 // executable's before main.
@@ -57,6 +95,9 @@ bool initializeImage() {
 }
 
 void initializeExecutable() {
+  // Only the executable installs the filter: a DLL could be unloaded while
+  // the process's slot still named its copy.
+  RtlSetUnhandledExceptionFilter(unhandledExceptionFilter);
   // Before any constructor, which may call exit. The Universal CRT runs its
   // atexit table newest first, so the registries' token, posted second, runs
   // the registrations before the terminators.
