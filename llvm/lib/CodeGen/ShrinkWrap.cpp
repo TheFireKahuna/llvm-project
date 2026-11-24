@@ -402,6 +402,11 @@ bool ShrinkWrapImpl::useOrDefCSROrFI(const MachineInstr &MI, RegScavenger *RS,
       if (!PhysReg)
         continue;
       assert(PhysReg.isPhysical() && "Unallocated register?!");
+      // A callee-saved register that nothing in the function modifies is not
+      // saved, so reading it, its caller's value, needs no frame.
+      if (!MO.isDef() && RCI->getLastCalleeSavedAlias(PhysReg) &&
+          !MF->getRegInfo().isPhysRegModified(PhysReg))
+        continue;
       // The stack pointer is not normally described as a callee-saved register
       // in calling convention definitions, so we need to watch for it
       // separately. An SP mentioned by a call instruction, we can ignore,

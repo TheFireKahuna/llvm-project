@@ -10845,6 +10845,10 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
     }
 
     if (VA.isRegLoc()) {
+      // A function that pins the thread pointer holds it in the register.
+      if (Flags.isThreadPointer() &&
+          MF.getFunction().hasFnAttribute("pin-thread-pointer"))
+        continue;
       if (i == 0 && Flags.isReturned() && !Flags.isSwiftSelf() &&
           Outs[0].VT == MVT::i64) {
         assert(VA.getLocVT() == MVT::i64 &&
@@ -34027,6 +34031,10 @@ Value *AArch64TargetLowering::getSafeStackPointerLocation(
 
 /// If a physical register, this returns the register that receives the
 /// exception address on entry to an EH pad.
+MCRegister AArch64TargetLowering::getThreadPointerRegister() const {
+  return AArch64::X28;
+}
+
 Register AArch64TargetLowering::getExceptionPointerRegister(
     ExceptionHandling EH, const Constant *PersonalityFn) const {
   // FIXME: This is a guess. Has this been defined yet?

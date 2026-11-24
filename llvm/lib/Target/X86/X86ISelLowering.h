@@ -620,6 +620,8 @@ namespace llvm {
     Register getRegisterByName(const char* RegName, LLT VT,
                                const MachineFunction &MF) const override;
 
+    MCRegister getThreadPointerRegister() const override;
+
     /// If a physical register, this returns the register that receives the
     /// exception address on entry to an EH pad.
     Register

@@ -523,6 +523,12 @@ AArch64RegisterInfo::getStrictlyReservedRegs(const MachineFunction &MF) const {
   markSuperRegs(Reserved, AArch64::FPMR);
   markSuperRegs(Reserved, AArch64::FPSR);
 
+  // A function that pins the thread pointer keeps it in X28 throughout.
+  if (MF.getFunction().hasFnAttribute("pin-thread-pointer")) {
+    markSuperRegs(Reserved, AArch64::X28);
+    markSuperRegs(Reserved, AArch64::W28);
+  }
+
   if (MF.getFunction().getCallingConv() == CallingConv::GRAAL) {
     markSuperRegs(Reserved, AArch64::X27);
     markSuperRegs(Reserved, AArch64::X28);

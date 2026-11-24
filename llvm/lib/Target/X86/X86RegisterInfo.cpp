@@ -523,6 +523,11 @@ BitVector X86RegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   // Set the Shadow Stack Pointer as reserved.
   Reserved.set(X86::SSP);
 
+  // A function that pins the thread pointer keeps it in R14 throughout.
+  if (MF.getFunction().hasFnAttribute("pin-thread-pointer"))
+    for (const MCPhysReg &SubReg : subregs_inclusive(X86::R14))
+      Reserved.set(SubReg);
+
   auto &ST = MF.getSubtarget<X86Subtarget>();
   if (ST.hasUserReservedRegisters()) {
     if (ST.is64Bit()) {

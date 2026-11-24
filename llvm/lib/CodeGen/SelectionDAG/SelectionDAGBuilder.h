@@ -385,6 +385,7 @@ public:
   void resolveOrClearDbgInfo();
 
   SDValue getValue(const Value *V);
+  SDValue getThreadPointerArgument(const Value *V);
 
   SDValue getNonRegisterValue(const Value *V);
   SDValue getValueImpl(const Value *V);

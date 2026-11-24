@@ -2400,6 +2400,10 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
       // Split v64i1 value into two registers
       Passv64i1ArgInRegs(dl, DAG, Arg, RegsToPass, VA, ArgLocs[++I], Subtarget);
     } else if (VA.isRegLoc()) {
+      // A function that pins the thread pointer holds it in the register.
+      if (Flags.isThreadPointer() &&
+          MF.getFunction().hasFnAttribute("pin-thread-pointer"))
+        continue;
       RegsToPass.push_back(std::make_pair(VA.getLocReg(), Arg));
       const TargetOptions &Options = DAG.getTarget().Options;
       if (Options.EmitCallSiteInfo)

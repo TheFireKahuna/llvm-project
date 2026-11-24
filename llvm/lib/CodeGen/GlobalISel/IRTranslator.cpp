@@ -3640,6 +3640,12 @@ bool IRTranslatorImpl::translateCall(const User &U,
   if (CI.countOperandBundlesOfType(LLVMContext::OB_cfguardtarget))
     return false;
 
+  // FIXME: support a thread pointer passed in its register.
+  if (CI.countOperandBundlesOfType(LLVMContext::OB_threadpointer) ||
+      (CI.getIntrinsicID() == Intrinsic::thread_pointer &&
+       CI.getFunction()->hasFnAttribute("thread-pointer-argument")))
+    return false;
+
   // FIXME: support statepoints and related.
   if (isa<GCStatepointInst, GCRelocateInst, GCResultInst>(U))
     return false;
@@ -3842,7 +3848,8 @@ bool IRTranslatorImpl::translateInvoke(const User &U,
     return false;
 
   // FIXME: support control flow guard targets.
-  if (I.countOperandBundlesOfType(LLVMContext::OB_cfguardtarget))
+  if (I.countOperandBundlesOfType(LLVMContext::OB_cfguardtarget) ||
+      I.countOperandBundlesOfType(LLVMContext::OB_threadpointer))
     return false;
 
   // FIXME: support Windows exception handling.

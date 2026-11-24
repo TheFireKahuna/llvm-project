@@ -664,11 +664,19 @@ void RAGreedy::evictInterference(const LiveInterval &VirtReg,
 MCRegister
 RegAllocEvictionAdvisor::getUnusedCalleeSavedReg(const LiveInterval &VirtReg,
                                                  MCRegister PhysReg) const {
+  // A callee-saved register is unused while it holds nothing but its own
+  // incoming value, which leaves it unmodified.
   auto IsUnusedCSR = [&](MCRegUnit Unit) {
     MCRegister CSR = RegClassInfo.getCalleeSavedAlias(Unit);
-    if (CSR && !Matrix->isPhysRegUsed(CSR))
-      return CSR;
-    return MCRegister();
+    if (!CSR)
+      return MCRegister();
+    for (MCRegUnit U : TRI->regunits(CSR))
+      for (LiveIntervalUnion::SegmentIter SI =
+               Matrix->getLiveUnions()[static_cast<unsigned>(U)].begin();
+           SI.valid(); ++SI)
+        if (MRI->getLiveInPhysReg(SI.value()->reg()) != CSR)
+          return MCRegister();
+    return CSR;
   };
 
   for (MCRegUnitMaskIterator Units(PhysReg, TRI); Units.isValid(); ++Units) {
@@ -2844,9 +2852,11 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
     // When NewVRegs is not empty, we may have made decisions such as evicting
     // a virtual register, go with the earlier decisions and use the physical
     // register.
+    // A live-in callee-saved register's own value keeps it unmodified, so
+    // holding it there costs no save.
     if (CSRCost.getFrequency() &&
         EvictAdvisor->getUnusedCalleeSavedReg(VirtReg, PhysReg) &&
-        NewVRegs.empty()) {
+        MRI->getLiveInPhysReg(VirtReg.reg()) != PhysReg && NewVRegs.empty()) {
       MCRegister CSRReg = tryAssignCSRFirstTime(VirtReg, Order, PhysReg,
                                                 CostPerUseLimit, NewVRegs);
       if (CSRReg || !NewVRegs.empty())

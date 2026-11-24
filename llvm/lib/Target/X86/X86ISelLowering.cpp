@@ -29118,6 +29118,10 @@ SDValue X86TargetLowering::LowerFRAME_TO_ARGS_OFFSET(SDValue Op,
   return DAG.getIntPtrConstant(2 * RegInfo->getSlotSize(), SDLoc(Op));
 }
 
+MCRegister X86TargetLowering::getThreadPointerRegister() const {
+  return Subtarget.is64Bit() ? X86::R14 : MCRegister();
+}
+
 Register X86TargetLowering::getExceptionPointerRegister(
     ExceptionHandling EH, const Constant *PersonalityFn) const {
   if (classifyEHPersonality(PersonalityFn) == EHPersonality::CoreCLR)

@@ -171,6 +171,13 @@ void Mangler::getNameWithPrefix(raw_ostream &OS, const GlobalValue *GV,
 
   getNameWithPrefixImpl(OS, Name, PrefixTy, DL, Prefix);
 
+  // A function that is passed its thread pointer says so in its symbol, so
+  // that a reference which passes none never binds it.
+  if (const auto *F = dyn_cast_or_null<Function>(GV->getAliaseeObject());
+      F && !Name.starts_with("\01") &&
+      F->hasFnAttribute("thread-pointer-argument"))
+    OS << "$tp";
+
   if (!MSFunc)
     return;
 

@@ -2589,6 +2589,10 @@ void Verifier::verifyFunctionAttrs(FunctionType *FT, AttributeList Attrs,
         "Attribute writable and memory without argmem: write are incompatible!",
         V);
 
+  Check(!Attrs.hasFnAttr("pin-thread-pointer") ||
+            Attrs.hasFnAttr("thread-pointer-argument"),
+        "'pin-thread-pointer' requires 'thread-pointer-argument'", V);
+
   if (Attrs.hasFnAttr("aarch64_pstate_sm_enabled")) {
     Check(!Attrs.hasFnAttr("aarch64_pstate_sm_compatible"),
            "Attributes 'aarch64_pstate_sm_enabled and "
@@ -4327,6 +4331,10 @@ void Verifier::visitCallBase(CallBase &Call) {
       FoundCFGuardTargetBundle = true;
       Check(BU.Inputs.size() == 1,
             "Expected exactly one cfguardtarget bundle operand", Call);
+    } else if (Tag == LLVMContext::OB_threadpointer) {
+      Check(Call.countOperandBundlesOfType(Tag) == 1 && BU.Inputs.size() == 1 &&
+                BU.Inputs[0]->getType()->isPointerTy(),
+            "Expected one threadpointer bundle of one pointer operand", Call);
     } else if (Tag == LLVMContext::OB_ptrauth) {
       Check(!FoundPtrauthBundle, "Multiple ptrauth operand bundles", Call);
       FoundPtrauthBundle = true;
@@ -4443,6 +4451,13 @@ void Verifier::verifyMustTailCall(CallInst &CI) {
   // - The calling conventions of the caller and callee must match.
   Check(F->getCallingConv() == CI.getCallingConv(),
         "cannot guarantee tail call due to mismatched calling conv", &CI);
+
+  // - A caller that was passed no thread pointer cannot leave one in the
+  //   register for a callee that is passed it.
+  if (const Function *Callee = CI.getCalledFunction())
+    Check(!Callee->hasFnAttribute("thread-pointer-argument") ||
+              F->hasFnAttribute("thread-pointer-argument"),
+          "cannot guarantee tail call due to mismatched thread pointer", &CI);
 
   // - The call must immediately precede a :ref:`ret <i_ret>` instruction.
   // - The ret instruction must return the value produced by the call or void.

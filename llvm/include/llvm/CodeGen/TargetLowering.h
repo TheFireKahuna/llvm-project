@@ -350,6 +350,7 @@ public:
     bool IsSwiftAsync : 1;
     bool IsSwiftError : 1;
     bool IsCFGuardTarget : 1;
+    bool IsThreadPointer : 1;
     MaybeAlign Alignment = std::nullopt;
     Type *IndirectType = nullptr;
 
@@ -358,7 +359,8 @@ public:
           IsZExt(false), IsNoExt(false), IsInReg(false), IsSRet(false),
           IsNest(false), IsByVal(false), IsByRef(false), IsInAlloca(false),
           IsPreallocated(false), IsReturned(false), IsSwiftSelf(false),
-          IsSwiftAsync(false), IsSwiftError(false), IsCFGuardTarget(false) {}
+          IsSwiftAsync(false), IsSwiftError(false), IsCFGuardTarget(false),
+          IsThreadPointer(false) {}
 
     explicit ArgListEntry(Value *Val, SDValue Node = SDValue(),
                           Attribute::AttrKind ExtAttr = Attribute::None)
@@ -2167,6 +2169,10 @@ public:
   Register getStackPointerRegisterToSaveRestore() const {
     return StackPointerRegisterToSaveRestore;
   }
+
+  /// If a physical register, this returns the register in which a function
+  /// that carries "thread-pointer-argument" is passed its thread pointer.
+  virtual MCRegister getThreadPointerRegister() const { return MCRegister(); }
 
   /// If a physical register, this returns the register that receives the
   /// exception address on entry to an EH pad.

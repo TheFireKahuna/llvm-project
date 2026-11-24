@@ -56,8 +56,9 @@ namespace ISD {
       Pointer = 1U << 23,
       /// Whether this is part of a variable argument list (non-fixed).
       VarArg = 1U << 24,
+      ThreadPointer = 1U << 25, ///< Thread pointer a call passes
 
-      LLVM_MARK_AS_BITMASK_ENUM(/* LargestFlag = */ VarArg)
+      LLVM_MARK_AS_BITMASK_ENUM(/* LargestFlag = */ ThreadPointer)
     };
 
   private:
@@ -112,6 +113,9 @@ namespace ISD {
 
     bool isSwiftSelf() const { return FlagVals & SwiftSelf; }
     void setSwiftSelf() { setFlag(SwiftSelf); }
+
+    bool isThreadPointer() const { return FlagVals & ThreadPointer; }
+    void setThreadPointer() { setFlag(ThreadPointer); }
 
     bool isSwiftAsync() const { return FlagVals & SwiftAsync; }
     void setSwiftAsync() { setFlag(SwiftAsync); }

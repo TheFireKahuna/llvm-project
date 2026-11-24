@@ -404,6 +404,8 @@ public:
   Value *getSafeStackPointerLocation(
       IRBuilderBase &IRB, const LibcallLoweringInfo &Libcalls) const override;
 
+  MCRegister getThreadPointerRegister() const override;
+
   /// If a physical register, this returns the register that receives the
   /// exception address on entry to an EH pad.
   Register

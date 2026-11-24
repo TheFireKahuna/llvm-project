@@ -51,6 +51,11 @@ class CCIfPreallocated<CCAction A> : CCIf<"ArgFlags.isPreallocated()", A> {
 class CCIfSwiftSelf<CCAction A> : CCIf<"ArgFlags.isSwiftSelf()", A> {
 }
 
+/// CCIfThreadPointer - If the current argument is the thread pointer a call
+/// passes, apply Action A.
+class CCIfThreadPointer<CCAction A> : CCIf<"ArgFlags.isThreadPointer()", A> {
+}
+
 /// CCIfSwiftAsync - If the current argument has swiftasync parameter attribute,
 /// apply Action A.
 class CCIfSwiftAsync<CCAction A> : CCIf<"ArgFlags.isSwiftAsync()", A> {

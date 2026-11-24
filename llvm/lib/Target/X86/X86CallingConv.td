@@ -531,6 +531,9 @@ def CC_X86_64_C : CallingConv<[
   CCIfNest<CCIfSubtarget<"isTarget64BitILP32()", CCAssignToReg<[R10D]>>>,
   CCIfNest<CCAssignToReg<[R10]>>,
 
+  // Pass the thread pointer in a callee saved register.
+  CCIfThreadPointer<CCIfType<[i64], CCAssignToReg<[R14]>>>,
+
   // Pass SwiftSelf in a callee saved register.
   CCIfSwiftSelf<CCIfType<[i64], CCAssignToReg<[R13]>>>,
 
@@ -625,6 +628,9 @@ def CC_X86_Win64_C : CallingConv<[
 
   // The 'nest' parameter, if any, is passed in R10.
   CCIfNest<CCAssignToReg<[R10]>>,
+
+  // Pass the thread pointer in a callee saved register.
+  CCIfThreadPointer<CCIfType<[i64], CCAssignToReg<[R14]>>>,
 
   // A SwiftError is passed in R12.
   CCIfSwiftError<CCIfType<[i64], CCAssignToReg<[R12]>>>,

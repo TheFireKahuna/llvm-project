@@ -35,6 +35,10 @@ defvar AArch64_Common = [
   CCIfNest<CCAssignToReg<[X15]>>,
 
   CCIfType<[iPTR], CCBitConvertToType<i64>>,
+
+  // Pass the thread pointer in a callee saved register.
+  CCIfThreadPointer<CCIfType<[i64], CCAssignToReg<[X28]>>>,
+
   CCIfType<[v2f32], CCBitConvertToType<v2i32>>,
   CCIfType<[v2f64, v4f32], CCBitConvertToType<v2i64>>,
 

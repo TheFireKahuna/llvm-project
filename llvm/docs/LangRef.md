@@ -2658,6 +2658,21 @@ fn -> other_fn -> other_fn ; fn is norecurse
 :   This attribute specifies a byte value to use for `tail-pad-to-size` fill,
     with default of 0 if this attribute is absent.
 
+`"thread-pointer-argument"`
+:   This attribute indicates that the function is passed its thread pointer
+    in a register that every calling convention of the target preserves
+    across a call (`r14` on x86-64, `x28` on AArch64). The function's type is
+    unchanged: in it `llvm.thread.pointer` is the register's value on entry,
+    and a call passes a thread pointer only in a
+    {ref}`threadpointer operand bundle<ob_threadpointer>`. The function's
+    symbol is its name followed by `$tp`, so a reference that passes no
+    thread pointer does not bind it.
+
+`"pin-thread-pointer"`
+:   This attribute, which requires `"thread-pointer-argument"`, keeps the
+    thread pointer in its register for the whole function: no other value is
+    allocated to the register, and a call passes it with no copy.
+
 `"probe-stack"`
 :   This attribute indicates that the function will trigger a guard region
     in the end of the stack. It ensures that accesses to the stack must be
@@ -3477,6 +3492,22 @@ to a valid value for the target, the marked instruction will return the
 value of its first argument instead of calling the specified function
 or intrinsic. This is achieved with `PATCHINST` relocations on the
 target instructions (see the AArch64 psABI for details).
+
+(ob_threadpointer)=
+
+#### Thread Pointer Operand Bundles
+
+A `"threadpointer"` operand bundle passes a call's callee the thread pointer
+of a function that carries `"thread-pointer-argument"`. It has one operand of
+pointer type, which instruction selection passes as one more argument in the
+target's thread pointer register. For example:
+
+```llvm
+call void @f(i64 %x) ["threadpointer"(ptr %tp)]
+```
+
+A call may carry at most one such bundle. A `musttail` call to a function
+that is passed its thread pointer must be made from a function that is too.
 
 (moduleasm)=
 

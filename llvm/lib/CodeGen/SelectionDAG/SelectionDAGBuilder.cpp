@@ -1848,6 +1848,21 @@ SDValue SelectionDAGBuilder::getCopyFromRegs(const Value *V, Type *Ty) {
   return Result;
 }
 
+/// In a function that is passed its thread pointer, \p V's value where it is
+/// llvm.thread.pointer: the register's on entry.
+SDValue SelectionDAGBuilder::getThreadPointerArgument(const Value *V) {
+  const auto *II = dyn_cast<IntrinsicInst>(V);
+  const TargetLowering &TLI = DAG.getTargetLoweringInfo();
+  MCRegister Reg = TLI.getThreadPointerRegister();
+  if (!II || II->getIntrinsicID() != Intrinsic::thread_pointer || !Reg ||
+      !II->getFunction()->hasFnAttribute("thread-pointer-argument"))
+    return SDValue();
+  MVT VT = TLI.getPointerTy(DAG.getDataLayout());
+  return DAG.getCopyFromReg(DAG.getEntryNode(), getCurSDLoc(),
+                            FuncInfo.MF->addLiveIn(Reg, TLI.getRegClassFor(VT)),
+                            VT);
+}
+
 /// getValue - Return an SDValue for the given Value.
 SDValue SelectionDAGBuilder::getValue(const Value *V) {
   // If we already have an SDValue for this value, use it. It's important
@@ -1855,6 +1870,11 @@ SDValue SelectionDAGBuilder::getValue(const Value *V) {
   // have a regular SDValue.
   SDValue &N = NodeMap[V];
   if (N.getNode()) return N;
+
+  // A thread pointer a function is passed is read where it is used, so that
+  // a call passes the register's incoming value, which a tail call keeps.
+  if (SDValue TP = getThreadPointerArgument(V))
+    return TP;
 
   // If there's a virtual register allocated and initialized for this
   // value, use it.
@@ -3523,7 +3543,7 @@ void SelectionDAGBuilder::visitInvoke(const InvokeInst &I) {
                          LLVMContext::OB_gc_live, LLVMContext::OB_funclet,
                          LLVMContext::OB_cfguardtarget, LLVMContext::OB_ptrauth,
                          LLVMContext::OB_clang_arc_attachedcall,
-                         LLVMContext::OB_kcfi});
+                         LLVMContext::OB_kcfi, LLVMContext::OB_threadpointer});
 
   const Value *Callee(I.getCalledOperand());
   const Function *Fn = dyn_cast<Function>(Callee);
@@ -6906,6 +6926,12 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     // By default, turn this into a target intrinsic node.
     visitTargetIntrinsic(I, Intrinsic);
     return;
+  case Intrinsic::thread_pointer:
+    if (SDValue TP = getThreadPointerArgument(&I))
+      setValue(&I, TP);
+    else
+      visitTargetIntrinsic(I, Intrinsic);
+    return;
   case Intrinsic::vscale: {
     EVT VT = TLI.getValueType(DAG.getDataLayout(), I.getType());
     setValue(&I, DAG.getVScale(sdl, VT, APInt(VT.getSizeInBits(), 1)));
@@ -9481,6 +9507,15 @@ void SelectionDAGBuilder::LowerCallTo(const CallBase &CB, SDValue Callee,
     Args.push_back(Entry);
   }
 
+  // A threadpointer bundle is one more argument, which the calling convention
+  // assigns the thread pointer's register.
+  if (auto Bundle = CB.getOperandBundle(LLVMContext::OB_threadpointer)) {
+    Value *V = Bundle->Inputs[0];
+    TargetLowering::ArgListEntry Entry(V, getValue(V));
+    Entry.IsThreadPointer = true;
+    Args.push_back(Entry);
+  }
+
   // Disable tail calls if there is an swifterror argument. Targets have not
   // been updated to support tail calls.
   if (TLI.supportSwiftError() && SwiftErrorVal)
@@ -10117,7 +10152,8 @@ void SelectionDAGBuilder::visitCall(const CallInst &I) {
       {LLVMContext::OB_deopt, LLVMContext::OB_funclet,
        LLVMContext::OB_cfguardtarget, LLVMContext::OB_preallocated,
        LLVMContext::OB_clang_arc_attachedcall, LLVMContext::OB_kcfi,
-       LLVMContext::OB_convergencectrl, LLVMContext::OB_deactivation_symbol});
+       LLVMContext::OB_convergencectrl, LLVMContext::OB_deactivation_symbol,
+       LLVMContext::OB_threadpointer});
 
   SDValue Callee = getValue(I.getCalledOperand());
 
@@ -11752,6 +11788,8 @@ TargetLowering::LowerCallTo(TargetLowering::CallLoweringInfo &CLI) const {
         Flags.setSwiftError();
       if (Args[i].IsCFGuardTarget)
         Flags.setCFGuardTarget();
+      if (Args[i].IsThreadPointer)
+        Flags.setThreadPointer();
       if (Args[i].IsByVal)
         Flags.setByVal();
       if (Args[i].IsByRef)
