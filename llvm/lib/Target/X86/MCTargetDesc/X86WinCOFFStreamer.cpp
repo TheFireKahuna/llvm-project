@@ -180,14 +180,16 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
       Flags |= X86::IP_AFTER_PREFIXES;
   }
 
-  // On Windows Itanium and NT-POSIX the relocation type of a jmp states what
-  // the linker may do to it, which the unwind data covering it decides. A jmp
-  // outside a frame may be deleted, as may one that ends an epilogue where
-  // the unwinder is right at every address with the jmp gone. Version 2's is,
-  // every distance it reads being a relocation. Version 1's reads the code,
-  // and is where the epilogue is one instruction that leaves the frame whole
-  // before it: the stack adjustment of a frame without a push, or `leave`.
-  if (Inst.getOpcode() == X86::JMP_1 && STI.hasFeature(X86::Is64Bit) &&
+  // On Windows Itanium and NT-POSIX the relocation type of a jmp, direct or
+  // through a pointer, states what the linker may do to it, which the unwind
+  // data covering it decides. A jmp outside a frame may be deleted, as may one
+  // that ends an epilogue where the unwinder is right at every address with
+  // the jmp gone. Version 2's is, every distance it reads being a relocation.
+  // Version 1's reads the code, and is where the epilogue is one instruction
+  // that leaves the frame whole before it: the stack adjustment of a frame
+  // without a push, or `leave`.
+  if ((Opcode == X86::JMP_1 || Opcode == X86::JMP64m) &&
+      STI.hasFeature(X86::Is64Bit) &&
       STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
     const WinEH::FrameInfo *Frame = getCurrentWinFrameInfo();
     auto EndsDeletableEpilog = [&] {

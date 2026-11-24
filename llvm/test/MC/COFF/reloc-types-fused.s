@@ -51,6 +51,7 @@
 // CHECK-NEXT:   0x5E IMAGE_REL_LLVM_JUMP8
 // CHECK-NEXT:   0x62 IMAGE_REL_LLVM_FUSED_READ __imp_f
 // CHECK-NEXT:   0x72 IMAGE_REL_LLVM_FUSED_READ __imp_f
+// CHECK-NEXT:   0x79 IMAGE_REL_LLVM_FUSED_TEST __imp_f
 // CHECK-NEXT: }
 // CHECK:      Flags: 0x8
 
@@ -136,6 +137,11 @@ called:
   movq __imp_f@FUSED(%rip), %rax
   fs
   movl (%rcx), %ecx
+
+// A .reloc of IMAGE_REL_LLVM_FUSED_TEST marks the test of a register a load
+// of the pointer set.
+  .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_f
+  testq %rcx, %rcx
 
 .ifdef READ
 // A fused read is a 64-bit load of the pointer itself through RIP.

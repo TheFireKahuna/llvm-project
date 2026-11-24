@@ -1142,7 +1142,7 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
             Reloc.Data.Type == COFF::IMAGE_REL_ARM64_REL32) ||
            Reloc.Data.Type == COFF::IMAGE_REL_LLVM_REL32_CALL ||
            (Reloc.Data.Type >= COFF::IMAGE_REL_LLVM_BRANCH32 &&
-            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_LEA_OFFSET) ||
+            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_MEM_JUMP_TAIL) ||
            (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
             (Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ ||
              Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ_REX2)))

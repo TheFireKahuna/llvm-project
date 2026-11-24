@@ -14,8 +14,8 @@
 ; RUN: lld-link -def:imp.def -out:imp.lib -machine:x64
 
 ;; early.bc comes first, so its definitions prevail before main.bc is added.
-; RUN: lld-link -dll -noentry -export:use -out:out.dll -lldsavetemps early.bc main.bc \
-; RUN:   other.obj abs.obj weak.obj imp.lib \
+; RUN: lld-link -dll -noentry -export:use -base:0x10000000 -out:out.dll \
+; RUN:   -lldsavetemps early.bc main.bc other.obj abs.obj weak.obj imp.lib \
 ; RUN:   -alternatename:__imp_aliased=__imp_imported
 ; RUN: FileCheck %s < out.dll.resolution.txt
 
@@ -37,7 +37,8 @@
 ;; ThinLTO's backend emits such a dllimport reference directly too.
 ; RUN: opt -module-summary main.ll -o thin.bc
 ; RUN: opt -module-summary early.ll -o thin-early.bc
-; RUN: lld-link -dll -noentry -export:use -out:thin.dll thin-early.bc thin.bc \
+; RUN: lld-link -dll -noentry -export:use -base:0x10000000 -out:thin.dll \
+; RUN:   thin-early.bc thin.bc \
 ; RUN:   other.obj abs.obj weak.obj imp.lib -alternatename:__imp_aliased=__imp_imported
 ; RUN: llvm-objdump -d --no-show-raw-insn thin.dll | FileCheck --check-prefix=THIN %s
 ; THIN-LABEL: <use>:
@@ -114,7 +115,7 @@ define i32 @aliased() {
 
 ;--- abs.s
 .globl absolute
-absolute = 0x1000
+absolute = 0x10001000
 
 ;--- weak.s
 .weak viaweak

@@ -289,6 +289,12 @@ private:
   const COFFLinkerContext &ctx;
 };
 
+// Whether s is absolute zero, as a weak external nothing defines resolves.
+inline bool isAbsoluteZero(const Symbol *s) {
+  auto *d = dyn_cast<DefinedAbsolute>(s);
+  return d && d->getVA() == 0;
+}
+
 // This symbol is used for linker-synthesized symbols like __ImageBase and
 // __safe_se_handler_table.
 class DefinedSynthetic : public Defined {

@@ -642,7 +642,9 @@ void X86MCCodeEmitter::emitMemModRMByte(
         case X86::JMP64m_REX:
         case X86::JMP64m_NT:
           if (!HasOffset && NumPrefixes == 0)
-            return X86::reloc_riprel_4byte_jump;
+            return MI.getFlags() & X86::IP_TAIL_JUMP
+                       ? X86::reloc_riprel_4byte_tail
+                       : X86::reloc_riprel_4byte_jump;
           if (!HasOffset && NumPrefixes == 1)
             return X86::reloc_riprel_4byte_jump_p1;
           break;
@@ -2055,6 +2057,7 @@ void X86MCCodeEmitter::encodeInstruction(const MCInst &MI,
         FixupKind == X86::reloc_riprel_4byte_call ||
         FixupKind == X86::reloc_riprel_4byte_jump ||
         FixupKind == X86::reloc_riprel_4byte_jump_p1 ||
+        FixupKind == X86::reloc_riprel_4byte_tail ||
         FixupKind == X86::reloc_tail_4byte_pcrel)
       Fixups.back().setLinkerRelaxable();
   }

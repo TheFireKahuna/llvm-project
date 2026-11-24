@@ -634,6 +634,7 @@ MCFixupKindInfo X86AsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
       {"reloc_riprel_4byte_call", 0, 32, 0},
       {"reloc_riprel_4byte_jump", 0, 32, 0},
       {"reloc_riprel_4byte_jump_p1", 0, 32, 0},
+      {"reloc_riprel_4byte_tail", 0, 32, 0},
       {"reloc_riprel_4byte_lea", 0, 32, 0},
       {"reloc_jump_4byte_pcrel", 0, 32, 0},
       {"reloc_jump_1byte_pcrel", 0, 8, 0},
@@ -676,6 +677,7 @@ static unsigned getFixupKindSize(unsigned Kind) {
   case X86::reloc_riprel_4byte_call:
   case X86::reloc_riprel_4byte_jump:
   case X86::reloc_riprel_4byte_jump_p1:
+  case X86::reloc_riprel_4byte_tail:
   case X86::reloc_riprel_4byte_lea:
   case X86::reloc_jump_4byte_pcrel:
   case X86::reloc_tail_4byte_pcrel:
@@ -1370,14 +1372,19 @@ public:
             .Case("IMAGE_REL_LLVM_ALIGN", COFF::IMAGE_REL_LLVM_ALIGN)
             .Default(-1u);
     // A Windows Itanium or NT-POSIX object marks a call or a jump through a
-    // register that holds an import pointer.
+    // register that holds an import pointer, the test of one, and the
+    // sequence that forms an image's thread-local base.
     if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
-      Type = StringSwitch<unsigned>(Name)
-                 .Case("IMAGE_REL_LLVM_FUSED_CALL",
-                       COFF::IMAGE_REL_LLVM_FUSED_CALL)
-                 .Case("IMAGE_REL_LLVM_FUSED_JUMP",
-                       COFF::IMAGE_REL_LLVM_FUSED_JUMP)
-                 .Default(Type);
+      Type =
+          StringSwitch<unsigned>(Name)
+              .Case("IMAGE_REL_LLVM_FUSED_CALL",
+                    COFF::IMAGE_REL_LLVM_FUSED_CALL)
+              .Case("IMAGE_REL_LLVM_FUSED_JUMP",
+                    COFF::IMAGE_REL_LLVM_FUSED_JUMP)
+              .Case("IMAGE_REL_LLVM_FUSED_TEST",
+                    COFF::IMAGE_REL_LLVM_FUSED_TEST)
+              .Case("IMAGE_REL_LLVM_TLS_SCALE", COFF::IMAGE_REL_LLVM_TLS_SCALE)
+              .Default(Type);
     if (Is64Bit && Type != -1u)
       return getCOFFRelocFixupKind(Type);
     return StringSwitch<std::optional<MCFixupKind>>(Name)

@@ -736,10 +736,15 @@ void LinkerDriver::checkFailIfMismatch(StringRef arg, InputFile *source) {
     auto [k, v] = pair.split('=');
     if (k.empty() || v.empty())
       Fatal(ctx) << "/failifmismatch: invalid argument: " << arg;
+    std::string sourceStr = source ? toString(source) : "cmd-line";
+    // The revision of the ntposix thread-local model that LLD holds.
+    if (k == "_TLS_MODEL" && v.split('.').first == "ntposix" &&
+        v != "ntposix.1")
+      Err(ctx) << sourceStr << ": unknown revision of the ntposix "
+               << "thread-local model: " << v;
     auto [it, inserted] = ctx.config.mustMatch.try_emplace(k, v, source);
     auto [existing, existingSource] = it->second;
     if (!inserted && v != existing) {
-      std::string sourceStr = source ? toString(source) : "cmd-line";
       std::string existingStr =
           existingSource ? toString(existingSource) : "cmd-line";
       Err(ctx) << "/failifmismatch: mismatch detected for '" << k << "':\n>>> "

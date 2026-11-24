@@ -29,10 +29,10 @@
 // is right with the jmp gone: any epilogue under version 2 unwind data, and
 // under version 1 the stack adjustment of a frame without a push, or a lone
 // `leave`. A jmp written with 32 bits is BRANCH32 and a jcc JUMP32 everywhere,
-// and a jmp that stays short is JUMP8. On AArch64 a b with no frame open is
-// BRANCH_TAIL and one in a frame BRANCH26, as bl is anywhere; a conditional
-// branch keeps its type, and a b to a label across code the linker may resize
-// keeps its relocation, against a label.
+// elsewhere; after a prefix byte it is MEM_JUMP_P1. On AArch64 a b with no
+// frame open is BRANCH_TAIL and one in a frame BRANCH26, as bl is anywhere; a
+// conditional branch keeps its type, and a b to a label across code the linker
+// may resize keeps its relocation, against a label.
 
 // MSVC-COUNT-2: IMAGE_REL_AMD64_REL32 {{ext|callee}}
 // MSVC:         IMAGE_REL_ARM64_BRANCH26 {{ext|callee}}
@@ -52,6 +52,13 @@
 // ASM-NEXT:   0x54 IMAGE_REL_LLVM_BRANCH_TAIL ext
 // ASM-NEXT:   0x62 IMAGE_REL_LLVM_JUMP32 ext
 // ASM-NEXT: }
+// ASM:      Section ({{[0-9]+}}) .text$mem {
+// ASM-NEXT:   0x2 IMAGE_REL_LLVM_MEM_JUMP_TAIL __imp_g
+// ASM-NEXT:   0x9 IMAGE_REL_LLVM_MEM_JUMP_P1 __imp_g
+// ASM-NEXT:   0x13 IMAGE_REL_LLVM_MEM_JUMP __imp_g
+// ASM-NEXT:   0x1D IMAGE_REL_LLVM_MEM_JUMP_TAIL __imp_g
+// ASM-NEXT:   0x25 IMAGE_REL_LLVM_MEM_JUMP __imp_g
+// ASM-NEXT: }
 
 // IR:      Section ({{[0-9]+}}) .text {
 // IR-NEXT:   0x3 IMAGE_REL_LLVM_JUMP8 $L1
@@ -60,6 +67,11 @@
 // IR-NEXT:   0x13 IMAGE_REL_LLVM_ALIGN - (324)
 // IR-NEXT:   0x28 IMAGE_REL_LLVM_BRANCH32 other
 // IR-NEXT:   0x34 IMAGE_REL_LLVM_JUMP32 callee
+// IR-NEXT:   0x38 IMAGE_REL_LLVM_ALIGN - (324)
+// IR-NEXT:   0x42 IMAGE_REL_LLVM_MEM_JUMP_TAIL __imp_imp
+// IR-NEXT:   0x46 IMAGE_REL_LLVM_ALIGN - (324)
+// IR-NEXT:   0x56 IMAGE_REL_LLVM_BRANCH32 other
+// IR-NEXT:   0x62 IMAGE_REL_LLVM_MEM_JUMP __imp_imp
 // IR-NEXT: }
 
 // A64:      Section ({{[0-9]+}}) .text {
@@ -77,6 +89,13 @@
 // IR64-NEXT:   IMAGE_REL_LLVM_BRANCH_TAIL callee
 // IR64-NEXT:   IMAGE_REL_ARM64_BRANCH26 other
 // IR64-NEXT:   IMAGE_REL_ARM64_BRANCH26 callee
+// IR64-NEXT:   IMAGE_REL_ARM64_PAGEBASE_REL21 __imp_imp
+// IR64-NEXT:   IMAGE_REL_LLVM_FUSED_READ __imp_imp
+// IR64-NEXT:   IMAGE_REL_LLVM_FUSED_JUMP __imp_imp
+// IR64-NEXT:   IMAGE_REL_ARM64_BRANCH26 other
+// IR64-NEXT:   IMAGE_REL_ARM64_PAGEBASE_REL21 __imp_imp
+// IR64-NEXT:   IMAGE_REL_LLVM_FUSED_READ __imp_imp
+// IR64-NEXT:   IMAGE_REL_LLVM_FUSED_JUMP __imp_imp
 // IR64-NEXT: }
 
 //--- a.s
@@ -166,6 +185,32 @@ reloaded:
   jmp ext
   .seh_endproc
 
+// A jmp through a pointer with no prefix follows the same frames.
+  .section .text$mem,"xr"
+  jmpq *__imp_g(%rip)
+  rex64 jmpq *__imp_g(%rip)
+  .seh_proc memframed
+memframed:
+  subq $40, %rsp
+  .seh_stackalloc 40
+  .seh_endprologue
+  jmpq *__imp_g(%rip)
+  .seh_startepilogue
+  addq $40, %rsp
+  .seh_endepilogue
+  jmpq *__imp_g(%rip)
+  .seh_endproc
+  .seh_proc mempushed
+mempushed:
+  pushq %rbx
+  .seh_pushreg %rbx
+  .seh_endprologue
+  .seh_startepilogue
+  popq %rbx
+  .seh_endepilogue
+  jmpq *__imp_g(%rip)
+  .seh_endproc
+
 //--- a64.s
   .text
   .globl frameless
@@ -215,4 +260,20 @@ define i32 @framed(i32 %x) {
   call void @other()
   %r = tail call i32 @callee(i32 %x)
   ret i32 %r
+}
+
+; A tail call through an import pointer, with no frame and after an epilogue
+; that pops.
+declare dllimport void @imp()
+
+define void @imp_frameless() nounwind {
+  tail call void @imp()
+  ret void
+}
+
+define void @imp_pushed() {
+  call void @other()
+  call void asm sideeffect "", "~{rbx},~{x19}"()
+  tail call void @imp()
+  ret void
 }

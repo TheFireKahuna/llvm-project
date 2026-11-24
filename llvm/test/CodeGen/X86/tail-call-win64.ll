@@ -1,7 +1,8 @@
 ; RUN: llc -mtriple=x86_64-windows -show-mc-encoding < %s | FileCheck %s
 
-; The Win64 ABI wants tail jmps to use a REX_W prefix so it can distinguish
-; in-function jumps from function exiting jumps.
+; The Win64 ABI wants tail jmps through a register to use a REX_W prefix so it
+; can distinguish in-function jumps from function exiting jumps. A jmp through
+; a RIP-relative pointer is an epilogue's end without one.
 
 define void @tail_jmp_reg(i32, i32, ptr %fptr) {
   tail call void () %fptr()
@@ -33,4 +34,5 @@ define void @tail_jmp_mem() {
 }
 
 ; CHECK-LABEL: tail_jmp_mem:
-; CHECK: rex64 jmpq *g_fptr(%rip)
+; CHECK: jmpq *g_fptr(%rip)
+; CHECK-NEXT: encoding: [0xff,0x25,A,A,A,A]

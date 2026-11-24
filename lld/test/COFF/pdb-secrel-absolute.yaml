@@ -41,10 +41,6 @@ sections:
     Characteristics: [ IMAGE_SCN_CNT_CODE, IMAGE_SCN_MEM_EXECUTE, IMAGE_SCN_MEM_READ ]
     Alignment:       16
     SectionData:     488D0500000000C3
-    Relocations:
-      - VirtualAddress:  3
-        SymbolName:      __guard_fids_table
-        Type:            IMAGE_REL_AMD64_REL32
 symbols:
   - Name:            '.debug$S'
     Value:           0
@@ -66,7 +62,7 @@ symbols:
     StorageClass:    IMAGE_SYM_CLASS_STATIC
     SectionDefinition:
       Length:          8
-      NumberOfRelocations: 1
+      NumberOfRelocations: 0
       NumberOfLinenumbers: 0
       CheckSum:        1092178131
       Number:          0

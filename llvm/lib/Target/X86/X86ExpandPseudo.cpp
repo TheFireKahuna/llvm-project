@@ -359,9 +359,17 @@ bool X86ExpandPseudoImpl::expandMI(MachineBasicBlock &MBB,
 
     } else if (Opcode == X86::TCRETURNmi || Opcode == X86::TCRETURNmi64 ||
                Opcode == X86::TCRETURN_WINmi64) {
+      // The Win64 unwinder takes jmp qword ptr [rip+disp32] for the end of an
+      // epilogue without REX.W, which import call optimization records.
+      bool NeedsREX =
+          IsX64 && (MBBI->getOperand(X86::AddrBaseReg).getReg() != X86::RIP ||
+                    MBBI->getOperand(X86::AddrIndexReg).getReg() ||
+                    MBBI->getOperand(X86::AddrSegmentReg).getReg() ||
+                    MBB.getParent()->getFunction().getParent()->getModuleFlag(
+                        "import-call-optimization"));
       unsigned Op = (Opcode == X86::TCRETURNmi)
                         ? X86::TAILJMPm
-                        : (IsX64 ? X86::TAILJMPm64_REX : X86::TAILJMPm64);
+                        : (NeedsREX ? X86::TAILJMPm64_REX : X86::TAILJMPm64);
       MachineInstrBuilder MIB = BuildMI(MBB, MBBI, DL, TII->get(Op));
       for (unsigned i = 0; i != X86::AddrNumOperands; ++i)
         MIB.add(MBBI->getOperand(i));

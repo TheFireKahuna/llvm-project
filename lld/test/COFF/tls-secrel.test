@@ -1,0 +1,78 @@
+# REQUIRES: x86, aarch64
+
+## A section-relative relocation whose target lies in the TLS groups is
+## computed from the first TLS group, as link.exe computes it, whatever output
+## section holds .tls. The bound is link.exe's: past the start of the first
+## group and before the start of the last, so the last group's tz, like the
+## non-TLS st, keeps its output section as the base. pdb-fixup.test pins the
+## Fixup Data stream's flag for the same targets.
+
+# RUN: rm -rf %t && split-file %s %t
+# RUN: cat %t/x64.s %t/data.s > %t/x64-all.s
+# RUN: cat %t/arm64.s %t/data.s > %t/arm64-all.s
+# RUN: llvm-mc -triple=x86_64-windows-msvc -filetype=obj %t/x64-all.s -o %t/x64.obj
+# RUN: llvm-mc -triple=x86_64-windows-msvc -filetype=obj %t/end.s -o %t/x64-end.obj
+# RUN: llvm-mc -triple=aarch64-windows-msvc -filetype=obj %t/arm64-all.s -o %t/arm64.obj
+# RUN: llvm-mc -triple=aarch64-windows-msvc -filetype=obj %t/end.s -o %t/arm64-end.obj
+
+# RUN: lld-link /entry:main /subsystem:console /out:%t/x64.exe %t/x64.obj %t/x64-end.obj
+# RUN: llvm-readobj -x .data %t/x64.exe | FileCheck --check-prefixes=DATA,OWN %s
+# RUN: lld-link /entry:main /subsystem:console /merge:.tls=.rdata /out:%t/x64-merge.exe \
+# RUN:   %t/x64.obj %t/x64-end.obj
+# RUN: llvm-readobj -x .data %t/x64-merge.exe | FileCheck --check-prefixes=DATA,MERGE %s
+
+# RUN: lld-link /entry:main /subsystem:console /out:%t/arm64.exe %t/arm64.obj %t/arm64-end.obj
+# RUN: llvm-readobj -x .data %t/arm64.exe | FileCheck --check-prefixes=DATA,OWN %s
+# RUN: llvm-objdump -d %t/arm64.exe | FileCheck --check-prefix=CODE %s
+# RUN: lld-link /entry:main /subsystem:console /merge:.tls=.rdata /out:%t/arm64-merge.exe \
+# RUN:   %t/arm64.obj %t/arm64-end.obj
+# RUN: llvm-readobj -x .data %t/arm64-merge.exe | FileCheck --check-prefixes=DATA,MERGE %s
+# RUN: llvm-objdump -d %t/arm64-merge.exe | FileCheck --check-prefix=CODE %s
+
+## tv, st and tz.
+# DATA:  10100000 08000000
+# OWN:   {{ }}1c100000
+# MERGE: {{ }}2c100000
+
+# CODE:      add x0, x0, #0x1, lsl #12
+# CODE-NEXT: add x0, x0, #0x10
+# CODE-NEXT: ldr x0, [x0, #0x10]
+
+#--- x64.s
+        .text
+        .globl  main
+main:
+        ret
+
+#--- arm64.s
+        .text
+        .globl  main
+main:
+        add     x0, x0, :secrel_hi12:tv
+        add     x0, x0, :secrel_lo12:tv
+        ldr     x0, [x0, :secrel_lo12:tv]
+        ret
+
+#--- data.s
+        .section .rdata,"dr"
+        .quad   0
+st:
+        .quad   0
+        .data
+        .secrel32 tv
+        .secrel32 st
+        .secrel32 tz
+        .section .tls,"dw"
+        .quad   0
+        .section .tls$,"dw"
+        .zero   0x1008
+tv:
+        .quad   0
+        .section .tls$zzz,"dw"
+        .long   0
+tz:
+        .long   0
+
+#--- end.s
+        .section .tls$zzz,"dw"
+        .quad   0

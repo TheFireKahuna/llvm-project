@@ -22,6 +22,7 @@
 // CHECK-NEXT:   0x14 IMAGE_REL_ARM64_PAGEBASE_REL21 __imp_f
 // CHECK-NEXT:   0x18 IMAGE_REL_LLVM_FUSED_READ __imp_f
 // CHECK-NEXT:   0x1C IMAGE_REL_LLVM_FUSED_JUMP __imp_f
+// CHECK-NEXT:   0x20 IMAGE_REL_LLVM_FUSED_TEST __imp_f
 // CHECK-NEXT: }
 // CHECK:      Flags: 0x8
 
@@ -39,6 +40,11 @@
   ldr x16, [x16, :fused_lo12:__imp_f]
   .reloc ., IMAGE_REL_LLVM_FUSED_JUMP, __imp_f
   br x16
+
+// A .reloc of IMAGE_REL_LLVM_FUSED_TEST marks the test of a register a load
+// of the pointer set.
+  .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_f
+  cbz x16, .
 
 .ifdef ERR
 // A fused read is a 64-bit load of the pointer itself, a fused call a blr and

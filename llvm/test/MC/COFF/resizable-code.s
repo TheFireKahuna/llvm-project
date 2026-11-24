@@ -73,7 +73,7 @@
 // CHECK-NEXT:     0x7 IMAGE_REL_AMD64_PAIR $L{{[0-9a-f]+}}
 // CHECK-NEXT:     0x9 IMAGE_REL_LLVM_SSPAN8 [[LAST:\$L[0-9a-f]+]]
 // CHECK-NEXT:     0x9 IMAGE_REL_AMD64_PAIR $L{{[0-9a-f]+}}
-// CHECK-NEXT:     0xC IMAGE_REL_LLVM_MEM_JUMP __imp_g
+// CHECK-NEXT:     0xC IMAGE_REL_LLVM_MEM_JUMP_TAIL __imp_g
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text$n {
 // CHECK-NEXT:     0x1 IMAGE_REL_LLVM_BRANCH32 ext

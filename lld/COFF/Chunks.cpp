@@ -12,6 +12,7 @@
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "Writer.h"
+#include "lld/Common/AArch64Instructions.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -85,6 +86,13 @@ static void add64(uint8_t *p, int64_t v) { write64le(p, read64le(p) + v); }
 static void or16(uint8_t *p, uint16_t v) { write16le(p, read16le(p) | v); }
 static void or32(uint8_t *p, uint32_t v) { write32le(p, read32le(p) | v); }
 
+// Adds v to a 32-bit PC-relative field; returns false if the sum overflows.
+static bool addRel32(uint8_t *p, int64_t v) {
+  v += SignExtend64<32>(read32le(p));
+  write32le(p, v);
+  return isInt<32>(v);
+}
+
 // Verify that given sections are appropriate targets for SECREL
 // relocations. This check is relaxed because unfortunately debug
 // sections have section-relative relocations against absolute symbols.
@@ -97,11 +105,18 @@ static bool checkSecRel(const SectionChunk *sec, OutputSection *os) {
   return false;
 }
 
+// A thread-local's offset is from the first TLS group, whatever output section
+// holds it; any other target's is from its output section.
+static uint64_t getSecRel(const SectionChunk *sec, OutputSection *os,
+                          uint64_t s) {
+  return sec->file->symtab.ctx.tlsOffset(s).value_or(s - os->getRVA());
+}
+
 static void applySecRel(const SectionChunk *sec, uint8_t *off,
                         OutputSection *os, uint64_t s) {
   if (!checkSecRel(sec, os))
     return;
-  uint64_t secRel = s - os->getRVA();
+  uint64_t secRel = getSecRel(sec, os, s);
   if (secRel > UINT32_MAX) {
     error("overflow in SECREL relocation in section: " + sec->getSectionName());
     return;
@@ -144,16 +159,17 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_LLVM_MEM_CALL:
   case IMAGE_REL_LLVM_MEM_JUMP:
   case IMAGE_REL_LLVM_MEM_JUMP_P1:
+  case IMAGE_REL_LLVM_MEM_JUMP_TAIL:
   case IMAGE_REL_LLVM_MEM_LOAD:
   case IMAGE_REL_LLVM_MEM_LOAD_REX2:
   case IMAGE_REL_LLVM_LEA:
   case IMAGE_REL_LLVM_LEA_OFFSET:
-  case IMAGE_REL_AMD64_REL32:    add32(off, s - p - 4); break;
-  case IMAGE_REL_AMD64_REL32_1:  add32(off, s - p - 5); break;
-  case IMAGE_REL_AMD64_REL32_2:  add32(off, s - p - 6); break;
-  case IMAGE_REL_AMD64_REL32_3:  add32(off, s - p - 7); break;
-  case IMAGE_REL_AMD64_REL32_4:  add32(off, s - p - 8); break;
-  case IMAGE_REL_AMD64_REL32_5:  add32(off, s - p - 9); break;
+  case IMAGE_REL_AMD64_REL32:    return addRel32(off, s - p - 4);
+  case IMAGE_REL_AMD64_REL32_1:  return addRel32(off, s - p - 5);
+  case IMAGE_REL_AMD64_REL32_2:  return addRel32(off, s - p - 6);
+  case IMAGE_REL_AMD64_REL32_3:  return addRel32(off, s - p - 7);
+  case IMAGE_REL_AMD64_REL32_4:  return addRel32(off, s - p - 8);
+  case IMAGE_REL_AMD64_REL32_5:  return addRel32(off, s - p - 9);
   case IMAGE_REL_AMD64_SECTION:
     applySecIdx(off, os, file->symtab.ctx.outputSections.size());
     break;
@@ -170,15 +186,19 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_LLVM_FUSED_READ_REX2:
     write32le(off, s - p - 4);
     break;
-  // No image has a link-time thread-local place.
+  // s is the offset from the thread pointer, which a displacement holds.
   case IMAGE_REL_LLVM_TPOFF32:
-    return false;
+    if (s > INT32_MAX)
+      return false;
+    add32(off, s);
+    break;
   case IMAGE_REL_AMD64_SREL32:
   case IMAGE_REL_AMD64_EHANDLER:
   case IMAGE_REL_LLVM_FUSED_CALL:
   case IMAGE_REL_LLVM_FUSED_JUMP:
   case IMAGE_REL_LLVM_FUSED_ACCESS:
   case IMAGE_REL_LLVM_FUSED_INDEX:
+  case IMAGE_REL_LLVM_FUSED_TEST:
     break;
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
@@ -336,7 +356,7 @@ static void applyArm64Ldr(uint8_t *off, uint64_t imm) {
 static void applySecRelLow12A(const SectionChunk *sec, uint8_t *off,
                               OutputSection *os, uint64_t s) {
   if (checkSecRel(sec, os))
-    applyArm64Imm(off, (s - os->getRVA()) & 0xfff, 0);
+    applyArm64Imm(off, getSecRel(sec, os, s) & 0xfff, 0);
 }
 
 static void applySecRelHigh12A(const SectionChunk *sec, uint8_t *off,
@@ -346,7 +366,7 @@ static void applySecRelHigh12A(const SectionChunk *sec, uint8_t *off,
   uint32_t orig = read32le(off);
   uint64_t imm = (orig >> 10) & 0xFFF;
   orig &= ~(0xFFF << 10);
-  imm = (s + imm - os->getRVA()) >> 12;
+  imm = (getSecRel(sec, os, s) + imm) >> 12;
   if (0xfff < imm) {
     error("overflow in SECREL_HIGH12A relocation in section: " +
           sec->getSectionName());
@@ -358,7 +378,7 @@ static void applySecRelHigh12A(const SectionChunk *sec, uint8_t *off,
 static void applySecRelLdr(const SectionChunk *sec, uint8_t *off,
                            OutputSection *os, uint64_t s) {
   if (checkSecRel(sec, os))
-    applyArm64Ldr(off, (s - os->getRVA()) & 0xfff);
+    applyArm64Ldr(off, getSecRel(sec, os, s) & 0xfff);
 }
 
 void applyArm64Branch26(uint8_t *off, int64_t v) {
@@ -409,7 +429,7 @@ bool SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
     applySecIdx(off, os, file->symtab.ctx.outputSections.size());
     break;
   case IMAGE_REL_LLVM_REL32_CALL:
-  case IMAGE_REL_ARM64_REL32:          add32(off, s - p - 4); break;
+  case IMAGE_REL_ARM64_REL32:          return addRel32(off, s - p - 4);
   // The low or the second 16 bits of an absolute value in a MOVZ or MOVK.
   case IMAGE_REL_LLVM_MOVW_UABS_G0:
   case IMAGE_REL_LLVM_MOVW_UABS_G0_NC:
@@ -432,15 +452,27 @@ bool SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
     write32le(off, (insn & ~(0x1fff << 10)) | imm << 10);
     break;
   }
-  // No image has a link-time thread-local place.
-  case IMAGE_REL_LLVM_TPOFF_HIGH12A:
+  // s is the offset from the thread pointer. The high part's field holds
+  // the low twelve bits of an addend.
+  case IMAGE_REL_LLVM_TPOFF_HIGH12A: {
+    uint32_t insn = read32le(off);
+    uint64_t v = (s + ((insn >> 10) & 0xfff)) >> 12;
+    if (v > 0xfff)
+      return false;
+    write32le(off, (insn & ~(0xfff << 10)) | v << 10);
+    break;
+  }
   case IMAGE_REL_LLVM_TPOFF_LOW12A:
+    applyArm64Imm(off, s & 0xfff, 0);
+    break;
   case IMAGE_REL_LLVM_TPOFF_LOW12L:
-    return false;
+    applyArm64Ldr(off, s & 0xfff);
+    break;
   case IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL:
   case IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL:
   case IMAGE_REL_LLVM_FUSED_CALL:
   case IMAGE_REL_LLVM_FUSED_JUMP:
+  case IMAGE_REL_LLVM_FUSED_TEST:
     break;
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
@@ -647,8 +679,54 @@ void SectionChunk::applyRelocation(uint8_t *off,
                                    const coff_relocation &rel) const {
   // ABSOLUTE writes nothing; a PAIR is applied with the relocation before it.
   COFFLinkerContext &ctx = file->symtab.ctx;
-  if (relocationNamesNoSymbol(rel.Type))
+  if (relocationNamesNoSymbol(rel.Type)) {
+    if (rel.Type != IMAGE_REL_LLVM_TLS_SCALE)
+      return;
+    // The scale site forms the image's thread-local base in one register, and
+    // LLD writes the image's scale into its immediate. On x86-64 it is imul
+    // r64, r64, imm32, then add r64, [rip+place] into the same register. On
+    // ARM64 it is adrp and ldr of the place into Xp, movz Xs, #imm16, then
+    // madd Xd, Xn, Xs, Xp.
+    size_t size = getSize() - rel.VirtualAddress;
+    std::string problem = "do not form a thread-local base";
+    if (ctx.isTlsModel("pe")) {
+      problem = "are in an image of the pe thread-local model, which has no "
+                "scale";
+    } else if (getArch() == Triple::x86_64 && size >= 14) {
+      if ((off[0] & 0xfa) == 0x48 && off[1] == 0x69 && off[2] >= 0xc0 &&
+          off[7] == (off[0] & 0xfc) && off[8] == 0x03 &&
+          off[9] == (0x05 | (off[2] & 0x38))) {
+        write32le(off + 3, ctx.tlsScale);
+        return;
+      }
+    } else if (getArch() == Triple::aarch64 && size >= 16) {
+      aarch64::Adrp adrp;
+      aarch64::Ldr ldr;
+      uint32_t movz = read32le(off + 8), madd = read32le(off + 12);
+      uint32_t xs = movz & 31;
+      if (aarch64::parseAdrp(read32le(off), adrp) &&
+          aarch64::parseLdr(read32le(off + 4), ldr) && ldr.p2Size == 3 &&
+          !ldr.isFloat && ldr.extendType == aarch64::ZeroExtend &&
+          ldr.baseRegister == adrp.destRegister &&
+          ldr.destRegister == adrp.destRegister && adrp.destRegister != 31 &&
+          (movz & 0xffe00000) == 0xd2800000 && xs != 31 &&
+          xs != adrp.destRegister && (madd & 0xffe08000) == 0x9b000000 &&
+          ((madd >> 16) & 31) == xs &&
+          ((madd >> 10) & 31) == ldr.destRegister) {
+        if (isUInt<16>(ctx.tlsScale)) {
+          write32le(off + 8, (movz & ~(0xffff << 5)) | ctx.tlsScale << 5);
+          return;
+        }
+        problem = ("cannot hold the image's scale, " + Twine(ctx.tlsScale) +
+                   ", in 16 bits")
+                      .str();
+      }
+    }
+    Err(ctx) << file << ": the instructions at the TLS_SCALE relocation at "
+             << "offset 0x" << Twine::utohexstr(rel.VirtualAddress) << " of "
+             << getSectionName() << " " << problem;
     return;
+  }
   if (isPair(rel.Type)) {
     if (&rel == relocsData || getPair(*(&rel - 1)) != &rel)
       Err(ctx) << file << ": PAIR relocation in " << getSectionName()
@@ -817,8 +895,59 @@ void SectionChunk::applyRelocation(uint8_t *off,
     Warn(ctx) << file << ": ADDR32 relocation against " << toString(ctx, *sym)
               << " is out of range";
 
+  // A thread-pointer offset is the target's offset in the TLS groups plus the
+  // image's place.
+  if (rel.Type >= IMAGE_REL_LLVM_TPOFF32 &&
+      rel.Type <= IMAGE_REL_LLVM_TPOFF_LOW12L) {
+    if (ctx.tlsOversize) {
+      if (!ctx.tlsOversizeReported.exchange(true))
+        Err(ctx) << "TPOFF relocations need a thread-local place, which an "
+                 << "executable has only for thread-locals of up to "
+                 << ctx.tlsSlotSize << " bytes; it has " << ctx.tlsOversize;
+      return;
+    }
+    std::optional<uint64_t> offset = ctx.tlsOffset(s, /*inclusive=*/true);
+    if (!ctx.tlsPlace || !offset) {
+      Err(ctx) << file << ": "
+               << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+               << " relocation against " << toString(ctx, *sym)
+               << (ctx.tlsPlace ? ", which is not a thread-local"
+                                : " needs an image whose thread-local place "
+                                  "the link knows");
+      return;
+    }
+    s = *offset + *ctx.tlsPlace;
+  }
+
   // Compute the RVA of the relocation for relative relocations.
   uint64_t p = rva + rel.VirtualAddress;
+  // /force:unresolved resolves an undefined symbol to absolute zero too.
+  auto reportMisfit = [&] {
+    COFFSyncStream(ctx, ctx.config.forceUnresolved && isAbsoluteZero(sym)
+                            ? DiagLevel::Warn
+                            : DiagLevel::Err)
+        << file << ": " << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+        << " relocation against " << toString(ctx, *sym)
+        << (rel.Type == IMAGE_REL_LLVM_LOGIMM ? " is not a bitmask immediate"
+            : isAbsoluteZero(sym)
+                ? " is out of range: it resolves to address 0, as a weak "
+                  "external nothing defines does; reference it through a "
+                  "pointer, or define it"
+                : " is out of range");
+  };
+  // No ARM64 branch reaches absolute zero from an image. In an object LLVM made
+  // for Windows Itanium or NT-POSIX one goes to the next instruction instead,
+  // as lld/ELF resolves a branch to an undefined weak symbol for the AArch64
+  // ABI.
+  if (getArch() == Triple::aarch64 && isAbsoluteZero(sym) &&
+      (type == IMAGE_REL_ARM64_BRANCH26 || type == IMAGE_REL_LLVM_BRANCH_TAIL ||
+       type == IMAGE_REL_ARM64_BRANCH19 || type == IMAGE_REL_ARM64_BRANCH14)) {
+    if (!file->forkObject) {
+      reportMisfit();
+      return;
+    }
+    s = p + 4;
+  }
   bool fits = true;
   switch (getArch()) {
   case Triple::x86_64:
@@ -840,14 +969,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
     llvm_unreachable("unknown machine type");
   }
   if (!fits)
-    Err(ctx) << file << ": "
-             << file->getCOFFObj()->getRelocationTypeName(rel.Type)
-             << " relocation against " << toString(ctx, *sym)
-             << (rel.Type == IMAGE_REL_LLVM_LOGIMM
-                     ? " is not a bitmask immediate"
-                 : rel.Type >= IMAGE_REL_LLVM_TPOFF32
-                     ? " needs an image whose thread-local place the link knows"
-                     : " is out of range");
+    reportMisfit();
 }
 
 // Defend against unsorted relocations. This may be overly conservative.

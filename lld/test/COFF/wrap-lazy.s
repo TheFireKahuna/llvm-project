@@ -103,8 +103,11 @@ foo:
 #--- weak.s
   .globl start
 start:
-  movq __real_foo(%rip), %rax
+  movq .Lref(%rip), %rax
   retq
+  .data
+.Lref:
+  .quad __real_foo
   .weak __real_foo
 
 #--- lto.ll

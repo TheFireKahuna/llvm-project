@@ -3,8 +3,8 @@
 ## The linker applies each type from 0x8000 up that the assembler writes with
 ## its assembled meaning: a branch, a site, a call-only field or a fused read
 ## as the field of its instruction, a span as A - B of its width, and on
-## AArch64 an absolute value's immediate. ALIGN, a fused call and a fused jump
-## write nothing, and a branch out of range takes a thunk.
+## AArch64 an absolute value's immediate. ALIGN, a fused call, a fused jump and
+## a fused test write nothing, and a branch out of range takes a thunk.
 
 # RUN: llvm-mc -triple=x86_64-pc-windows-ntposix -mattr=+egpr -filetype=obj \
 # RUN:   --defsym=X64=1 %s -o %t.x.obj
@@ -77,6 +77,7 @@ main:
 .Lm:
   callq g
   jmp g
+  .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_g
   jne g
   callq *__imp_g(%rip)
   jmpq *__imp_g(%rip)
@@ -114,6 +115,7 @@ g:
   .globl main
 main:
 .Lm:
+  .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_g
   b.ne g
   adrp x8, __imp_g
   ldr x8, [x8, :fused_lo12:__imp_g]

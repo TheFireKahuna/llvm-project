@@ -1,17 +1,19 @@
 // An object for Windows Itanium or NT-POSIX is marked by @comp.id, carries
 // link records with a Symbols group, and names in .drectve, its first
-// section, the symbol that a linker which reads the records defines.
+// section, the symbol that a linker which reads the records defines, before
+// NT-POSIX's thread-local model.
 
 // RUN: llvm-mc -filetype=obj -triple x86_64-unknown-windows-itanium %s -o %t.o
-// RUN: llvm-readobj -S --sd --symbols --coff-link-records %t.o | FileCheck %s
+// RUN: llvm-readobj -S --sd --symbols --coff-link-records %t.o \
+// RUN:   | FileCheck %s --check-prefixes=CHECK,WI
 // RUN: %if aarch64-registered-target %{ llvm-mc -filetype=obj -triple aarch64-unknown-windows-itanium %s \
 // RUN:   -o %t.a64.o %}
 // RUN: %if aarch64-registered-target %{ llvm-readobj -S --sd --symbols --coff-link-records %t.a64.o \
-// RUN:   | FileCheck %s %}
+// RUN:   | FileCheck %s --check-prefixes=CHECK,WI %}
 // RUN: llvm-mc -filetype=obj -triple x86_64-unknown-windows-ntposix %s \
 // RUN:   -o %t.nt.o
 // RUN: llvm-readobj -S --sd --symbols --coff-link-records %t.nt.o \
-// RUN:   | FileCheck %s
+// RUN:   | FileCheck %s --check-prefixes=CHECK,NT
 
 // CHECK:      Sections [
 // CHECK-NEXT:   Section {
@@ -20,7 +22,10 @@
 // CHECK:          SectionData (
 // CHECK-NEXT:       0000: 202F6578 706F7274 3A66202F 494E434C  | /export:f /INCL|
 // CHECK-NEXT:       0010: 5544453A 5F5F6C6C 766D5F6C 696E6B5F  |UDE:__llvm_link_|
-// CHECK-NEXT:       0020: 7265636F 7264735F 7631               |records_v1|
+// WI-NEXT:          0020: 7265636F 7264735F 7631              |records_v1|
+// NT-NEXT:          0020: 7265636F 7264735F 7631202F 4641494C  |records_v1 /FAIL|
+// NT-NEXT:          0030: 49464D49 534D4154 43483A5F 544C535F  |IFMISMATCH:_TLS_|
+// NT-NEXT:          0040: 4D4F4445 4C3D6E74 706F7369 782E31    |MODEL=ntposix.1|
 // CHECK-NEXT:     )
 // CHECK:          Name: .llvm_link_records
 // CHECK:          Characteristics [ (0x100200)

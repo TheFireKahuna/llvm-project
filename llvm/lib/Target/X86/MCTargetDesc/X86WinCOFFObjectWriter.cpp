@@ -70,7 +70,7 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
       Spec != MCSymbolRefExpr::VK_COFF_IMGREL32 &&
       Spec != MCSymbolRefExpr::VK_COFF_IMGREL32_CALL &&
       !(Spec == X86::S_COFF_REL32_CALL && FixupKind == FK_Data_4) &&
-      !(Spec == X86::S_COFF_FUSED && Is64Bit &&
+      !((Spec == X86::S_COFF_FUSED || Spec == X86::S_TPOFF) && Is64Bit &&
         Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
     Ctx.reportError(Fixup.getLoc(),
                     "relocation specifier @" +
@@ -94,6 +94,16 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
                       "fused read is not a 64-bit mov of a pointer");
       return COFF::IMAGE_REL_AMD64_ABSOLUTE;
     }
+    // A thread-local's offset from the thread pointer is a displacement or
+    // an immediate.
+    if (Spec == X86::S_TPOFF) {
+      if (!PCRel &&
+          (FixupKind == FK_Data_4 || FixupKind == X86::reloc_signed_4byte ||
+           FixupKind == X86::reloc_signed_4byte_relax))
+        return COFF::IMAGE_REL_LLVM_TPOFF32;
+      Ctx.reportError(Fixup.getLoc(), "@TPOFF is not a 32-bit absolute field");
+      return COFF::IMAGE_REL_AMD64_ABSOLUTE;
+    }
     switch (FixupKind) {
     case X86::reloc_riprel_4byte_imm1:
       return COFF::IMAGE_REL_AMD64_REL32_1;
@@ -107,6 +117,8 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
       return COFF::IMAGE_REL_LLVM_MEM_JUMP;
     case X86::reloc_riprel_4byte_jump_p1:
       return COFF::IMAGE_REL_LLVM_MEM_JUMP_P1;
+    case X86::reloc_riprel_4byte_tail:
+      return COFF::IMAGE_REL_LLVM_MEM_JUMP_TAIL;
     case X86::reloc_riprel_4byte_lea:
       // The target's constant is the offset less the field's four bytes.
       return Target.getConstant() == -4 ? COFF::IMAGE_REL_LLVM_LEA

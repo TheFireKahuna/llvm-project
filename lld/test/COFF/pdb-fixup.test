@@ -6,8 +6,7 @@
 ## sites, then the debug directory's reference to the CodeView record. An
 ## absolute target, x86-64's EHANDLER, ABSOLUTE and ALIGN have no record. The
 ## flags are 0x8000 for a function, 0x4000 for a label and 0x2000 for a
-## section-relative reference between the first and the last thread-local
-## chunk.
+## section-relative reference into the thread-local groups before the last.
 
 # RUN: yaml2obj --docnum=1 %s -o %t1.obj
 # RUN: lld-link /entry:f1 /subsystem:console /debug /debugtype:cv,fixup \
@@ -32,6 +31,7 @@
 # X64-NEXT: 0001 | 8000  | 00003010 | 00001010
 # X64-NEXT: 000B | 2000  | 00003018 | 0000500C
 # X64-NEXT: 000B | 0000  | 0000301C | 00003008
+# X64-NEXT: 000B | 0000  | 00003024 | 00005014
 # X64-NEXT: 8010 | 4000  | 00003028 | 00001020
 # X64-NEXT: 000F | 8000  | 00003028 | 00001010
 # X64-NEXT: 8040 | 0000  | 0000302C | 00003008
@@ -78,6 +78,7 @@ sections:
       - { VirtualAddress: 16, SymbolName: f2, Type: IMAGE_REL_AMD64_ADDR64 }
       - { VirtualAddress: 24, SymbolName: tv, Type: IMAGE_REL_AMD64_SECREL }
       - { VirtualAddress: 28, SymbolName: st, Type: IMAGE_REL_AMD64_SECREL }
+      - { VirtualAddress: 36, SymbolName: tz, Type: IMAGE_REL_AMD64_SECREL }
       - { VirtualAddress: 32, SymbolTableIndex: 0, Type: IMAGE_REL_AMD64_ABSOLUTE }
       - { VirtualAddress: 32, SymbolName: abs, Type: IMAGE_REL_AMD64_ADDR64 }
       - { VirtualAddress: 40, SymbolName: lab, Type: IMAGE_REL_LLVM_SSPAN8 }
@@ -123,6 +124,7 @@ symbols:
   - { Name: lab, Value: 32, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_LABEL }
   - { Name: st, Value: 8, SectionNumber: 2, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
   - { Name: tv, Value: 4, SectionNumber: 7, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
+  - { Name: tz, Value: 4, SectionNumber: 8, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
   - { Name: abs, Value: 5, SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_EXTERNAL }
 ...
 

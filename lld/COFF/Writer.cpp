@@ -83,6 +83,13 @@ static_assert((sizeof(dos_header) + sizeof(dosProgram)) % 8 == 0,
 
 static const int numberOfDataDirectory = 16;
 
+// The constants of NT-POSIX's thread-local model's revision 1: a thread's
+// block and its slot of a plane hold tlsSlotSize each, the block starts with
+// a header, and the first plane's slot lies 48 KiB from the thread pointer.
+static const uint64_t tlsSlotSize = COFFLinkerContext::tlsSlotSize;
+static const uint64_t tlsHeaderSize = 0x100;
+static const uint64_t tlsPlaneOffset = 48 * 1024;
+
 namespace {
 
 class DebugDirectoryChunk : public NonSectionChunk {
@@ -550,6 +557,10 @@ bool Writer::createThunks(OutputSection *os, int margin) {
       if (!sym)
         continue;
 
+      // No thunk reaches absolute zero either: the write reports the branch,
+      // or in a fork object makes it go to the next instruction.
+      if (isAnyArm64(machine) && isAbsoluteZero(sym))
+        continue;
       uint64_t s = sym->getRVA();
 
       if (isInRange(rel.Type, s, p, margin, machine))
@@ -673,6 +684,8 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
         continue;
 
       uint64_t p = sc->getRVA() + rel.VirtualAddress;
+      if (isAnyArm64(machine) && isAbsoluteZero(sym))
+        continue;
       uint64_t s = sym->getRVA();
 
       if (!isInRange(rel.Type, s, p, 0, machine))
@@ -1192,6 +1205,10 @@ void Writer::createSections() {
 
   fixPartialSectionChars(".rsrc", data | r);
   fixPartialSectionChars(".edata", data | r);
+  // The ntposix model's template is read-only: the runtime copies it.
+  bool ntposixTls = ctx.isTlsModel("ntposix");
+  if (ntposixTls)
+    fixPartialSectionChars(".tls", data | r);
   if (iatInDidat)
     fixPartialSectionChars(".didat", data | r | w);
   // Even in non MinGW cases, we might need to link against GNU import
@@ -1232,6 +1249,11 @@ void Writer::createSections() {
       sortCRTSectionChunks(pSec->chunks);
     }
 
+    // The ntposix model's .tls header states the template's alignment, as it
+    // states its bounds.
+    if (name == ".tls" && ntposixTls)
+      outChars |= (Log2_32(tlsAlignment) + 1) * IMAGE_SCN_ALIGN_1BYTES;
+
     // ARM64EC has specific placement and alignment requirements for the IAT.
     // Delay adding its chunks until appendECImportTables.
     if (isArm64EC(ctx.config.machine) &&
@@ -1243,6 +1265,12 @@ void Writer::createSections() {
       sec->addChunk(c);
 
     sec->addContributingPartialSection(pSec);
+    if (name == ".tls" && !pSec->chunks.empty()) {
+      if (!ctx.tlsFirst)
+        ctx.tlsFirst = pSec->chunks.front();
+      ctx.tlsLast = pSec->chunks.front();
+      ctx.tlsEnd = pSec->chunks.back();
+    }
   }
 
   if (ctx.hybridSymtab) {
@@ -1789,10 +1817,16 @@ void Writer::mergeSections() {
     }
   }
 
-  // A .didat that holds the IAT stays its own section.
+  // A .didat that holds the IAT stays its own section. The ntposix model's
+  // .tls is the image's one thread-local range, which its header describes.
+  bool ntposixTls = ctx.isTlsModel("ntposix");
   for (auto &p : ctx.config.merge) {
-    if (p.first != ".bss" &&
-        !(p.first == ".didat" && delayIatPlacement == DelayIatPlacement::Didat))
+    if (ntposixTls && (p.first == ".tls" || p.second == ".tls"))
+      Err(ctx) << "/merge: cannot merge '.tls' with any section in an image "
+               << "of the ntposix thread-local model";
+    else if (p.first != ".bss" &&
+             !(p.first == ".didat" &&
+               delayIatPlacement == DelayIatPlacement::Didat))
       mergeSection(p);
   }
 
@@ -1910,6 +1944,29 @@ void Writer::assignAddresses() {
     fileSize += alignTo(rawSize, config->fileAlign);
   }
   sizeOfImage = alignTo(rva, config->align);
+
+  // The thread-locals' scale counts the slots they fill. In the ntposix
+  // model the runtime states its own place, and an executable has the room
+  // of its block past the header where they fit it, else its slot of the
+  // first plane where they fit a slot. The pe model has no place.
+  Symbol *placeSym = ctx.symtab.find("__tp_place");
+  if (isa_and_nonnull<Defined>(placeSym) && ctx.isTlsModel("pe"))
+    Err(ctx) << "__tp_place is defined in an image of the pe thread-local "
+             << "model, which has no place";
+  if (ctx.tlsFirst) {
+    uint64_t size =
+        ctx.tlsEnd->getRVA() + ctx.tlsEnd->getSize() - ctx.tlsFirst->getRVA();
+    ctx.tlsScale = std::max<uint64_t>(1, divideCeil(size, tlsSlotSize));
+    if (ctx.isTlsModel("ntposix")) {
+      if (auto *place = dyn_cast_or_null<DefinedAbsolute>(placeSym))
+        ctx.tlsPlace = place->getVA();
+      else if (!config->dll && size <= tlsSlotSize)
+        ctx.tlsPlace = size <= tlsSlotSize - tlsHeaderSize ? tlsHeaderSize
+                                                           : tlsPlaneOffset;
+      else if (!config->dll)
+        ctx.tlsOversize = size;
+    }
+  }
 
   // Assign addresses to sections in MergeChunks.
   for (MergeChunk *mc : ctx.mergeChunkInstances)
@@ -3160,9 +3217,9 @@ static bool isSecRel(Triple::ArchType arch, uint16_t type) {
 // site of the relocation it follows, none for x86-64's EHANDLER outside the
 // exception table, and none where the target is absolute. The flags are the
 // kind of the symbol the object names: 0x8000 a function, 0x4000 a label,
-// and 0x2000 a section-relative reference between the first and the last
-// thread-local chunk. The exception table's records follow the others, and
-// the last record is the debug directory's reference to the CodeView record.
+// and 0x2000 a section-relative reference into the thread-local groups. The
+// exception table's records follow the others, and the last record is the
+// debug directory's reference to the CodeView record.
 void Writer::createFixups() {
   if (!(ctx.config.debugTypes & unsigned(coff::DebugType::Fixup)) || !buildId ||
       errorCount())
@@ -3241,10 +3298,8 @@ void Writer::createFixups() {
               count = mid;
           }
           rva = table.first->getRVA() + entry * entrySize + site % entrySize;
-        } else if (isSecRel(sc->getArch(), rel.Type) && tos &&
-                   tos->name == ".tls" &&
-                   d->getRVA() > tos->chunks.front()->getRVA() &&
-                   d->getRVA() < tos->chunks.back()->getRVA()) {
+        } else if (isSecRel(sc->getArch(), rel.Type) &&
+                   ctx.tlsOffset(d->getRVA())) {
           flags |= 0x2000;
         }
         (sorted ? tableFixups : fixups)

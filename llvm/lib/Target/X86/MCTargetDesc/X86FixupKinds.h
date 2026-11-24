@@ -44,6 +44,7 @@ enum Fixups {
   reloc_riprel_4byte_call,    // call *sym(%rip), after any prefixes
   reloc_riprel_4byte_jump,    // jmp *sym(%rip)
   reloc_riprel_4byte_jump_p1, // jmp *sym(%rip) after one prefix byte
+  reloc_riprel_4byte_tail,    // jmp *sym(%rip) that may be deleted
   reloc_riprel_4byte_lea,     // lea sym+k(%rip), r
   reloc_jump_4byte_pcrel,     // jmp or jcc the assembler relaxed to 32 bits
   reloc_jump_1byte_pcrel,     // jmp or jcc the assembler left at 8 bits

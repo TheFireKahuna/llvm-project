@@ -19,6 +19,7 @@
 #include "Writer.h"
 #include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/Timer.h"
+#include <atomic>
 
 namespace lld::coff {
 
@@ -87,6 +88,44 @@ public:
   OutputSection *getOutputSection(const Chunk *c) const {
     return c->osidx == 0 ? nullptr : outputSections[c->osidx - 1];
   }
+
+  // The first chunks of the first and the last TLS group (.tls, .tls$*), and
+  // the last chunk of the last.
+  Chunk *tlsFirst = nullptr;
+  Chunk *tlsLast = nullptr;
+  Chunk *tlsEnd = nullptr;
+
+  // An RVA's offset from the first TLS group if it lies in the TLS groups.
+  // A SECREL's bound is link.exe's: past the first group's start and before
+  // the last group's. The inclusive bound, from the first group's start to
+  // the last group's end, needs no marker section around the variables.
+  std::optional<uint64_t> tlsOffset(uint64_t rva,
+                                    bool inclusive = false) const {
+    if (!tlsFirst ||
+        (inclusive ? rva < tlsFirst->getRVA() ||
+                         rva > tlsEnd->getRVA() + tlsEnd->getSize()
+                   : rva <= tlsFirst->getRVA() || rva >= tlsLast->getRVA()))
+      return std::nullopt;
+    return rva - tlsFirst->getRVA();
+  }
+
+  // Whether the image is of the thread-local model, "pe" or "ntposix", that
+  // its objects state in their _TLS_MODEL key.
+  bool isTlsModel(StringRef model) const {
+    auto it = config.mustMatch.find("_TLS_MODEL");
+    return it != config.mustMatch.end() &&
+           it->second.first.split('.').first == model;
+  }
+
+  // The TLS groups' base in a thread is tlsScale times the thread pointer
+  // plus the image's place, which the link knows for some images. An
+  // executable of the ntposix model whose thread-locals exceed tlsSlotSize
+  // has none; tlsOversize is their size, which its first TPOFF reports.
+  static constexpr uint64_t tlsSlotSize = 1024;
+  std::optional<uint64_t> tlsPlace;
+  uint32_t tlsScale = 1;
+  uint64_t tlsOversize = 0;
+  std::atomic<bool> tlsOversizeReported = false;
 
   // Fake sections for parsing bitcode files.
   FakeSection ltoTextSection;

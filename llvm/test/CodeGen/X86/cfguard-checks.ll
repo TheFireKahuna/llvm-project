@@ -212,7 +212,7 @@ entry:
 
   ; X64-LABEL: func_cf_tail
   ; X64:       leaq	target_func(%rip), %rax
-  ; X64:       rex64 jmpq *__guard_dispatch_icall_fptr(%rip)         # TAILCALL
+  ; X64:       {{^[[:blank:]]*}}jmpq *__guard_dispatch_icall_fptr(%rip)         # TAILCALL
   ; X64-NOT:   callq
 }
 
@@ -244,7 +244,7 @@ entry:
   ; X64-LABEL: vmptr_thunk:
   ; X64:            movq (%rcx), %rax
   ; X64-NEXT:       movq 8(%rax), %rax
-  ; X64-NEXT:       rex64 jmpq      *__guard_dispatch_icall_fptr(%rip)            # TAILCALL
+  ; X64-NEXT:       {{^[[:blank:]]*}}jmpq      *__guard_dispatch_icall_fptr(%rip)            # TAILCALL
   ; X64-NOT:   callq
 }
 

@@ -73,6 +73,7 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
       // Supported
       break;
     case AArch64::S_FUSED:
+    case AArch64::S_TPREL:
       if (Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
         break;
       [[fallthrough]];
@@ -156,6 +157,11 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
         return COFF::IMAGE_REL_ARM64_SECREL_LOW12A;
       if (Spec == AArch64::S_SECREL_HI12)
         return COFF::IMAGE_REL_ARM64_SECREL_HIGH12A;
+      // A thread-local's offset from the thread pointer.
+      if (Spec == AArch64::S_TPREL_HI12)
+        return COFF::IMAGE_REL_LLVM_TPOFF_HIGH12A;
+      if (Spec == AArch64::S_TPREL_LO12 || Spec == AArch64::S_TPREL_LO12_NC)
+        return COFF::IMAGE_REL_LLVM_TPOFF_LOW12A;
     }
     return COFF::IMAGE_REL_ARM64_PAGEOFFSET_12A;
 
@@ -171,6 +177,8 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
       // A load of a pointer whose register only fused sites read.
       if (Spec == AArch64::S_FUSED_LO12)
         return COFF::IMAGE_REL_LLVM_FUSED_READ;
+      if (Spec == AArch64::S_TPREL_LO12 || Spec == AArch64::S_TPREL_LO12_NC)
+        return COFF::IMAGE_REL_LLVM_TPOFF_LOW12L;
     }
     return COFF::IMAGE_REL_ARM64_PAGEOFFSET_12L;
 

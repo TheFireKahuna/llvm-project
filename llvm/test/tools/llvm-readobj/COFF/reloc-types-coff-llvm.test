@@ -41,6 +41,7 @@
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_CALL (32832)
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_JUMP (32833)
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_READ (32834)
+# CHECK:      Type: IMAGE_REL_LLVM_FUSED_TEST (32838)
 # CHECK:      Type: IMAGE_REL_LLVM_TLS_SCALE (32852)
 # CHECK-NEXT: Symbol: -
 # CHECK-NEXT: SymbolIndex: 7
@@ -59,6 +60,7 @@
 # X64:        Type: IMAGE_REL_LLVM_MEM_LOAD_REX2 (32807)
 # X64:        Type: IMAGE_REL_LLVM_LEA (32808)
 # X64:        Type: IMAGE_REL_LLVM_LEA_OFFSET (32809)
+# X64:        Type: IMAGE_REL_LLVM_MEM_JUMP_TAIL (32810)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_READ_REX2 (32835)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_ACCESS (32836)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_INDEX (32837)
@@ -99,6 +101,7 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_CALL }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_TEST }
       - { VirtualAddress: 0, SymbolTableIndex: 7, Type: IMAGE_REL_LLVM_TLS_SCALE }
 symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]
 
@@ -121,6 +124,7 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_LOAD_REX2 }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA_OFFSET }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_JUMP_TAIL }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ_REX2 }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_ACCESS }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_INDEX }

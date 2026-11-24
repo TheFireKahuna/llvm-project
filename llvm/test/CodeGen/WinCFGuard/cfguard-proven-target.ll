@@ -123,7 +123,7 @@ define void @unproven(ptr %x) {
 
 ; X64-LABEL: unproven_tail:
 ; X64:         addl -4(%rax), %r10d
-; X64:         rex64 jmpq *__guard_dispatch_icall_fptr(%rip) # TAILCALL
+; X64:         {{^}} jmpq *__guard_dispatch_icall_fptr(%rip) # TAILCALL
 ; A64-LABEL: unproven_tail:
 ; A64:         adrp x8, __guard_check_icall_fptr
 ; A64:         ldr x8, [x8, :lo12:__guard_check_icall_fptr]
