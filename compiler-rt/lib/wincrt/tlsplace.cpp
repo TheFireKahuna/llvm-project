@@ -330,7 +330,12 @@ static uint64_t registerImage(char *Base) {
   if (find(Base)) {
     uint64_t Place = placeOf(I);
     add(&shared().CreateGen, 1);
-    eachRecord([&](uint32_t Index) { install(I, Place, Index, Again); });
+    eachRecord([&](uint32_t Index) {
+      if (protect(recordAt(Index))) {
+        install(I, Place, Index, Again);
+        unprotect(recordAt(Index));
+      }
+    });
     return Place;
   }
   Placed P = place(granules(I), (I.Align + Granule - 1) / Granule);
@@ -341,8 +346,15 @@ static uint64_t registerImage(char *Base) {
     return 0;
   }
   store(&E->Word, EntryLive);
+  // Each thread's block is written as its protector, so that its record is
+  // not finished and its chunk does not park under the writes.
   add(&shared().CreateGen, 1);
-  eachRecord([&](uint32_t Index) { install(I, P.Place, Index, Walk); });
+  eachRecord([&](uint32_t Index) {
+    if (protect(recordAt(Index))) {
+      install(I, P.Place, Index, Walk);
+      unprotect(recordAt(Index));
+    }
+  });
   return P.Place;
 }
 

@@ -17,7 +17,8 @@
 // writes its client id, then its bit by one compare-exchange that requires
 // the chunk live. The release that frees a chunk's last bit parks it, sealing
 // every record a claimer left without its bit and returning the chunk's
-// pages. A revival or a park names its actor in the chunk's entry.
+// pages. A revival or a park names its actor in the chunk's entry, so that
+// the rotating check finishes one whose actor is gone.
 //
 //===----------------------------------------------------------------------===//
 
@@ -273,6 +274,19 @@ void wincrt::tls::resumeReturn(Record &Self, Record &Dead) {
 // Chunks and records
 //===----------------------------------------------------------------------===//
 
+bool wincrt::tls::gone(uint32_t Tid) {
+  CLIENT_ID Id = {nullptr, reinterpret_cast<HANDLE>(uintptr_t(Tid))};
+  OBJECT_ATTRIBUTES Attributes = {sizeof(Attributes)};
+  HANDLE Thread;
+  NTSTATUS Status = NtOpenThread(&Thread, SYNCHRONIZE, &Attributes, &Id);
+  if (Status < 0)
+    return Status == STATUS_INVALID_CID;
+  LARGE_INTEGER Zero = {};
+  Status = NtWaitForSingleObject(Thread, FALSE, &Zero);
+  NtClose(Thread);
+  return Status == STATUS_WAIT_0;
+}
+
 // Plane P's run of a chunk: its slots 16 to 63, at P planes from the blocks.
 void *wincrt::tls::planeRun(uint32_t C, unsigned P) {
   return chunkBase(C) + 16 * TP_BLOCK + P * TP_PLANE;
@@ -395,6 +409,24 @@ bool wincrt::tls::advance(Record &R, uint64_t State) {
   }
 }
 
+// Finishes a chunk's revival or park whose actor is gone: the revival is
+// undone, since no slot of a reviving chunk is claimed, and the park run.
+void wincrt::tls::finishChunk(uint32_t C) {
+  Chunk &Ch = chunkAt(C);
+  uint64_t Actor = load(&Ch.Actor);
+  if (!Actor || !gone(static_cast<uint32_t>(Actor)) ||
+      !cas(&Ch.Actor, Actor, currentTid()))
+    return;
+  uint64_t W = load(&Ch.Word);
+  if ((W & ChunkState) == ChunkReviving) {
+    decommit(chunkBase(C), ChunkSize);
+    store(&Ch.Word, ChunkEmpty);
+  }
+  store(&Ch.Actor, 0);
+  if ((W & ChunkState) == ChunkParking)
+    park(C);
+}
+
 //===----------------------------------------------------------------------===//
 // Adoption
 //===----------------------------------------------------------------------===//
@@ -436,16 +468,20 @@ intptr_t wincrt::tls::adopt(uint32_t Tid, HANDLE Thread) {
   Record &R = recordAt(Index);
   bool Adopted =
       NtDuplicateObject(GetCurrentProcess(), Thread, GetCurrentProcess(),
-                        &R.Pin, SYNCHRONIZE, 0, 0) >= 0;
+                        &R.Pin, SYNCHRONIZE | THREAD_QUERY_LIMITED_INFORMATION,
+                        OBJ_PROTECT_CLOSE, 0) >= 0;
   if (Adopted) {
     seed(Index);
     Adopted = advance(R, Live) && publish(Tid, Index);
   }
-  // A refused adoption leaves its record to the thread's finisher.
+  // A refused adoption leaves its record to the rotating check, which
+  // finishes it once the thread is gone.
   if (!Adopted) {
     advance(R, Releasing);
     return -EAGAIN;
   }
+  if (Tid == currentTid())
+    check(R);
   return reinterpret_cast<intptr_t>(blockAt(Index));
 }
 
@@ -464,7 +500,9 @@ Header *wincrt::tls::header(bool Adopt) {
 //===----------------------------------------------------------------------===//
 
 // Every step is idempotent, and keeps where it is when run again: the map's
-// entry moves by compare-exchange from the value it replaces.
+// entry moves by compare-exchange from the value it replaces, a decommit
+// changes nothing twice, and the pin leaves the record before it is closed,
+// so that no rerun closes a handle the process has reused.
 // A dead protector's protection ends with its hold, and a dead finisher's
 // with the finish it left.
 static void finish(Record &Self, uint32_t Index, unsigned How) {
@@ -475,6 +513,20 @@ static void finish(Record &Self, uint32_t Index, unsigned How) {
     dropThread(reinterpret_cast<Header *>(blockAt(Index))->Thread);
   if (How & StepTomb)
     cas(slot(Tid, inB(Tid)), Entry, TP_TOMBSTONE);
+  if (How & StepClear) {
+    resumeReturn(Self, R);
+    clear(Self, Tid, Index);
+  }
+  if (How & StepScan) {
+    if (uint64_t Checked = load(&R.Checked); Checked & Landed)
+      unprotect(recordAt(uint32_t(Checked - 1)));
+    store(&R.Checked, 0);
+  }
+  if (How & StepClose)
+    if (HANDLE Pin = __atomic_exchange_n(&R.Pin, nullptr, __ATOMIC_ACQ_REL))
+      NtClose(Pin);
+  if (How & StepFree)
+    release(Index);
 }
 
 void wincrt::tls::releaseSelf() {
@@ -485,6 +537,81 @@ void wincrt::tls::releaseSelf() {
   if (!advance(R, Releasing))
     return;
   finish(R, Entry & TP_MASK, Release);
+  check(R);
+}
+
+// A word of a record the checker does not hold, which its chunk's park may
+// return under it: read, and moved, by probe.
+static uint64_t probeLoad(const uint64_t *W) { return __wincrt_probe64(W); }
+
+bool wincrt::tls::protect(Record &R) {
+  for (uint64_t W = probeLoad(&R.Word);;) {
+    if (stateOf(W) == Free || stateOf(W) == Finishing ||
+        (W & Protectors) == Protectors)
+      return false;
+    uint64_t Was = __wincrt_probe_cas(&R.Word, W, W + Protect);
+    if (Was == W)
+      return true;
+    W = Was;
+  }
+}
+
+void wincrt::tls::unprotect(Record &R) {
+  for (uint64_t W = probeLoad(&R.Word), Was;
+       W & Protectors &&
+       (Was = __wincrt_probe_cas(&R.Word, W, W - Protect)) != W;
+       W = Was)
+    ;
+}
+
+// A shared cursor runs over every slot of the published chunks. Each step
+// takes the next records that a thread holds, up to two, and waits on each
+// one's pin with a zero timeout as its protector, which keeps the pin open: a
+// signalled pin is a thread past its last instruction, whose record's one
+// finisher the compare-exchange of its sole protector picks. A record killed
+// before its pin is finished where its client id names no thread; a chunk's
+// revival or park, at the chunk's first slot, where its actor is gone.
+void wincrt::tls::check(Record &Self) {
+  uint32_t Top = load(&shared().Top);
+  for (unsigned Held = 0, Seen = 0; Top && Held != 2 && Seen != 64; ++Seen) {
+    uint32_t Index =
+        uint32_t(add(&shared().Cursor, 1) % (uint64_t(Top) * 64)) + 64;
+    uint32_t Slot = Index % 64;
+    uint64_t C = load(&chunkAt(Index / 64).Word);
+    if (!Slot)
+      finishChunk(Index / 64);
+    if (Slot < 16 || Slot == 63 || (C & ChunkState) != ChunkLive)
+      continue;
+    Record &R = recordAt(Index);
+    uint64_t State = stateOf(probeLoad(&R.Word));
+    if (State == Free || State == Finishing)
+      continue;
+    ++Held;
+    store(&Self.Checked, Index + 1);
+    if (&R == &Self || !protect(R)) {
+      store(&Self.Checked, 0);
+      continue;
+    }
+    store(&Self.Checked, (Index + 1) | Landed);
+    HANDLE Pin = reinterpret_cast<HANDLE>(
+        probeLoad(reinterpret_cast<uint64_t *>(&R.Pin)));
+    LARGE_INTEGER Zero = {};
+    uint64_t W = probeLoad(&R.Word);
+    bool Dead = Pin ? NtWaitForSingleObject(Pin, FALSE, &Zero) == STATUS_WAIT_0
+                    : gone(tidOf(W));
+    W = probeLoad(&R.Word);
+    if (Dead && (W & Protectors) == Protect &&
+        __wincrt_probe_cas(&R.Word, W,
+                           recordWord(Finishing, tidOf(W), W) & ~Protectors) ==
+            W) {
+      store(&Self.Checked, 0);
+      // A claimer killed before its bit seeded no block.
+      finish(Self, Index, C >> Slot & 1 ? StepFree : Finish);
+      continue;
+    }
+    unprotect(R);
+    store(&Self.Checked, 0);
+  }
 }
 
 // The cold calls' one body, which the assembly entries call having saved

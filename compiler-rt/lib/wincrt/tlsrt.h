@@ -44,11 +44,16 @@ NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG,
                                                ULONG *);
 NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE,
                                           ACCESS_MASK, ULONG, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtOpenThread(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
+                                     CLIENT_ID *);
 
 // The no-thread header: what the thread pointer names on a thread with no
 // block. Read-only, its thread-pointer words naming itself.
 WINCRT_TLS_API extern const uint64_t __tp_none[TP_H / 8];
 }
+
+#define STATUS_INVALID_CID ((NTSTATUS)0xC000000BL)
+#define OBJ_PROTECT_CLOSE 0x00000001
 
 namespace wincrt::tls {
 
@@ -86,15 +91,25 @@ struct Record {
   HANDLE Pin;      // the thread's own handle, which keeps its client id
   uint64_t Return; // one plus the map page whose return the thread runs
 
-  uint64_t Pad[5];
+  // One plus the record a check of the thread's protects, with Landed once
+  // the protection stands.
+  uint64_t Checked;
+  uint64_t Pad[4];
 };
 static_assert(sizeof(Record) == 64);
 enum : uint64_t { Free, Claimed, Live, Releasing, Finishing };
-
+// The record's protectors: a check that waits on its pin, and a registration
+// that writes its block, each of which keeps it from being finished, so that
+// its pin stays open and its chunk does not park; only a check that is the
+// sole protector elects its finisher. The record's own thread moves its word
+// over them.
+constexpr uint64_t Protect = uint64_t(1) << 56, Protectors = uint64_t(15) << 56,
+                   Landed = uint64_t(1) << 63;
 inline uint64_t stateOf(uint64_t W) { return W >> 60; }
 inline uint32_t tidOf(uint64_t W) { return uint32_t(W >> 32 & 0xFFFFFF) << 2; }
 inline uint64_t recordWord(uint64_t State, uint32_t Tid, uint64_t Old) {
-  return State << 60 | uint64_t(Tid >> 2) << 32 | uint32_t(Old + 1);
+  return State << 60 | (Old & Protectors) | uint64_t(Tid >> 2) << 32 |
+         uint32_t(Old + 1);
 }
 
 // A chunk's resident entry. Word holds the free bits of slots 16 to 62 and
@@ -146,7 +161,7 @@ struct State {
   uint32_t Hint;
   uint64_t Planes; // the open planes, and Change while one opens or closes
   uint64_t CreateGen;
-
+  uint64_t Cursor; // the rotating check's
   // What thread-local destructors are encoded with: the founding copy's
   // security cookie, since each copy's differs.
   uint64_t Cookie;
@@ -199,11 +214,16 @@ void clear(Record &Self, uint32_t Tid, uint32_t Entry);
 void resumeReturn(Record &Self, Record &Dead);
 
 // Claims a record for the calling thread, or answers 0; frees one, parking
-// its chunk where that frees the chunk's last; parks a chunk.
+// its chunk where that frees the chunk's last; parks a chunk; finishes the
+// revival or park of a chunk whose actor is gone.
 uint32_t claim(uint32_t Tid);
 void release(uint32_t Index);
 void park(uint32_t C);
+void finishChunk(uint32_t C);
 void *planeRun(uint32_t C, unsigned P);
+// Whether the thread with client id Tid, whose handle no record holds, is
+// past its last instruction: its id names no thread, or a signalled one.
+bool gone(uint32_t Tid);
 
 // The thread pointer of the thread with client id Tid, whose handle Thread
 // is, adopting it where it has no block: the calling thread, or one the
@@ -212,19 +232,29 @@ intptr_t adopt(uint32_t Tid, HANDLE Thread);
 // The calling thread's block header, adopting the thread where Adopt is set;
 // null where it has none, or it is released.
 Header *header(bool Adopt);
-// Moves the caller's own record to State.
+// Moves the caller's own record to State, over its protectors.
 bool advance(Record &R, uint64_t State);
 // The steps that end a record, in this order; each caller selects some. The
-// release at the thread's last hook takes Release.
+// release at the thread's last hook takes Release, its finisher Finish.
 enum : unsigned {
-  StepDrop = 2, // drop its destructor list without running it
-  StepTomb = 4, // replace its TID-map entry with the tombstone
-  Release = StepDrop | StepTomb
+  StepDrop = 2,   // drop its destructor list without running it
+  StepTomb = 4,   // replace its TID-map entry with the tombstone
+  StepClear = 8,  // clear its TID-map entry
+  StepScan = 16,  // drop the protection a dead check of its own left
+  StepClose = 32, // close its pin
+  StepFree = 64,  // free the record and its block
+  Release = StepDrop | StepTomb,
+  Finish = StepDrop | StepClear | StepScan | StepClose | StepFree
 };
 void finish(Record &Self, uint32_t Index, unsigned How);
 // The release at the calling thread's last hook.
 void releaseSelf();
-
+// The rotating check: finishes the next record or two whose thread is gone.
+void check(Record &Self);
+// Adds a protector to a record, unless it is free or being finished; drops
+// one.
+bool protect(Record &R);
+void unprotect(Record &R);
 // Drops a thread's destructor list without running it.
 void dropThread(ThreadState &T);
 // Finds whether the executable's last TLS callback is __wincrt_thread_end.
