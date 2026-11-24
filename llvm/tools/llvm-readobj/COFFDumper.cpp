@@ -2565,6 +2565,7 @@ constexpr EnumStringDef<COFF::LinkFactTag> LinkFactTagDefs[] = {
     {{"Init"}, COFF::LinkFactInit},
     {{"Descriptor"}, COFF::LinkFactDescriptor},
     {{"AddressSignificant"}, COFF::LinkFactAddressSignificant},
+    {{"TlsRecord"}, COFF::LinkFactTlsRecord},
 };
 constexpr auto LinkFactTags = BUILD_ENUM_STRINGS(LinkFactTagDefs);
 
@@ -2671,6 +2672,17 @@ void COFFDumper::printCOFFLinkRecords() {
                 }
                 return C.takeError();
               }
+              if (Kind == COFF::LinkRecordSiteFacts)
+                return readCOFFSiteFacts(
+                    Payload, [&](uint64_t Section, uint64_t Relocation,
+                                 uint64_t Fact, uint64_t Value) {
+                      DictScope S(W, "SiteFact");
+                      W.printNumber("Section", getSymbolName(Section), Section);
+                      W.printNumber("Relocation", Relocation);
+                      W.printNumber("Fact", Fact);
+                      W.printNumber("Value", Value);
+                      return Error::success();
+                    });
               if (Kind == COFF::LinkRecordImages) {
                 std::vector<COFFLinkImage> Images;
                 if (Error E = readCOFFLinkImages(Payload, Images))
@@ -2712,6 +2724,11 @@ void COFFDumper::printCOFFLinkRecords() {
                     DictScope F(W, "Fact");
                     W.printNumber("Symbol", getSymbolName(Symbol), Symbol);
                     W.printEnum("Tag", Tag, EnumStrings(LinkFactTags));
+                    if (Tag == COFF::LinkFactTlsRecord && !Operands.empty()) {
+                      DataExtractor Data(Operands, /*IsLittleEndian=*/true);
+                      uint64_t Offset = 0, Guard = Data.getULEB128(&Offset);
+                      W.printNumber("Guard", getSymbolName(Guard), Guard);
+                    }
                     W.printBinaryBlock("Operands", Operands);
                     return Error::success();
                   });

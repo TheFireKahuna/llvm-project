@@ -45,12 +45,12 @@ int use() { return iv + dyn + S<int>::m + S<int>::d + local() + tl + hid; }
 // explicitly instantiated, a static variable of an inline function and their
 // thread-local forms are unique. A variable with one definition is not, nor
 // is one that its definition makes weak.
-// CHECK-DAG: @iv = linkonce_odr global i32 1, comdat, align 4[[U:( #[0-9]+)?]]
-// CHECK-DAG: @_ZN1SIiE1mE = linkonce_odr global i32 2, comdat, align 4[[U]]
-// CHECK-DAG: @_ZN1SIlE1mE = weak_odr global i32 2, comdat, align 4[[U]]
-// CHECK-DAG: @tl = linkonce_odr dso_local thread_local global i32 4, comdat, align 4[[U]]
-// CHECK-DAG: @strong = dso_local global i32 0, align 4{{$}}
-// CHECK-DAG: @weak = weak global i32 1, align 4{{$}}
+// CHECK-DAG: @iv = linkonce_odr {{.*}}global i32 1, comdat, align 4[[U:( #[0-9]+)?]]
+// CHECK-DAG: @_ZN1SIiE1mE = linkonce_odr {{.*}}global i32 2, comdat, align 4[[U]]
+// CHECK-DAG: @_ZN1SIlE1mE = weak_odr {{.*}}global i32 2, comdat, align 4[[U]]
+// CHECK-DAG: @tl = linkonce_odr {{.*}}thread_local global i32 4, comdat, align 4, !tls_record {{![0-9]+}}[[U]]
+// CHECK-DAG: @strong = {{.*}}global i32 0, align 4{{$}}
+// CHECK-DAG: @weak = weak {{.*}}global i32 1, align 4{{$}}
 // CHECK-DAG: @al = alias i32, ptr @iv
 // CHECK-DAG: @hid = linkonce_odr hidden global i32 5, comdat, align 4
 // CHECK-DAG: @exported = weak_odr dso_local dllexport global i32 6, comdat, align 4

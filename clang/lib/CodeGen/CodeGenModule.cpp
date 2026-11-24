@@ -2498,7 +2498,8 @@ void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
 }
 
 bool CodeGenModule::shouldMapDefinitionToDLLExport(
-    const NamedDecl *D, llvm::GlobalValue::LinkageTypes Linkage) const {
+    const NamedDecl *D, llvm::GlobalValue::LinkageTypes Linkage,
+    bool Record) const {
   if (!getTriple().isOSBinFormatCOFF())
     return shouldMapVisibilityToDLLExport(D);
   if (!LangOpts.hasDefaultVisibilityExportMapping() || !D)
@@ -2514,31 +2515,94 @@ bool CodeGenModule::shouldMapDefinitionToDLLExport(
   // variable the source declared is one object across images whatever its
   // linkage, but a native thread-local one has no address to export.
   if (const auto *VD = dyn_cast<VarDecl>(D))
-    return VD->getTLSKind() == VarDecl::TLS_None;
+    return Record || VD->getTLSKind() == VarDecl::TLS_None;
   return !llvm::GlobalValue::isLinkOnceLinkage(Linkage);
 }
 
 /// Whether the mapping makes a declaration of \p D an import: a marked
 /// default visibility says that a shared library defines it, as it says on a
 /// definition that the library exports it. A vtable or type_info object,
-/// named by its class, and a thread-local variable are reached otherwise.
+/// named by its class, is reached otherwise, and a thread-local variable
+/// through its record, which \p Record asks about.
 static bool shouldMapVisibilityToDLLImport(const CodeGenModule &CGM,
-                                           const NamedDecl *D) {
+                                           const NamedDecl *D,
+                                           bool Record = false) {
   if (!CGM.getTriple().isOSBinFormatCOFF() ||
       !CGM.getLangOpts().hasDefaultVisibilityExportMapping() ||
       !isa<FunctionDecl, VarDecl>(D) || D->hasAttr<DLLExportAttr>())
     return false;
-  if (const auto *VD = dyn_cast<VarDecl>(D);
-      VD && VD->getTLSKind() != VarDecl::TLS_None)
+  const auto *VD = dyn_cast<VarDecl>(D);
+  if ((VD && VD->getTLSKind() != VarDecl::TLS_None) != Record)
     return false;
   return D->getVisibility() == DefaultVisibility && D->isVisibilityMarked();
+}
+
+bool CodeGenModule::isThreadLocalRecordImport(const VarDecl *VD) const {
+  return hasThreadLocalRecords() && VD->getTLSKind() != VarDecl::TLS_None &&
+         VD->isExternallyVisible() && !VD->hasDefinition() && !VD->isWeak() &&
+         (VD->hasAttr<DLLImportAttr>() ||
+          shouldMapVisibilityToDLLImport(*this, VD, /*Record=*/true));
+}
+
+// The record holds the address of the defining image's TLS index and the
+// offsets of the variable and of its guard in that image's block. None
+// changes once the image is loaded, which is before this one runs. The
+// thread's array of blocks does: the loader replaces it when an image with
+// thread-local data loads.
+llvm::Value *CodeGenModule::EmitThreadLocalRecordAddress(CGBuilderTy &Builder,
+                                                         const VarDecl *VD,
+                                                         llvm::Value **Guard) {
+  llvm::LLVMContext &Ctx = getLLVMContext();
+  llvm::StructType *RecordTy =
+      llvm::StructType::get(DefaultPtrTy, Int32Ty, Int32Ty);
+  auto *Record = cast<llvm::GlobalVariable>(getModule().getOrInsertGlobal(
+      (getMangledName(VD) + "$tls").str(), RecordTy));
+  Record->setConstant(true);
+  Record->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+
+  llvm::MDNode *Empty = llvm::MDNode::get(Ctx, {});
+  auto Load = [&](llvm::Type *Ty, llvm::Value *Addr, unsigned Align) {
+    llvm::LoadInst *L =
+        Builder.CreateAlignedLoad(Ty, Addr, CharUnits::fromQuantity(Align));
+    L->setMetadata(llvm::LLVMContext::MD_invariant_load, Empty);
+    return L;
+  };
+  // The index is four bytes that can be loaded again wherever its address
+  // can, so nothing need spill it.
+  llvm::LoadInst *IndexAddr = Load(DefaultPtrTy, Record, 8);
+  llvm::MDNode *Four = llvm::MDNode::get(
+      Ctx, llvm::ConstantAsMetadata::get(Builder.getInt64(4)));
+  IndexAddr->setMetadata(llvm::LLVMContext::MD_dereferenceable, Four);
+  IndexAddr->setMetadata(llvm::LLVMContext::MD_align, Four);
+  IndexAddr->setMetadata(llvm::LLVMContext::MD_noundef, Empty);
+  llvm::Value *Index = Load(Int32Ty, IndexAddr, 4);
+  llvm::Value *Array = Builder.CreateIntrinsic(llvm::Intrinsic::thread_pointer,
+                                               {DefaultPtrTy}, {});
+  // An image's block is the thread's for as long as the array is.
+  llvm::Value *Block =
+      Load(DefaultPtrTy,
+           Builder.CreateInBoundsGEP(DefaultPtrTy, Array,
+                                     Builder.CreateZExt(Index, Int64Ty)),
+           8);
+  auto At = [&](unsigned Field) {
+    llvm::Value *Offset =
+        Load(Int32Ty,
+             Builder.CreateConstInBoundsGEP2_32(RecordTy, Record, 0, Field), 4);
+    return Builder.CreateInBoundsGEP(Int8Ty, Block,
+                                     Builder.CreateZExt(Offset, Int64Ty));
+  };
+  if (Guard)
+    *Guard = At(2);
+  return At(1);
 }
 
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
                                           const NamedDecl *D) const {
   // A global can be local although its declaration is visible: the
-  // construction vtables of an available_externally VTT are internal.
-  if (D && D->isExternallyVisible() && !GV->hasLocalLinkage()) {
+  // construction vtables of an available_externally VTT are internal. An
+  // image exports a record of a thread-local variable, never the variable.
+  if (D && D->isExternallyVisible() && !GV->hasLocalLinkage() &&
+      !(GV->isThreadLocal() && hasThreadLocalRecords())) {
     if (D->hasAttr<DLLImportAttr>())
       GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
     else if ((D->hasAttr<DLLExportAttr>() ||
@@ -6539,8 +6603,9 @@ CodeGenModule::GetOrCreateLLVMGlobal(StringRef MangledName, llvm::Type *Ty,
 
     setLinkageForGV(GV, D);
 
+    // The C++ ABI states the record of a variable of either kind.
     if (D->getTLSKind()) {
-      if (D->getTLSKind() == VarDecl::TLS_Dynamic)
+      if (D->getTLSKind() == VarDecl::TLS_Dynamic || hasThreadLocalRecords())
         CXXThreadLocals.push_back(D);
       setTLSMode(GV, *D);
     }
@@ -7183,7 +7248,10 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
 
   GV->setLinkage(Linkage);
   setGnuUnique(*D, *GV);
-  if (D->hasAttr<DLLImportAttr>())
+  // An image exports a record of a thread-local variable in its place.
+  if (D->getTLSKind() && hasThreadLocalRecords())
+    GV->setDLLStorageClass(llvm::GlobalVariable::DefaultStorageClass);
+  else if (D->hasAttr<DLLImportAttr>())
     GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
   else if (D->hasAttr<DLLExportAttr>())
     GV->setDLLStorageClass(llvm::GlobalVariable::DLLExportStorageClass);
@@ -7204,7 +7272,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
   setNonAliasAttributes(D, GV);
 
   if (D->getTLSKind() && !GV->isThreadLocal()) {
-    if (D->getTLSKind() == VarDecl::TLS_Dynamic)
+    if (D->getTLSKind() == VarDecl::TLS_Dynamic || hasThreadLocalRecords())
       CXXThreadLocals.push_back(D);
     setTLSMode(GV, *D);
   }

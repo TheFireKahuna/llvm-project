@@ -80,6 +80,8 @@ public:
           "lea of a constant directly after the load of a pointer";
       FusedForms[size_t(COFF::FusedUse::Access)] =
           "load or store through a register alone";
+      FusedForms[size_t(COFF::FusedUse::Index)] =
+          "use of the word of a record that its fact states";
       FusedForms[size_t(COFF::FusedUse::Test)] =
           "test of a 64-bit register against itself";
     }
@@ -204,6 +206,7 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
     }
     unsigned RegOp;
     COFF::FusedUse Use = X86::getFusedUse(Inst, MCII->get(Opcode), RegOp);
+    selectFusedIndex(Inst, Use, RegOp);
     // A fused add is the lea of a constant to the register that the load of
     // a pointer directly before it wrote, which the linker makes the lea of
     // what the pointer names plus the constant. The index of its marker

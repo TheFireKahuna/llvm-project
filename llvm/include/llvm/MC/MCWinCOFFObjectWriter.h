@@ -81,6 +81,14 @@ public:
   /// The flags of the object's link records.
   uint64_t LinkRecordsFlags = 0;
 
+  /// A fact that the SiteFacts group of the object's link records states of
+  /// the first relocation at or after a label.
+  struct SiteFact {
+    const MCSymbol *At;
+    uint64_t Fact, Value;
+  };
+  std::vector<SiteFact> SiteFacts;
+
   /// A dispatch through a jump table that the Sections group of the object's
   /// link records states: its branch, table, base and load, and the count and
   /// type of the table's entries.

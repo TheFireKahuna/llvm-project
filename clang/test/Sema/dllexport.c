@@ -3,7 +3,7 @@
 // RUN: %clang_cc1 -triple i686-mingw32   -fsyntax-only -fms-extensions -verify -std=c11 %s
 // RUN: %clang_cc1 -triple x86_64-mingw32 -fsyntax-only -fms-extensions -verify -std=c99 %s
 // RUN: %clang_cc1 -triple i686-windows-itanium   -fsyntax-only -fms-extensions -verify -std=c99 %s
-// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify -std=c11 %s
+// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify -std=c11 -DTLS_RECORDS %s
 // RUN: %clang_cc1 -triple x86_64-sie-ps5         -fsyntax-only -fms-extensions -verify -std=c99 %s
 // RUN: %clang_cc1 -triple x86_64-sie-ps5         -fsyntax-only -fms-extensions -verify -std=c11 %s
 
@@ -59,8 +59,13 @@ __declspec(dllexport) extern int GlobalRedecl4; // expected-warning{{redeclarati
 // External linkage is required.
 __declspec(dllexport) static int StaticGlobal; // expected-error{{'StaticGlobal' must have external linkage when declared 'dllexport'}}
 
-// Thread local variables are invalid.
+// Thread local variables are invalid, except where an image exports a record
+// of the variable.
+#ifndef TLS_RECORDS
 __declspec(dllexport) __thread int ThreadLocalGlobal; // expected-error{{'ThreadLocalGlobal' cannot be thread local when declared 'dllexport'}}
+#else
+__declspec(dllexport) __thread int ThreadLocalGlobal;
+#endif
 
 // Export in local scope.
 void functionScope(void) {

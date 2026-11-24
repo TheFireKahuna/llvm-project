@@ -63,6 +63,7 @@ class COFFAsmParser : public MCAsmParserExtension {
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSymIdx>(".symidx");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSafeSEH>(".safeseh");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveLinkFact>(".link_fact");
+    addDirectiveHandler<&COFFAsmParser::parseDirectiveSiteFact>(".site_fact");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSymver>(".symver");
     addDirectiveHandler<&COFFAsmParser::parseDirectiveSwitchTable>(
         ".switch_table");
@@ -136,6 +137,7 @@ class COFFAsmParser : public MCAsmParserExtension {
   bool parseDirectiveSecIdx(StringRef, SMLoc);
   bool parseDirectiveSafeSEH(StringRef, SMLoc);
   bool parseDirectiveLinkFact(StringRef, SMLoc);
+  bool parseDirectiveSiteFact(StringRef, SMLoc);
   bool parseDirectiveSymver(StringRef, SMLoc);
   bool parseDirectiveSwitchTable(StringRef, SMLoc);
   bool parseDirectiveSymIdx(StringRef, SMLoc);
@@ -570,6 +572,16 @@ bool COFFAsmParser::parseDirectiveLinkFact(StringRef, SMLoc) {
   if (parseEOL())
     return true;
   getStreamer().emitCOFFLinkFact(Symbol, Tag, Operands);
+  return false;
+}
+
+/// ::= .site_fact fact, value
+bool COFFAsmParser::parseDirectiveSiteFact(StringRef, SMLoc) {
+  int64_t Fact, Value;
+  if (getParser().parseAbsoluteExpression(Fact) || getParser().parseComma() ||
+      getParser().parseAbsoluteExpression(Value) || parseEOL())
+    return true;
+  getStreamer().emitCOFFSiteFact(Fact, Value);
   return false;
 }
 

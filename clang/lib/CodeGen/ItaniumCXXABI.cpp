@@ -3233,6 +3233,23 @@ getThreadLocalWrapperLinkage(const VarDecl *VD, CodeGen::CodeGenModule &CGM) {
   return llvm::GlobalValue::WeakODRLinkage;
 }
 
+// Creates the initialization function Name, which does nothing, of the
+// thread-local variable Var.
+static llvm::Function *createEmptyThreadLocalInit(CodeGenModule &CGM,
+                                                  StringRef Name,
+                                                  llvm::GlobalVariable *Var) {
+  llvm::Function *Func =
+      llvm::Function::Create(llvm::FunctionType::get(CGM.VoidTy, false),
+                             Var->getLinkage(), Name, &CGM.getModule());
+  const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
+  CGM.SetLLVMFunctionAttributes(GlobalDecl(), FI, Func, /*IsThunk=*/false);
+  llvm::BasicBlock *Entry =
+      llvm::BasicBlock::Create(CGM.getLLVMContext(), "", Func);
+  CGBuilderTy Builder(CGM, Entry);
+  Builder.CreateRetVoid();
+  return Func;
+}
+
 llvm::Function *
 ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
                                              llvm::Value *Val) {
@@ -3287,6 +3304,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     ArrayRef<llvm::Function *> CXXThreadLocalInits,
     ArrayRef<const VarDecl *> CXXThreadLocalInitVars) {
   llvm::Function *InitFunc = nullptr;
+  llvm::GlobalVariable *InitGuard = nullptr;
 
   // Separate initializers into those with ordered (or partially-ordered)
   // initialization and those with unordered initialization.
@@ -3309,7 +3327,7 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
     InitFunc = CGM.CreateGlobalInitOrCleanUpFunction(FTy, "__tls_init", FI,
                                                      SourceLocation(),
                                                      /*TLS=*/true);
-    llvm::GlobalVariable *Guard = new llvm::GlobalVariable(
+    llvm::GlobalVariable *Guard = InitGuard = new llvm::GlobalVariable(
         CGM.getModule(), CGM.Int8Ty, /*isConstant=*/false,
         llvm::GlobalVariable::InternalLinkage,
         llvm::ConstantInt::get(CGM.Int8Ty, 0), "__tls_guard");
@@ -3331,18 +3349,42 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
   // Create declarations for thread wrappers for all thread-local variables
   // with non-discardable definitions in this translation unit.
   for (const VarDecl *VD : CXXThreadLocals) {
-    if (VD->hasDefinition() &&
+    if (VD->getTLSKind() == VarDecl::TLS_Dynamic && VD->hasDefinition() &&
         !isDiscardableGVALinkage(getContext().GetGVALinkageForVariable(VD))) {
       llvm::GlobalValue *GV = CGM.GetGlobalValue(CGM.getMangledName(VD));
       getOrCreateThreadLocalWrapper(VD, GV);
     }
   }
 
+  // The initialization function of the definition Var of VD: an alias of the
+  // function that initializes it in a thread, where the unit has one.
+  auto CreateInitAlias = [&](const VarDecl *VD, llvm::GlobalVariable *Var,
+                             StringRef Name) -> llvm::GlobalValue * {
+    llvm::Function *InitFuncToUse = InitFunc;
+    if (isTemplateInstantiation(VD->getTemplateSpecializationKind())) {
+      InitFuncToUse = UnorderedInits.lookup(VD->getCanonicalDecl());
+      // On Windows Itanium and NT-POSIX the variable's own initialization
+      // function is associative to the variable's section.
+      if (InitFuncToUse &&
+          CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+        InitFuncToUse->setComdat(Var->getComdat());
+    }
+    return InitFuncToUse ? llvm::GlobalAlias::create(Var->getLinkage(), Name,
+                                                     InitFuncToUse)
+                         : nullptr;
+  };
+
   // Emit all referenced thread wrappers.
   for (auto VDAndWrapper : ThreadWrappers) {
     const VarDecl *VD = VDAndWrapper.first;
+    // The wrapper of another image's variable reaches the variable and its
+    // guard through the variable's record, and the image exports the
+    // initialization function with the record.
+    bool Import = CGM.isThreadLocalRecordImport(VD);
     llvm::GlobalVariable *Var =
-        cast<llvm::GlobalVariable>(CGM.GetGlobalValue(CGM.getMangledName(VD)));
+        Import ? nullptr
+               : cast<llvm::GlobalVariable>(
+                     CGM.GetGlobalValue(CGM.getMangledName(VD)));
     llvm::Function *Wrapper = VDAndWrapper.second;
 
     // Some targets require that all access to thread local variables go through
@@ -3381,32 +3423,25 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       HasConstantInitialization = true;
     } else if (VD->hasDefinition()) {
       InitIsInitFunc = true;
-      llvm::Function *InitFuncToUse = InitFunc;
-      if (isTemplateInstantiation(VD->getTemplateSpecializationKind())) {
-        InitFuncToUse = UnorderedInits.lookup(VD->getCanonicalDecl());
-        // On Windows Itanium and NT-POSIX the variable's own initialization
-        // function is associative to the variable's section.
-        if (InitFuncToUse &&
-            CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
-          InitFuncToUse->setComdat(Var->getComdat());
-      }
-      if (InitFuncToUse)
-        Init = llvm::GlobalAlias::create(Var->getLinkage(), InitFnName.str(),
-                                         InitFuncToUse);
+      Init = CreateInitAlias(VD, Var, InitFnName);
     } else {
       // Emit a weak global function referring to the initialization function.
       // This function will not exist if the TU defining the thread_local
       // variable in question does not need any dynamic initialization for
       // its thread_local variables.
-      Init = llvm::Function::Create(InitFnTy,
-                                    llvm::GlobalVariable::ExternalWeakLinkage,
-                                    InitFnName.str(), &CGM.getModule());
+      Init = llvm::Function::Create(
+          InitFnTy,
+          Import ? llvm::GlobalVariable::ExternalLinkage
+                 : llvm::GlobalVariable::ExternalWeakLinkage,
+          InitFnName.str(), &CGM.getModule());
       const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
       CGM.SetLLVMFunctionAttributes(
           GlobalDecl(), FI, cast<llvm::Function>(Init), /*IsThunk=*/false);
     }
 
-    if (Init) {
+    if (Import) {
+      Init->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
+    } else if (Init) {
       Init->setVisibility(Var->getVisibility());
       // Don't mark an extern_weak function DSO local on windows.
       if (!CGM.getTriple().isOSWindows() || !Init->hasExternalWeakLinkage())
@@ -3429,25 +3464,26 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       // is elsewhere.
       assert(Init == nullptr && "Expected Init to be null.");
 
-      llvm::Function *Func = llvm::Function::Create(
-          InitFnTy, Var->getLinkage(), InitFnName.str(), &CGM.getModule());
-      const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
-      CGM.SetLLVMFunctionAttributes(GlobalDecl(), FI,
-                                    cast<llvm::Function>(Func),
-                                    /*IsThunk=*/false);
-      // Create a function body that just returns
-      llvm::BasicBlock *Entry = llvm::BasicBlock::Create(Context, "", Func);
-      CGBuilderTy Builder(CGM, Entry);
-      Builder.CreateRetVoid();
+      createEmptyThreadLocalInit(CGM, InitFnName, Var);
     }
 
     llvm::BasicBlock *Entry = llvm::BasicBlock::Create(Context, "", Wrapper);
     CGBuilderTy Builder(CGM, Entry);
+    llvm::Value *Guard = nullptr;
+    llvm::Value *Val =
+        Import ? CGM.EmitThreadLocalRecordAddress(Builder, VD, &Guard)
+               : nullptr;
     if (HasConstantInitialization) {
       // No dynamic initialization to invoke.
     } else if (InitIsInitFunc) {
       if (Init) {
-        llvm::CallInst *CallVal = Builder.CreateCall(InitFnTy, Init);
+        // Where a record shares the variable, an image offers the alias,
+        // which LTO keeps and then cannot inline, so the unit calls its own
+        // initialization, which the guard makes the same.
+        llvm::CallInst *CallVal = Builder.CreateCall(
+            InitFnTy, CGM.hasThreadLocalRecords()
+                          ? cast<llvm::GlobalAlias>(Init)->getAliaseeObject()
+                          : Init);
         if (isThreadWrapperReplaceable(VD, CGM)) {
           CallVal->setCallingConv(llvm::CallingConv::CXX_FAST_TLS);
           llvm::Function *Fn =
@@ -3466,10 +3502,17 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       Builder.CreateCall(InitFnTy, Init);
     } else {
       // Don't know whether we have an init function. Call it if it exists.
-      llvm::Value *Have = Builder.CreateIsNotNull(Init);
+      // An imported one exists, and runs until the guard is set.
+      llvm::Value *Have = Import
+                              ? Builder.CreateIsNull(Builder.CreateAlignedLoad(
+                                    CGM.Int8Ty, Guard, CharUnits::One()))
+                              : Builder.CreateIsNotNull(Init);
       llvm::BasicBlock *InitBB = llvm::BasicBlock::Create(Context, "", Wrapper);
       llvm::BasicBlock *ExitBB = llvm::BasicBlock::Create(Context, "", Wrapper);
-      Builder.CreateCondBr(Have, InitBB, ExitBB);
+      Builder.CreateCondBr(
+          Have, InitBB, ExitBB,
+          Import ? llvm::MDBuilder(Context).createUnlikelyBranchWeights()
+                 : nullptr);
 
       Builder.SetInsertPoint(InitBB);
       Builder.CreateCall(InitFnTy, Init);
@@ -3480,22 +3523,104 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
 
     // For a reference, the result of the wrapper function is a pointer to
     // the referenced object.
-    llvm::Value *Val = Builder.CreateThreadLocalAddress(Var);
+    if (!Import)
+      Val = Builder.CreateThreadLocalAddress(Var);
 
     if (VD->getType()->isReferenceType()) {
       CharUnits Align = CGM.getContext().getDeclAlign(VD);
-      Val = Builder.CreateAlignedLoad(Var->getValueType(), Val, Align);
+      Val = Builder.CreateAlignedLoad(CGM.DefaultPtrTy, Val, Align);
     }
     Val = Builder.CreateAddrSpaceCast(Val, Wrapper->getReturnType());
 
     Builder.CreateRet(Val);
+  }
+
+  // On Windows Itanium and NT-POSIX another image reaches a thread-local
+  // variable through a record that the linker writes: the image's TLS index,
+  // the variable's offset and the offset of its guard, a thread-local byte
+  // that is not zero once the thread has initialized the variable. A
+  // definition states its guard for the record, and one that the image
+  // exports has the record and its initialization function exported in its
+  // place.
+  if (!CGM.hasThreadLocalRecords())
+    return;
+  llvm::Module &M = CGM.getModule();
+  for (const VarDecl *VD : CXXThreadLocals) {
+    auto *Var = dyn_cast_or_null<llvm::GlobalVariable>(
+        CGM.GetGlobalValue(CGM.getMangledName(VD)));
+    if (!Var || Var->isDeclarationForLinker() || Var->hasLocalLinkage() ||
+        Var->hasHiddenVisibility() || Var->hasMetadata("tls_record"))
+      continue;
+    bool Exported = VD->hasAttr<DLLExportAttr>() ||
+                    CGM.shouldMapDefinitionToDLLExport(VD, Var->getLinkage(),
+                                                       /*Record=*/true);
+    SmallString<256> InitFnName;
+    {
+      llvm::raw_svector_ostream Out(InitFnName);
+      getMangleContext().mangleItaniumThreadLocalInit(VD, Out);
+    }
+    llvm::GlobalValue *Init = M.getNamedValue(InitFnName);
+    // A unit that defines the variable and does not use it has no wrapper to
+    // have made the initialization function, which another unit or image
+    // calls by its name.
+    if (!Init && usesThreadWrapperFunction(VD) &&
+        (Init = CreateInitAlias(VD, Var, InitFnName))) {
+      Init->setVisibility(Var->getVisibility());
+      Init->setDSOLocal(Var->isDSOLocal());
+    }
+    llvm::GlobalVariable *Guard;
+    if (Init) {
+      // The variable's own guard, or the guard of the unit's ordered
+      // initialization.
+      Guard = CGM.getStaticLocalDeclGuardAddress(VD->getDefinition());
+      if (!Guard)
+        Guard = InitGuard;
+      Var->addAttribute("dynamic-init", "thread-local");
+    } else {
+      // Nothing initializes the variable in a thread, so its guard is a byte
+      // that is never zero, and an importer that does not know it calls a
+      // function that does nothing.
+      Guard = M.getNamedGlobal("__tls_set");
+      if (!Guard) {
+        Guard = new llvm::GlobalVariable(M, CGM.Int8Ty, /*isConstant=*/true,
+                                         llvm::GlobalValue::LinkOnceODRLinkage,
+                                         llvm::ConstantInt::get(CGM.Int8Ty, 1),
+                                         "__tls_set");
+        Guard->setThreadLocalMode(CGM.GetDefaultLLVMTLSModel());
+        Guard->setAlignment(llvm::Align(1));
+        Guard->setVisibility(llvm::GlobalValue::HiddenVisibility);
+        Guard->setDSOLocal(true);
+        Guard->setComdat(M.getOrInsertComdat(Guard->getName()));
+        CGM.addCompilerUsedGlobal(Guard);
+      }
+      if (Exported) {
+        Init = createEmptyThreadLocalInit(CGM, InitFnName, Var);
+        CGM.SetLLVMFunctionAttributesForDefinition(nullptr,
+                                                   cast<llvm::Function>(Init));
+        Init->setVisibility(Var->getVisibility());
+        Init->setDSOLocal(true);
+        cast<llvm::Function>(Init)->setComdat(Var->getComdat());
+      }
+    }
+    if (!Guard)
+      continue;
+    Var->setMetadata("tls_record",
+                     llvm::MDNode::get(M.getContext(),
+                                       llvm::ConstantAsMetadata::get(Guard)));
+    if (Exported) {
+      Init->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
+      CGM.AppendLinkFact(("-export:" + Var->getName() + "$tls,data").str());
+    }
   }
 }
 
 LValue ItaniumCXXABI::EmitThreadLocalVarDeclLValue(CodeGenFunction &CGF,
                                                    const VarDecl *VD,
                                                    QualType LValType) {
-  llvm::Value *Val = CGF.CGM.GetAddrOfGlobalVar(VD);
+  // The module declares no variable that it reaches through a record.
+  llvm::Value *Val = CGF.CGM.isThreadLocalRecordImport(VD)
+                         ? nullptr
+                         : CGF.CGM.GetAddrOfGlobalVar(VD);
   llvm::Function *Wrapper = getOrCreateThreadLocalWrapper(VD, Val);
 
   llvm::CallInst *CallVal =

@@ -308,8 +308,11 @@ bool SymbolTable::loadMinGWSymbols() {
 
     if (ctx.config.autoImport || sym->forkReferenced) {
       // If we have an undefined symbol, but we have a lazy symbol we could
-      // load, load it.
+      // load, load it. Bitcode reaches a thread-local variable X that LTO
+      // does not make the image's through __imp_X$tls.
       Symbol *l = find(("__imp_" + name).str());
+      if (!l && sym->forkReferenced)
+        l = find(("__imp_" + name + "$tls").str());
       if (!l || l->pendingArchiveLoad || !l->isLazy())
         continue;
 
@@ -454,7 +457,9 @@ void SymbolTable::reportUnresolvable() {
     }
     if (name.contains("_PchSym_"))
       continue;
-    if ((ctx.config.autoImport || sym->forkReferenced) && impSymbol(name))
+    if ((ctx.config.autoImport || sym->forkReferenced) &&
+        (impSymbol(name) ||
+         (sym->forkReferenced && impSymbol((name + "$tls").str()))))
       continue;
     undefs.insert(sym);
   }

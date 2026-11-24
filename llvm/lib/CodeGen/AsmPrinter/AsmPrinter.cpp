@@ -5421,10 +5421,10 @@ bool AsmPrinter::optimizesFusedSites() const {
          !MF->getFunction().hasOptNone();
 }
 
-bool AsmPrinter::isOnlySetter(const MachineInstr &Load, const MachineInstr &Use,
-                              bool OrItsLike, bool InItsSection) const {
+bool AsmPrinter::hasOnlySetters(
+    Register Reg, const MachineInstr &Use,
+    function_ref<bool(const MachineInstr &)> Is) const {
   const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
-  Register Reg = Load.getOperand(0).getReg();
   SmallVector<const MachineBasicBlock *, 8> Work;
   SmallPtrSet<const MachineBasicBlock *, 8> Seen;
   const MachineBasicBlock *Block = Use.getParent();
@@ -5434,10 +5434,7 @@ bool AsmPrinter::isOnlySetter(const MachineInstr &Load, const MachineInstr &Use,
     while (I != Block->rend() && !I->modifiesRegister(Reg, TRI))
       ++I;
     if (I != Block->rend()) {
-      if (&*I != &Load &&
-          !(OrItsLike && I->isIdenticalTo(Load) &&
-            (!InItsSection || I->getParent()->getSectionID() ==
-                                  Load.getParent()->getSectionID())))
+      if (!Is(*I))
         return false;
     } else if (Block->pred_empty() || Block->isEHPad()) {
       return false;
@@ -5497,12 +5494,14 @@ void AsmPrinter::findFusedSites(
                                 unsigned &)>
         GetUse,
     bool AccessNeedsRead, bool SharesSites,
+    function_ref<int(const MachineInstr &, const MachineInstr &)> GetWord,
     function_ref<bool(MachineInstr &, const FusedSiteList &)> Place) {
   // The linker may make a call or a tail call through an import pointer
   // direct, an access through one an access to what it names, and the jump
   // on a test of one unconditional or none, where the object states that the
   // load of the pointer alone reaches it, and drop the load where it states
-  // that only such sites read the load's register, in the load's section.
+  // that only such sites read the load's register. The linker decides a
+  // function's code as one, its cold part with it.
   // Every path counts: the register holds a value until an instruction
   // writes it, which an epilogue before a tail call may, and an exception may
   // leave a block at any of its calls.
@@ -5521,15 +5520,30 @@ void AsmPrinter::findFusedSites(
     // How an instruction reads what Def wrote, the load or a copy of its
     // register, where the target describes that as a site, the instruction
     // reads the register in no other operand, but a test against itself, and
-    // Def alone reaches it. An instruction identical to Def may reach it as
-    // well where the target says so: one of Def's section only, whose sites
-    // the linker binds as one, unless the site is a call, a jump or a test,
-    // which reads its register no more once the linker has bound it.
-    auto GetSiteUse = [&](const MachineInstr &Def, const MachineInstr &I) {
+    // Def alone reaches it, or a load that IsLike holds for. Without IsLike,
+    // the instructions identical to Def may reach the site as well: any site
+    // where the target binds a site by its pointer alone, as the linker binds
+    // a function's sites as one, and otherwise an access that reads its
+    // register no more once bound, where the target says so or where it
+    // loads a record's word. A 32-bit load writes all of the register that
+    // an index reads. Only a word of a record has an index, which reads it in
+    // the operand that IndexOp is set to: the first of the two that the
+    // instruction adds, or the second.
+    auto GetSiteUse = [&](const MachineInstr &Def, const MachineInstr &I,
+                          function_ref<bool(const MachineInstr &)> IsLike,
+                          unsigned *IndexOp = nullptr) {
       Register Reg = Def.getOperand(0).getReg();
       unsigned Op;
       COFF::FusedUse Use = GetUse(*Load, I, Op);
-      return Use != COFF::FusedUse::None && I.getOperand(Op).getReg() == Reg &&
+      if (Use == COFF::FusedUse::Index) {
+        if (!IndexOp)
+          return COFF::FusedUse::None;
+        *IndexOp = TRI->isSuperRegisterEq(Reg, I.getOperand(Op).getReg());
+        if (!*IndexOp)
+          Op = COFF::getFusedIndexOperand(I, Op);
+      }
+      return Use != COFF::FusedUse::None &&
+                     TRI->isSuperRegisterEq(Reg, I.getOperand(Op).getReg()) &&
                      none_of(I.operands(),
                              [&](const MachineOperand &MO) {
                                return MO.getOperandNo() != Op &&
@@ -5539,15 +5553,20 @@ void AsmPrinter::findFusedSites(
                                       MO.getReg() &&
                                       TRI->regsOverlap(MO.getReg(), Reg);
                              }) &&
-                     isOnlySetter(Def, I, SharesSites,
-                                  Use != COFF::FusedUse::Call &&
-                                      Use != COFF::FusedUse::Jump &&
-                                      Use != COFF::FusedUse::Test)
+                     hasOnlySetters(
+                         Reg, I,
+                         [&](const MachineInstr &Setter) {
+                           if (&Setter == &Def || IsLike)
+                             return &Setter == &Def || IsLike(Setter);
+                           return Setter.isIdenticalTo(Def) &&
+                                  (SharesSites ||
+                                   (Use == COFF::FusedUse::Access &&
+                                    &Def == Load &&
+                                    (!AccessNeedsRead ||
+                                     GetWord(*Load, I) >= 0)));
+                         })
                  ? Use
                  : COFF::FusedUse::None;
-    };
-    auto InSection = [&](const MachineInstr &I) {
-      return I.getParent()->getSectionID() == Load->getParent()->getSectionID();
     };
     // The instructions that read what the load wrote: each is a site, or the
     // load stays one. A copy is no reader where accesses alone read what it
@@ -5555,32 +5574,34 @@ void AsmPrinter::findFusedSites(
     // linker has dropped the load.
     bool IsRead = true;
     forEachReader(*Load, DebugValues, [&](MachineInstr &I) {
-      COFF::FusedUse Use = GetSiteUse(*Load, I);
+      COFF::FusedUse Use = GetSiteUse(*Load, I, nullptr);
       if (Use == COFF::FusedUse::Copy) {
         size_t Before = Sites.size();
         forEachReader(I, DebugValues, [&](MachineInstr &Access) {
-          if (GetSiteUse(I, Access) != COFF::FusedUse::Access ||
-              !InSection(Access))
+          if (GetSiteUse(I, Access, nullptr) != COFF::FusedUse::Access)
             Use = COFF::FusedUse::None;
           Sites.push_back({&Access, COFF::FusedUse::Access});
         });
-        if (Use == COFF::FusedUse::None || !InSection(I))
+        if (Use == COFF::FusedUse::None)
           Sites.truncate(Before);
       } else if (Use != COFF::FusedUse::None) {
         Sites.push_back({&I, Use});
       }
-      IsRead &= Use != COFF::FusedUse::None && InSection(I);
+      IsRead &= Use != COFF::FusedUse::None;
     });
     IsRead &= !Sites.empty();
     // An add is a site only of a load that its sites alone read: it adds to
     // what the linker gives the register in the load's place. So is an
     // access where the target says so, and otherwise where it is in the
-    // load's block.
+    // load's block. The load of a record's word is a site wherever it is, so
+    // that each one that reaches an index is stated.
     if (!IsRead)
       erase_if(Sites, [&](const std::pair<MachineInstr *, COFF::FusedUse> &S) {
         return S.second == COFF::FusedUse::Add ||
                (S.second == COFF::FusedUse::Access &&
-                (AccessNeedsRead || S.first->getParent() != Load->getParent()));
+                GetWord(*Load, *S.first) < 0 &&
+                (AccessNeedsRead ||
+                 S.first->getParent() != Load->getParent()));
       });
     // The linker may dispose of a fused read, so its register holds no
     // variable's value. A target may place the read, or fold it into its
@@ -5594,6 +5615,57 @@ void AsmPrinter::findFusedSites(
       FusedSites[Load] = {Load, COFF::FusedUse::None};
     for (const auto &[Site, Use] : Sites)
       FusedSites[Site] = {Load, Use};
+    // A marked access that loads a word of a thread-local variable's record
+    // is to its readers what the load of the pointer is to it: the linker
+    // that knows the record gives each index the word's value in its place,
+    // and drops a load that indexes of its function alone read. The index of
+    // the TLS index's address may then read the page of that address in the
+    // register: the one load reaches it, and where an access is a site only
+    // of a load that its sites alone read, so is such an index. The index
+    // of an offset reads its register no more or the same offset in it, so
+    // every load of the same word of the same record may reach it, wherever
+    // it is.
+    for (const std::pair<MachineInstr *, COFF::FusedUse> &Entry : Sites) {
+      MachineInstr *Site = Entry.first;
+      int Word =
+          Entry.second == COFF::FusedUse::Access ? GetWord(*Load, *Site) : -1;
+      if (Word < 0)
+        continue;
+      auto IsLike = [&](const MachineInstr &Setter) {
+        unsigned Op;
+        return Word && GetWord(*Load, Setter) == Word &&
+               Setter.getOperand(0).getReg() == Site->getOperand(0).getReg() &&
+               GetUse(*Load, Setter, Op) == COFF::FusedUse::Access &&
+               hasOnlySetters(Setter.getOperand(Op).getReg(), Setter,
+                              [&](const MachineInstr &Pointer) {
+                                return IsPointerLoad(Pointer) &&
+                                       Pointer.isIdenticalTo(
+                                           *Load, MachineInstr::IgnoreDefs);
+                              });
+      };
+      SmallVector<std::pair<MachineInstr *, unsigned>, 4> Indexes;
+      SmallVector<MachineInstr *, 4> WordValues;
+      bool IndexedRead = true;
+      forEachReader(*Site, WordValues, [&](MachineInstr &I) {
+        unsigned ViaFirst = 0;
+        COFF::FusedUse Reads = GetSiteUse(*Site, I, IsLike, &ViaFirst);
+        if (Reads == (Word ? COFF::FusedUse::Index : COFF::FusedUse::Access))
+          Indexes.push_back(
+              {&I, Word | (ViaFirst ? COFF::SiteFactViaFirst : 0)});
+        else
+          IndexedRead = false;
+      });
+      IndexedRead &= !Indexes.empty();
+      if (!IndexedRead && !Word && AccessNeedsRead)
+        continue;
+      for (const auto &[I, Index] : Indexes)
+        FusedSites[I] = {Load, COFF::FusedUse::Index, uint8_t(Index)};
+      if (IndexedRead) {
+        FusedSites[Site].IndexedRead = true;
+        for (MachineInstr *DebugValue : WordValues)
+          DebugValue->setDebugValueUndef();
+      }
+    }
   }
 #ifdef EXPENSIVE_CHECKS
   MF->verify(nullptr, "After finding fused sites", &errs());
@@ -5601,7 +5673,8 @@ void AsmPrinter::findFusedSites(
 }
 
 // A fused site has no relocation of its own, so one marks it.
-void AsmPrinter::emitFusedSite(COFF::FusedUse Use, const MCSymbol *Pointer) {
+void AsmPrinter::emitFusedSite(const FusedSite &Site, const MCSymbol *Pointer) {
+  COFF::FusedUse Use = Site.Use;
   MCSymbol *Dot = OutContext.createTempSymbol();
   OutStreamer->emitLabel(Dot);
   OutStreamer->emitRelocDirective(
@@ -5613,6 +5686,10 @@ void AsmPrinter::emitFusedSite(COFF::FusedUse Use, const MCSymbol *Pointer) {
           ->Name,
       Pointer ? MCSymbolRefExpr::create(Pointer, OutContext) : nullptr,
       SMLoc());
+  if (Use == COFF::FusedUse::Index)
+    OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndex, Site.Index);
+  else if (Site.IndexedRead)
+    OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndexedRead, 0);
 }
 
 std::tuple<const MCSymbol *, uint64_t, const MCSymbol *,

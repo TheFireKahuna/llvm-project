@@ -1514,6 +1514,7 @@ StringRef COFFObjectFile::getRelocationTypeName(uint16_t Type) const {
     LLVM_COFF_SWITCH_RELOC_TYPE_NAME(IMAGE_REL_LLVM_FUSED_CALL);
     LLVM_COFF_SWITCH_RELOC_TYPE_NAME(IMAGE_REL_LLVM_FUSED_JUMP);
     LLVM_COFF_SWITCH_RELOC_TYPE_NAME(IMAGE_REL_LLVM_FUSED_READ);
+    LLVM_COFF_SWITCH_RELOC_TYPE_NAME(IMAGE_REL_LLVM_FUSED_INDEX);
     LLVM_COFF_SWITCH_RELOC_TYPE_NAME(IMAGE_REL_LLVM_FUSED_TEST);
     LLVM_COFF_SWITCH_RELOC_TYPE_NAME(IMAGE_REL_LLVM_FUSED_JUMP_TAIL);
     LLVM_COFF_SWITCH_RELOC_TYPE_NAME(IMAGE_REL_LLVM_TPOFF_HIGH12A);
@@ -2726,6 +2727,40 @@ Error object::readCOFFLinkFacts(
   return C.takeError();
 }
 
+Error object::readCOFFSiteFacts(
+    StringRef Payload, function_ref<Error(uint64_t Section, uint64_t Relocation,
+                                          uint64_t Fact, uint64_t Value)>
+                           Fact) {
+  DataExtractor Data(Payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor C(0);
+  while (C && !Data.eof(C)) {
+    uint64_t Section = Data.getULEB128(C), Relocation = 0;
+    // A site takes two bytes or more, which bounds the count.
+    uint64_t Count = Data.getULEB128(C);
+    if (C && Count > (Payload.size() - C.tell()) / 2)
+      return createStringError(object_error::parse_failed,
+                               Twine(Count) +
+                                   " sites, which the group does not hold");
+    for (; C && Count; --Count) {
+      Relocation += Data.getULEB128(C);
+      StringRef Facts = Data.getBytes(C, Data.getULEB128(C));
+      DataExtractor Pairs(Facts, /*IsLittleEndian=*/true);
+      DataExtractor::Cursor P(0);
+      while (C && P && !Pairs.eof(P)) {
+        uint64_t Number = Pairs.getULEB128(P), Value = Pairs.getULEB128(P);
+        if (P)
+          if (Error E = Fact(Section, Relocation, Number, Value))
+            return E;
+      }
+      if (Error E = P.takeError()) {
+        consumeError(C.takeError());
+        return E;
+      }
+    }
+  }
+  return C.takeError();
+}
+
 Error object::readCOFFLinkImages(StringRef Payload,
                                  std::vector<COFFLinkImage> &Images) {
   DataExtractor Data(Payload, /*IsLittleEndian=*/true);
@@ -2787,7 +2822,7 @@ Error object::readCOFFLinkImages(StringRef Payload,
         E.CheckSum = Flags & COFF::LinkImageEntityCheckSum ? Data.getU32(C) : 0;
         if (C && (Flags > 0xFF || Log2Align > 13 ||
                   (Flags >> COFF::LinkImageEntityInitShift & 7) >
-                      COFF::LinkFactDynamicUnordered))
+                      COFF::LinkFactTLSDynamic))
           return createStringError(object_error::parse_failed,
                                    "entity " + E.Name + " of " + Image.Name +
                                        " is out of range");

@@ -292,13 +292,11 @@ const ConstantInt *llvm::getFunctionTypePrefixMarker(const Function &F) {
 // Whether GV is a name of a vague entity: a definition that each unit that
 // needs it emits and of which a process has one. So is every alias of one
 // and whatever shares its COMDAT, a guard variable among them, which move
-// with it. A thread-local variable is shared otherwise. A function with any
-// other linkage may differ from the definition that replaces it, so its
-// calls could not stay with its image.
+// with it. A function with any other linkage may differ from the definition
+// that replaces it, so its calls could not stay with its image.
 static bool isVagueEntity(const GlobalValue *GV) {
   const GlobalObject *GO = GV->getAliaseeObject();
-  if (!GO || GV->isThreadLocal() || GV->hasLocalLinkage() ||
-      isa<GlobalIFunc>(GV))
+  if (!GO || GV->hasLocalLinkage() || isa<GlobalIFunc>(GV))
     return false;
   if (GO != GV)
     return isVagueEntity(GO);
@@ -316,7 +314,7 @@ static bool isVagueEntity(const GlobalValue *GV) {
 
 void llvm::emitLinkFactsForGlobalCOFF(
     const GlobalValue *GV, const Triple &TT,
-    function_ref<void(uint64_t Tag, ArrayRef<uint64_t> Operands)> Fact) {
+    function_ref<void(uint64_t Tag, ArrayRef<LinkFactOperand> Operands)> Fact) {
   if (!TT.isWindowsItaniumOrNTPOSIXEnvironment())
     return;
 
@@ -336,6 +334,19 @@ void llvm::emitLinkFactsForGlobalCOFF(
          {F->hasMetadata("kcfi_vfn_type") ? COFF::LinkFactVfnType
                                           : COFF::LinkFactNoSecondWord});
 
+  // A thread-local variable that has a record states its guard. One that
+  // lost its guard states none, which fails a link that needs the record.
+  // Images share a vague one by its record, so the record is stated before
+  // what is stated of a vague entity.
+  if (const MDNode *Record =
+          Var && Var == GV ? Var->getMetadata("tls_record") : nullptr) {
+    if (auto *Guard =
+            mdconst::dyn_extract_or_null<GlobalValue>(Record->getOperand(0)))
+      Fact(COFF::LinkFactTlsRecord, {Guard});
+    else
+      Fact(COFF::LinkFactTlsRecord, {});
+  }
+
   // Only an observable entity is stated: data, and a function whose address
   // is significant. A hidden function states nothing, each image keeping
   // its own.
@@ -349,8 +360,9 @@ void llvm::emitLinkFactsForGlobalCOFF(
   }
   StringRef Dynamic = Var->getAttribute("dynamic-init").getValueAsString();
   Fact(COFF::LinkFactInit,
-       {Dynamic == "guarded"     ? COFF::LinkFactDynamicGuarded
-        : Dynamic == "unordered" ? COFF::LinkFactDynamicUnordered
+       {Dynamic == "guarded"        ? COFF::LinkFactDynamicGuarded
+        : Dynamic == "unordered"    ? COFF::LinkFactDynamicUnordered
+        : Dynamic == "thread-local" ? COFF::LinkFactTLSDynamic
         : Var->isConstant() && Var->hasDefinitiveInitializer()
             ? COFF::LinkFactConstantImmutable
             : COFF::LinkFactConstantMutable});

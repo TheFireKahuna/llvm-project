@@ -288,6 +288,27 @@ void MCWinCOFFStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
       {Symbol, Tag, {Operands.begin(), Operands.end()}});
 }
 
+void MCWinCOFFStreamer::emitCOFFSiteFact(uint64_t Fact, uint64_t Value) {
+  // The marker of a fused site is a label that moves with the site.
+  MCValue Site;
+  const MCSymbol *At = nullptr;
+  if (!FusedSite.Offset) {
+    MCSymbol *Here = getContext().createTempSymbol();
+    emitLabel(Here);
+    At = Here;
+  } else if (FusedSite.Offset->evaluateAsRelocatable(Site, nullptr) &&
+             !Site.getSubSym() && !Site.getConstant()) {
+    At = Site.getAddSym();
+    if (Fact == COFF::SiteFactIndex)
+      FusedSite.Index = Value;
+  }
+  if (At)
+    getWriter().SiteFacts.push_back({At, Fact, Value});
+  else
+    getContext().reportError(FusedSite.Loc,
+                             "site fact is of a marker that is at no label");
+}
+
 void MCWinCOFFStreamer::emitCOFFSwitchTable(
     const MCSymbol *Branch, const MCSymbol *Table, const MCSymbol *Base,
     uint64_t Count, uint64_t Type, const MCSymbol *Load, uint64_t Flags) {
@@ -450,8 +471,8 @@ static uint16_t getMachine(const MCContext &Context) {
 }
 
 // What a fused site is called, by how it reads its register.
-static const char *const FusedKinds[] = {"",    "",       "call", "jump",
-                                         "add", "access", "test"};
+static const char *const FusedKinds[] = {"",    "",       "call",  "jump",
+                                         "add", "access", "index", "test"};
 
 void MCWinCOFFStreamer::reportMisplacedFusedSite() {
   getContext().reportError(FusedSite.Loc,
@@ -522,7 +543,24 @@ void MCWinCOFFStreamer::emitRelocDirective(const MCExpr &Offset, StringRef Name,
     reportMisplacedFusedSite();
   auto *Pointer = dyn_cast_or_null<MCSymbolRefExpr>(Expr);
   FusedSite = {
-      &Offset, Pointer ? &Pointer->getSymbol() : nullptr, Loc, Type, Use, Expr};
+      &Offset, Pointer ? &Pointer->getSymbol() : nullptr, Loc, Type, Use, Expr,
+      -1};
+}
+
+void MCWinCOFFStreamer::selectFusedIndex(const MCInst &Inst,
+                                         COFF::FusedUse &Use,
+                                         unsigned &RegOp) const {
+  if (!FusedSite.Offset || FusedSite.Use != COFF::FusedUse::Index)
+    return;
+  int Word = FusedSite.Index & ~int(COFF::SiteFactViaFirst);
+  if (Word == 0)
+    Use = Use == COFF::FusedUse::Access ? COFF::FusedUse::Index
+                                        : COFF::FusedUse::None;
+  else if (!COFF::getTlsRecordWordSize(Word))
+    Use = COFF::FusedUse::None;
+  else if (Use == COFF::FusedUse::Index &&
+           !(FusedSite.Index & COFF::SiteFactViaFirst))
+    RegOp = COFF::getFusedIndexOperand(Inst, RegOp);
 }
 
 bool MCWinCOFFStreamer::readsFusedRegisterOnce(const MCInst &Inst,
@@ -551,6 +589,7 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
                                         bool IsRead, bool Tail) {
   const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
   MCSymbol *Marker = nullptr;
+  const MCSymbol *WordOf = nullptr;
   if (RunSection != getCurrentSection())
     RunWrites.clear();
   RunSection = getCurrentSection();
@@ -585,57 +624,76 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
       reportMisplacedFusedSite();
     else if (FusedSite.Pointer &&
              any_of(MRI.regunits(Reg), [&](MCRegUnit Unit) {
+               // A write of a register's low half writes all of it.
                auto Write = RunWrites.find(static_cast<unsigned>(Unit));
-               if (Write == RunWrites.end())
+               if (Write == RunWrites.end() || MRI.isArtificialRegUnit(Unit))
                  return false;
                const MCSymbol *Pointer = Write->second.getPointer();
-               return Write->second.getInt()
-                          ? Use != COFF::FusedUse::Access ||
-                                (Pointer && Pointer != FusedSite.Pointer)
-                          : Pointer != FusedSite.Pointer;
+               switch (Write->second.getInt()) {
+               case Loaded:
+                 return Use == COFF::FusedUse::Index ||
+                        Pointer != FusedSite.Pointer;
+               case Copied:
+                 return Use != COFF::FusedUse::Access ||
+                        (Pointer && Pointer != FusedSite.Pointer);
+               case Word:
+                 return Use != COFF::FusedUse::Index ||
+                        Pointer != FusedSite.Pointer;
+               }
+               llvm_unreachable("a register holds a pointer in three ways");
              }))
       getContext().reportError(
           FusedSite.Loc, Twine("fused ") + Kind + " reads " + MRI.getName(Reg) +
                              ", which no load of '" +
                              FusedSite.Pointer->getName() + "' last wrote");
+    if (Here && IsSite && Use == COFF::FusedUse::Access)
+      WordOf = FusedSite.Pointer;
     // The linker may resize a site of one instruction with it.
     if (Here && IsSite && Use != COFF::FusedUse::Call &&
         Use != COFF::FusedUse::Jump &&
-        COFF::relocationMayResizeCode(getMachine(getContext()), FusedSite.Type))
+        COFF::relocationMayResizeCode(
+            getMachine(getContext()), FusedSite.Type,
+            FusedSite.Pointer ? FusedSite.Pointer->getName() : ""))
       SiteInsts = 1;
     FusedSite.Offset = nullptr;
     getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
   }
   if (IsRead)
     getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
-  // A copy holds what every unit of its source does.
-  PointerIntPair<const MCSymbol *, 1, bool> Held(Load, false);
+  // A copy holds what every unit of its source does, and a marked access
+  // writes a word of what its pointer names.
+  Held Holds(Load, Loaded);
+  if (WordOf)
+    Holds = {WordOf, Word};
   if (Use == COFF::FusedUse::Copy) {
-    Held.setInt(true);
+    Holds.setInt(Copied);
     bool First = true;
     for (MCRegUnit Unit : MRI.regunits(Inst.getOperand(RegOp).getReg())) {
       auto Write = RunWrites.find(static_cast<unsigned>(Unit));
       const MCSymbol *Pointer =
-          Write == RunWrites.end() ? nullptr : Write->second.getPointer();
+          Write == RunWrites.end() || Write->second.getInt() == Word
+              ? nullptr
+              : Write->second.getPointer();
       if ((Write != RunWrites.end() && !Pointer) ||
-          (!First && Pointer != Held.getPointer()))
-        Held = {nullptr, false};
+          (!First && Pointer != Holds.getPointer()))
+        Holds = {nullptr, Loaded};
       else if (First)
-        Held.setPointer(Pointer);
+        Holds.setPointer(Pointer);
       First = false;
     }
   }
-  auto Write = [&](MCRegister Reg,
-                   PointerIntPair<const MCSymbol *, 1, bool> Held) {
-    for (MCRegUnit Unit : MRI.regunits(Reg))
-      RunWrites[static_cast<unsigned>(Unit)] = Held;
+  // A write of a constant register, a compare's on ARM64, holds nothing.
+  auto Write = [&](MCRegister Reg, Held Holds) {
+    if (!MRI.isConstant(Reg))
+      for (MCRegUnit Unit : MRI.regunits(Reg))
+        RunWrites[static_cast<unsigned>(Unit)] = Holds;
   };
   if (Desc.isCall() || Desc.isBarrier() || Desc.isTrap())
     RunWrites.clear();
   else {
     for (unsigned I = 0, E = Desc.getNumDefs(); I != E; ++I)
       if (Inst.getOperand(I).isReg() && Inst.getOperand(I).getReg())
-        Write(Inst.getOperand(I).getReg(), Held);
+        Write(Inst.getOperand(I).getReg(), Holds);
     for (MCPhysReg Reg : Desc.implicit_defs())
       Write(Reg, {});
   }

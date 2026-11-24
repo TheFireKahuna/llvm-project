@@ -3493,9 +3493,14 @@ static LValue EmitGlobalVarDeclLValue(CodeGenFunction &CGF,
       return LV.value();
   }
 
-  llvm::Value *V = CGF.CGM.GetAddrOfGlobalVar(VD);
+  // Another image's thread-local variable is reached through its record,
+  // and the module declares no variable.
+  bool Record = CGF.CGM.isThreadLocalRecordImport(VD);
+  llvm::Value *V = Record
+                       ? CGF.CGM.EmitThreadLocalRecordAddress(CGF.Builder, VD)
+                       : CGF.CGM.GetAddrOfGlobalVar(VD);
 
-  if (VD->getTLSKind() != VarDecl::TLS_None)
+  if (VD->getTLSKind() != VarDecl::TLS_None && !Record)
     V = CGF.Builder.CreateThreadLocalAddress(V);
 
   llvm::Type *RealVarTy = CGF.getTypes().ConvertTypeForMem(VD->getType());

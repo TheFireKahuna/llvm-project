@@ -162,6 +162,41 @@ COFF::FusedUse getFusedUse(const InstT &I, unsigned &RegOp) {
     return I.getOperand(2).isImm() && !I.getOperand(3).getImm()
                ? COFF::FusedUse::Add
                : COFF::FusedUse::None;
+  // The sum of two registers, and a load or a store at it, neither shifted.
+  case AArch64::ADDXrr:
+    RegOp = 1;
+    return COFF::FusedUse::Index;
+  case AArch64::ADDXrs:
+    RegOp = 1;
+    return !I.getOperand(3).getImm() ? COFF::FusedUse::Index
+                                     : COFF::FusedUse::None;
+  case AArch64::LDRBBroX:
+  case AArch64::LDRHHroX:
+  case AArch64::LDRWroX:
+  case AArch64::LDRXroX:
+  case AArch64::LDRSBWroX:
+  case AArch64::LDRSBXroX:
+  case AArch64::LDRSHWroX:
+  case AArch64::LDRSHXroX:
+  case AArch64::LDRSWroX:
+  case AArch64::LDRBroX:
+  case AArch64::LDRHroX:
+  case AArch64::LDRSroX:
+  case AArch64::LDRDroX:
+  case AArch64::LDRQroX:
+  case AArch64::STRBBroX:
+  case AArch64::STRHHroX:
+  case AArch64::STRWroX:
+  case AArch64::STRXroX:
+  case AArch64::STRBroX:
+  case AArch64::STRHroX:
+  case AArch64::STRSroX:
+  case AArch64::STRDroX:
+  case AArch64::STRQroX:
+    RegOp = 1;
+    return !I.getOperand(3).getImm() && !I.getOperand(4).getImm()
+               ? COFF::FusedUse::Index
+               : COFF::FusedUse::None;
   case AArch64::CBZX:
   case AArch64::CBNZX:
     return COFF::FusedUse::Test;

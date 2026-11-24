@@ -1260,6 +1260,8 @@ void MCStreamer::emitCOFFSafeSEH(MCSymbol const *Symbol) {}
 void MCStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
                                   ArrayRef<const MCExpr *> Operands) {}
 
+void MCStreamer::emitCOFFSiteFact(uint64_t Fact, uint64_t Value) {}
+
 void MCStreamer::emitCOFFSwitchTable(const MCSymbol *Branch,
                                      const MCSymbol *Table,
                                      const MCSymbol *Base, uint64_t Count,

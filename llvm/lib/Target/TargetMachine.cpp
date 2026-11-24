@@ -289,11 +289,11 @@ bool TargetMachine::shouldAssumeDSOLocal(const GlobalValue *GV) const {
 
     // On Windows Itanium and NT-POSIX a DLL may define what the module only
     // declares, or a variable that another definition may replace, under
-    // each of its names, as a shared object may on ELF. A thread-local
-    // variable is never imported, and a declaration marked dllexport is of
-    // what this image defines.
+    // each of its names, as a shared object may on ELF. Code reaches a
+    // thread-local one through the record of it that its image has. A
+    // declaration marked dllexport is of what this image defines.
     const GlobalObject *GO = GV->getAliaseeObject();
-    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() && !GV->isThreadLocal() &&
+    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
         ((GV->isDeclarationForLinker() && !GV->hasDLLExportStorageClass()) ||
          (GO && isa<GlobalVariable>(GO) && GO->isWeakForLinker())))
       return false;

@@ -265,10 +265,15 @@ protected:
 
   /// A fused site: the load of the pointer that it goes through, and how it
   /// reads the load's register. A fused read is its own load and reads
-  /// nothing.
+  /// nothing. A fused index goes through the pointer of a thread-local
+  /// variable's record and reads a word of the record, which Index states as
+  /// COFF::SiteFactIndex does; IndexedRead says of an access that loads such
+  /// a word that fused indexes alone read it.
   struct FusedSite {
     const MachineInstr *Load = nullptr;
     COFF::FusedUse Use{};
+    uint8_t Index = 0;
+    bool IndexedRead = false;
   };
   /// The current function's fused reads and sites.
   DenseMap<const MachineInstr *, FusedSite> FusedSites;
@@ -930,11 +935,10 @@ public:
   /// that is optimized, so that its instructions may change for them.
   bool optimizesFusedSites() const;
 
-  /// Whether \p Load, which writes the register of its first operand, is that
-  /// register's last writer on every path to \p Use, or with \p OrItsLike an
-  /// instruction identical to it is, with \p InItsSection one of its section.
-  bool isOnlySetter(const MachineInstr &Load, const MachineInstr &Use,
-                    bool OrItsLike = false, bool InItsSection = false) const;
+  /// Whether \p Is holds for the last writer of \p Reg on every path to
+  /// \p Use.
+  bool hasOnlySetters(Register Reg, const MachineInstr &Use,
+                      function_ref<bool(const MachineInstr &)> Is) const;
 
   /// Gives \p Reader each instruction that reads what \p Def wrote to the
   /// register of its first operand, on every path from it, and collects the
@@ -951,7 +955,12 @@ public:
   /// with the operand that reads it. \p AccessNeedsRead says that an access
   /// is a site only of a load that its sites alone read, and \p SharesSites
   /// that several loads of one pointer into one register may reach a site,
-  /// which the linker then binds by the pointer alone. \p Place is given
+  /// which the linker then binds by the pointer alone. \p GetWord returns the
+  /// offset of the word of a thread-local variable's record that an
+  /// instruction loads whole, where the first is a load of the record's
+  /// pointer and the second a load through a register, and otherwise a
+  /// negative number: the instructions that read such a word as \p GetUse
+  /// says a fused index does are sites as well. \p Place is given
   /// each such load, with its sites, and returns whether it removed the load
   /// and its sites; it may otherwise move the load in its block. A variable
   /// said to be in such a load's register is set undefined.
@@ -963,13 +972,15 @@ public:
                                   const MachineInstr &MI, unsigned &RegOp)>
           GetUse,
       bool AccessNeedsRead, bool SharesSites,
+      function_ref<int(const MachineInstr &Load, const MachineInstr &MI)>
+          GetWord,
       function_ref<bool(MachineInstr &, const FusedSiteList &)> Place =
           nullptr);
 
-  /// Emits the relocation that marks the instruction that follows, a fused
-  /// site that reads its register as \p Use says, and names \p Pointer where
-  /// its type names one.
-  void emitFusedSite(COFF::FusedUse Use, const MCSymbol *Pointer);
+  /// Emits the relocation that marks the instruction that follows, the fused
+  /// site \p Site, and names \p Pointer where its type names one, then the
+  /// facts of the site.
+  void emitFusedSite(const FusedSite &Site, const MCSymbol *Pointer);
 
   //===------------------------------------------------------------------===//
   // CodeView Helper Routines

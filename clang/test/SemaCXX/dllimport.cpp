@@ -7,7 +7,7 @@
 // RUN: %clang_cc1 -triple x86_64-pc-cygwin       -fsyntax-only -fms-extensions -verify=expected,non-ms,gnu,win-gnu,non-ms-11     -std=c++11 -Wunsupported-dll-base-class-template %s
 // RUN: %clang_cc1 -triple x86_64-pc-cygwin       -fsyntax-only -fms-extensions -verify=expected,non-ms,gnu,win-gnu,non-ms-17     -std=c++17 -Wunsupported-dll-base-class-template %s
 // RUN: %clang_cc1 -triple i686-windows-itanium   -fsyntax-only -fms-extensions -verify=expected,non-ms,non-gnu,win-gnu,non-ms-11 -std=c++11 -Wunsupported-dll-base-class-template %s
-// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify=expected,non-ms,non-gnu,win-gnu,non-ms-17 -std=c++17 -Wunsupported-dll-base-class-template %s
+// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify=expected,non-ms,non-gnu,win-gnu,non-ms-17 -std=c++17 -Wunsupported-dll-base-class-template -DTLS_RECORDS %s
 // RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fdeclspec      -verify=expected,non-ms,non-gnu,ms-ps,non-ms-11   -std=c++11 -Wunsupported-dll-base-class-template %s
 // RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fdeclspec      -verify=expected,non-ms,non-gnu,ms-ps,non-ms-17   -std=c++17 -Wunsupported-dll-base-class-template %s
 // RUN: %clang_cc1 -triple x86_64-sie-ps5         -fsyntax-only -fdeclspec      -verify=expected,non-ms,non-gnu,ms-ps,non-ms-17   -std=c++17 -Wunsupported-dll-base-class-template %s
@@ -114,8 +114,13 @@ namespace ns { __declspec(dllimport) int ExternalGlobal; }
 __declspec(dllimport) auto InternalAutoTypeGlobal = Internal(); // expected-error{{'InternalAutoTypeGlobal' must have external linkage when declared 'dllimport'}} \
                                                                    expected-error{{definition of dllimport data}}
 
-// Thread local variables are invalid.
+// Thread local variables are invalid, except where an image exports a record
+// of the variable.
+#ifndef TLS_RECORDS
 __declspec(dllimport) __thread int ThreadLocalGlobal; // expected-error{{'ThreadLocalGlobal' cannot be thread local when declared 'dllimport'}}
+#else
+__declspec(dllimport) extern __thread int ThreadLocalGlobal;
+#endif
 // This doesn't work on MinGW, because there, dllimport on the inline function is ignored.
 inline void __declspec(dllimport) ImportedInlineWithThreadLocal() { // gnu-warning{{'dllimport' attribute ignored on inline function}}
   static __thread int OK; // no-error

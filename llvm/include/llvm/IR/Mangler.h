@@ -74,12 +74,20 @@ LLVM_ABI void emitLinkerFlagsForGlobalCOFF(raw_ostream &OS,
 /// with !kcfi_type, which x86 emits type data for only under the kcfi flag.
 LLVM_ABI const ConstantInt *getFunctionTypePrefixMarker(const Function &F);
 
+/// An operand of a link fact: a symbol or a number.
+struct LinkFactOperand {
+  const GlobalValue *Symbol = nullptr;
+  uint64_t Number = 0;
+  LinkFactOperand(uint64_t Number) : Number(Number) {}
+  LinkFactOperand(const GlobalValue *Symbol) : Symbol(Symbol) {}
+};
+
 /// Calls \p Fact with the tag, a COFF::LinkFactTag, and the operands of each
 /// fact about \p GV that an object for \p TT states in its link records and
 /// bitcode in its symbol table.
 LLVM_ABI void emitLinkFactsForGlobalCOFF(
     const GlobalValue *GV, const Triple &TT,
-    function_ref<void(uint64_t Tag, ArrayRef<uint64_t> Operands)> Fact);
+    function_ref<void(uint64_t Tag, ArrayRef<LinkFactOperand> Operands)> Fact);
 
 LLVM_ABI void emitLinkerFlagsForUsedCOFF(raw_ostream &OS, const GlobalValue *GV,
                                          const Triple &T, Mangler &M);

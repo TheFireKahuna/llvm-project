@@ -47,6 +47,8 @@ public:
       FusedForms[size_t(COFF::FusedUse::Jump)] = "br";
       FusedForms[size_t(COFF::FusedUse::Access)] =
           "load or store with an offset that is a number";
+      FusedForms[size_t(COFF::FusedUse::Index)] =
+          "use of the word of a record that its fact states";
       FusedForms[size_t(COFF::FusedUse::Test)] =
           "cbz or cbnz of a 64-bit register";
       FusedForms[size_t(COFF::FusedUse::Add)] =
@@ -96,6 +98,7 @@ void AArch64WinCOFFStreamer::emitInstruction(const MCInst &Inst,
     // A br that no unwind frame covers may be deleted, as a b there may.
     unsigned RegOp;
     COFF::FusedUse Use = AArch64_MC::getFusedUse(Inst, RegOp);
+    selectFusedIndex(Inst, Use, RegOp);
     Tail = FusedSite.Offset && FusedSite.Use == COFF::FusedUse::Jump &&
            Use == FusedSite.Use && !getCurrentWinFrameInfo();
     checkFused(Inst, Use, RegOp, Load, Read, Tail);

@@ -350,7 +350,21 @@ public:
             return COFF::FusedUse::None;
           return Use;
         },
-        /*AccessNeedsRead=*/true, /*SharesSites=*/true);
+        /*AccessNeedsRead=*/true, /*SharesSites=*/true,
+        // The word of a thread-local variable's record that MI loads.
+        [](const MachineInstr &Load, const MachineInstr &MI) -> int {
+          const MachineOperand &Pointer = Load.getOperand(2);
+          unsigned Size = MI.getOpcode() == AArch64::LDRXui ? 8 : 4;
+          if (!COFF::isTlsRecordName(Pointer.isSymbol()
+                                         ? Pointer.getSymbolName()
+                                         : Pointer.getGlobal()->getName()) ||
+              (Size == 4 && MI.getOpcode() != AArch64::LDRWui) ||
+              !MI.getOperand(2).isImm() ||
+              COFF::getTlsRecordWordSize(MI.getOperand(2).getImm() * Size) !=
+                  Size)
+            return -1;
+          return MI.getOperand(2).getImm() * Size;
+        });
 
     // The linker proves that an adrp and the instruction with the low part
     // of its address pair where they are adjacent on one register, and may
@@ -4481,9 +4495,9 @@ void AArch64AsmPrinter::emitFusedSite(const MachineInstr *MI) {
     return;
   const MachineOperand &Pointer = Site.Load->getOperand(2);
   AsmPrinter::emitFusedSite(
-      Site.Use, Pointer.isGlobal()
-                    ? MCInstLowering.GetGlobalAddressSymbol(Pointer)
-                    : MCInstLowering.GetExternalSymbolSymbol(Pointer));
+      Site, Pointer.isGlobal()
+                ? MCInstLowering.GetGlobalAddressSymbol(Pointer)
+                : MCInstLowering.GetExternalSymbolSymbol(Pointer));
 }
 
 void AArch64AsmPrinter::recordIfImportCall(

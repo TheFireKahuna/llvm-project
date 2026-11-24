@@ -1640,6 +1640,65 @@ uint64_t WinCOFFWriter::writeObject() {
     }
     if (!Payload.empty())
       Group(COFF::LinkRecordSpans, Payload);
+    // The SiteFacts group states each fact of the relocation that it is
+    // of, by the relocation's index in its section's table, which is in the
+    // order of the offsets where a site has facts.
+    if (!OWriter.SiteFacts.empty()) {
+      struct Entry {
+        COFFSection *Section;
+        uint32_t Relocation;
+        uint64_t Fact, Value;
+      };
+      SmallVector<Entry, 0> Entries;
+      for (const WinCOFFObjectWriter::SiteFact &Fact : OWriter.SiteFacts) {
+        COFFSection *Section = SectionMap.lookup(&Fact.At->getSection());
+        uint64_t Offset = Asm->getSymbolOffset(*Fact.At);
+        relocations Empty;
+        relocations &Relocations = Section ? Section->Relocations : Empty;
+        auto Site = partition_point(Relocations, [&](const COFFRelocation &R) {
+          return R.Data.VirtualAddress < Offset;
+        });
+        if (Site == Relocations.end())
+          getContext().reportError(SMLoc(), "site fact " + Twine(Fact.Fact) +
+                                                " is of no relocation");
+        else
+          Entries.push_back({Section, uint32_t(Site - Relocations.begin()),
+                             Fact.Fact, Fact.Value});
+      }
+      stable_sort(Entries, [](const Entry &A, const Entry &B) {
+        return std::pair(A.Section->Number, A.Relocation) <
+               std::pair(B.Section->Number, B.Relocation);
+      });
+      // Each section's part: the index of its symbol, a count, and for each
+      // relocation with facts its index less that of the one before it, the
+      // size of its facts and each fact with its value.
+      SmallString<0> Payload;
+      raw_svector_ostream PayloadOS(Payload);
+      for (auto I = Entries.begin(), E = Entries.end(); I != E;) {
+        COFFSection *Section = I->Section;
+        SmallString<64> Sites;
+        raw_svector_ostream SitesOS(Sites);
+        uint64_t Count = 0;
+        for (uint32_t Last = 0; I != E && I->Section == Section; ++Count) {
+          SmallString<16> Bytes;
+          raw_svector_ostream BytesOS(Bytes);
+          uint32_t Relocation = I->Relocation;
+          for (; I != E && I->Section == Section && I->Relocation == Relocation;
+               ++I) {
+            encodeULEB128(I->Fact, BytesOS);
+            encodeULEB128(I->Value, BytesOS);
+          }
+          encodeULEB128(Relocation - Last, SitesOS);
+          encodeULEB128(Bytes.size(), SitesOS);
+          SitesOS << Bytes;
+          Last = Relocation;
+        }
+        encodeULEB128(Section->Symbol->getIndex(), PayloadOS);
+        encodeULEB128(Count, PayloadOS);
+        PayloadOS << Sites;
+      }
+      Group(COFF::LinkRecordSiteFacts, Payload);
+    }
     auto *Sec = getContext().getCOFFSection(".llvm_link_records",
                                             COFF::IMAGE_SCN_LNK_INFO);
     Sec->curFragList()->Tail->setVarContents(OS.str());
@@ -1720,6 +1779,7 @@ int WinCOFFWriter::getSectionNumber(const MCSection &Section) const {
 void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
   LinkFacts.clear();
+  SiteFacts.clear();
   FixedSizeSections.clear();
   SwitchTables.clear();
   Spans.clear();

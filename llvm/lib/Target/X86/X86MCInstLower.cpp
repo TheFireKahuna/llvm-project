@@ -2814,8 +2814,7 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
           MCSymbolRefExpr::create(Pointer, X86::S_COFF_FUSED, OutContext));
     } else {
       SMShadowTracker.emitShadowPadding(*OutStreamer, getSubtargetInfo());
-      emitFusedSite(Site.Use,
-                    Site.Use == COFF::FusedUse::Add ? nullptr : Pointer);
+      emitFusedSite(Site, Site.Use == COFF::FusedUse::Add ? nullptr : Pointer);
     }
   }
 

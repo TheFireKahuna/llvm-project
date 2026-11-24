@@ -19,6 +19,7 @@
 #include "X86MachineFunctionInfo.h"
 #include "X86Subtarget.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
@@ -1194,7 +1195,7 @@ static bool isCheaperHeldAcrossCalls(Register Reg, bool IsLoad, bool IsVariable,
     if (unsigned Op;
         IsLoad && IsVariable && Use.mayLoadOrStore() &&
         X86::getFusedUse(Use, Use.getDesc(), Op) == COFF::FusedUse::Access &&
-        Use.getOperand(Op).isReg() && Use.getOperand(Op).getReg() == Reg &&
+        Use.getOperand(Op).getReg() == Reg &&
         none_of(Use.operands(), [&](const MachineOperand &MO) {
           return MO.getOperandNo() != Op && MO.isReg() && MO.getReg() == Reg;
         }))
@@ -1300,17 +1301,42 @@ bool X86RegisterInfo::getRegAllocationHints(
         Def = nullptr;
       IsReloaded = true;
     }
+    // An offset that is loaded from a thread-local variable's record is the
+    // operand of each access that adds it where the linker finds the
+    // variable in the image, provided that no register carries it from one
+    // load to several accesses: it is loaded again through the record's
+    // pointer.
+    bool IsOffset = false;
+    if (Def && Def->getOpcode() == X86::MOV32rm &&
+        Def->getOperand(1 + X86::AddrBaseReg).isReg() &&
+        Def->getOperand(1 + X86::AddrBaseReg).getReg().isVirtual() &&
+        !Def->getOperand(1 + X86::AddrIndexReg).getReg() &&
+        Def->getOperand(1 + X86::AddrDisp).isImm()) {
+      Register Base = Def->getOperand(1 + X86::AddrBaseReg).getReg();
+      Seen.clear();
+      Def = nullptr;
+      if (!FindDef(FindDef, Base))
+        Def = nullptr;
+      IsOffset = true;
+    }
     if (Def && Def->getOpcode() == X86::MOV64rm) {
       const MachineOperand &Disp = Def->getOperand(1 + X86::AddrDisp);
       // A call through a thunk cannot take the load of its target as its
       // operand, so such calls share one.
-      if (Disp.isGlobal() &&
-          isRelaxableImportReference(Disp.getGlobal(),
-                                     Disp.getTargetFlags()) &&
-          !(isa<Function>(Disp.getGlobal()) && ST.useIndirectThunkCalls()) &&
-          !isCheaperHeldAcrossCalls(VirtReg, !IsReloaded,
-                                    !isa<Function>(Disp.getGlobal()), *MRI,
-                                    MF)) {
+      if (IsOffset
+              ? COFF::isTlsRecordName(Disp.isSymbol()
+                                          ? Disp.getSymbolName()
+                                          : Disp.isGlobal()
+                                                ? Disp.getGlobal()->getName()
+                                                : "")
+              : Disp.isGlobal() &&
+                    isRelaxableImportReference(Disp.getGlobal(),
+                                               Disp.getTargetFlags()) &&
+                    !(isa<Function>(Disp.getGlobal()) &&
+                      ST.useIndirectThunkCalls()) &&
+                    !isCheaperHeldAcrossCalls(VirtReg, !IsReloaded,
+                                              !isa<Function>(Disp.getGlobal()),
+                                              *MRI, MF)) {
         auto IsCalleeSaved = [&](MCPhysReg Reg) {
           return isCalleeSavedPhysReg(Reg, MF);
         };

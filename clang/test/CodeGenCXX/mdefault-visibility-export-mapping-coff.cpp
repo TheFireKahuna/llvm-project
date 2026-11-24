@@ -1,11 +1,11 @@
 // DEFINE: %{cc} = %clang_cc1 -std=c++17 -emit-llvm -o - %s
 // DEFINE: %{explicit} = -mdefault-visibility-export-mapping=explicit
 // DEFINE: %{all} = -mdefault-visibility-export-mapping=all
-// RUN: %{cc} -triple x86_64-unknown-windows-itanium %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " -DA= "-DI=dllimport " -DL=
-// RUN: %{cc} -triple aarch64-pc-windows-ntposix %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " -DA= "-DI=dllimport " -DL=
-// RUN: %{cc} -triple x86_64-w64-mingw32 %{explicit} | FileCheck %s "-DE=dllexport " -DA= "-DI=dllimport " "-DL=dso_local "
-// RUN: %{cc} -triple x86_64-unknown-windows-itanium %{all} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " "-DA=dllexport " "-DI=dllimport " -DL=
-// RUN: %{cc} -triple x86_64-unknown-windows-itanium | FileCheck %s --check-prefixes=CHECK,ITANIUM -DE= -DA= -DI= -DL=
+// RUN: %{cc} -triple x86_64-unknown-windows-itanium %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM,RECORD "-DE=dllexport " -DA= "-DI=dllimport " -DL=
+// RUN: %{cc} -triple aarch64-pc-windows-ntposix %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM,RECORD "-DE=dllexport " -DA= "-DI=dllimport " -DL=
+// RUN: %{cc} -triple x86_64-w64-mingw32 %{explicit} | FileCheck %s --check-prefixes=CHECK,TLS "-DE=dllexport " -DA= "-DI=dllimport " "-DL=dso_local "
+// RUN: %{cc} -triple x86_64-unknown-windows-itanium %{all} | FileCheck %s --check-prefixes=CHECK,ITANIUM,RECORD "-DE=dllexport " "-DA=dllexport " "-DI=dllimport " -DL=
+// RUN: %{cc} -triple x86_64-unknown-windows-itanium | FileCheck %s --check-prefixes=CHECK,ITANIUM,TLS -DE= -DA= -DI= -DL=
 
 /// On COFF the mapping exports a definition whose default or protected
 /// visibility the source marks (under "all", implied too) unless every user
@@ -14,9 +14,6 @@
 /// declaration, its template, or a class or namespace around it; a template
 /// argument or a variable's type only restricts, as under -fvisibility=hidden.
 /// A thread-local variable is reached through its record.
-/// and delete are such declarations. A protected, extern_weak, dllexport or
-/// thread-local declaration and a vtable are not imports, and the address of
-/// an import stays a constant initializer.
 
 #define DEFAULT __attribute__((visibility("default")))
 #define PROTECTED __attribute__((visibility("protected")))
@@ -210,7 +207,8 @@ int varDefinedLater = 1;
 // CHECK-DAG: @importedVar = external {{(dso_local )?}}[[I]]global
 // CHECK-DAG: @address = dso_local [[A]]global ptr @importedVar
 // CHECK-DAG: @plainDeclVar = external {{(dso_local )?}}global
-// CHECK-DAG: @importedTls = external {{(dso_local )?}}thread_local global
+// TLS-DAG: @importedTls = external {{(dso_local )?}}thread_local global
+// RECORD-DAG: @"importedTls$tls" = external dllimport constant { ptr, i32, i32 }
 // CHECK-DAG: @varDefinedLater = dso_local [[E]]global
 // CHECK-DAG: @_ZN8Imported6memberE = external {{(dso_local )?}}[[I]]global
 // CHECK-DAG: @_ZTV8Imported = external {{(dso_local )?}}constant

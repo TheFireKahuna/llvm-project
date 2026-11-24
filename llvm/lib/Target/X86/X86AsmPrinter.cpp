@@ -200,6 +200,53 @@ void X86AsmPrinter::fuseImportCalls() {
         MI->eraseFromParent();
       }
 
+  // The word of a thread-local variable's record that MI loads, through the
+  // record's address that Load loaded.
+  auto GetWord = [&](const MachineInstr &Load, const MachineInstr &MI) -> int {
+    const MachineOperand &Pointer = Load.getOperand(1 + X86::AddrDisp);
+    unsigned Size = MI.getOpcode() == X86::MOV64rm ? 8 : 4;
+    if (!COFF::isTlsRecordName(Pointer.isSymbol()
+                                   ? Pointer.getSymbolName()
+                                   : Pointer.getGlobal()->getName()) ||
+        (Size == 4 && MI.getOpcode() != X86::MOV32rm))
+      return -1;
+    const MachineOperand &Disp = MI.getOperand(1 + X86::AddrDisp);
+    if (MI.getOperand(1 + X86::AddrIndexReg).getReg() || !Disp.isImm() ||
+        COFF::getTlsRecordWordSize(Disp.getImm()) != Size)
+      return -1;
+    return Disp.getImm();
+  };
+
+  // The linker gives an index the offset in the place of the register that
+  // held it, for which the add of two registers has no form that leaves the
+  // flags as they were. Where they are dead, the add of an offset that was
+  // loaded from a record is an lea, which has one.
+  if (Edits)
+    for (MachineBasicBlock &MBB : *MF)
+      for (MachineInstr &Word : MBB) {
+        if (Word.getOpcode() != X86::MOV32rm)
+          continue;
+        Register Base = Word.getOperand(1 + X86::AddrBaseReg).getReg();
+        const MachineInstr *Pointer = nullptr;
+        if (!Base ||
+            !hasOnlySetters(Base, Word,
+                            [&](const MachineInstr &I) {
+                              Pointer = &I;
+                              return IsPointerLoad(I);
+                            }) ||
+            !Pointer || GetWord(*Pointer, Word) <= 0)
+          continue;
+        SmallVector<MachineInstr *, 2> DebugValues, Adds;
+        forEachReader(Word, DebugValues, [&](MachineInstr &I) {
+          if (I.getOpcode() == X86::ADD64rr &&
+              I.getOperand(2).getReg() != X86::RSP)
+            Adds.push_back(&I);
+        });
+        for (MachineInstr *Add : Adds)
+          if (TII->convertToThreeAddress(*Add, nullptr))
+            Add->eraseFromParent();
+      }
+
   findFusedSites(
       IsPointerLoad,
       [&](const MachineInstr &Load, const MachineInstr &MI, unsigned &Op) {
@@ -232,12 +279,12 @@ void X86AsmPrinter::fuseImportCalls() {
             return COFF::FusedUse::None;
         }
         if (unsigned InstOp;
-            Use == COFF::FusedUse::Access &&
+            (Use == COFF::FusedUse::Access || Use == COFF::FusedUse::Index) &&
             (getLoweredFusedUse(MI, InstOp) != Use || InstOp != Op))
           return COFF::FusedUse::None;
         return Use;
       },
-      /*AccessNeedsRead=*/false, /*SharesSites=*/false,
+      /*AccessNeedsRead=*/false, /*SharesSites=*/false, GetWord,
       [&](MachineInstr &Read, const AsmPrinter::FusedSiteList &Sites) {
         // The load of a fused add stays, and takes the sum where the linker
         // binds its pointer.

@@ -1028,9 +1028,26 @@ public:
   bool shouldMapVisibilityToDLLExport(const NamedDecl *D) const {
     return Context.shouldMapVisibilityToDLLExport(D);
   }
-  /// Whether the mapping exports the definition of \p D that has \p Linkage.
-  bool shouldMapDefinitionToDLLExport(
-      const NamedDecl *D, llvm::GlobalValue::LinkageTypes Linkage) const;
+  /// Whether the mapping exports the definition of \p D that has \p Linkage,
+  /// or with \p Record the record of a thread-local variable.
+  bool shouldMapDefinitionToDLLExport(const NamedDecl *D,
+                                      llvm::GlobalValue::LinkageTypes Linkage,
+                                      bool Record = false) const;
+  /// Whether another image reaches a thread-local variable of this one
+  /// through a record of the variable that the linker writes.
+  bool hasThreadLocalRecords() const {
+    return getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+           getTriple().isArch64Bit() && !getTriple().isWindowsArm64EC();
+  }
+  /// Whether \p VD is a thread-local variable that another image defines,
+  /// which this one reaches through the record that image exports.
+  bool isThreadLocalRecordImport(const VarDecl *VD) const;
+  /// Emits the address of \p VD in the current thread from its record, and
+  /// with \p Guard the address of its guard, the byte that is not zero once
+  /// the thread has initialized \p VD.
+  llvm::Value *EmitThreadLocalRecordAddress(CGBuilderTy &Builder,
+                                            const VarDecl *VD,
+                                            llvm::Value **Guard = nullptr);
   /// On Windows Itanium and NT-POSIX, name the address \p Offset bytes into
   /// \p GV "<GV><Kind><Offset>" where another image can reach \p GV.
   void emitInteriorName(llvm::GlobalVariable *GV, StringRef Kind,

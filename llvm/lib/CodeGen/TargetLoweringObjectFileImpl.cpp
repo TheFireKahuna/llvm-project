@@ -2044,10 +2044,14 @@ void TargetLoweringObjectFileCOFF::emitLinkerDirectives(MCStreamer &Streamer,
     Flags.clear();
     emitLinkFactsForGlobalCOFF(
         &GV, getContext().getTargetTriple(),
-        [&](uint64_t Tag, ArrayRef<uint64_t> Operands) {
+        [&](uint64_t Tag, ArrayRef<LinkFactOperand> Operands) {
           SmallVector<const MCExpr *, 2> Exprs;
-          for (uint64_t Operand : Operands)
-            Exprs.push_back(MCConstantExpr::create(Operand, getContext()));
+          for (const LinkFactOperand &Operand : Operands)
+            Exprs.push_back(
+                Operand.Symbol
+                    ? cast<MCExpr>(MCSymbolRefExpr::create(
+                          TM->getSymbol(Operand.Symbol), getContext()))
+                    : MCConstantExpr::create(Operand.Number, getContext()));
           Streamer.emitCOFFLinkFact(TM->getSymbol(&GV), Tag, Exprs);
         });
   }

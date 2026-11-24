@@ -318,6 +318,7 @@ public:
   void emitCOFFSafeSEH(MCSymbol const *Symbol) override;
   void emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
                         ArrayRef<const MCExpr *> Operands) override;
+  void emitCOFFSiteFact(uint64_t Fact, uint64_t Value) override;
   void emitCOFFSwitchTable(const MCSymbol *Branch, const MCSymbol *Table,
                            const MCSymbol *Base, uint64_t Count, uint64_t Type,
                            const MCSymbol *Load, uint64_t Flags) override;
@@ -1005,6 +1006,11 @@ void MCAsmStreamer::emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
     OS << ", ";
     MAI->printExpr(OS, *Operand);
   }
+  EmitEOL();
+}
+
+void MCAsmStreamer::emitCOFFSiteFact(uint64_t Fact, uint64_t Value) {
+  OS << "\t.site_fact\t" << Fact << ", " << Value;
   EmitEOL();
 }
 

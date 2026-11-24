@@ -4,7 +4,7 @@
 // RUN: %clang_cc1 -triple x86_64-mingw32         -fsyntax-only -fms-extensions -verify -std=c99 -DGNU %s
 // RUN: %clang_cc1 -triple aarch64-win32          -fsyntax-only -fms-extensions -verify -std=c99 -DMS %s
 // RUN: %clang_cc1 -triple i686-windows-itanium   -fsyntax-only -fms-extensions -verify -std=c99 -DWI %s
-// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify -std=c11 -DWI -DCONSTANT_ADDRESS %s
+// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify -std=c11 -DWI -DCONSTANT_ADDRESS -DTLS_RECORDS %s
 // RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fms-extensions -verify -std=c11 -DWI %s
 // RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fms-extensions -verify -std=c99 -DWI %s
 // RUN: %clang_cc1 -triple x86_64-sie-ps5         -fsyntax-only -fms-extensions -verify -std=c11 -DWI %s
@@ -123,8 +123,13 @@ __declspec(dllimport) extern int GlobalRedecl5; // expected-warning{{redeclarati
 // External linkage is required.
 __declspec(dllimport) static int StaticGlobal; // expected-error{{'StaticGlobal' must have external linkage when declared 'dllimport'}}
 
-// Thread local variables are invalid.
+// Thread local variables are invalid, except where an image exports a record
+// of the variable.
+#ifndef TLS_RECORDS
 __declspec(dllimport) __thread int ThreadLocalGlobal; // expected-error{{'ThreadLocalGlobal' cannot be thread local when declared 'dllimport'}}
+#else
+__declspec(dllimport) extern __thread int ThreadLocalGlobal;
+#endif
 
 // Import in local scope.
 __declspec(dllimport) float LocalRedecl1; // expected-note{{previous declaration is here}}

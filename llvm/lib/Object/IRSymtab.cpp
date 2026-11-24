@@ -89,6 +89,9 @@ struct Builder {
 
   std::string COFFLinkFacts;
   raw_string_ostream COFFLinkFactsOS{COFFLinkFacts};
+  // The index of each symbol of the module being added that is a global
+  // value, built when a link fact first has a symbol for an operand.
+  DenseMap<const GlobalValue *, uint64_t> COFFLinkFactSymbols;
 
   std::vector<storage::Str> DependentLibraries;
 
@@ -173,6 +176,7 @@ Error Builder::addModule(Module *M) {
   for (ModuleSymbolTable::Symbol Msym : Msymtab.symbols())
     if (Error Err = addSymbol(Msymtab, Used, Msym))
       return Err;
+  COFFLinkFactSymbols.clear();
 
   return Error::success();
 }
@@ -305,8 +309,18 @@ Error Builder::addSymbol(const ModuleSymbolTable &Msymtab,
       if (Error E = GV->materialize())
         return E;
     emitLinkFactsForGlobalCOFF(
-        GV, TT, [&](uint64_t Tag, ArrayRef<uint64_t> Operands) {
-          COFF::encodeLinkFact(COFFLinkFactsOS, Syms.size() - 1, Tag, Operands);
+        GV, TT, [&](uint64_t Tag, ArrayRef<LinkFactOperand> Operands) {
+          SmallVector<uint64_t, 2> Numbers;
+          for (const LinkFactOperand &Operand : Operands) {
+            if (Operand.Symbol && COFFLinkFactSymbols.empty())
+              for (auto [I, S] : enumerate(Msymtab.symbols()))
+                if (auto *V = dyn_cast_if_present<GlobalValue *>(S))
+                  COFFLinkFactSymbols[V] = Mods.back().Begin + I;
+            Numbers.push_back(Operand.Symbol
+                                  ? COFFLinkFactSymbols.lookup(Operand.Symbol)
+                                  : Operand.Number);
+          }
+          COFF::encodeLinkFact(COFFLinkFactsOS, Syms.size() - 1, Tag, Numbers);
         });
 
     if ((Flags & object::BasicSymbolRef::SF_Weak) &&

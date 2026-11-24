@@ -6,8 +6,8 @@
 ; callee-saved register on the paths that make no call: the allocator splits
 ; it around the cold block, which saves the registers it uses, and does not
 ; then undo the split by moving the rest of the value into the register the
-; cold block saved. Here that value is the TLS index on Windows and the thread
-; pointer on ELF.
+; cold block saved. Here that value is the thread's TLS block on Windows and
+; the thread pointer on ELF.
 
 @z = dso_local thread_local global i32 0
 @guard = dso_local thread_local global i8 0
@@ -21,14 +21,12 @@ define i32 @static_local() {
 ; WIN:       // %bb.0: // %entry
 ; WIN-NEXT:    adrp x8, _tls_index
 ; WIN-NEXT:    ldr x9, [x18, #88]
-; WIN-NEXT:    ldr w8, [x8, :lo12:_tls_index]
-; WIN-NEXT:    ldr x9, [x9, x8, lsl #3]
-; WIN-NEXT:    add x9, x9, :secrel_hi12:guard
-; WIN-NEXT:    ldrb w9, [x9, :secrel_lo12:guard]
-; WIN-NEXT:    cbz w9, .LBB0_3
-; WIN-NEXT:  .LBB0_1: // %done
-; WIN-NEXT:    ldr x9, [x18, #88]
+; WIN-NEXT:    ldrsw x8, [x8, :lo12:_tls_index]
 ; WIN-NEXT:    ldr x8, [x9, x8, lsl #3]
+; WIN-NEXT:    add x9, x8, :secrel_hi12:guard
+; WIN-NEXT:    ldrb w10, [x9, :secrel_lo12:guard]
+; WIN-NEXT:    cbz w10, .LBB0_3
+; WIN-NEXT:  .LBB0_1: // %done
 ; WIN-NEXT:    add x8, x8, :secrel_hi12:z
 ; WIN-NEXT:    ldr w0, [x8, :secrel_lo12:z]
 ; WIN-NEXT:    ret
@@ -44,11 +42,10 @@ define i32 @static_local() {
 ; WIN-NEXT:    stp x21, x30, [sp, #16] // 16-byte Folded Spill
 ; WIN-NEXT:    .seh_save_lrpair x21, 16
 ; WIN-NEXT:    .seh_endprologue
-; WIN-NEXT:    ldr x9, [x18, #88]
+; WIN-NEXT:    add x10, x8, :secrel_hi12:z
 ; WIN-NEXT:    mov x19, x8
-; WIN-NEXT:    ldr x21, [x9, x8, lsl #3]
-; WIN-NEXT:    add x9, x21, :secrel_hi12:z
-; WIN-NEXT:    add x20, x9, :secrel_lo12:z
+; WIN-NEXT:    mov x21, x9
+; WIN-NEXT:    add x20, x10, :secrel_lo12:z
 ; WIN-NEXT:    mov x0, x20
 ; WIN-NEXT:    bl ctor
 ; WIN-NEXT:    mov x1, x20
@@ -56,9 +53,8 @@ define i32 @static_local() {
 ; WIN-NEXT:    ldr x0, [x0, :lo12:__imp_ctor]
 ; WIN-NEXT:    bl atexit
 ; WIN-NEXT:    mov x8, x19
-; WIN-NEXT:    add x9, x21, :secrel_hi12:guard
-; WIN-NEXT:    mov w10, #1 // =0x1
-; WIN-NEXT:    strb w10, [x9, :secrel_lo12:guard]
+; WIN-NEXT:    mov w9, #1 // =0x1
+; WIN-NEXT:    strb w9, [x21, :secrel_lo12:guard]
 ; WIN-NEXT:    .seh_startepilogue
 ; WIN-NEXT:    ldp x21, x30, [sp, #16] // 16-byte Folded Reload
 ; WIN-NEXT:    .seh_save_lrpair x21, 16

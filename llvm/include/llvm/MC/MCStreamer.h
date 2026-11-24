@@ -596,6 +596,11 @@ public:
   virtual void emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
                                 ArrayRef<const MCExpr *> Operands);
 
+  /// States a COFF::SiteFact, with its value, of the fused site whose marker
+  /// was emitted last and whose instruction is still to come, or else of the
+  /// relocation that is emitted next.
+  virtual void emitCOFFSiteFact(uint64_t Fact, uint64_t Value);
+
   /// States a dispatch through a jump table: the branch, the table of
   /// \p Count entries of the codeview::JumpTableEntrySize \p Type, the label
   /// that the entries are relative to, the instruction that loads the entry

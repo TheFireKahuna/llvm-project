@@ -315,6 +315,9 @@ private:
   uint64_t importTableSize = 0;
   Chunk *iatStart = nullptr;
   uint64_t iatSize = 0;
+  // A word that an image with a TLS directory and no import states as its
+  // import address table.
+  Chunk *tlsGate = nullptr;
   DelayLoadContents delayIdata;
   bool setNoSEHCharacteristic = false;
   uint32_t tlsAlignment = 0;
@@ -1340,6 +1343,16 @@ void Writer::createMiscChunks() {
     }
   });
 
+  // The loader reads an image's TLS directory only on the path that binds
+  // its imports, which it takes where the import address table or the import
+  // directory is stated. An image with thread-local data and no import
+  // states one word as its table, which names no import.
+  if (!importTableStart &&
+      isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("_tls_used"))) {
+    tlsGate = make<EmptyChunk>(config->wordsize);
+    rdataSec->addChunk(tlsGate);
+  }
+
   // Create Debug Information Chunks
   if (config->mingw) {
     debugInfoSec = buildidSec;
@@ -2157,6 +2170,9 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   if (iatStart) {
     dir[IAT].RelativeVirtualAddress = iatStart->getRVA();
     dir[IAT].Size = iatSize;
+  } else if (tlsGate) {
+    dir[IAT].RelativeVirtualAddress = tlsGate->getRVA();
+    dir[IAT].Size = tlsGate->getSize();
   }
   if (rsrcSec->getVirtualSize()) {
     dir[RESOURCE_TABLE].RelativeVirtualAddress = rsrcSec->getRVA();

@@ -1562,6 +1562,14 @@ LLVM_ABI Error readCOFFLinkFacts(
     function_ref<Error(uint64_t Symbol, uint64_t Tag, StringRef Operands)>
         Fact);
 
+/// Reads a SiteFacts group: calls \p Fact with the index of a section's
+/// symbol, the index of a relocation of that section, in ascending order,
+/// and each COFF::SiteFact of that relocation with its value.
+LLVM_ABI Error readCOFFSiteFacts(
+    StringRef Payload, function_ref<Error(uint64_t Section, uint64_t Relocation,
+                                          uint64_t Fact, uint64_t Value)>
+                           Fact);
+
 /// An image of an Images group of link records: a DLL, or an image that is
 /// loaded with it.
 struct COFFLinkImage {

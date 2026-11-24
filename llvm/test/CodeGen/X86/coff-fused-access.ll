@@ -201,3 +201,17 @@ done:
   ret i32 %acc2
 }
 declare i32 @get(ptr)
+
+; The allocator reads the uses of a chosen pointer before the frame is laid
+; out, where the base of a store's address may be a stack slot: such a store
+; is no access through the pointer.
+define void @slot(i64 %i) {
+; CHECK-LABEL: slot:
+; FUSED:         movq __imp_chosen(%rip), %rax
+; FUSED-NEXT:    movq %rax, {{[0-9]+}}(%rsp,%r{{cx|di}})
+  %a = alloca [4 x ptr]
+  %p = getelementptr i8, ptr %a, i64 %i
+  store ptr @chosen, ptr %p
+  call void @taking(ptr %a)
+  ret void
+}

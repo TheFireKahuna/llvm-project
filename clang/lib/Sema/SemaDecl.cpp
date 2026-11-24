@@ -15635,8 +15635,13 @@ void Sema::FinalizeDeclaration(Decl *ThisDecl) {
   }
 
   // dllimport/dllexport variables cannot be thread local, their TLS index
-  // isn't exported with the variable.
-  if (DLLAttr && VD->getTLSKind()) {
+  // isn't exported with the variable. On Windows Itanium and NT-POSIX an
+  // image exports a record of the variable in its place, through which an
+  // importer reaches the variable.
+  const llvm::Triple &TT = Context.getTargetInfo().getTriple();
+  bool HasRecord = TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
+                   TT.isArch64Bit() && !TT.isWindowsArm64EC();
+  if (DLLAttr && VD->getTLSKind() && !HasRecord) {
     auto *F = dyn_cast_or_null<FunctionDecl>(VD->getParentFunctionOrMethod());
     if (F && getDLLAttr(F)) {
       assert(VD->isStaticLocal());

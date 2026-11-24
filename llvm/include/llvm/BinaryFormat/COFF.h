@@ -486,7 +486,7 @@ enum RelocationTypesLLVM : unsigned {
   IMAGE_REL_LLVM_FUSED_READ = 0x8042,
   IMAGE_REL_LLVM_FUSED_READ_REX2 = 0x8043, // AMD64
   IMAGE_REL_LLVM_FUSED_ACCESS = 0x8044,    // AMD64
-  IMAGE_REL_LLVM_FUSED_INDEX = 0x8045,     // AMD64
+  IMAGE_REL_LLVM_FUSED_INDEX = 0x8045,
   IMAGE_REL_LLVM_FUSED_TEST = 0x8046,
   IMAGE_REL_LLVM_FUSED_JUMP_TAIL = 0x8047,
   IMAGE_REL_LLVM_FUSED_ADD = 0x8048,      // AMD64
@@ -523,6 +523,11 @@ enum class FusedUse : uint8_t {
   Add,
   /// An access to memory at the register plus a constant.
   Access,
+  /// The use of a word of a thread-local variable's record, which a marked
+  /// access loaded into the register: of the address of the TLS index as an
+  /// access does, and of an offset as one of the two registers that an
+  /// instruction adds, in a memory operand or to give a third.
+  Index,
   /// A test of the register for zero that one conditional jump alone reads.
   Test,
 };
@@ -557,6 +562,8 @@ inline constexpr FusedMarker FusedMarkers[] = {
     {"IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL",
      IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL, FusedUse::Access,
      IMAGE_FILE_MACHINE_ARM64},
+    {"IMAGE_REL_LLVM_FUSED_INDEX", IMAGE_REL_LLVM_FUSED_INDEX, FusedUse::Index,
+     0},
 };
 
 /// Returns the first fused marker of \p Machine that \p Is holds for, or null.
@@ -600,6 +607,47 @@ inline bool isBoundPointerName(StringRef Name) {
   return Name.starts_with("__imp_") || Name.starts_with(".refptr.");
 }
 
+/// Returns true if \p Name is that of the record of a thread-local variable,
+/// through which code reaches a variable that may be another image's.
+inline bool isTlsRecordName(StringRef Name) { return Name.ends_with("$tls"); }
+
+/// Returns true if \p Name is that of the pointer to such a record.
+inline bool isTlsRecordPointerName(StringRef Name) {
+  return Name.starts_with("__imp_") && isTlsRecordName(Name);
+}
+
+/// A record holds the address of its image's TLS index, 64 bits at offset 0,
+/// and the offsets of the variable and of its guard, 32 bits at 8 and at 12.
+/// Returns the size of the word at \p Offset, or 0 where none begins there.
+inline unsigned getTlsRecordWordSize(int64_t Offset) {
+  return Offset == 0 ? 8 : Offset == 8 || Offset == 12 ? 4 : 0;
+}
+
+/// An instruction that adds two registers names them in two operands, and a
+/// fused index reads one of them. Returns the second, where \p Op is the
+/// first: the next operand of \p I that is a register.
+template <class InstT>
+unsigned getFusedIndexOperand(const InstT &I, unsigned Op) {
+  do
+    ++Op;
+  while (!I.getOperand(Op).isReg());
+  return Op;
+}
+
+/// What an object for Windows Itanium or NT-POSIX states of the site of one
+/// relocation in the SiteFacts group of its link records, where the
+/// assembler checked its fused relocation types.
+enum SiteFact : uint64_t {
+  /// At a FUSED_INDEX: the word of the record that the register holds, its
+  /// offset in the record, plus SiteFactViaFirst where the register is the
+  /// first of the two that the instruction adds.
+  SiteFactIndex = 8,
+  /// At the marker of a fused access that loads one word of a record: only
+  /// fused indexes of the function's code read the register it writes.
+  SiteFactIndexedRead = 9,
+};
+enum : uint64_t { SiteFactViaFirst = 16 };
+
 /// Returns true if the linker may change the size of the code at a relocation
 /// of \p Type against \p Symbol in an object that LLVM writes for Windows
 /// Itanium or NT-POSIX on \p Machine, AMD64 or ARM64: a jump whose width it
@@ -607,11 +655,12 @@ inline bool isBoundPointerName(StringRef Name) {
 /// binds, a 64-bit load of such a pointer, which it may write as a shorter
 /// zero or constant, such a load with the call through its register, a fused
 /// site, a test whose outcome it knows, a thread-local base, alignment
-/// padding, and an ARM64 adrp with the add or load of the same address. A load
-/// of any other symbol keeps its size. The assembler resolves no distance
-/// across such code, and the linker resizes code at no other relocation. On
-/// AMD64 both hold only in a section with a relocation that relocationMovesCode
-/// names.
+/// padding, an ARM64 adrp with the add or load of the same address, and an
+/// ARM64 load of a word of a thread-local variable's record. A load of any
+/// other symbol keeps its size, and the linker resizes code at no other
+/// relocation. The assembler resolves no distance across such code where the
+/// linker moves it; in an AMD64 section that it only compacts, it states the
+/// values that depend on the layout as spans.
 inline bool relocationMayResizeCode(uint16_t Machine, uint16_t Type,
                                     StringRef Symbol = {}) {
   switch (Type) {
@@ -626,7 +675,9 @@ inline bool relocationMayResizeCode(uint16_t Machine, uint16_t Type,
   if (Machine != IMAGE_FILE_MACHINE_AMD64)
     return Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
            Type == IMAGE_REL_ARM64_PAGEOFFSET_12A ||
-           Type == IMAGE_REL_ARM64_PAGEOFFSET_12L;
+           Type == IMAGE_REL_ARM64_PAGEOFFSET_12L ||
+           (Type == IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL &&
+            isTlsRecordPointerName(Symbol));
   switch (Type) {
   case IMAGE_REL_LLVM_JUMP32:
   case IMAGE_REL_LLVM_JUMP8:
@@ -654,12 +705,11 @@ inline bool relocationMayResizeCode(uint16_t Machine, uint16_t Type,
 /// Returns true if the linker moves the code after a relocation of the AMD64
 /// \p Type: its rewrite removes an instruction or changes the length of one
 /// that no other form replaces in place, which a fused site and a
-/// thread-local base do. A load and the call through its
-/// register are one site, which a direct call and a no-operation replace in
-/// place. The linker moves the code of an AMD64 section only where the
-/// section has such a relocation. In any other it
-/// writes each site in its assembled length, so the assembler resolves the
-/// distances there, and may only delete a jump that ends the section.
+/// thread-local base do. The linker moves the code of an AMD64 section freely
+/// only where the section has such a relocation. Any other it compacts by the
+/// spans it states: it deletes the bytes that a rewrite frees, such as those
+/// of a load whose call through its register becomes a direct call, narrows
+/// the jumps that the spans name and shortens the jump that ends it.
 inline bool relocationMovesCode(uint16_t Type) {
   switch (Type) {
   case IMAGE_REL_LLVM_TLS_SCALE:
@@ -1185,6 +1235,11 @@ enum LinkFactTag : uint64_t {
   /// address is significant in this unit. A unit states no other function.
   /// Critical.
   LinkFactAddressSignificant = 5,
+  /// The symbol is a thread-local variable that another image may reach,
+  /// which it does through a record of the variable that the linker writes.
+  /// The operand is the symbol of the thread-local byte that is not zero once
+  /// the variable is initialized in a thread. Critical.
+  LinkFactTlsRecord = 7,
 };
 
 /// The states are in the order of constraint: the copies of one name have
@@ -1209,6 +1264,9 @@ enum LinkFactInitKind : uint64_t {
   LinkFactDynamicGuarded = 2,
   /// Initialized under its guard variable with its image.
   LinkFactDynamicUnordered = 3,
+  /// A thread-local variable that each thread initializes when it first
+  /// uses the variable.
+  LinkFactTLSDynamic = 4,
 };
 
 enum LinkFactSecondWord : uint64_t {
@@ -1305,7 +1363,8 @@ enum LinkImageEntityFlags : uint64_t {
 /// variables.
 LLVM_ABI bool isVagueEntityName(StringRef Name);
 
-/// Writes a link fact whose operands are numbers.
+/// Writes a link fact whose operands are numbers, a symbol's being its
+/// index.
 LLVM_ABI void encodeLinkFact(raw_ostream &OS, uint64_t Symbol, uint64_t Tag,
                              ArrayRef<uint64_t> Operands);
 

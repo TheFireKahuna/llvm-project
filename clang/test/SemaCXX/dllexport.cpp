@@ -5,7 +5,7 @@
 // RUN: %clang_cc1 -triple i686-pc-cygwin         -fsyntax-only -fms-extensions -verify=expected,non-ms,gnu,win-gnu      -std=c++1y -Wunsupported-dll-base-class-template %s
 // RUN: %clang_cc1 -triple x86_64-pc-cygwin       -fsyntax-only -fms-extensions -verify=expected,non-ms,gnu,win-gnu      -std=c++11 -Wunsupported-dll-base-class-template %s
 // RUN: %clang_cc1 -triple i686-windows-itanium   -fsyntax-only -fms-extensions -verify=expected,non-ms,non-gnu,win-gnu  -std=c++11 -Wunsupported-dll-base-class-template %s
-// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify=expected,non-ms,non-gnu,win-gnu  -std=c++1y -Wunsupported-dll-base-class-template %s
+// RUN: %clang_cc1 -triple x86_64-windows-itanium -fsyntax-only -fms-extensions -verify=expected,non-ms,non-gnu,win-gnu  -std=c++1y -Wunsupported-dll-base-class-template -DTLS_RECORDS %s
 // RUN: %clang_cc1 -triple x86_64-scei-ps4        -fsyntax-only -fdeclspec      -verify=expected,non-ms,non-gnu,ms-ps    -std=c++11 -Wunsupported-dll-base-class-template %s
 // RUN: %clang_cc1 -triple x86_64-sie-ps5         -fsyntax-only -fdeclspec      -verify=expected,non-ms,non-gnu,ms-ps    -std=c++1y -Wunsupported-dll-base-class-template %s
 
@@ -81,8 +81,13 @@ namespace ns { __declspec(dllexport) int ExternalGlobal; }
 __declspec(dllexport) auto InternalAutoTypeGlobal = Internal(); // expected-error{{'InternalAutoTypeGlobal' must have external linkage when declared 'dllexport'}}
 __declspec(dllexport) auto ExternalAutoTypeGlobal = External();
 
-// Thread local variables are invalid.
+// Thread local variables are invalid, except where an image exports a record
+// of the variable.
+#ifndef TLS_RECORDS
 __declspec(dllexport) __thread int ThreadLocalGlobal; // expected-error{{'ThreadLocalGlobal' cannot be thread local when declared 'dllexport'}}
+#else
+__declspec(dllexport) __thread int ThreadLocalGlobal;
+#endif
 // But a static local TLS var in an export function is OK.
 inline void __declspec(dllexport) ExportedInlineWithThreadLocal() {
   static __thread int OK; // no-error

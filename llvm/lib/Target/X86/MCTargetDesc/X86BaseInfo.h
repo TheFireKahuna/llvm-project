@@ -1430,13 +1430,20 @@ COFF::FusedUse getFusedUse(const InstT &I, const MCInstrDesc &Desc,
     RegOp = 1;
     return COFF::FusedUse::Copy;
   // The lea of a register plus a constant into itself changes no flag. The
-  // constant is one that the index of a marker has room for.
+  // constant is one that the index of a marker has room for. The lea of two
+  // registers and a constant adds one to the other.
   case X86::LEA64r:
     RegOp = 1 + X86::AddrBaseReg;
+    if (!I.getOperand(RegOp).isReg() ||
+        I.getOperand(1 + X86::AddrSegmentReg).getReg() ||
+        !I.getOperand(1 + X86::AddrDisp).isImm())
+      return COFF::FusedUse::None;
+    if (I.getOperand(1 + X86::AddrIndexReg).getReg())
+      return I.getOperand(RegOp).getReg() &&
+                     I.getOperand(1 + X86::AddrScaleAmt).getImm() == 1
+                 ? COFF::FusedUse::Index
+                 : COFF::FusedUse::None;
     return I.getOperand(RegOp).getReg() == I.getOperand(0).getReg() &&
-                   !I.getOperand(1 + X86::AddrIndexReg).getReg() &&
-                   !I.getOperand(1 + X86::AddrSegmentReg).getReg() &&
-                   I.getOperand(1 + X86::AddrDisp).isImm() &&
                    isInt<28>(I.getOperand(1 + X86::AddrDisp).getImm())
                ? COFF::FusedUse::Add
                : COFF::FusedUse::None;
@@ -1452,18 +1459,24 @@ COFF::FusedUse getFusedUse(const InstT &I, const MCInstrDesc &Desc,
     return COFF::FusedUse::Jump;
   // An instruction that loads or stores through a memory operand whose base
   // is the register, with no index and no segment and a constant as its
-  // displacement. A transfer of control through memory is none: the unwinder
-  // may read its form.
+  // displacement, or one whose memory operand adds the register to another,
+  // unscaled. A transfer of control through memory is none: the unwinder may
+  // read its form.
   default: {
     int Mem = X86II::getMemoryOperandIdx(Desc);
     if (Mem < 0 || !(Desc.mayLoad() || Desc.mayStore()) || Desc.isCall() ||
         Desc.isBranch() || Desc.isReturn())
       return COFF::FusedUse::None;
     RegOp = Mem + X86::AddrBaseReg;
-    return !I.getOperand(Mem + X86::AddrIndexReg).getReg() &&
-                   !I.getOperand(Mem + X86::AddrSegmentReg).getReg() &&
-                   I.getOperand(Mem + X86::AddrDisp).isImm()
-               ? COFF::FusedUse::Access
+    if (!I.getOperand(RegOp).isReg() ||
+        I.getOperand(Mem + X86::AddrSegmentReg).getReg() ||
+        !I.getOperand(Mem + X86::AddrDisp).isImm())
+      return COFF::FusedUse::None;
+    if (!I.getOperand(Mem + X86::AddrIndexReg).getReg())
+      return COFF::FusedUse::Access;
+    return I.getOperand(RegOp).getReg() &&
+                   I.getOperand(Mem + X86::AddrScaleAmt).getImm() == 1
+               ? COFF::FusedUse::Index
                : COFF::FusedUse::None;
   }
   }

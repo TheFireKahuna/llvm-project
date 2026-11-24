@@ -65,6 +65,7 @@ public:
   void emitELFSize(MCSymbol *Symbol, const MCExpr *Value) override;
   void emitCOFFLinkFact(const MCSymbol *Symbol, uint64_t Tag,
                         ArrayRef<const MCExpr *> Operands) override;
+  void emitCOFFSiteFact(uint64_t Fact, uint64_t Value) override;
   void emitCOFFSwitchTable(const MCSymbol *Branch, const MCSymbol *Table,
                            const MCSymbol *Base, uint64_t Count, uint64_t Type,
                            const MCSymbol *Load, uint64_t Flags) override;
@@ -113,17 +114,21 @@ protected:
   std::unique_ptr<const MCInstrInfo> MCII;
   StringRef FusedForms[size_t(COFF::FusedUse::Test) + 1];
   /// What each register unit that the current run wrote holds: the pointer a
-  /// load of one read, or null, and whether as a copy of the register that
-  /// the load wrote. A copy of what the run did not write holds any pointer.
-  /// A run is the instructions of one section since the last that execution
-  /// does not fall through.
-  DenseMap<unsigned, PointerIntPair<const MCSymbol *, 1, bool>> RunWrites;
+  /// load of one read, or null, as the load wrote it, as a copy of the
+  /// register that the load wrote, or as a word that a marked access through
+  /// that register loaded. A copy of what the run did not write holds any
+  /// pointer. A run is the instructions of one section since the last that
+  /// execution does not fall through.
+  enum HeldAs { Loaded, Copied, Word };
+  using Held = PointerIntPair<const MCSymbol *, 2, HeldAs>;
+  DenseMap<unsigned, Held> RunWrites;
   MCSectionSubPair RunSection;
   /// The marker of a fused site, until the instruction of its site is
   /// emitted, with how that reads its register. A jump's relocation is
   /// recorded with its site, whose unwind frame decides its type, and Expr
   /// is the pointer it names.
   /// So is that of a type that names none, whose index its site gives.
+  /// Index is what COFF::SiteFactIndex states of the site, or -1.
   struct {
     const MCExpr *Offset = nullptr;
     const MCSymbol *Pointer;
@@ -131,6 +136,7 @@ protected:
     uint16_t Type;
     COFF::FusedUse Use;
     const MCExpr *Expr;
+    int Index;
   } FusedSite;
 
   /// The instructions still to come of the site at a marker of code that the
@@ -163,6 +169,12 @@ protected:
   /// \p Inst, which a target may move with the site.
   MCSymbol *checkFused(const MCInst &Inst, COFF::FusedUse Use, unsigned RegOp,
                        const MCSymbol *Load, bool IsRead, bool Tail = false);
+  /// Before checkFused, where a fused index is pending: the index of the
+  /// address of the TLS index is the access through it, and any other reads
+  /// the first or the second of the registers that \p Inst adds, as its
+  /// fact says.
+  void selectFusedIndex(const MCInst &Inst, COFF::FusedUse &Use,
+                        unsigned &RegOp) const;
 
   void finalizeCGProfileEntry(const MCSymbolRefExpr *&S);
 
