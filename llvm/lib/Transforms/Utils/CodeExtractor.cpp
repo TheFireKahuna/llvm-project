@@ -946,7 +946,12 @@ Function *CodeExtractor::constructFunctionDeclaration(
   //           attribute can not be inherited.
   for (const auto &Attr : oldFunction->getAttributes().getFnAttrs()) {
     if (Attr.isStringAttribute()) {
-      if (Attr.getKindAsString() == "thunk")
+      // However the function comes by its thread pointer, what is extracted
+      // from it is passed that one (below).
+      if (is_contained({"thunk", "thread-pointer-probe",
+                        "thread-pointer-refusal", "thread-pointer-plain-entry",
+                        "thread-pointer-unused"},
+                       Attr.getKindAsString()))
         continue;
     } else
       switch (Attr.getKindAsEnum()) {
@@ -1072,6 +1077,9 @@ Function *CodeExtractor::constructFunctionDeclaration(
 
     newFunction->addFnAttr(Attr);
   }
+  if (M->getTargetTriple().isWindowsNTPOSIXEnvironment() &&
+      !oldFunction->hasFnAttribute("no-thread-pointer"))
+    newFunction->addFnAttr("thread-pointer-argument");
 
   // Create scalar and aggregate iterators to name all of the arguments we
   // inserted.
