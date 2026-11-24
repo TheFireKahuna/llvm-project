@@ -159,16 +159,11 @@ struct ExitRegistry {
 // token the executable's start-up posts. A copy finds the state through
 // PEB->ImageBaseAddress and the {ExitStateTag, RVA} that the linker writes at
 // 0x30 in the executable's MZ header; without it, under a foreign executable,
-// each copy keeps a state of its own. Every copy reads and writes it, the
-// records and each thread's list, so any change to them changes
-// ExitStateVersion.
+// each copy keeps a state of its own. Every copy reads and writes it and the
+// records, so any change to them changes ExitStateVersion.
 struct ExitState {
   uint32_t Version;
   uint32_t Size;
-  // One plus the TLS slot that holds a thread's thread-local destructors,
-  // which the first registration of one allocates, so that an executable
-  // without thread-locals needs no TLS directory.
-  LONG ThreadSlot;
   // The key that registered functions are encoded with: the security cookie
   // of the first copy to register one, since each copy's differs.
   uintptr_t Cookie;
@@ -184,7 +179,7 @@ struct ExitState {
 };
 
 constexpr uint32_t ExitStateTag = 0x7E1A5C03;
-constexpr uint32_t ExitStateVersion = 1;
+constexpr uint32_t ExitStateVersion = 2;
 
 // The process's state: the executable's, or this copy's own.
 ExitState &exitState();
@@ -208,14 +203,12 @@ inline uintptr_t exitCookie(ExitState &State) {
   return Cookie;
 }
 
-inline uintptr_t encodeExit(ExitState &State, Destructor Function) {
-  uintptr_t Cookie = exitCookie(State);
+inline uintptr_t encodeExit(uintptr_t Cookie, Destructor Function) {
   return __builtin_rotateright64(reinterpret_cast<uintptr_t>(Function) ^ Cookie,
                                  Cookie & 63);
 }
 
-inline Destructor decodeExit(ExitState &State, uintptr_t Value) {
-  uintptr_t Cookie = exitCookie(State);
+inline Destructor decodeExit(uintptr_t Cookie, uintptr_t Value) {
   return reinterpret_cast<Destructor>(
       __builtin_rotateleft64(Value, Cookie & 63) ^ Cookie);
 }

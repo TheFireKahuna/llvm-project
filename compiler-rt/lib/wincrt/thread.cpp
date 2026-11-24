@@ -12,14 +12,17 @@
 // through kernel.appcore.dll on a process's first thread.
 //
 // A started thread keeps a record of what its start did, which its end
-// undoes: the Universal CRT keeps it in its per-thread data, which it does not
-// expose, and which needs nothing from these functions. A thread that leaves
-// through ExitThread rather than by returning or through _endthread keeps its
-// module loaded, as it would under the Universal CRT, and leaks its record.
+// undoes, in its block's header: the Universal CRT keeps it in its per-thread
+// data, which it does not expose, and which needs nothing from these
+// functions. A thread that leaves through ExitThread rather than by returning
+// or through _endthread keeps its module loaded, as it would under the
+// Universal CRT, and leaks its record. Its creator gives it its block before
+// it starts, and its thread-local destructors run as it ends, outside the
+// loader lock and before the Universal CRT's per-thread data goes.
 //
 //===----------------------------------------------------------------------===//
 
-#include "wincrt.h"
+#include "tlsrt.h"
 
 #include <errno.h>
 #include <process.h>
@@ -40,8 +43,6 @@ struct ThreadRecord {
   // Whether the start initialized the Windows Runtime on the thread.
   bool Apartment;
 };
-
-thread_local ThreadRecord *Started;
 
 // The Universal CRT's errno for the error of a failed CreateThread or
 // ResumeThread.
@@ -90,10 +91,12 @@ __attribute__((no_sanitize("kcfi"))) void roUninitialize() {
 }
 
 [[noreturn]] void endThread(unsigned Code) {
-  ThreadRecord *T = Started;
+  __cxa_thread_finalize(nullptr);
+  wincrt::tls::Header *H = wincrt::tls::header(false);
+  auto *T = H ? static_cast<ThreadRecord *>(H->Started) : nullptr;
   if (!T)
     ExitThread(Code);
-  Started = nullptr;
+  H->Started = nullptr;
   if (T->Apartment)
     roUninitialize();
   if (T->Handle)
@@ -110,7 +113,8 @@ __attribute__((no_sanitize("kcfi"))) void roUninitialize() {
 // code, as on a thread the Universal CRT starts. The procedure may come from
 // an object built without KCFI; Control Flow Guard checks the call.
 __attribute__((no_sanitize("kcfi"))) DWORD WINAPI threadStart(void *Record) {
-  auto *T = Started = static_cast<ThreadRecord *>(Record);
+  auto *T = static_cast<ThreadRecord *>(Record);
+  wincrt::tls::header(false)->Started = T;
   T->Apartment = roInitialize();
   __try {
     if (!T->Handle)
@@ -142,11 +146,20 @@ HANDLE beginThread(_beginthreadex_proc_type Procedure, bool Close,
   T->Context = Context;
   GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS,
                      reinterpret_cast<LPCWSTR>(Procedure), &T->Module);
+  // Created suspended, so that its block is seeded and published first.
   DWORD Id;
-  HANDLE Thread = CreateThread(static_cast<LPSECURITY_ATTRIBUTES>(Security),
-                               StackSize, threadStart, T, Flags, &Id);
-  if (!Thread) {
-    setErrnoFromLastError();
+  HANDLE Thread =
+      CreateThread(static_cast<LPSECURITY_ATTRIBUTES>(Security), StackSize,
+                   threadStart, T, Flags | CREATE_SUSPENDED, &Id);
+  intptr_t Tp = Thread ? wincrt::tls::adopt(Id, Thread) : 0;
+  if (!Thread || Tp < 0) {
+    if (Thread) {
+      TerminateThread(Thread, 0);
+      CloseHandle(Thread);
+      errno = static_cast<int>(-Tp);
+    } else {
+      setErrnoFromLastError();
+    }
     if (T->Module)
       FreeLibrary(T->Module);
     crtFree(T);
@@ -154,12 +167,12 @@ HANDLE beginThread(_beginthreadex_proc_type Procedure, bool Close,
   }
   if (ThreadId)
     *ThreadId = Id;
-  if (Close) {
+  if (Close)
     T->Handle = Thread;
-    if (ResumeThread(Thread) == static_cast<DWORD>(-1)) {
-      setErrnoFromLastError();
-      return nullptr;
-    }
+  if (!(Flags & CREATE_SUSPENDED) &&
+      ResumeThread(Thread) == static_cast<DWORD>(-1)) {
+    setErrnoFromLastError();
+    return nullptr;
   }
   return Thread;
 }
@@ -173,7 +186,7 @@ __wrap__beginthread(_beginthread_proc_type Procedure, unsigned StackSize,
                     void *Context) {
   HANDLE Thread =
       beginThread(reinterpret_cast<_beginthreadex_proc_type>(Procedure), true,
-                  nullptr, StackSize, Context, CREATE_SUSPENDED, nullptr);
+                  nullptr, StackSize, Context, 0, nullptr);
   return reinterpret_cast<uintptr_t>(Thread ? Thread : INVALID_HANDLE_VALUE);
 }
 

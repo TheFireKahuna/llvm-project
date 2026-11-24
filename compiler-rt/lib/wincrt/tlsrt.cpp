@@ -459,6 +459,34 @@ Header *wincrt::tls::header(bool Adopt) {
   return Tp < 0 ? nullptr : reinterpret_cast<Header *>(Tp);
 }
 
+//===----------------------------------------------------------------------===//
+// Thread end
+//===----------------------------------------------------------------------===//
+
+// Every step is idempotent, and keeps where it is when run again: the map's
+// entry moves by compare-exchange from the value it replaces.
+// A dead protector's protection ends with its hold, and a dead finisher's
+// with the finish it left.
+static void finish(Record &Self, uint32_t Index, unsigned How) {
+  Record &R = recordAt(Index);
+  uint32_t Tid = tidOf(load(&R.Word)), Entry = Index;
+
+  if (How & StepDrop)
+    dropThread(reinterpret_cast<Header *>(blockAt(Index))->Thread);
+  if (How & StepTomb)
+    cas(slot(Tid, inB(Tid)), Entry, TP_TOMBSTONE);
+}
+
+void wincrt::tls::releaseSelf() {
+  uint32_t Entry = lookup(currentTid()), Index = Entry & TP_MASK;
+  if (!(Entry & TP_SLOT_TEST) || !advance(recordAt(Index), Releasing))
+    return;
+  Record &R = recordAt(Entry & TP_MASK);
+  if (!advance(R, Releasing))
+    return;
+  finish(R, Entry & TP_MASK, Release);
+}
+
 // The cold calls' one body, which the assembly entries call having saved
 // every register but the answer's: How is 0 for __tp_slow, 1 for __tp_try and
 // 2 for __tp_probe, which never adopts.
@@ -696,7 +724,7 @@ bool wincrt::tls::found() {
   if (!First) {
     State &St = shared();
     return St.Version == StateVersion && St.Size == sizeof(State) &&
-           AddVectoredExceptionHandler(1, recoverProbe);
+           AddVectoredExceptionHandler(1, recoverProbe) && (findTail(), true);
   }
   char *Meta = static_cast<char *>(reserve(StateAt + Page));
   char *Area = static_cast<char *>(reserve(uintptr_t(Chunks) * ChunkSize));
@@ -704,9 +732,10 @@ bool wincrt::tls::found() {
       !commit(Meta + StateAt, Page) || !seal(uintptr_t(Meta), uintptr_t(Area)))
     return false;
   shared() = {StateVersion, sizeof(State)};
-
+  shared().Cookie = __security_cookie | 1;
   shared().Taken[0] = (uint64_t(1) << TP_EXE_PLACE / Granule) - 1;
-  return AddVectoredExceptionHandler(1, recoverProbe) && foundImages();
+  return AddVectoredExceptionHandler(1, recoverProbe) && foundImages() &&
+         (findTail(), true);
 }
 
 #ifndef COMPILER_RT_SHARED_LIB

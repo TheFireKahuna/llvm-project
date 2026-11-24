@@ -330,7 +330,7 @@ void drain(ExitState &S, Registry &R, void *Dso) {
     // Stay on the record while its newest entry is the newest of all: until
     // it is older than another record's, or something is registered.
     do {
-      Destructor Function = decodeExit(S, E->Dtor);
+      Destructor Function = decodeExit(exitCookie(S), E->Dtor);
       if (!Dso && (!Code.hold(reinterpret_cast<void *>(Function)) ||
                    !Data.hold(BestKey))) {
         store(&Best->Unloading, 1);
@@ -452,7 +452,7 @@ int append(Registry ExitState::*Which, Destructor Function, void *Object,
     if (!E)
       return -1;
   } while (!cas(&I->Bump, Slot, Slot + 1));
-  E->Dtor = encodeExit(S, Function);
+  E->Dtor = encodeExit(exitCookie(S), Function);
   E->Obj = Object;
   // The sequence advances for the entry's number and again once a drain can
   // see the entry, so that a drain whose pass over the records missed it

@@ -114,6 +114,16 @@ enum : uint64_t {
 };
 constexpr uint64_t FullBits = 0x7FFFFFFFFFFF0000;
 
+struct Dtor;
+struct Module;
+// A thread's thread-local destructors, newest first, the images they keep
+// loaded, and whether its completion runs.
+struct ThreadState {
+  Dtor *Dtors;
+  Module *Modules;
+  bool Finalizing;
+};
+
 // The block's header: the words outside code addresses, then the runtime's.
 struct Header {
   uintptr_t TcbSelf;
@@ -121,6 +131,8 @@ struct Header {
   uintptr_t Self;
   uint64_t Reserved1[3];
   uint64_t PointerGuard;
+  ThreadState Thread;
+  void *Started; // the record of the thread's start, for a thread wincrt starts
 };
 static_assert(offsetof(Header, Self) == TP_SELF &&
               offsetof(Header, PointerGuard) == TP_POINTER_GUARD &&
@@ -135,6 +147,9 @@ struct State {
   uint64_t Planes; // the open planes, and Change while one opens or closes
   uint64_t CreateGen;
 
+  // What thread-local destructors are encoded with: the founding copy's
+  // security cookie, since each copy's differs.
+  uint64_t Cookie;
   uint64_t ControlCommitted[MapPages / 8 / 64];
   uint64_t Taken[3]; // the granules of the block's, plane 1's and plane 2's
   void *Set;         // the image set's first page
@@ -199,6 +214,21 @@ intptr_t adopt(uint32_t Tid, HANDLE Thread);
 Header *header(bool Adopt);
 // Moves the caller's own record to State.
 bool advance(Record &R, uint64_t State);
+// The steps that end a record, in this order; each caller selects some. The
+// release at the thread's last hook takes Release.
+enum : unsigned {
+  StepDrop = 2, // drop its destructor list without running it
+  StepTomb = 4, // replace its TID-map entry with the tombstone
+  Release = StepDrop | StepTomb
+};
+void finish(Record &Self, uint32_t Index, unsigned How);
+// The release at the calling thread's last hook.
+void releaseSelf();
+
+// Drops a thread's destructor list without running it.
+void dropThread(ThreadState &T);
+// Finds whether the executable's last TLS callback is __wincrt_thread_end.
+void findTail();
 // Seeds the block of record Index before its thread runs code of the model.
 void seed(uint32_t Index);
 

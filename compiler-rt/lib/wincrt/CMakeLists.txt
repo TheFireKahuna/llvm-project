@@ -23,6 +23,8 @@ set(WINCRT_SOURCES
   purecall.cpp
   security.cpp
   tls.cpp
+  tls_tail.cpp
+  tlregdtor.cpp
   ucrt.c
   )
 
@@ -43,6 +45,14 @@ set(WINCRT_PROCESS_SOURCES
   tlsplace.cpp
   tlsrt.cpp
   tp.S
+  )
+
+# vcruntime's support for an MSVC object's thread-locals and local statics,
+# whose own thread-locals are the loader's: built for the MSVC environment, so
+# that, like the objects that name them, they state no thread-local model.
+set(WINCRT_MSVC_SOURCES
+  thread_safe_statics.c
+  tlsdyn.c
   )
 
 # The C++ runtimes are built after wincrt, which uses none of their headers.
@@ -79,10 +89,22 @@ function(add_wincrt_import_library arch name def)
 endfunction()
 
 foreach(arch ${BUILTIN_SUPPORTED_ARCH})
+  # At the target's own hardware baseline, which the MSVC environment's
+  # default is below.
+  if(arch STREQUAL "aarch64")
+    set(baseline -march=armv8.2-a)
+  else()
+    set(baseline -march=x86-64-v3)
+  endif()
+  add_compiler_rt_object_libraries(WincrtMSVC
+    ARCHS ${arch}
+    SOURCES ${WINCRT_MSVC_SOURCES}
+    CFLAGS --target=${arch}-pc-windows-msvc ${baseline} -Xclang -cfguard)
   add_compiler_rt_runtime(clang_rt.wincrt
     STATIC
     ARCHS ${arch}
     SOURCES ${WINCRT_SOURCES}
+    OBJECT_LIBS WincrtMSVC
     ADDITIONAL_HEADERS entry.h ucrt_names.h wincrt.h
     CFLAGS ${WINCRT_CFLAGS}
     CXX_STANDARD 17
