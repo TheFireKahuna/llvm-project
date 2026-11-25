@@ -40,10 +40,13 @@ set(WINCRT_PROCESS_SOURCES
   formatted_io.c
   rand_s.cpp
   thread.cpp
+  tlsrt.cpp
+  tp.S
   )
 
 # The C++ runtimes are built after wincrt, which uses none of their headers.
 set(WINCRT_CFLAGS -fno-exceptions -fno-rtti -nostdinc++)
+include_directories(../../include)
 
 find_program(WINCRT_LLVM_LIB NAMES llvm-lib HINTS ${LLVM_TOOLS_BINARY_DIR}
              REQUIRED)
@@ -93,7 +96,7 @@ foreach(arch ${BUILTIN_SUPPORTED_ARCH})
     STATIC
     ARCHS ${arch}
     SOURCES ${WINCRT_PROCESS_SOURCES}
-    ADDITIONAL_HEADERS ucrt_names.h wincrt.h
+    ADDITIONAL_HEADERS tlsrt.h ucrt_names.h wincrt.h
     CFLAGS ${WINCRT_CFLAGS}
     CXX_STANDARD 17
     PARENT_TARGET crt)
@@ -103,7 +106,7 @@ foreach(arch ${BUILTIN_SUPPORTED_ARCH})
     SHARED
     ARCHS ${arch}
     SOURCES ${WINCRT_PROCESS_SOURCES}
-    ADDITIONAL_HEADERS ucrt_names.h wincrt.h
+    ADDITIONAL_HEADERS tlsrt.h ucrt_names.h wincrt.h
     CFLAGS ${WINCRT_CFLAGS}
     LINK_FLAGS -nostdlib++ --unwindlib=none
                -Wl,-nodefaultlib:clang_rt.wincrt_dynamic.lib

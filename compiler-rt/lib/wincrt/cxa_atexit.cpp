@@ -32,7 +32,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "wincrt.h"
+#include "tlsrt.h"
 
 #include <process.h>
 
@@ -564,13 +564,16 @@ int __wincrt_detach_image(void *Dso, int Terminating) {
 #ifdef COMPILER_RT_SHARED_LIB
 // The registries serve the process until it ends: the tokens and the
 // thread-exit callback they post must stay mapped until exit runs them, and
-// the records outlive the images that registered them.
+// the records outlive the images that registered them. The thread-local
+// runtime is founded here, before any image that imports this one
+// initializes.
 BOOL WINAPI DllMain(HINSTANCE, DWORD Reason, LPVOID) {
   HMODULE Self;
   return Reason != DLL_PROCESS_ATTACH ||
-         GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                GET_MODULE_HANDLE_EX_FLAG_PIN,
-                            reinterpret_cast<LPCWSTR>(&DllMain), &Self);
+         (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                 GET_MODULE_HANDLE_EX_FLAG_PIN,
+                             reinterpret_cast<LPCWSTR>(&DllMain), &Self) &&
+          wincrt::tls::found());
 }
 #endif
 
