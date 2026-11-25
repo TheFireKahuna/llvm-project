@@ -2690,6 +2690,8 @@ void COFFDumper::printCOFFLinkRecords() {
                 for (const COFFLinkImage &Image : Images) {
                   DictScope I(W, "Image");
                   W.printString("Name", Image.Name);
+                  if (Image.Executable)
+                    W.printString("Kind", "Executable");
                   for (uint32_t Import : Image.Imports)
                     W.printString(Import % 2 ? "DelayLoads" : "Imports",
                                   Images[Import / 2].Name);

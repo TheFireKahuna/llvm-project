@@ -8,15 +8,16 @@
 
 // lld-link links, with the runtime libraries as default libraries after the
 // inputs and no option that selects how imports bind. An executable embeds
-// the segment-heap manifest shipped beside wincrt. The image's timestamps are
-// a hash of its contents.
+// the segment-heap manifest shipped beside wincrt. The subsystem version is
+// Windows 10's, and the image's timestamps are a hash of its contents.
 // RUN: %{x64} 2>&1 | FileCheck --check-prefix=C %s \
 // RUN:   --implicit-check-not=libc++ --implicit-check-not=user32 --implicit-check-not=-entry: \
-// RUN:   --implicit-check-not=-subsystem: --implicit-check-not=-nodefaultlib:oldnames \
+// RUN:   --implicit-check-not=-nodefaultlib:oldnames \
 // RUN:   --implicit-check-not=-auto-import --implicit-check-not=-runtime-pseudo-reloc \
 // RUN:   --implicit-check-not=-import-slots --implicit-check-not=-start-stop-symbols \
 // RUN:   --implicit-check-not=-boundary-symbols --implicit-check-not=_load_config_used
-// C:      lld-link{{(.exe)?}}" "-out:a.exe" "-lldignoreenv" "-manifest:embed"
+// C:      lld-link{{(.exe)?}}" "-out:a.exe" "-lldignoreenv" "-subsystem:default,10.0"
+// C-SAME: "-manifest:embed"
 // C-SAME: "-manifestinput:{{[^"]*}}segment_heap.manifest" "-Brepro"
 // C-SAME: "{{[^"]*}}.o"
 // C-SAME: "-defaultlib:libunwind.dll.lib"
@@ -56,12 +57,14 @@
 // and a DLL embeds no manifest. Under Control Flow Guard, an executable
 // suppresses its exports as call targets and a DLL does not; an x86-64 image
 // is marked for the shadow stack and has the table of EH continuation targets,
-// with or without the guard, all in one -guard: argument.
+// with or without the guard, all in one -guard: argument. What a DLL's link
+// does not define stays an error, unless the link opts in to importing it
+// from the executable.
 // RUN: %{x64} -shared -o foo.dll 2>&1 | FileCheck --check-prefixes=DLL,DLL-X64 %s \
-// RUN:   --implicit-check-not=-manifest
+// RUN:   --implicit-check-not=-manifest --implicit-check-not=-unresolved-host-imports
 // RUN: %{cl-a64} /LD /Fefoo.dll /Tc%s 2>&1 | FileCheck --check-prefixes=DLL,DLL-A64 %s \
 // RUN:   --implicit-check-not=-manifest --implicit-check-not=-cetcompat
-// DLL:          "-out:foo.dll" "-lldignoreenv" "-dll" "-implib:foo.dll.lib"
+// DLL:          "-out:foo.dll" "-lldignoreenv" "-subsystem:default,10.0" "-dll" "-implib:foo.dll.lib"
 // DLL-X64-SAME: "-cetcompat" "-guard:cf,ehcont"
 // DLL-A64-SAME: "-guard:cf"
 
@@ -75,11 +78,11 @@
 // RUN:   | FileCheck --check-prefix=CONSOLE %s \
 // RUN:   --implicit-check-not=user32 --implicit-check-not=-cetcompat --implicit-check-not=-Brepro
 // RUN: %{x64} -c -mwindows 2>&1 | FileCheck --check-prefix=COMPILE-ONLY %s
-// WINDOWS:      "-lldignoreenv" "-subsystem:windows"
+// WINDOWS:      "-lldignoreenv" "-subsystem:windows,10.0"
 // WINDOWS-SAME: "-manifestinput:{{[^"]*}}" "-debug" "-Brepro" "-cetcompat" "-guard:cf,ehcont,exportsuppress"
 // WINDOWS-SAME: "-guard:cf,noexportsuppress" "-timestamp:1"
 // WINDOWS-SAME: "-defaultlib:onecore_apiset.lib" "-defaultlib:user32.lib"
-// CONSOLE:      "-lldignoreenv" "-subsystem:console"
+// CONSOLE:      "-lldignoreenv" "-subsystem:console,10.0"
 // CONSOLE-SAME: "-manifestinput:{{[^"]*}}" "-guard:cf,exportsuppress"
 // COMPILE-ONLY-NOT: error:
 

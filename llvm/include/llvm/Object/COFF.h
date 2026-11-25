@@ -1586,6 +1586,7 @@ struct COFFLinkImage {
   /// plus one for an image that it loads late.
   std::vector<uint32_t> Imports;
   std::vector<Entity> Kept;
+  bool Executable = false;
 };
 
 /// Reads the payload of an Images group. An image that is not well formed is

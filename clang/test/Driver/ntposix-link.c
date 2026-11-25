@@ -5,15 +5,16 @@
 // ntposix.dll's import library and the builtins, as default libraries after
 // the inputs, with the builtins' load configuration: no C library, no unwind
 // library, no start files, and no option that selects how imports bind. An
-// executable embeds a manifest, and an image's timestamps are a hash of its
-// contents.
+// image's subsystem version is Windows 10's, an executable embeds a manifest,
+// and an image's timestamps are a hash of its contents.
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix %s --sysroot=%t -resource-dir=%t/resource 2>&1 | FileCheck --check-prefix=EXE %s \
 // RUN:   --implicit-check-not=libc++ --implicit-check-not=libunwind --implicit-check-not=wincrt \
 // RUN:   --implicit-check-not=oldnames --implicit-check-not=-defaultlib:ucrt --implicit-check-not=.obj \
 // RUN:   --implicit-check-not=-entry: --implicit-check-not=-manifestinput: --implicit-check-not=-auto-import \
 // RUN:   --implicit-check-not=-runtime-pseudo-reloc --implicit-check-not=-import-slots \
 // RUN:   --implicit-check-not=-start-stop-symbols --implicit-check-not=-boundary-symbols
-// EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-lldignoreenv" "-manifest:embed" "-Brepro"
+// EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-lldignoreenv" "-subsystem:default,10.0"
+// EXE-SAME: "-manifest:embed" "-Brepro"
 // EXE-SAME: "-cetcompat" "-guard:ehcont,nocf"
 // EXE-SAME: "-libpath:[[ROOT:[^"]*]]{{/|\\\\}}lib{{/|\\\\}}x86_64-pc-windows-ntposix"
 // EXE-SAME: "-libpath:[[ROOT]]{{/|\\\\}}lib"
@@ -25,11 +26,14 @@
 // EXE-SAME: "-nodefaultlib:libcmt" "-nodefaultlib:libcmtd"
 // EXE-SAME: "-nodefaultlib:ucrtd" "-nodefaultlib:iso_stdio_wide_specifiers"
 
-// A C++ link adds libc++; the unwinder is ntposix.dll's.
-// RUN: %clangxx -### --target=aarch64-pc-windows-ntposix %s -shared -o foo.dll 2>&1 | FileCheck --check-prefix=DLL %s \
+// A C++ link adds libc++; the unwinder is ntposix.dll's. As on ELF, a DLL
+// imports what its link does not define from the executable that loads it,
+// unless a -z defs that follows says otherwise.
+// RUN: %clangxx -### --target=aarch64-pc-windows-ntposix %s -shared -z defs -o foo.dll 2>&1 | FileCheck --check-prefix=DLL %s \
 // RUN:   --implicit-check-not=libunwind --implicit-check-not=-manifest --implicit-check-not=-cetcompat
-// DLL:      "-out:foo.dll" "-lldignoreenv" "-dll" "-implib:foo.dll.lib"
+// DLL:      "-out:foo.dll" "-lldignoreenv" "-subsystem:default,10.0" "-dll" "-implib:foo.dll.lib" "-unresolved-host-imports"
 // DLL-SAME: "-guard:ehcont,nocf"
+// DLL-SAME: "-z" "defs"
 // DLL-SAME: "-defaultlib:libc++.dll.lib"
 // DLL-SAME: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib" "-include:_load_config_used" "-defaultlib:ntposix"
 

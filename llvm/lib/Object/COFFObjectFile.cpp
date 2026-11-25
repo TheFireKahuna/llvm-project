@@ -2803,6 +2803,11 @@ Error object::readCOFFLinkImages(StringRef Payload,
         return createStringError(object_error::parse_failed,
                                  "a field longer than the group");
       uint64_t End = C.tell() + Size;
+      if (C && Tag == COFF::LinkImageExecutable) {
+        Image.Executable = true;
+        C.seek(End);
+        continue;
+      }
       if (C && Tag != COFF::LinkImageKept) {
         if (Tag & COFF::LinkRecordCritical)
           return createStringError(object_error::parse_failed,
@@ -2857,7 +2862,11 @@ void object::writeCOFFLinkImages(raw_ostream &OS,
     encodeULEB128(Image.Imports.size(), OS);
     for (uint32_t Import : Image.Imports)
       encodeULEB128(Import, OS);
-    encodeULEB128(!Image.Kept.empty(), OS);
+    encodeULEB128(Image.Executable + !Image.Kept.empty(), OS);
+    if (Image.Executable) {
+      encodeULEB128(COFF::LinkImageExecutable, OS);
+      encodeULEB128(0, OS);
+    }
     if (Image.Kept.empty())
       continue;
     SmallString<0> Kept;

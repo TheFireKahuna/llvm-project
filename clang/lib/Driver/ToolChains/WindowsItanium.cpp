@@ -81,6 +81,18 @@ void tools::windowsitanium::Linker::ConstructJob(
 
   bool IsDLL = Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
                            options::OPT__SLASH_LDd);
+  // The subsystem version is Windows 10's, at which the loader fails an image
+  // whose security cookie it cannot write rather than running it unprotected.
+  // -mwindows or -mconsole names an executable's subsystem; a user's
+  // -subsystem:, which follows, replaces either part.
+  const Arg *Subsystem =
+      IsDLL ? nullptr
+            : Args.getLastArg(options::OPT_mwindows, options::OPT_mconsole);
+  CmdArgs.push_back(
+      !Subsystem ? "-subsystem:default,10.0"
+      : Subsystem->getOption().matches(options::OPT_mwindows)
+          ? "-subsystem:windows,10.0"
+          : "-subsystem:console,10.0");
   if (IsDLL) {
     CmdArgs.push_back("-dll");
     // name.dll.lib, so that name.dll's import library and the static archive
@@ -88,12 +100,12 @@ void tools::windowsitanium::Linker::ConstructJob(
     SmallString<128> ImpLib(Output.getFilename());
     llvm::sys::path::replace_extension(ImpLib, "dll.lib");
     CmdArgs.push_back(Args.MakeArgString("-implib:" + ImpLib));
+    // As ELF's -shared does, an NT-POSIX DLL imports what nothing in its link
+    // defines from the executable that loads it, unless a -z defs or
+    // --no-undefined that follows says otherwise.
+    if (TC.getTriple().isWindowsNTPOSIXEnvironment())
+      CmdArgs.push_back("-unresolved-host-imports");
   } else {
-    if (const Arg *A =
-            Args.getLastArg(options::OPT_mwindows, options::OPT_mconsole))
-      CmdArgs.push_back(A->getOption().matches(options::OPT_mwindows)
-                            ? "-subsystem:windows"
-                            : "-subsystem:console");
     // Every executable embeds a manifest, so that neither a loose manifest
     // nor a .local redirection changes what the loader binds. On Windows
     // Itanium it is the one shipped beside wincrt, which selects the segment

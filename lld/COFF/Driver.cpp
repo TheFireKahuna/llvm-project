@@ -2441,8 +2441,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     parseVersion(arg->getValue(), &config->majorImageVersion,
                  &config->minorImageVersion);
 
-  // Handle /subsystem
-  if (auto *arg = args.getLastArg(OPT_subsystem))
+  // Handle /subsystem. As link.exe does, a later one without a version keeps
+  // the version an earlier one gave.
+  for (auto *arg : args.filtered(OPT_subsystem))
     parseSubsystem(arg->getValue(), &config->subsystem,
                    &config->majorSubsystemVersion,
                    &config->minorSubsystemVersion);

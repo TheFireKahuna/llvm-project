@@ -1352,6 +1352,9 @@ enum LinkImageField : uint64_t {
   /// bytes, the logarithm of its alignment and, where the flags say so, the
   /// 32 bits of its section's checksum. Critical.
   LinkImageKept = 1,
+  /// The image is an executable, so that an image that imports from it binds
+  /// the running executable by name, whatever its file. Empty. Critical.
+  LinkImageExecutable = 3,
 };
 
 /// An entity's LinkFactVisibilityState is in bits 0 and 1 and a variable's
