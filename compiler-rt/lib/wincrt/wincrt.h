@@ -85,6 +85,10 @@ extern const uintptr_t __security_cookie;
 #define WINCRT_API
 #endif
 
+// A function the loader or the runtime's assembly calls on a thread that may
+// have no thread pointer, or none any more, is passed none and derives none.
+#define WINCRT_NO_TP __attribute__((thread_pointer("none")))
+
 extern "C" {
 WINCRT_API int __cdecl __cxa_atexit(void (*)(void *), void *, void *);
 WINCRT_API int __cdecl __llvm_kcfi_cxa_atexit(void (*)(void *), void *, void *);

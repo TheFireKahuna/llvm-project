@@ -25,14 +25,6 @@
 // so that a later copy can trust it (tlsrt.cpp).
 #define WINCRT_TLS_API __declspec(dllexport)
 
-// The runtime never derives a thread pointer inside itself: its entries and
-// what its assembly calls run with none.
-#if __has_attribute(thread_pointer)
-#define WINCRT_NO_TP __attribute__((thread_pointer("none")))
-#else
-#define WINCRT_NO_TP
-#endif
-
 extern "C" {
 // Exported by ntdll; no SDK header declares them.
 NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemoryEx(HANDLE, PVOID *, SIZE_T *,
@@ -40,19 +32,21 @@ NTSYSAPI NTSTATUS NTAPI NtAllocateVirtualMemoryEx(HANDLE, PVOID *, SIZE_T *,
                                                   MEM_EXTENDED_PARAMETER *,
                                                   ULONG);
 NTSYSAPI NTSTATUS NTAPI NtFreeVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG);
-NTSYSAPI NTSTATUS NTAPI NtProtectVirtualMemory(HANDLE, PVOID *, SIZE_T *, ULONG,
-                                               ULONG *);
 NTSYSAPI NTSTATUS NTAPI NtDuplicateObject(HANDLE, HANDLE, HANDLE, PHANDLE,
                                           ACCESS_MASK, ULONG, ULONG);
 NTSYSAPI NTSTATUS NTAPI NtOpenThread(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES,
                                      CLIENT_ID *);
-
+NTSYSAPI NTSTATUS NTAPI NtSetInformationObject(HANDLE, ULONG, PVOID, ULONG);
+NTSYSAPI NTSTATUS NTAPI NtCreateSection(PHANDLE, ACCESS_MASK,
+                                        POBJECT_ATTRIBUTES, PLARGE_INTEGER,
+                                        ULONG, ULONG, HANDLE);
 // The no-thread header: what the thread pointer names on a thread with no
 // block. Read-only, its thread-pointer words naming itself.
 WINCRT_TLS_API extern const uint64_t __tp_none[TP_H / 8];
 }
 
 #define STATUS_INVALID_CID ((NTSTATUS)0xC000000BL)
+#define SEC_NO_CHANGE 0x00400000
 #define OBJ_PROTECT_CLOSE 0x00000001
 
 namespace wincrt::tls {
@@ -82,43 +76,70 @@ template <typename T, typename U> bool cas(T *P, T &Expected, U Desired) {
 template <typename T, typename U> T add(T *P, U V) {
   return __atomic_fetch_add(P, static_cast<T>(V), __ATOMIC_ACQ_REL);
 }
+template <typename T, typename U> T setBits(T *P, U V) {
+  return __atomic_fetch_or(P, static_cast<T>(V), __ATOMIC_ACQ_REL);
+}
+template <typename T, typename U> T clearBits(T *P, U V) {
+  return __atomic_fetch_and(P, ~static_cast<T>(V), __ATOMIC_ACQ_REL);
+}
 template <typename T> T peek(T *P) { return add(P, 0); }
+inline uint64_t run(unsigned N) {
+  return N >= 64 ? ~uint64_t(0) : (uint64_t(1) << N) - 1;
+}
+
+// A reservation in flight: the system call's output, and what a release
+// passes back with its size zero.
+struct Reserve {
+  void *Base;
+  SIZE_T Size;
+};
+// Where a thread keeps the reservation it makes until its home holds it,
+// and the one it releases until the kernel has written the size back: every
+// reservation is created into a journal, so that a kill at any point leaves
+// one a finisher can settle.
+struct Journal {
+  Reserve Making;
+  uint64_t *Home;
+  Reserve Freeing;
+};
 
 // A record: the tenancy of one slot's block, its word {state, client id,
 // generation}, which moves only by compare-exchange.
 struct Record {
   uint64_t Word;
   HANDLE Pin;      // the thread's own handle, which keeps its client id
+  uint64_t Hold;   // the wide era a step of this thread acts under, or 0
   uint64_t Return; // one plus the map page whose return the thread runs
-
-  // One plus the record a check of the thread's protects, with Landed once
-  // the protection stands.
-  uint64_t Checked;
-  uint64_t Pad[4];
+  Journal J;
+  // One plus the record the thread protects, or the first slot of the chunk
+  // all of whose records it protects: one a check waits on the pin of, or a
+  // registration writes the blocks of. No record is finished while a live
+  // thread protects it, so its pin stays open and its chunk does not park; a
+  // dead protector's own finisher clears it.
+  uint64_t Protecting;
+  // The pin's thread's creation time, written by its closer before it tags
+  // the pin closing, so that a rerun knows the pin's thread from another.
+  uint64_t PinTime;
+  uint64_t Pad[5];
 };
-static_assert(sizeof(Record) == 64);
+static_assert(sizeof(Record) == 128);
 enum : uint64_t { Free, Claimed, Live, Releasing, Finishing };
-// The record's protectors: a check that waits on its pin, and a registration
-// that writes its block, each of which keeps it from being finished, so that
-// its pin stays open and its chunk does not park; only a check that is the
-// sole protector elects its finisher. The record's own thread moves its word
-// over them.
-constexpr uint64_t Protect = uint64_t(1) << 56, Protectors = uint64_t(15) << 56,
-                   Landed = uint64_t(1) << 63;
 inline uint64_t stateOf(uint64_t W) { return W >> 60; }
 inline uint32_t tidOf(uint64_t W) { return uint32_t(W >> 32 & 0xFFFFFF) << 2; }
 inline uint64_t recordWord(uint64_t State, uint32_t Tid, uint64_t Old) {
-  return State << 60 | (Old & Protectors) | uint64_t(Tid >> 2) << 32 |
-         uint32_t(Old + 1);
+  return State << 60 | uint64_t(Tid >> 2) << 32 | uint32_t(Old + 1);
 }
 
 // A chunk's resident entry. Word holds the free bits of slots 16 to 62 and
 // the state; Actor the client id of the thread whose revival or park is in
-// flight.
+// flight, which acts under Hold and makes and releases through J.
 struct Chunk {
   uint64_t Word;
   uint64_t Actor;
+  uint64_t Hold;
+  Journal J;
 };
+static_assert(sizeof(Chunk) == 64);
 enum : uint64_t {
   ChunkEmpty,
   ChunkReviving,
@@ -166,64 +187,78 @@ struct State {
   // security cookie, since each copy's differs.
   uint64_t Cookie;
   uint64_t ControlCommitted[MapPages / 8 / 64];
-  uint64_t Taken[3]; // the granules of the block's, plane 1's and plane 2's
-  void *Set;         // the image set's first page
+  uint64_t Taken[3];   // the granules of the block's, plane 1's and plane 2's
+  void *Set;           // the image set's first page
+  uint64_t Wide;       // the wide area's words taken, the executable's first
+  uint64_t Era;        // the wide era, from 1
+  uint64_t Holders;    // the set's wide and overflow entries
+  uint64_t Pending;    // the set's entries removing or closing
+  const uint64_t *Key; // the key's read-only page
 };
 constexpr uint32_t StateVersion = 1;
-constexpr uintptr_t StateAt =
-    2 * MapSpan + MapPages * 512 + Chunks * sizeof(Chunk);
+constexpr uintptr_t StateAt = 2 * MapSpan + MapPages * 512 + Chunks * 64;
 constexpr uint64_t Change = uint64_t(1) << 63;
 
 // The runtime's exports, read-only once founding has written them: A, then
 // B, the map's control blocks and the chunk entries; the block area.
-extern "C" WINCRT_TLS_API const volatile uintptr_t __tp_map, __tp_base;
+extern "C" WINCRT_TLS_API const volatile uintptr_t __tp_map, __tp_base,
+    __tp_key;
 inline char *meta() { return reinterpret_cast<char *>(__tp_map); }
 inline char *area() { return reinterpret_cast<char *>(__tp_base); }
 inline State &shared() { return *reinterpret_cast<State *>(meta() + StateAt); }
 
+inline char *chunkBase(uint32_t C) {
+  return area() + (uintptr_t(C) << TP_CHUNK_SHIFT);
+}
 inline char *blockAt(uint32_t Index) {
-  return area() + (uintptr_t(Index >> 6) << TP_CHUNK_SHIFT) +
-         (uintptr_t(Index & 63) << TP_BLOCK_SHIFT);
+  return chunkBase(Index >> 6) + (uintptr_t(Index & 63) << TP_BLOCK_SHIFT);
 }
 inline Chunk &chunkAt(uint32_t C) {
   return reinterpret_cast<Chunk *>(meta() + 2 * MapSpan + MapPages * 512)[C];
 }
-inline char *chunkBase(uint32_t C) {
-  return area() + (uintptr_t(C) << TP_CHUNK_SHIFT);
-}
 inline Record &recordAt(uint32_t Index) {
-  return reinterpret_cast<Record *>(
-      area() +
-      (uintptr_t(Index >> 6) << TP_CHUNK_SHIFT))[(Index & 63) - 16];
+  return reinterpret_cast<Record *>(chunkBase(Index >> 6))[(Index & 63) - 16];
+}
+// Plane P's run of a chunk: its slots 16 to 63, at P planes from the blocks.
+inline char *planeRun(uint32_t C, unsigned P) {
+  return chunkBase(C) + 16 * TP_BLOCK + P * TP_PLANE;
 }
 inline uint32_t currentTid() {
   return *reinterpret_cast<const uint32_t *>(
       reinterpret_cast<const char *>(NtCurrentTeb()) + TP_CLIENT_ID);
 }
+inline char *executable() {
+  return static_cast<char *>(
+      NtCurrentTeb()->ProcessEnvironmentBlock->Reserved3[1]);
+}
+
+// Every live chunk with its claimed slots, by its bits; every claimed slot.
+template <typename F> void eachChunk(F Each) {
+  for (uint32_t C = 1, Top = load(&shared().Top); C <= Top; ++C)
+    if (uint64_t W = load(&chunkAt(C).Word); (W & ChunkState) == ChunkLive)
+      Each(C, ~W & FullBits);
+}
+template <typename F> void eachRecord(F Each) {
+  eachChunk([&](uint32_t C, uint64_t Taken) {
+    for (; Taken; Taken &= Taken - 1)
+      Each(C * 64 + __builtin_ctzll(Taken));
+  });
+}
+
+// Publishes Self's protection of record Index, or, for the first slot of a
+// chunk, of every record of the chunk; ends it.
+inline void shield(Record &Self, uint32_t Index) {
+  __atomic_exchange_n(&Self.Protecting, uint64_t(Index) + 1, __ATOMIC_SEQ_CST);
+}
+inline void unprotect(Record &Self) { store(&Self.Protecting, 0); }
 
 // Commits or decommits [Base, Base + Size).
 bool commit(void *Base, uintptr_t Size);
 void decommit(void *Base, uintptr_t Size);
-
-// The map: the entry of a client id, its first publication, the replacement
-// of the entry it holds by a compare-exchange, and its clear.
+// The entry of a client id in the TID map.
 uint32_t lookup(uint32_t Tid);
-bool publish(uint32_t Tid, uint32_t Entry);
-bool replace(uint32_t Tid, uint32_t From, uint32_t To);
-void clear(Record &Self, uint32_t Tid, uint32_t Entry);
-void resumeReturn(Record &Self, Record &Dead);
-
-// Claims a record for the calling thread, or answers 0; frees one, parking
-// its chunk where that frees the chunk's last; parks a chunk; finishes the
-// revival or park of a chunk whose actor is gone.
-uint32_t claim(uint32_t Tid);
-void release(uint32_t Index);
+// Parks a chunk whose last bit the caller freed.
 void park(uint32_t C);
-void finishChunk(uint32_t C);
-void *planeRun(uint32_t C, unsigned P);
-// Whether the thread with client id Tid, whose handle no record holds, is
-// past its last instruction: its id names no thread, or a signalled one.
-bool gone(uint32_t Tid);
 
 // The thread pointer of the thread with client id Tid, whose handle Thread
 // is, adopting it where it has no block: the calling thread, or one the
@@ -232,41 +267,27 @@ intptr_t adopt(uint32_t Tid, HANDLE Thread);
 // The calling thread's block header, adopting the thread where Adopt is set;
 // null where it has none, or it is released.
 Header *header(bool Adopt);
-// Moves the caller's own record to State, over its protectors.
-bool advance(Record &R, uint64_t State);
-// The steps that end a record, in this order; each caller selects some. The
-// release at the thread's last hook takes Release, its finisher Finish.
-enum : unsigned {
-  StepDrop = 2,   // drop its destructor list without running it
-  StepTomb = 4,   // replace its TID-map entry with the tombstone
-  StepClear = 8,  // clear its TID-map entry
-  StepScan = 16,  // drop the protection a dead check of its own left
-  StepClose = 32, // close its pin
-  StepFree = 64,  // free the record and its block
-  Release = StepDrop | StepTomb,
-  Finish = StepDrop | StepClear | StepScan | StepClose | StepFree
-};
-void finish(Record &Self, uint32_t Index, unsigned How);
 // The release at the calling thread's last hook.
 void releaseSelf();
-// The rotating check: finishes the next record or two whose thread is gone.
-void check(Record &Self);
-// Adds a protector to a record, unless it is free or being finished; drops
-// one.
-bool protect(Record &R);
-void unprotect(Record &R);
 // Drops a thread's destructor list without running it.
 void dropThread(ThreadState &T);
 // Finds whether the executable's last TLS callback is __wincrt_thread_end.
 void findTail();
-// Seeds the block of record Index before its thread runs code of the model.
-void seed(uint32_t Index);
 
 // Writes every registered image's template into the block of record Index,
-// being seeded.
-void seedImages(uint32_t Index);
+// being seeded; false where a reservation or a commit is refused.
+bool seedImages(uint32_t Index);
 // Registers the executable, and has the loader notify unloads.
 bool foundImages();
+// The wide and overflow entries' part of a chunk's revival and park, made
+// by the chunk's actor; and of a record's end: its wide slots of a page or
+// more decommitted, its hold cleared and the scan run.
+bool reviveHook(uint32_t C);
+void parkHook(uint32_t C);
+void endWide(Record &Self, uint32_t Index);
+void endHold(Record &Self, Record &Dead);
+// Settles the journal of a maker that is gone.
+void settle(Journal &J);
 // Writes a word of read-only image memory under the fill's bracket.
 bool bracket(volatile const uint64_t *Word, uint64_t Value);
 
@@ -274,14 +295,16 @@ bool bracket(volatile const uint64_t *Word, uint64_t Value);
 bool found();
 
 // Accesses to pages the runtime may return, or images being unloaded, which
-// find zero there: a u32's and a word's load; a copy of whole words, false
-// where it stopped; a word's compare-exchange, answering the word it found.
+// find zero there: a u32's and a word's load; a copy of one or more whole
+// words, false where it stopped; a word's compare-exchange, answering the
+// word it found.
 extern "C" {
-uint32_t __wincrt_probe32(const void *);
-uint64_t __wincrt_probe64(const void *);
-bool __wincrt_probe_copy(void *, const void *, size_t);
-uint64_t __wincrt_probe_cas(uint64_t *, uint64_t, uint64_t);
+WINCRT_NO_TP uint32_t __wincrt_probe32(const void *);
+WINCRT_NO_TP uint64_t __wincrt_probe64(const void *);
+WINCRT_NO_TP bool __wincrt_probe_copy(void *, const void *, size_t);
+WINCRT_NO_TP uint64_t __wincrt_probe_cas(uint64_t *, uint64_t, uint64_t);
 }
+inline uint64_t probeLoad(const uint64_t *W) { return __wincrt_probe64(W); }
 
 } // namespace wincrt::tls
 

@@ -35,7 +35,7 @@ using namespace wincrt::tls;
 extern "C" {
 __declspec(allocate(".wtls")) const volatile uintptr_t __tp_map = 0;
 __declspec(allocate(".wtls")) const volatile uintptr_t __tp_base = 0;
-
+__declspec(allocate(".wtls")) const volatile uintptr_t __tp_key = 0;
 __declspec(align(64)) const uint64_t __tp_none[TP_H / 8] = {
     reinterpret_cast<uint64_t>(&__tp_none), 0,
     reinterpret_cast<uint64_t>(&__tp_none)};
@@ -58,238 +58,206 @@ void wincrt::tls::decommit(void *Base, uintptr_t Size) {
 
 namespace {
 
-// A page's control: an occupancy bit per id, 32 to a group word with TagA,
-// set while A's return is in flight; a bit per id whose entry is in B; and
-// the page's word, whether each slot's page is committed (CA, CB) or being
-// returned (RA, RB), and the returner's client id.
+// A page's control: a bit per id with an entry, and per id whose entry is in
+// B; the page's word, whether each slot's page is committed (CA, CB) or being
+// returned (RA, RB), and the returner's client id. A returner flags its slot
+// in the word, then reads the bits; a publisher sets its bit, then reads the
+// word, each by a read-modify-write: one sees the other.
 struct Control {
-  uint64_t Group[32];
-  uint64_t BBits[16];
+  uint64_t Ids[16];
+  uint64_t InB[16];
   uint64_t W;
-  uint64_t Pad[15];
+  uint64_t Pad[31];
 };
 static_assert(sizeof(Control) == 512);
-constexpr uint64_t TagA = uint64_t(1) << 32;
 enum : uint64_t { CA = 1, CB = 2, RA = 4, RB = 8 };
 
 uint32_t *slot(uint32_t Tid, bool B) {
   return reinterpret_cast<uint32_t *>(meta() + B * MapSpan + Tid);
 }
-void *pageOf(uint32_t Page, bool B) {
-  return meta() + B * MapSpan + uintptr_t(Page) * wincrt::tls::Page;
+void *pageOf(uint32_t P, bool B) {
+  return meta() + B * MapSpan + uintptr_t(P) * Page;
 }
-Control &control(uint32_t Page) {
-  return reinterpret_cast<Control *>(meta() + 2 * MapSpan)[Page];
+Control &control(uint32_t P) {
+  return reinterpret_cast<Control *>(meta() + 2 * MapSpan)[P];
+}
+
+bool committed(uint32_t P) {
+  return load(&shared().ControlCommitted[P / 8 / 64]) >> (P / 8 % 64) & 1;
 }
 
 // The control of a page, committed. Eight share a page of their own, which
 // is committed once and kept.
-Control *controlFor(uint32_t Page) {
-  uint64_t *Bits = &shared().ControlCommitted[Page / 8 / 64];
-  uint64_t Bit = uint64_t(1) << (Page / 8 % 64);
-  if (!(load(Bits) & Bit)) {
-    if (!commit(&control(Page & ~7u), wincrt::tls::Page))
+Control *controlFor(uint32_t P) {
+  if (!committed(P)) {
+    if (!commit(&control(P & ~7u), Page))
       return nullptr;
-    __atomic_fetch_or(Bits, Bit, __ATOMIC_ACQ_REL);
+    setBits(&shared().ControlCommitted[P / 8 / 64], uint64_t(1) << P / 8 % 64);
   }
-  return &control(Page);
+  return &control(P);
 }
 
-bool committed(uint32_t Page) {
-  return load(&shared().ControlCommitted[Page / 8 / 64]) >> (Page / 8 % 64) & 1;
-}
-
-void evaluate(Record &Self, uint32_t Page);
-
-void setCommitted(Control &C, uint64_t Bit) {
-  __atomic_fetch_or(&C.W, Bit, __ATOMIC_ACQ_REL);
-}
-
-// The ids of the page with an entry in a slot: B by its bits, A by its
-// occupancy. A plain load decides only to look further; a nonzero one, which
+// Whether an id of the page has an entry in B, or in either slot, which
+// keeps A. A plain load decides only to look further; a nonzero one, which
 // could be stale, is confirmed by a read-modify-write.
 bool holds(Control &C, bool B) {
-  for (unsigned I = 0, N = B ? 16 : 32; I != N; ++I) {
-    uint64_t *W = B ? &C.BBits[I] : &C.Group[I];
-    uint64_t Mask = B ? ~uint64_t(0) : TagA - 1;
-    if (load(W) & Mask && peek(W) & Mask)
+  for (uint64_t &W : B ? C.InB : C.Ids)
+    if (load(&W) && peek(&W))
       return true;
-  }
   return false;
 }
 
-void releaseReturn(Record &Self, Control &C, uint64_t R, uint32_t Page) {
-  __atomic_fetch_and(&C.W, ~(R | ~uint64_t(0) << 32), __ATOMIC_ACQ_REL);
+void evaluate(Record &Self, uint32_t P);
+
+// Returns a slot's page where the slot holds no entry, and A again where a
+// publisher filled B meanwhile, so that its derivation reads zero rather than
+// faulting; then ends the return and evaluates the page again.
+void returnSlot(Record &Self, Control &C, uint32_t P, bool B) {
+  if (!holds(C, B)) {
+    decommit(pageOf(P, B), Page);
+    if (clearBits(&C.W, B ? CB : CA) & CB && !B && commit(pageOf(P, B), Page))
+      setBits(&C.W, CA);
+  }
+  clearBits(&C.W, (B ? RB : RA) | ~uint64_t(0) << 32);
   store(&Self.Return, 0);
-  evaluate(Self, Page);
-}
-
-// Returns A's page: every group word is tagged from empty, stopping at an
-// occupant; then the decommit, and A again where a publisher filled B
-// meanwhile, so that its derivation reads zero rather than faulting. A tag
-// already standing is a dead returner's, resumed.
-void returnA(Record &Self, Control &C, uint32_t Page) {
-  unsigned G = 0;
-  for (; G != 32; ++G) {
-    uint64_t Z = 0;
-    if (!cas(&C.Group[G], Z, TagA) && Z != TagA)
-      break;
-  }
-  if (G == 32) {
-    decommit(pageOf(Page, false), wincrt::tls::Page);
-    if (__atomic_fetch_and(&C.W, ~CA, __ATOMIC_ACQ_REL) & CB &&
-        commit(pageOf(Page, false), wincrt::tls::Page))
-      setCommitted(C, CA);
-  }
-  while (G--)
-    __atomic_fetch_and(&C.Group[G], ~TagA, __ATOMIC_ACQ_REL);
-  releaseReturn(Self, C, RA, Page);
-}
-
-void returnB(Record &Self, Control &C, uint32_t Page) {
-  if (!holds(C, true)) {
-    decommit(pageOf(Page, true), wincrt::tls::Page);
-    __atomic_fetch_and(&C.W, ~CB, __ATOMIC_ACQ_REL);
-  }
-  releaseReturn(Self, C, RB, Page);
+  evaluate(Self, P);
 }
 
 // Returns a slot of the page that holds no entry, B first, each by one
 // compare-exchange that names the returner, journalled in its record.
-void evaluate(Record &Self, uint32_t Page) {
-  Control &C = control(Page);
+void evaluate(Record &Self, uint32_t P) {
+  Control &C = control(P);
   for (int B = 1; B >= 0; --B) {
     uint64_t W = load(&C.W);
     if (W & (RA | RB))
       return;
     if (!(W & (B ? CB : CA)) || holds(C, B))
       continue;
-    store(&Self.Return, Page + 1);
+    store(&Self.Return, P + 1);
     if (cas(&C.W, W, W | (B ? RB : RA) | uint64_t(currentTid()) << 32))
-      return B ? returnB(Self, C, Page) : returnA(Self, C, Page);
-    store(&Self.Return, 0);
-    return;
+      return returnSlot(Self, C, P, B);
+    return store(&Self.Return, 0);
   }
 }
 
-} // namespace
-
-uint32_t wincrt::tls::lookup(uint32_t Tid) {
-  uint32_t Page = Tid / wincrt::tls::Page;
-  if (Page < Prefix)
-    return load(slot(Tid, false));
-  if (Page >= MapPages || !committed(Page))
-    return 0;
-  uint64_t W = load(&control(Page).W);
-  uint32_t E = W & CA ? __wincrt_probe32(slot(Tid, false)) : 0;
-  return E || !(W & CB) ? E : __wincrt_probe32(slot(Tid, true));
-}
-
-bool wincrt::tls::publish(uint32_t Tid, uint32_t Entry) {
-  uint32_t Page = Tid / wincrt::tls::Page, Id = Tid / 4 % 1024;
-  if (Page < Prefix) {
-    store(slot(Tid, false), Entry);
-    return true;
-  }
-  Control *C = Page < MapPages ? controlFor(Page) : nullptr;
+// Publishes Tid's entry, its first and only write.
+bool publish(uint32_t Tid, uint32_t Entry) {
+  uint32_t P = Tid / Page, Id = Tid / 4 % 1024;
+  if (P < Prefix)
+    return store(slot(Tid, false), Entry), true;
+  Control *C = P < MapPages ? controlFor(P) : nullptr;
   if (!C)
     return false;
-  uint64_t Group = add(&C->Group[Id / 32], uint64_t(1) << Id % 32);
-  bool InB = Group & TagA;
+  uint64_t *Occupied = &C->Ids[Id / 64], *InB = &C->InB[Id / 64];
+  uint64_t Bit = uint64_t(1) << Id % 64;
+  setBits(Occupied, Bit);
   // A's return is in flight: B, unless B's has begun since, which A's ended
-  // before and Id's occupancy now blocks. A is committed beside B, so that
-  // the derivation reads zero there.
-  if (InB) {
-    if (!commit(pageOf(Page, true), wincrt::tls::Page))
-      return __atomic_fetch_and(&C->Group[Id / 32], ~(uint64_t(1) << Id % 32),
-                                __ATOMIC_ACQ_REL),
-             false;
-    setCommitted(*C, CB);
-    __atomic_fetch_or(&C->BBits[Id / 64], uint64_t(1) << Id % 64,
-                      __ATOMIC_ACQ_REL);
-    if (peek(&C->W) & RB) {
-      __atomic_fetch_and(&C->BBits[Id / 64], ~(uint64_t(1) << Id % 64),
-                         __ATOMIC_ACQ_REL);
-      InB = false;
-    }
+  // before and Id's bit now blocks. A is committed beside B, so that the
+  // derivation reads zero there.
+  uint64_t W = peek(&C->W);
+  bool B = W & RA;
+  if (B) {
+    if (!commit(pageOf(P, true), Page))
+      return clearBits(Occupied, Bit), false;
+    setBits(&C->W, CB);
+    setBits(InB, Bit);
+    if ((W = peek(&C->W)) & RB)
+      B = (clearBits(InB, Bit), false);
   }
-  if (!(peek(&C->W) & CA)) {
-    if (commit(pageOf(Page, false), wincrt::tls::Page))
-      setCommitted(*C, CA);
-    else if (!InB)
-      return __atomic_fetch_and(&C->Group[Id / 32], ~(uint64_t(1) << Id % 32),
-                                __ATOMIC_ACQ_REL),
-             false;
+  if (!(W & CA)) {
+    if (commit(pageOf(P, false), Page))
+      setBits(&C->W, CA);
+    else if (!B)
+      return clearBits(Occupied, Bit), false;
   }
-  store(slot(Tid, InB), Entry);
+  store(slot(Tid, B), Entry);
   return true;
 }
 
 // The entry's owner writes it: the thread, or its finisher while its pin
 // keeps the id. Its occupancy keeps A's page, and its B bit B's.
-static bool inB(uint32_t Tid) {
-  uint32_t Page = Tid / wincrt::tls::Page, Id = Tid / 4 % 1024;
-  return Page >= Prefix && load(&control(Page).BBits[Id / 64]) >> (Id % 64) & 1;
+bool inB(uint32_t Tid) {
+  uint32_t P = Tid / Page, Id = Tid / 4 % 1024;
+  return P >= Prefix && load(&control(P).InB[Id / 64]) >> Id % 64 & 1;
 }
 
-bool wincrt::tls::replace(uint32_t Tid, uint32_t From, uint32_t To) {
-  return cas(slot(Tid, inB(Tid)), From, To);
-}
-
-void wincrt::tls::clear(Record &Self, uint32_t Tid, uint32_t Entry) {
-  uint32_t Page = Tid / wincrt::tls::Page, Id = Tid / 4 % 1024;
-  if (Page >= Prefix && !committed(Page))
+void clear(Record &Self, uint32_t Tid, uint32_t Entry) {
+  uint32_t P = Tid / Page, Id = Tid / 4 % 1024, Tomb = TP_TOMBSTONE;
+  if (P >= Prefix && !committed(P))
     return;
-  uint32_t *E = slot(Tid, inB(Tid));
-  uint32_t Was[] = {Entry, TP_TOMBSTONE};
-  for (uint32_t V : Was)
-    cas(E, V, 0);
-  if (Page < Prefix)
+  // The id's occupancy, cleared after its entry, keeps the entry's page: a
+  // rerun that finds it clear finds the entry cleared, and its page perhaps
+  // returned.
+  if (uint32_t *E = slot(Tid, inB(Tid));
+      P < Prefix || load(&control(P).Ids[Id / 64]) >> Id % 64 & 1)
+    cas(E, Entry, 0) || cas(E, Tomb, 0);
+  if (P < Prefix)
     return;
-  Control &C = control(Page);
-  __atomic_fetch_and(&C.BBits[Id / 64], ~(uint64_t(1) << Id % 64),
-                     __ATOMIC_ACQ_REL);
-  __atomic_fetch_and(&C.Group[Id / 32], ~(uint64_t(1) << Id % 32),
-                     __ATOMIC_ACQ_REL);
-  evaluate(Self, Page);
+  Control &C = control(P);
+  clearBits(&C.InB[Id / 64], uint64_t(1) << Id % 64);
+  clearBits(&C.Ids[Id / 64], uint64_t(1) << Id % 64);
+  evaluate(Self, P);
 }
 
 // Resumes the return that a dead record's journal names, where its word
 // still names the dead thread.
-void wincrt::tls::resumeReturn(Record &Self, Record &Dead) {
-  uint64_t Page = load(&Dead.Return);
-  if (!Page--)
+void resumeReturn(Record &Self, Record &Dead) {
+  uint64_t P = load(&Dead.Return);
+  if (!P--)
     return;
-  Control &C = control(Page);
+  Control &C = control(P);
   uint64_t W = load(&C.W);
   if (W >> 32 == tidOf(Dead.Word) && W & (RA | RB) &&
       cas(&C.W, W, (W & 0xFFFFFFFF) | uint64_t(currentTid()) << 32)) {
-    store(&Self.Return, Page + 1);
-    W &RA ? returnA(Self, C, Page) : returnB(Self, C, Page);
+    store(&Self.Return, P + 1);
+    returnSlot(Self, C, P, !(W & RA));
   }
   store(&Dead.Return, 0);
+}
+
+} // namespace
+
+uint32_t wincrt::tls::lookup(uint32_t Tid) {
+  uint32_t P = Tid / Page;
+  if (P < Prefix)
+    return load(slot(Tid, false));
+  if (P >= MapPages || !committed(P))
+    return 0;
+  uint64_t W = load(&control(P).W);
+  uint32_t E = W & CA ? __wincrt_probe32(slot(Tid, false)) : 0;
+  return E || !(W & CB) ? E : __wincrt_probe32(slot(Tid, true));
 }
 
 //===----------------------------------------------------------------------===//
 // Chunks and records
 //===----------------------------------------------------------------------===//
 
-bool wincrt::tls::gone(uint32_t Tid) {
+// Whether a thread's handle is signalled: the thread is past its last
+// instruction.
+static bool signalled(HANDLE Thread) {
+  LARGE_INTEGER Zero = {};
+  return NtWaitForSingleObject(Thread, FALSE, &Zero) == STATUS_WAIT_0;
+}
+
+// Whether the thread with client id Tid, whose handle no record holds, is
+// gone: its id names no thread, or a signalled one.
+static bool gone(uint32_t Tid) {
   CLIENT_ID Id = {nullptr, reinterpret_cast<HANDLE>(uintptr_t(Tid))};
   OBJECT_ATTRIBUTES Attributes = {sizeof(Attributes)};
   HANDLE Thread;
   NTSTATUS Status = NtOpenThread(&Thread, SYNCHRONIZE, &Attributes, &Id);
   if (Status < 0)
     return Status == STATUS_INVALID_CID;
-  LARGE_INTEGER Zero = {};
-  Status = NtWaitForSingleObject(Thread, FALSE, &Zero);
+  bool Gone = signalled(Thread);
   NtClose(Thread);
-  return Status == STATUS_WAIT_0;
+  return Gone;
 }
 
-// Plane P's run of a chunk: its slots 16 to 63, at P planes from the blocks.
-void *wincrt::tls::planeRun(uint32_t C, unsigned P) {
-  return chunkBase(C) + 16 * TP_BLOCK + P * TP_PLANE;
+// Returns a chunk whose revival is undone or whose park completes.
+static void empty(uint32_t C) {
+  parkHook(C);
+  decommit(chunkBase(C), ChunkSize);
+  store(&chunkAt(C).Word, ChunkEmpty);
 }
 
 // Commits a chunk and every open plane, or answers false having committed
@@ -297,9 +265,8 @@ void *wincrt::tls::planeRun(uint32_t C, unsigned P) {
 static bool revive(uint32_t C) {
   Chunk &Ch = chunkAt(C);
   uint64_t Actor = 0, W = load(&Ch.Word);
-  if ((W & ChunkState) != ChunkEmpty && (W & ChunkState) != ChunkParked)
-    return false;
-  if (!cas(&Ch.Actor, Actor, currentTid()))
+  if (((W & ChunkState) != ChunkEmpty && (W & ChunkState) != ChunkParked) ||
+      !cas(&Ch.Actor, Actor, currentTid()))
     return false;
   bool Revived = cas(&Ch.Word, W, ChunkReviving);
   if (Revived) {
@@ -309,10 +276,11 @@ static bool revive(uint32_t C) {
     Revived = commit(chunkBase(C), 64 * TP_BLOCK);
     for (unsigned P = 1; Revived && P <= TP_PLANES; ++P)
       Revived = !(Planes >> P & 1) || commit(planeRun(C, P), TP_PLANE);
-
-    if (!Revived)
-      decommit(chunkBase(C), ChunkSize);
-    store(&Ch.Word, Revived ? ChunkLive | FullBits : ChunkEmpty);
+    Revived = Revived && reviveHook(C);
+    if (Revived)
+      store(&Ch.Word, ChunkLive | FullBits);
+    else
+      empty(C);
   }
   store(&Ch.Actor, 0);
   return Revived;
@@ -325,15 +293,14 @@ static uint32_t takeIn(uint32_t C, uint32_t Tid) {
        (Bits & ChunkState) == ChunkLive && (Bits &= FullBits);
        Bits &= Bits - 1) {
     unsigned Slot = __builtin_ctzll(Bits);
-    uint64_t *R = &recordAt(C * 64 + Slot).Word, Old = load(R);
-    if (stateOf(Old) != Free || !cas(R, Old, recordWord(Claimed, Tid, Old)))
+    uint64_t *R = &recordAt(C * 64 + Slot).Word, Old = load(R),
+             Mine = recordWord(Claimed, Tid, Old);
+    if (stateOf(Old) != Free || !cas(R, Old, Mine))
       continue;
-    uint64_t Mine = recordWord(Claimed, Tid, Old), W = load(&Ch.Word);
-    while ((W & ChunkState) == ChunkLive && W >> Slot & 1)
-      if (cas(&Ch.Word, W, W & ~(uint64_t(1) << Slot))) {
-        store(&shared().Hint, C);
-        return C * 64 + Slot;
-      }
+    for (uint64_t W = load(&Ch.Word);
+         (W & ChunkState) == ChunkLive && W >> Slot & 1;)
+      if (cas(&Ch.Word, W, W & ~(uint64_t(1) << Slot)))
+        return store(&shared().Hint, C), C * 64 + Slot;
     // Its chunk is parking, which seals the record, or another took the bit.
     cas(R, Mine, recordWord(Free, 0, Mine));
   }
@@ -344,16 +311,15 @@ static uint32_t takeIn(uint32_t C, uint32_t Tid) {
 // publishes a chunk never used, whose entry's page is committed first. Each
 // pass that takes nothing follows another thread's take or publication, or
 // this one's, and the chunks are bounded.
-uint32_t wincrt::tls::claim(uint32_t Tid) {
+static uint32_t claim(uint32_t Tid) {
   for (;;) {
     uint32_t Top = load(&shared().Top), Hint = load(&shared().Hint);
     for (uint32_t I = 0; I != Top; ++I)
       if (uint32_t Index = takeIn((Hint + I) % Top + 1, Tid))
         return Index;
-    for (uint32_t I = 0; I != Top; ++I)
-      if (revive(I + 1))
-        if (uint32_t Index = takeIn(I + 1, Tid))
-          return Index;
+    for (uint32_t I = 1; I <= Top; ++I)
+      if (uint32_t Index = revive(I) ? takeIn(I, Tid) : 0)
+        return Index;
     if (Top + 1 >= Chunks || !commit(&chunkAt(Top + 1), sizeof(Chunk)))
       return 0;
     if (cas(&shared().Top, Top, Top + 1))
@@ -369,59 +335,64 @@ void wincrt::tls::park(uint32_t C) {
   uint64_t Actor = 0, W = ChunkLive | FullBits;
   if (!cas(&Ch.Actor, Actor, currentTid()))
     return;
-  if (cas(&Ch.Word, W, ChunkParking) || (W & ChunkState) == ChunkParking ||
-      (W & ChunkState) == ChunkParked) {
+  if (cas(&Ch.Word, W, ChunkParking) || (W & ChunkState) >= ChunkParking) {
     for (unsigned Slot = 16; Slot != 63; ++Slot) {
       uint64_t *R = &recordAt(C * 64 + Slot).Word, Old = load(R);
       if (stateOf(Old) != Free)
         cas(R, Old, recordWord(Free, 0, Old));
     }
-    if (peek(&shared().Planes) & Change) {
+    if (peek(&shared().Planes) & Change)
       store(&Ch.Word, ChunkParked);
-    } else {
-      decommit(chunkBase(C), ChunkSize);
-      store(&Ch.Word, ChunkEmpty);
-    }
+    else
+      empty(C);
   }
   store(&Ch.Actor, 0);
 }
 
-void wincrt::tls::release(uint32_t Index) {
-  Record &R = recordAt(Index);
-  Chunk &Ch = chunkAt(Index / 64);
-  uint64_t Bit = uint64_t(1) << Index % 64, C = load(&Ch.Word);
-  // The bit, then the word: a record whose claimer died before its bit holds
-  // none.
-  bool Held = (C & ChunkState) == ChunkLive && !(C & Bit);
-  for (uint64_t W = load(&R.Word);
-       stateOf(W) != Free && !cas(&R.Word, W, recordWord(Free, 0, W));)
-    ;
-  if (Held && add(&Ch.Word, Bit) + Bit == (ChunkLive | FullBits))
+static void returnBit(uint32_t Index) {
+  uint64_t Bit = uint64_t(1) << Index % 64;
+  if (add(&chunkAt(Index / 64).Word, Bit) + Bit == (ChunkLive | FullBits))
     park(Index / 64);
 }
 
-bool wincrt::tls::advance(Record &R, uint64_t State) {
-  for (uint64_t W = load(&R.Word);;) {
-    if (stateOf(W) == Finishing || stateOf(W) == Free)
-      return false;
+static void release(uint32_t Index) {
+  Record &R = recordAt(Index);
+  uint64_t C = load(&chunkAt(Index / 64).Word);
+  // The word, then the bit: a record whose claimer died before its bit holds
+  // none, and no claim reads a record whose bit is clear, so a free record
+  // with its bit clear is a return a rerun completes.
+  bool Held = (C & ChunkState) == ChunkLive && !(C >> Index % 64 & 1);
+  for (uint64_t W = load(&R.Word);
+       stateOf(W) != Free && !cas(&R.Word, W, recordWord(Free, 0, W));)
+    ;
+  if (Held)
+    returnBit(Index);
+}
+
+// Whether a record's thread holds it: neither free nor being finished.
+static bool inUse(uint64_t W) {
+  return stateOf(W) != Free && stateOf(W) != Finishing;
+}
+
+// Moves the caller's own record to State.
+static bool advance(Record &R, uint64_t State) {
+  for (uint64_t W = load(&R.Word); inUse(W);)
     if (cas(&R.Word, W, recordWord(State, tidOf(W), W)))
       return true;
-  }
+  return false;
 }
 
 // Finishes a chunk's revival or park whose actor is gone: the revival is
 // undone, since no slot of a reviving chunk is claimed, and the park run.
-void wincrt::tls::finishChunk(uint32_t C) {
+static void finishChunk(uint32_t C) {
   Chunk &Ch = chunkAt(C);
   uint64_t Actor = load(&Ch.Actor);
-  if (!Actor || !gone(static_cast<uint32_t>(Actor)) ||
-      !cas(&Ch.Actor, Actor, currentTid()))
+  if (!Actor || !gone(uint32_t(Actor)) || !cas(&Ch.Actor, Actor, currentTid()))
     return;
   uint64_t W = load(&Ch.Word);
-  if ((W & ChunkState) == ChunkReviving) {
-    decommit(chunkBase(C), ChunkSize);
-    store(&Ch.Word, ChunkEmpty);
-  }
+  settle(Ch.J);
+  if ((W & ChunkState) == ChunkReviving)
+    empty(C);
   store(&Ch.Actor, 0);
   if ((W & ChunkState) == ChunkParking)
     park(C);
@@ -431,11 +402,15 @@ void wincrt::tls::finishChunk(uint32_t C) {
 // Adoption
 //===----------------------------------------------------------------------===//
 
+static void check(Record &Self);
+
 // Zeroes the block and its slot of every open plane, then copies every
 // registered image's template, again while a registration's generation moves:
 // either the registration's walk reaches the block, or the seed reads the
-// raised generation.
-void wincrt::tls::seed(uint32_t Index) {
+// raised generation. A plane read open may close under the seed, which zeroes
+// by probe.
+static bool seed(uint32_t Index) {
+  static const uint64_t Zeros[TP_BLOCK / 8] = {};
   char *Tp = blockAt(Index);
   for (uint64_t Gen = load(&shared().CreateGen);;
        Gen = load(&shared().CreateGen)) {
@@ -443,19 +418,22 @@ void wincrt::tls::seed(uint32_t Index) {
     __builtin_memset(Tp, 0, TP_BLOCK);
     for (unsigned P = 1; P <= TP_PLANES; ++P)
       if (Planes >> P & 1)
-        __builtin_memset(Tp + P * TP_PLANE, 0, TP_BLOCK);
+        __wincrt_probe_copy(Tp + P * TP_PLANE, Zeros, TP_BLOCK / 8);
     auto &H = *reinterpret_cast<Header *>(Tp);
     H.TcbSelf = H.Self = reinterpret_cast<uintptr_t>(Tp);
-    seedImages(Index);
+    if (!seedImages(Index))
+      return false;
     if (load(&shared().CreateGen) == Gen)
-      return;
+      return true;
   }
 }
 
 // Each resource is in the record before the next is taken: the client id by
 // the claim, then the pin, the system call's output, then the block, so that
 // a kill anywhere leaves the record what the rotating check finishes. The
-// TID map's entry, published last, is the adoption's linearization point.
+// TID map's entry, published last, is the adoption's linearization point. A
+// refused adoption leaves its record to the rotating check, which finishes
+// it once the thread is gone.
 intptr_t wincrt::tls::adopt(uint32_t Tid, HANDLE Thread) {
   uint32_t Entry = lookup(Tid);
   if (Entry & TP_SLOT_TEST)
@@ -466,20 +444,11 @@ intptr_t wincrt::tls::adopt(uint32_t Tid, HANDLE Thread) {
   if (!Index)
     return -EAGAIN;
   Record &R = recordAt(Index);
-  bool Adopted =
-      NtDuplicateObject(GetCurrentProcess(), Thread, GetCurrentProcess(),
+  if (NtDuplicateObject(GetCurrentProcess(), Thread, GetCurrentProcess(),
                         &R.Pin, SYNCHRONIZE | THREAD_QUERY_LIMITED_INFORMATION,
-                        OBJ_PROTECT_CLOSE, 0) >= 0;
-  if (Adopted) {
-    seed(Index);
-    Adopted = advance(R, Live) && publish(Tid, Index);
-  }
-  // A refused adoption leaves its record to the rotating check, which
-  // finishes it once the thread is gone.
-  if (!Adopted) {
-    advance(R, Releasing);
-    return -EAGAIN;
-  }
+                        OBJ_PROTECT_CLOSE, 0) < 0 ||
+      !seed(Index) || !advance(R, Live) || !publish(Tid, Index))
+    return advance(R, Releasing), -EAGAIN;
   if (Tid == currentTid())
     check(R);
   return reinterpret_cast<intptr_t>(blockAt(Index));
@@ -487,10 +456,9 @@ intptr_t wincrt::tls::adopt(uint32_t Tid, HANDLE Thread) {
 
 Header *wincrt::tls::header(bool Adopt) {
   uint32_t Entry = lookup(currentTid());
-  if (Entry & TP_SLOT_TEST)
-    return reinterpret_cast<Header *>(blockAt(Entry & TP_MASK));
-  intptr_t Tp = Adopt && Entry != TP_TOMBSTONE
-                    ? adopt(currentTid(), GetCurrentThread())
+  intptr_t Tp = Adopt ? adopt(currentTid(), GetCurrentThread())
+                : Entry & TP_SLOT_TEST
+                    ? reinterpret_cast<intptr_t>(blockAt(Entry & TP_MASK))
                     : -1;
   return Tp < 0 ? nullptr : reinterpret_cast<Header *>(Tp);
 }
@@ -499,79 +467,125 @@ Header *wincrt::tls::header(bool Adopt) {
 // Thread end
 //===----------------------------------------------------------------------===//
 
-// Every step is idempotent, and keeps where it is when run again: the map's
-// entry moves by compare-exchange from the value it replaces, a decommit
-// changes nothing twice, and the pin leaves the record before it is closed,
-// so that no rerun closes a handle the process has reused.
-// A dead protector's protection ends with its hold, and a dead finisher's
-// with the finish it left.
-static void finish(Record &Self, uint32_t Index, unsigned How) {
-  Record &R = recordAt(Index);
-  uint32_t Tid = tidOf(load(&R.Word)), Entry = Index;
+// A finisher's protection while it finishes: the record, the generation of
+// the word its election wrote, and whether only the free step runs.
+enum : uint64_t { Finisher = uint64_t(1) << 63, FreeOnly = uint64_t(1) << 62 };
+constexpr unsigned GenShift = 22;
 
-  if (How & StepDrop)
-    dropThread(reinterpret_cast<Header *>(blockAt(Index))->Thread);
-  if (How & StepTomb)
-    cas(slot(Tid, inB(Tid)), Entry, TP_TOMBSTONE);
-  if (How & StepClear) {
+// The pin is protected from close from its duplicate, so an untagged value is
+// the record's own. Its closer writes the thread's creation time, tags the
+// value, unprotects and closes the handle, and clears the field last; a rerun
+// closes a tagged value only where it still names the thread of the record's
+// client id and creation time, since a closed value may name another handle.
+static void closePin(Record &R, uint32_t Tid) {
+  auto Pin = reinterpret_cast<uintptr_t>(load(&R.Pin));
+  auto *Thread = reinterpret_cast<HANDLE>(Pin & ~uintptr_t(3));
+  int64_t Times[4]; // creation, exit, kernel and user
+  bool Timed = Pin && NtQueryInformationThread(Thread, THREADINFOCLASS(1),
+                                               Times, sizeof(Times),
+                                               nullptr) >= 0;
+  if (!Pin)
+    return;
+  if (!(Pin & 1)) {
+    store(&R.PinTime, Timed ? uint64_t(Times[0]) : 0);
+    store(&R.Pin, reinterpret_cast<HANDLE>(Pin | 1));
+  } else if (!Timed || uint64_t(Times[0]) != load(&R.PinTime) ||
+             GetThreadId(Thread) != Tid) {
+    return store(&R.Pin, HANDLE(nullptr));
+  }
+  struct {
+    BOOLEAN Inherit, ProtectFromClose;
+  } Unprotected = {};
+  NtSetInformationObject(Thread, 4 /*ObjectHandleFlagInformation*/,
+                         &Unprotected, sizeof(Unprotected));
+  NtClose(Thread);
+  store(&R.Pin, HANDLE(nullptr));
+}
+
+static void finish(Record &Self, uint32_t Index, bool Seeded);
+
+// The finish a dead finisher left: run again while the record holds the word
+// its election wrote, or its bit returned where the record is free from that
+// word with its bit still clear.
+static void rerun(Record &Self, Record &Dead) {
+  uint64_t P = load(&Dead.Protecting);
+  if (!(P & Finisher))
+    return;
+  uint32_t Index = uint32_t(P & ((uint64_t(1) << GenShift) - 1)) - 1;
+  uint32_t Gen = uint32_t(P >> GenShift);
+  uint64_t W = probeLoad(&recordAt(Index).Word);
+  uint64_t C = load(&chunkAt(Index / 64).Word);
+  if (stateOf(W) == Finishing && uint32_t(W) == Gen)
+    finish(Self, Index, !(P & FreeOnly));
+  else if (!(P & FreeOnly) && stateOf(W) == Free && !tidOf(W) &&
+           uint32_t(W) == Gen + 1 && (C & ChunkState) == ChunkLive &&
+           !(C >> Index % 64 & 1))
+    returnBit(Index);
+}
+
+// What a thread leaves, which its release at its last hook begins and its
+// finisher ends: its wide slots of a page or more decommitted and its
+// destructor list dropped; then its TID-map entry tombstoned, or cleared, its
+// hold cleared and the scan run, its pin closed, and the record and its block
+// freed, of which a record that seeded no block has only the last. Every step
+// is idempotent, and keeps where it is when run again: the map's entry moves
+// by compare-exchange from the value it replaces, a decommit changes nothing
+// twice, and the pin stays in the record until it is closed. A dead
+// protector's protection ends with its hold, and a dead finisher's with the
+// finish it left.
+static void leave(Record &Self, uint32_t Index) {
+  endWide(Self, Index);
+  dropThread(reinterpret_cast<Header *>(blockAt(Index))->Thread);
+}
+
+static void finish(Record &Self, uint32_t Index, bool Seeded) {
+  Record &R = recordAt(Index);
+  uint32_t Tid = tidOf(load(&R.Word));
+  if (Seeded) {
+    leave(Self, Index);
     resumeReturn(Self, R);
     clear(Self, Tid, Index);
+    endHold(Self, R);
+    rerun(Self, R);
+    unprotect(R);
+    closePin(R, Tid);
   }
-  if (How & StepScan) {
-    if (uint64_t Checked = load(&R.Checked); Checked & Landed)
-      unprotect(recordAt(uint32_t(Checked - 1)));
-    store(&R.Checked, 0);
-  }
-  if (How & StepClose)
-    if (HANDLE Pin = __atomic_exchange_n(&R.Pin, nullptr, __ATOMIC_ACQ_REL))
-      NtClose(Pin);
-  if (How & StepFree)
-    release(Index);
+  release(Index);
 }
 
 void wincrt::tls::releaseSelf() {
   uint32_t Entry = lookup(currentTid()), Index = Entry & TP_MASK;
-  if (!(Entry & TP_SLOT_TEST) || !advance(recordAt(Index), Releasing))
+  Record &R = recordAt(Index);
+  if (!(Entry & TP_SLOT_TEST) || !advance(R, Releasing))
     return;
-  Record &R = recordAt(Entry & TP_MASK);
-  if (!advance(R, Releasing))
-    return;
-  finish(R, Entry & TP_MASK, Release);
+  uint32_t Tid = tidOf(load(&R.Word));
+  leave(R, Index);
+  cas(slot(Tid, inB(Tid)), Index, TP_TOMBSTONE);
   check(R);
 }
 
-// A word of a record the checker does not hold, which its chunk's park may
-// return under it: read, and moved, by probe.
-static uint64_t probeLoad(const uint64_t *W) { return __wincrt_probe64(W); }
-
-bool wincrt::tls::protect(Record &R) {
-  for (uint64_t W = probeLoad(&R.Word);;) {
-    if (stateOf(W) == Free || stateOf(W) == Finishing ||
-        (W & Protectors) == Protectors)
-      return false;
-    uint64_t Was = __wincrt_probe_cas(&R.Word, W, W + Protect);
-    if (Was == W)
-      return true;
-    W = Was;
-  }
-}
-
-void wincrt::tls::unprotect(Record &R) {
-  for (uint64_t W = probeLoad(&R.Word), Was;
-       W & Protectors &&
-       (Was = __wincrt_probe_cas(&R.Word, W, W - Protect)) != W;
-       W = Was)
-    ;
+// Whether a thread other than Self's protects record Index, or its chunk.
+static bool protectedBy(Record &Self, uint32_t Index) {
+  bool Found = false;
+  eachRecord([&](uint32_t I) {
+    uint64_t P = probeLoad(&recordAt(I).Protecting);
+    Found |= &recordAt(I) != &Self && (P == Index + 1 || P == (Index & ~63u) + 1);
+  });
+  return Found;
 }
 
 // A shared cursor runs over every slot of the published chunks. Each step
 // takes the next records that a thread holds, up to two, and waits on each
 // one's pin with a zero timeout as its protector, which keeps the pin open: a
 // signalled pin is a thread past its last instruction, whose record's one
-// finisher the compare-exchange of its sole protector picks. A record killed
-// before its pin is finished where its client id names no thread; a chunk's
-// revival or park, at the chunk's first slot, where its actor is gone.
-void wincrt::tls::check(Record &Self) {
+// finisher a compare-exchange to finishing picks, and which gives the record
+// back where another protects it. A protector publishes the record in its
+// own, then reads the record's state; an elector moves the state to
+// finishing, then reads every protector's: of the two read-modify-writes and
+// reads, one sees the other. A record killed before its pin is finished
+// where its client id names no thread; a chunk's revival or park, at the
+// chunk's first slot, where its actor is gone.
+static void check(Record &Self) {
   uint32_t Top = load(&shared().Top);
   for (unsigned Held = 0, Seen = 0; Top && Held != 2 && Seen != 64; ++Seen) {
     uint32_t Index =
@@ -580,37 +594,32 @@ void wincrt::tls::check(Record &Self) {
     uint64_t C = load(&chunkAt(Index / 64).Word);
     if (!Slot)
       finishChunk(Index / 64);
-    if (Slot < 16 || Slot == 63 || (C & ChunkState) != ChunkLive)
-      continue;
     Record &R = recordAt(Index);
-    uint64_t State = stateOf(probeLoad(&R.Word));
-    if (State == Free || State == Finishing)
+    if (Slot < 16 || Slot == 63 || (C & ChunkState) != ChunkLive ||
+        !inUse(probeLoad(&R.Word)) || (++Held, &R == &Self))
       continue;
-    ++Held;
-    store(&Self.Checked, Index + 1);
-    if (&R == &Self || !protect(R)) {
-      store(&Self.Checked, 0);
-      continue;
-    }
-    store(&Self.Checked, (Index + 1) | Landed);
-    HANDLE Pin = reinterpret_cast<HANDLE>(
-        probeLoad(reinterpret_cast<uint64_t *>(&R.Pin)));
-    LARGE_INTEGER Zero = {};
+    shield(Self, Index);
     uint64_t W = probeLoad(&R.Word);
-    bool Dead = Pin ? NtWaitForSingleObject(Pin, FALSE, &Zero) == STATUS_WAIT_0
-                    : gone(tidOf(W));
+    auto Pin = reinterpret_cast<HANDLE>(
+        probeLoad(reinterpret_cast<uint64_t *>(&R.Pin)));
+    bool Dead = inUse(W) && (Pin ? signalled(Pin) : gone(tidOf(W)));
     W = probeLoad(&R.Word);
-    if (Dead && (W & Protectors) == Protect &&
-        __wincrt_probe_cas(&R.Word, W,
-                           recordWord(Finishing, tidOf(W), W) & ~Protectors) ==
-            W) {
-      store(&Self.Checked, 0);
-      // A claimer killed before its bit seeded no block.
-      finish(Self, Index, C >> Slot & 1 ? StepFree : Finish);
-      continue;
+    uint64_t Elected = recordWord(Finishing, tidOf(W), W);
+    bool Elect = Dead && inUse(W) && __wincrt_probe_cas(&R.Word, W, Elected) == W;
+    if (Elect && protectedBy(Self, Index)) {
+      __wincrt_probe_cas(&R.Word, Elected,
+                         recordWord(stateOf(W), tidOf(W), Elected));
+      Elect = false;
     }
-    unprotect(R);
-    store(&Self.Checked, 0);
+    // A claimer killed before its bit seeded no block.
+    bool Bitless = C >> Slot & 1;
+    if (Elect) {
+      store(&Self.Protecting, Finisher | (Bitless ? FreeOnly : 0) |
+                                  uint64_t(uint32_t(Elected)) << GenShift |
+                                  (Index + 1));
+      finish(Self, Index, !Bitless);
+    }
+    unprotect(Self);
   }
 }
 
@@ -628,12 +637,10 @@ extern "C" WINCRT_NO_TP uintptr_t __wincrt_tp_cold(const uintptr_t *Map,
   // own while the tombstone stands, and every access through which faults.
   if (Entry == TP_TOMBSTONE)
     return How ? uintptr_t(-ESRCH)
-               : reinterpret_cast<uintptr_t>(area()) +
-                     TP_CLOSED_SLOT * TP_BLOCK;
+               : reinterpret_cast<uintptr_t>(blockAt(TP_CLOSED_SLOT));
   // Only the executable's code runs before its own fill: a DLL's entry that
   // finds its map unwritten fails closed.
-  auto *Exe = static_cast<char *>(
-      NtCurrentTeb()->ProcessEnvironmentBlock->Reserved3[1]);
+  char *Exe = executable();
   intptr_t Tp = !*Map && uintptr_t(reinterpret_cast<const char *>(Map) - Exe) >=
                              wincrt::imageSize(reinterpret_cast<HMODULE>(Exe))
                     ? -ENOEXEC
@@ -648,7 +655,7 @@ extern "C" WINCRT_NO_TP uintptr_t __wincrt_tp_cold(const uintptr_t *Map,
 //===----------------------------------------------------------------------===//
 
 extern "C" const char __wincrt_probe_begin[], __wincrt_probe_end[],
-    __wincrt_probe_landing[];
+    __wincrt_probe_landing[], __wincrt_probe_movs[];
 
 // A ULEB128, or an SLEB128 where Signed, and a 4-byte field.
 static uint64_t leb(const uint8_t *&P, bool Signed = false) {
@@ -745,7 +752,13 @@ static LONG CALLBACK recoverProbe(EXCEPTION_POINTERS *Exception) {
   if (Record.ExceptionCode != STATUS_ACCESS_VIOLATION)
     return EXCEPTION_CONTINUE_SEARCH;
 #if defined(__x86_64__)
-  DWORD64 &Pc = Exception->ContextRecord->Rip;
+  CONTEXT &Context = *Exception->ContextRecord;
+  DWORD64 &Pc = Context.Rip;
+  // The copy's rep movsq keeps the caller's rdi and rsi in r9 and r10.
+  if (Pc == reinterpret_cast<uintptr_t>(__wincrt_probe_movs)) {
+    Context.Rdi = Context.R9;
+    Context.Rsi = Context.R10;
+  }
 #else
   DWORD64 &Pc = Exception->ContextRecord->Pc;
 #endif
@@ -766,20 +779,15 @@ static LONG CALLBACK recoverProbe(EXCEPTION_POINTERS *Exception) {
 // Writes Value into a word of read-only image memory under the fill's
 // bracket: opened, stored, sealed read-only and read back.
 bool wincrt::tls::bracket(volatile const uint64_t *Word, uint64_t Value) {
-  void *Page = const_cast<uint64_t *>(Word);
-  SIZE_T Size = sizeof(uint64_t);
-  ULONG Old;
-  if (NtProtectVirtualMemory(GetCurrentProcess(), &Page, &Size, PAGE_READWRITE,
-                             &Old) < 0)
+  auto *To = const_cast<uint64_t *>(Word);
+  DWORD Old;
+  if (!VirtualProtect(To, sizeof(*To), PAGE_READWRITE, &Old))
     return false;
   // The word may be a constant to the compiler, which the empty asm hides it
   // from.
-  auto *To = const_cast<uint64_t *>(Word);
   __asm__("" : "+r"(To) : : "memory");
   *To = Value;
-  return NtProtectVirtualMemory(GetCurrentProcess(), &Page, &Size,
-                                PAGE_READONLY, &Old) >= 0 &&
-         *Word == Value;
+  return VirtualProtect(To, sizeof(*To), PAGE_READONLY, &Old) && *Word == Value;
 }
 
 // Writes the exports, read-only for the process's life.
@@ -829,11 +837,9 @@ static int rendezvous() {
   MEMORY_BASIC_INFORMATION Info;
   bool Trusted = VirtualQuery(Other, &Info, sizeof(Info)) &&
                  Info.Type == MEM_IMAGE && Info.AllocationBase == Other;
-  const char *Names[] = {"__tp_map", "__tp_base", "__tp_slow",
-                         "__tp_register"};
-  for (const char *Name : Names)
-    Trusted = Trusted && GetProcAddress(Other, Name);
-
+#define TP_EXPORT(Id, Name, Sealed)                                        \
+  Trusted = Trusted && GetProcAddress(Other, #Name);
+#include "tls/ThreadPointer.inc"
   UnmapViewOfFile(View);
   CloseHandle(Section);
   if (!Trusted)
@@ -841,7 +847,10 @@ static int rendezvous() {
   auto Word = [&](const char *Name) {
     return *reinterpret_cast<const uintptr_t *>(GetProcAddress(Other, Name));
   };
-  return seal(Word("__tp_map"), Word("__tp_base")) ? 0 : -1;
+  return seal(Word("__tp_map"), Word("__tp_base")) &&
+                 bracket(&__tp_key, Word("__tp_key"))
+             ? 0
+             : -1;
 }
 
 bool wincrt::tls::found() {
@@ -860,7 +869,7 @@ bool wincrt::tls::found() {
     return false;
   shared() = {StateVersion, sizeof(State)};
   shared().Cookie = __security_cookie | 1;
-  shared().Taken[0] = (uint64_t(1) << TP_EXE_PLACE / Granule) - 1;
+  shared().Taken[0] = run(TP_EXE_PLACE / Granule);
   return AddVectoredExceptionHandler(1, recoverProbe) && foundImages() &&
          (findTail(), true);
 }
@@ -869,7 +878,7 @@ bool wincrt::tls::found() {
 // Under -static the executable holds the runtime, founded by its first TLS
 // callback, before its entry point and before the fill's callback, which
 // .CRT$XLAF holds.
-static void NTAPI foundStatic(void *, DWORD Reason, void *) {
+static WINCRT_NO_TP void NTAPI foundStatic(void *, DWORD Reason, void *) {
   if (Reason == DLL_PROCESS_ATTACH && !found())
     wincrt::fatal("the thread-local runtime cannot be founded");
 }
