@@ -33971,7 +33971,6 @@ void AArch64TargetLowering::insertSSPDeclarations(
       F->setCallingConv(CallingConv::Win64);
       F->addParamAttr(0, Attribute::AttrKind::InReg);
     }
-    return;
   }
   TargetLowering::insertSSPDeclarations(M, Libcalls);
 }

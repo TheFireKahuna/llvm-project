@@ -5081,7 +5081,8 @@ defm zero_initialized_in_bss : BoolFOption<"zero-initialized-in-bss",
           "Don't place zero initialized data in BSS">,
   PosFlag<SetFalse>>;
 defm function_sections : BoolFOption<"function-sections",
-  CodeGenOpts<"FunctionSections">, DefaultFalse,
+  CodeGenOpts<"FunctionSections">,
+  Default<"T.isWindowsItaniumOrNTPOSIXEnvironment()">,
   PosFlag<SetTrue, [], [ClangOption, CC1Option, FlangOption, FC1Option],
           "Place each function in its own section">,
   NegFlag<SetFalse, [], [FlangOption, FC1Option]>>;
@@ -5096,7 +5097,8 @@ def fbasic_block_sections_EQ : Joined<["-"], "fbasic-block-sections=">, Group<f_
   Values<"all,none,list=">,
   MarshallingInfoString<CodeGenOpts<"BBSections">, [{"none"}]>;
 defm data_sections : BoolFOption<"data-sections",
-  CodeGenOpts<"DataSections">, DefaultFalse,
+  CodeGenOpts<"DataSections">,
+  Default<"T.isWindowsItaniumOrNTPOSIXEnvironment()">,
   PosFlag<SetTrue, [], [ClangOption, CC1Option, FlangOption, FC1Option],
           "Place each data in its own section">,
   NegFlag<SetFalse, [], [FlangOption, FC1Option]>>;

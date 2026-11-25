@@ -11,6 +11,10 @@
 // RUN: %clang_cc1 -triple x86_64-pc-linux-gnu -O2 -x ir %t.o -fthinlto-index=%t.thinlto.bc -S -ffunction-sections -o - | FileCheck %s --check-prefix=FUNC_SECT
 // RUN: %clang_cc1 -triple x86_64-pc-linux-gnu -O2 -x ir %t.o -fthinlto-index=%t.thinlto.bc -S -fdata-sections -o - | FileCheck %s --check-prefix=DATA_SECT
 
+// Windows Itanium and NT-POSIX use both without an option.
+// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -S -o - < %s | FileCheck %s --check-prefix=BOTH_SECT
+// RUN: %if aarch64-registered-target %{ %clang_cc1 -triple aarch64-pc-windows-ntposix -S -o - < %s | FileCheck %s --check-prefix=BOTH_SECT %}
+
 const int hello = 123;
 void world(void) {}
 
@@ -28,3 +32,8 @@ void world(void) {}
 // DATA_SECT: world:
 // DATA_SECT: .section .rodata.hello,
 // DATA_SECT: hello:
+
+// BOTH_SECT: .section .text,"xr",one_only,world
+// BOTH_SECT: world:
+// BOTH_SECT: .section .rdata,"dr",one_only,hello
+// BOTH_SECT: hello:

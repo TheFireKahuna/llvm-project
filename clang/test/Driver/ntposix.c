@@ -4,6 +4,7 @@
 
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefix=CC1 %s \
+// RUN:       --implicit-check-not=-stack-protector \
 // RUN:       --implicit-check-not=-fms-extensions --implicit-check-not=-D_DLL \
 // RUN:       --implicit-check-not=-fno-use-cxa-atexit \
 // RUN:       --implicit-check-not=-fwchar-type \
@@ -11,6 +12,7 @@
 // RUN:       --implicit-check-not=-fno-dllexport-inlines
 // RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefixes=CC1,CC1-A64 %s \
+// RUN:       --implicit-check-not=-stack-protector \
 // RUN:       --implicit-check-not=-fms-extensions --implicit-check-not=-D_DLL \
 // RUN:       --implicit-check-not=-fno-use-cxa-atexit \
 // RUN:       --implicit-check-not=-fwchar-type \
@@ -21,9 +23,14 @@
 // CC1-DAG:     "-Wget-proc-address-type"
 // CC1-DAG:     "-mframe-pointer=non-leaf"
 // CC1-DAG:     "-funwind-tables=2"
+// CC1-DAG:     "-ffunction-sections"
+// CC1-DAG:     "-fdata-sections"
+// CC1-DAG:     "-ftrivial-auto-var-init=zero"
 // CC1-DAG:     "-pthread"
 // CC1-DAG:     "-fdeclspec"
 // CC1-DAG:     "-exception-model=seh"
+// CC1-DAG:     "-cfguard-no-checks"
+// CC1-DAG:     "-ehcontguard"
 // CC1-A64-DAG: "-target-feature" "+lse2"
 
 // A user's frame-pointer options still apply.
@@ -31,6 +38,20 @@
 // RUN:     -mno-omit-leaf-frame-pointer 2>&1 \
 // RUN:   | FileCheck --check-prefix=LEAF-FP %s
 // LEAF-FP: "-mframe-pointer=all"
+
+// Separate sections and unwind tables are not optional.
+// RUN: %clang -### --target=aarch64-pc-windows-ntposix -c %s -ffreestanding \
+// RUN:     -fno-data-sections -fno-unwind-tables 2>&1 \
+// RUN:   | FileCheck --check-prefix=MANDATORY %s
+// MANDATORY:      warning: ignoring '-fno-data-sections' option as it is not currently supported for target 'aarch64-pc-windows-ntposix'
+// MANDATORY-NEXT: warning: ignoring '-fno-unwind-tables' option as it is not currently supported for target 'aarch64-pc-windows-ntposix'
+// MANDATORY-DAG:  "-funwind-tables=2"
+// MANDATORY-DAG:  "-fdata-sections"
+
+// Control Flow Guard's checks are not yet a default.
+// RUN: %clang -### --target=x86_64-pc-windows-ntposix -c %s -mguard=cf 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF %s
+// CF: "-cfguard"
 
 // A 16-bit wchar_t is the Win32 face's, not an option's.
 // RUN: not %clang -### --target=x86_64-pc-windows-ntposix -c %s \

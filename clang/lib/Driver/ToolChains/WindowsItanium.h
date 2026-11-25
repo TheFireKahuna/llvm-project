@@ -46,9 +46,11 @@ public:
     return false;
   }
   bool isPICDefaultForced() const override { return true; }
-  UnwindTableLevel
-  getDefaultUnwindTableLevel(const llvm::opt::ArgList &Args) const override {
-    return UnwindTableLevel::Asynchronous;
+  /// -ftrivial-auto-var-init=zero, so that no read of an automatic variable
+  /// yields what the stack held before.
+  LangOptions::TrivialAutoVarInitKind
+  GetDefaultTrivialAutoVarInit() const override {
+    return LangOptions::TrivialAutoVarInitKind::Zero;
   }
   llvm::ExceptionHandling
   GetExceptionModel(const llvm::opt::ArgList &Args) const override {
@@ -84,6 +86,10 @@ public:
   void AddCXXStdlibLibArgs(const llvm::opt::ArgList &Args,
                            llvm::opt::ArgStringList &CmdArgs) const override;
 
+  /// Returns the Control Flow Guard mode, one of -mguard='s values: "cf",
+  /// "cf-nochecks" or "none".
+  StringRef getGuardMode(const llvm::opt::ArgList &Args) const;
+
   /// Adds the C library and the system libraries, as default libraries.
   virtual void addSystemLibArgs(const llvm::opt::ArgList &Args,
                                 llvm::opt::ArgStringList &CmdArgs) const = 0;
@@ -99,6 +105,11 @@ public:
   WindowsItaniumToolChain(const Driver &D, const llvm::Triple &Triple,
                           const llvm::opt::ArgList &Args);
 
+  /// -fstack-protector-strong, as /GS gives for MSVC.
+  LangOptions::StackProtectorMode
+  GetDefaultStackProtectorLevel(bool KernelOrKext) const override {
+    return LangOptions::SSPStrong;
+  }
   UnwindLibType GetUnwindLibType(const llvm::opt::ArgList &Args) const override;
   void
   addClangTargetOptions(const llvm::opt::ArgList &DriverArgs,

@@ -9,6 +9,7 @@
 // RUN:       --implicit-check-not=-fno-dllexport-inlines
 // RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s 2>&1 \
 // RUN:   | FileCheck --check-prefixes=CC1,CC1-A64 %s \
+// RUN:       --implicit-check-not=-ehcontguard \
 // RUN:       --implicit-check-not=-fno-use-cxa-atexit \
 // RUN:       --implicit-check-not=-fvisibility-global-new-delete \
 // RUN:       --implicit-check-not=-fno-dllexport-inlines
@@ -22,6 +23,12 @@
 // CC1-DAG:     "-fdeclspec"
 // CC1-DAG:     "-exception-model=seh"
 // CC1-DAG:     "-funwind-tables=2"
+// CC1-DAG:     "-ffunction-sections"
+// CC1-DAG:     "-fdata-sections"
+// CC1-DAG:     "-stack-protector" "2"
+// CC1-DAG:     "-ftrivial-auto-var-init=zero"
+// CC1-DAG:     "-cfguard"
+// CC1-X64-DAG: "-ehcontguard"
 
 // Debug info is CodeView, for lld-link to write a PDB from.
 // RUN: %clang -### --target=x86_64-unknown-windows-itanium -c -g %s 2>&1 \
@@ -96,6 +103,105 @@
 // UBSAN-NO-TRAP: error: unsupported option '-fno-sanitize-trap={{[a-z,-]+}}' for target 'x86_64-unknown-windows-itanium'
 // UBSAN-TRAP:    "-fsanitize-trap=
 // CFI-CROSS-DSO: error: unsupported option '-fsanitize-cfi-cross-dso' for target 'x86_64-unknown-windows-itanium'
+
+// Separate sections and unwind tables are not optional, so the options that
+// would turn them off are ignored, and -ffreestanding keeps the tables.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-function-sections -fno-data-sections \
+// RUN:     -fno-asynchronous-unwind-tables -fno-unwind-tables 2>&1 \
+// RUN:   | FileCheck --check-prefixes=MANDATORY,MANDATORY-GCC %s \
+// RUN:       --implicit-check-not="argument unused"
+// RUN: %clang_cl -### --target=aarch64-unknown-windows-itanium /c /Gy- /Gw- \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=MANDATORY,MANDATORY-CL %s \
+// RUN:       --implicit-check-not="argument unused"
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s \
+// RUN:     -ffreestanding 2>&1 | FileCheck --check-prefix=MANDATORY %s
+// MANDATORY-GCC:      warning: ignoring '-fno-function-sections' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// MANDATORY-GCC-NEXT: warning: ignoring '-fno-data-sections' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// MANDATORY-GCC-NEXT: warning: ignoring '-fno-asynchronous-unwind-tables' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// MANDATORY-GCC-NEXT: warning: ignoring '-fno-unwind-tables' option as it is not currently supported for target 'x86_64-unknown-windows-itanium'
+// MANDATORY-CL:       warning: ignoring '/Gy-' option as it is not currently supported for target 'aarch64-unknown-windows-itanium'
+// MANDATORY-CL-NEXT:  warning: ignoring '/Gw-' option as it is not currently supported for target 'aarch64-unknown-windows-itanium'
+// MANDATORY-DAG:      "-funwind-tables=2"
+// MANDATORY-DAG:      "-ffunction-sections"
+// MANDATORY-DAG:      "-fdata-sections"
+
+// -fno-stack-protector turns the stack protector off, and so does clang-cl's
+// /GS- where it is the last of the options that set it.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -fno-stack-protector 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-SSP %s \
+// RUN:       --implicit-check-not=-stack-protector
+// RUN: %clang_cl -### --target=aarch64-unknown-windows-itanium /c /GS /GS- \
+// RUN:     -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=NO-SSP %s \
+// RUN:       --implicit-check-not=-stack-protector
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c /GS- /GS \
+// RUN:     -- %s 2>&1 | FileCheck --check-prefix=CL-SSP %s
+// RUN: %clang_cl -### --target=aarch64-unknown-windows-itanium /c /GS- \
+// RUN:     /clang:-fstack-protector-all -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CL-SSP-ALL %s
+// NO-SSP:     "-cc1"
+// CL-SSP:     "-stack-protector" "2"
+// CL-SSP-ALL: "-stack-protector" "3"
+
+// A user's -ftrivial-auto-var-init= replaces the default, which satisfies the
+// options that need an initialization.
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -ftrivial-auto-var-init=uninitialized 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-USER %s \
+// RUN:       --implicit-check-not=-ftrivial-auto-var-init=zero
+// RUN: %clang_cl -### --target=aarch64-unknown-windows-itanium /c \
+// RUN:     -ftrivial-auto-var-init-max-size=1024 -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=AUTO-INIT-MAX-SIZE %s \
+// RUN:       --implicit-check-not=error:
+// AUTO-INIT-USER:          "-ftrivial-auto-var-init=uninitialized"
+// AUTO-INIT-MAX-SIZE:      "-ftrivial-auto-var-init=zero"
+// AUTO-INIT-MAX-SIZE-SAME: "-ftrivial-auto-var-init-max-size=1024"
+
+// Control Flow Guard is on by default. -mguard=cf-nochecks and -mguard=none
+// leave out its checks and keep its tables, and clang-cl's /guard: values
+// select the same modes.
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c /guard:cf- \
+// RUN:     /guard:cf -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF %s \
+// RUN:       --implicit-check-not=-cfguard-no-checks
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -c %s \
+// RUN:     -mguard=cf-nochecks 2>&1 | FileCheck --check-prefix=CF-NOCHECKS %s
+// RUN: %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -mguard=none 2>&1 | FileCheck --check-prefix=CF-NOCHECKS %s
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c \
+// RUN:     /guard:cf,nochecks -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
+// RUN: %clang_cl -### --target=aarch64-unknown-windows-itanium /c /guard:cf \
+// RUN:     /d2guardnochecks -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF-NOCHECKS %s
+// RUN: %clang_cl -### --target=aarch64-unknown-windows-itanium /c /guard:cf- \
+// RUN:     -- %s 2>&1 | FileCheck --check-prefix=CF-NOCHECKS %s
+// CF:              "-cfguard"
+// CF-NOCHECKS-NOT: "-cfguard"
+// CF-NOCHECKS:     "-cfguard-no-checks"
+// CF-NOCHECKS-NOT: "-cfguard"
+
+// EH continuation metadata is not a choice: clang-cl's /guard:ehcont and
+// /guard:ehcont- are accepted and change nothing, and -mguard= has no value
+// for it.
+// RUN: %clang_cl -### --target=x86_64-unknown-windows-itanium /c \
+// RUN:     /guard:ehcont- -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefixes=CF,CL-EHCONT %s \
+// RUN:       --implicit-check-not=warning:
+// RUN: %clang_cl -### --target=aarch64-unknown-windows-itanium /c \
+// RUN:     /guard:ehcont -- %s 2>&1 \
+// RUN:   | FileCheck --check-prefix=CF %s --implicit-check-not=warning: \
+// RUN:       --implicit-check-not=-ehcontguard
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -c %s \
+// RUN:     -mguard=ehcont 2>&1 | FileCheck --check-prefix=CF-UNKNOWN %s
+// RUN: not %clang_cl -### --target=aarch64-unknown-windows-itanium /c \
+// RUN:     /guard:foo -- %s 2>&1 | FileCheck --check-prefix=CL-CF-UNKNOWN %s
+// CL-EHCONT:     "-ehcontguard"
+// CF-UNKNOWN:    error: unsupported argument 'ehcont' to option '-mguard='
+// CL-CF-UNKNOWN: error: invalid value 'foo' in '/guard:'
 
 // The resource headers, the wrappers over the Universal CRT's and the Windows
 // SDK's headers, then those headers, found as the MSVC toolchain finds them.

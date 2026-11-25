@@ -167,6 +167,13 @@ static bool addExceptionArgs(const ArgList &Args, types::ID InputType,
       CmdArgs.push_back("-fasync-exceptions");
       EH = true;
     }
+  } else if (Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+             Args.hasFlag(options::OPT_fasync_exceptions,
+                          options::OPT_fno_async_exceptions, false)) {
+    // A program built for asynchronous exceptions relies on them, so the
+    // option is not ignored where they are not implemented.
+    TC.getDriver().Diag(diag::err_drv_unsupported_opt_for_target)
+        << "-fasync-exceptions" << Triple.str();
   }
 
   // Obj-C exceptions are enabled by default, regardless of -fexceptions. This
@@ -8887,7 +8894,7 @@ struct EHFlags {
 /// - c: Assume that extern "C" functions are implicitly nounwind.
 /// The default is /EHs-c-, meaning cleanups are disabled.
 static EHFlags parseClangCLEHFlags(const Driver &D, const ArgList &Args,
-                                   bool isWindowsMSVC) {
+                                   const llvm::Triple &Triple) {
   EHFlags EH;
 
   std::vector<std::string> EHArgs =
@@ -8898,10 +8905,15 @@ static EHFlags parseClangCLEHFlags(const Driver &D, const ArgList &Args,
       case 'a':
         EH.Asynch = maybeConsumeDash(EHVal, I);
         if (EH.Asynch) {
-          // Async exceptions are Windows MSVC only.
-          if (!isWindowsMSVC) {
+          // Async exceptions are Windows MSVC only, and an error where
+          // -fasync-exceptions is one.
+          if (!Triple.isWindowsMSVCEnvironment()) {
             EH.Asynch = false;
-            D.Diag(clang::diag::warn_drv_unused_argument) << "/EHa" << EHVal;
+            if (Triple.isWindowsItaniumOrNTPOSIXEnvironment())
+              D.Diag(clang::diag::err_drv_unsupported_opt_for_target)
+                  << "/EHa" << Triple.str();
+            else
+              D.Diag(clang::diag::warn_drv_unused_argument) << "/EHa" << EHVal;
             continue;
           }
           EH.Synch = false;
@@ -8969,8 +8981,7 @@ void Clang::AddClangCLArgs(const ArgList &Args, types::ID InputType,
 
   const Driver &D = getToolChain().getDriver();
 
-  bool IsWindowsMSVC = getToolChain().getTriple().isWindowsMSVCEnvironment();
-  EHFlags EH = parseClangCLEHFlags(D, Args, IsWindowsMSVC);
+  EHFlags EH = parseClangCLEHFlags(D, Args, getToolChain().getTriple());
   if (!isNVPTX && (EH.Synch || EH.Asynch)) {
     if (types::isCXX(InputType))
       CmdArgs.push_back("-fcxx-exceptions");

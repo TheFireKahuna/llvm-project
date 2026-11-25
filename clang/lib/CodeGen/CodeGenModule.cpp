@@ -3977,7 +3977,10 @@ void CodeGenModule::addCompilerUsedGlobal(llvm::GlobalValue *GV) {
 void CodeGenModule::addUsedOrCompilerUsedGlobal(llvm::GlobalValue *GV) {
   assert((isa<llvm::Function>(GV) || !GV->isDeclaration()) &&
          "Only globals with definition can force usage.");
-  if (getTriple().isOSBinFormatELF())
+  // As on ELF, on Windows Itanium and NT-POSIX only the retain attribute asks
+  // the linker to keep a definition.
+  if (getTriple().isOSBinFormatELF() ||
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     LLVMCompilerUsed.emplace_back(GV);
   else
     LLVMUsed.emplace_back(GV);

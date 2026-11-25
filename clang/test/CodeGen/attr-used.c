@@ -1,5 +1,13 @@
 // RUN: %clang_cc1 -emit-llvm -triple x86_64 %s -o - | FileCheck %s --check-prefixes=CHECK,CUSED
 // RUN: %clang_cc1 -emit-llvm -triple x86_64-apple-darwin %s -o - | FileCheck %s --check-prefixes=CHECK,USED
+// RUN: %clang_cc1 -emit-llvm -triple x86_64-windows-msvc %s -o - | FileCheck %s --check-prefixes=CHECK,USED
+
+/// Windows Itanium and NT-POSIX follow ELF: the attribute keeps a definition
+/// from the compiler, and only retain keeps it from the linker.
+// RUN: %clang_cc1 -emit-llvm -triple x86_64-unknown-windows-itanium %s -o - | FileCheck %s --check-prefixes=CHECK,CUSED --implicit-check-not=llvm.used
+// RUN: %clang_cc1 -emit-llvm -triple x86_64-pc-windows-ntposix %s -o - | FileCheck %s --check-prefixes=CHECK,CUSED --implicit-check-not=llvm.used
+// RUN: %clang_cc1 -emit-llvm -triple aarch64-unknown-windows-itanium %s -o - | FileCheck %s --check-prefixes=CHECK,CUSED --implicit-check-not=llvm.used
+// RUN: %clang_cc1 -emit-llvm -triple aarch64-pc-windows-ntposix %s -o - | FileCheck %s --check-prefixes=CHECK,CUSED --implicit-check-not=llvm.used
 
 // USED:       @llvm.used =
 // CUSED:      @llvm.compiler.used =

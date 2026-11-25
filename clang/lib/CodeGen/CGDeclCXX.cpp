@@ -641,9 +641,10 @@ CodeGenModule::EmitCXXGlobalVarDeclInitFunc(const VarDecl *D,
         I == DelayedCXXInitPosition.end() ? CXXGlobalInits.size() : I->second;
     AddGlobalCtor(Fn, 65535, LexOrder, COMDATKey);
     if (COMDATKey && (getTriple().isOSBinFormatELF() ||
+                      getTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
                       getTarget().getCXXABI().isMicrosoft())) {
-      // When COMDAT is used on ELF or in the MS C++ ABI, the key must be in
-      // llvm.used to prevent linker GC.
+      // When COMDAT is used on ELF, on Windows Itanium and NT-POSIX or in the
+      // MS C++ ABI, the key must be in llvm.used to prevent linker GC.
       addUsedGlobal(COMDATKey);
     }
 

@@ -10,6 +10,7 @@
 #include "clang/Driver/Compilation.h"
 #include "clang/Driver/Driver.h"
 #include "clang/Options/Options.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/VirtualFileSystem.h"
@@ -18,6 +19,15 @@ using namespace clang::driver;
 using namespace clang::driver::toolchains;
 using namespace clang;
 using namespace llvm::opt;
+
+// Whether objects list their EH continuation targets and an image has their
+// table, which the kernel checks a continuation against: NT-POSIX's unwinder
+// continues only through it, and on Windows Itanium the x86-64 shadow stack
+// brings the check.
+static bool hasEHContGuard(const llvm::Triple &Triple) {
+  return Triple.isWindowsNTPOSIXEnvironment() ||
+         Triple.getArch() == llvm::Triple::x86_64;
+}
 
 // lld-link looks a library up by the name it is given. The runtimes of these
 // targets carry the "lib" prefix, as on ELF, and the Windows SDK's libraries
@@ -68,8 +78,9 @@ void tools::windowsitanium::Linker::ConstructJob(
   // targets never link.
   CmdArgs.push_back("-lldignoreenv");
 
-  if (Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
-                  options::OPT__SLASH_LDd)) {
+  bool IsDLL = Args.hasArg(options::OPT_shared, options::OPT__SLASH_LD,
+                           options::OPT__SLASH_LDd);
+  if (IsDLL) {
     CmdArgs.push_back("-dll");
     // name.dll.lib, so that name.dll's import library and the static archive
     // name.lib can share a directory.
@@ -106,6 +117,23 @@ void tools::windowsitanium::Linker::ConstructJob(
   // An executable exports what its sources mark, as a DLL does, so -rdynamic
   // has nothing to add.
   Args.ClaimAllArgs(options::OPT_rdynamic);
+
+  // The image runs with the hardware shadow stack.
+  if (TC.getArch() == llvm::Triple::x86_64)
+    CmdArgs.push_back("-cetcompat");
+
+  // Control Flow Guard, under which an executable's exports are call targets
+  // only once GetProcAddress returns them, and the table of EH continuation
+  // targets. lld-link honors only the last -guard:, so one names them all and
+  // a -guard: of the user's, which follows, replaces it.
+  bool CFGuard = TC.getGuardMode(Args) != "none";
+  std::string Guard = CFGuard ? "cf" : "";
+  if (hasEHContGuard(TC.getTriple()))
+    Guard += CFGuard ? ",ehcont" : "ehcont,nocf";
+  if (CFGuard && !IsDLL)
+    Guard += ",exportsuppress";
+  if (!Guard.empty())
+    CmdArgs.push_back(Args.MakeArgString("-guard:" + Guard));
 
   std::vector<std::string> LibDirs = Args.getAllArgValues(options::OPT_L);
   llvm::append_range(LibDirs, TC.getFilePaths());
@@ -153,6 +181,10 @@ void tools::windowsitanium::Linker::ConstructJob(
                             : "-defaultlib:libunwind.dll.lib");
     CmdArgs.push_back(Args.MakeArgString(
         "-defaultlib:" + TC.getCompilerRTBasename(Args, "builtins")));
+    // The loader refuses an image without a load configuration, which the
+    // builtins define and, on Windows Itanium, wincrt names.
+    if (TC.getTriple().isWindowsNTPOSIXEnvironment())
+      CmdArgs.push_back("-include:_load_config_used");
     if (!Args.hasArg(options::OPT_nolibc))
       TC.addSystemLibArgs(Args, CmdArgs);
     // Objects that clang-cl or MSVC compiled name the Visual C++ runtime
@@ -204,6 +236,10 @@ WindowsItaniumBase::TranslateArgs(const DerivedArgList &Args, BoundArch BA,
   // the C++ runtime provides.
   DAL->AddFlagArg(nullptr, Opts.getOption(options::OPT_fdeclspec));
   DAL->AddFlagArg(nullptr, Opts.getOption(options::OPT_fuse_cxa_atexit));
+  // Unwind tables, with -ffreestanding too: the unwinder takes a function
+  // without one for a leaf.
+  DAL->AddFlagArg(nullptr,
+                  Opts.getOption(options::OPT_fasynchronous_unwind_tables));
   // The Windows SDK's headers need the Microsoft extensions. Without a
   // compatibility version those emulate a Visual C++ older than 2015, whose
   // quirks break standard C++, so they come with the MSVC toolchain's default.
@@ -219,18 +255,69 @@ WindowsItaniumBase::TranslateArgs(const DerivedArgList &Args, BoundArch BA,
   }
 
   for (Arg *A : Args) {
+    switch (A->getOption().getID()) {
     // SEH is the only exception model.
-    if (A->getOption().matches(options::OPT_fsjlj_exceptions) ||
-        A->getOption().matches(options::OPT_fdwarf_exceptions) ||
-        A->getOption().matches(options::OPT_fwasm_exceptions)) {
+    case options::OPT_fsjlj_exceptions:
+    case options::OPT_fdwarf_exceptions:
+    case options::OPT_fwasm_exceptions:
+      DAL->AddFlagArg(A, Opts.getOption(options::OPT_fseh_exceptions));
+      [[fallthrough]];
+    // Separate sections, from which the linker takes a function's or a data
+    // object's extent, and unwind tables are not optional.
+    case options::OPT_fno_function_sections:
+    case options::OPT_fno_data_sections:
+    case options::OPT_fno_asynchronous_unwind_tables:
+    case options::OPT_fno_unwind_tables:
       getDriver().Diag(diag::warn_drv_unsupported_option_for_target)
           << A->getAsString(Args) << getTripleString();
-      DAL->AddFlagArg(A, Opts.getOption(options::OPT_fseh_exceptions));
-    } else {
+      A->claim();
+      break;
+    // clang-cl's /GS- only withholds the stack protector clang-cl asks for,
+    // which would leave the toolchain's default.
+    case options::OPT__SLASH_GS_:
+      DAL->AddFlagArg(A, Opts.getOption(options::OPT_fno_stack_protector));
+      DAL->append(A);
+      break;
+    // clang-cl's Control Flow Guard modes are -mguard='s. Its EH continuation
+    // values change nothing, since a table is complete only if every object
+    // lists its targets, and any other value is left for clang-cl to reject.
+    case options::OPT__SLASH_guard: {
+      StringRef Value = A->getValue();
+      const char *Mode =
+          llvm::StringSwitch<const char *>(Value)
+              .CaseLower("cf", Args.hasArg(options::OPT__SLASH_d2guardnochecks)
+                                   ? "cf-nochecks"
+                                   : "cf")
+              .CaseLower("cf,nochecks", "cf-nochecks")
+              .CaseLower("cf-", "none")
+              .Default(nullptr);
+      if (Mode)
+        DAL->AddJoinedArg(A, Opts.getOption(options::OPT_mguard_EQ), Mode);
+      else if (Value.equals_insensitive("ehcont") ||
+               Value.equals_insensitive("ehcont-"))
+        A->claim();
+      else
+        DAL->append(A);
+      break;
+    }
+    default:
       DAL->append(A);
     }
   }
   return DAL;
+}
+
+StringRef WindowsItaniumBase::getGuardMode(const ArgList &Args) const {
+  const Arg *A = Args.getLastArg(options::OPT_mguard_EQ);
+  // ntposix.dll does not yet give an image its guard pointers.
+  if (!A)
+    return getTriple().isWindowsItaniumEnvironment() ? "cf" : "none";
+  StringRef Mode = A->getValue();
+  if (Mode == "cf" || Mode == "cf-nochecks" || Mode == "none")
+    return Mode;
+  getDriver().Diag(diag::err_drv_unsupported_option_argument)
+      << A->getSpelling() << Mode;
+  return "none";
 }
 
 void WindowsItaniumBase::addClangTargetOptions(
@@ -240,6 +327,13 @@ void WindowsItaniumBase::addClangTargetOptions(
   for (auto Opt : {options::OPT_mwindows, options::OPT_mconsole})
     if (Arg *A = DriverArgs.getLastArgNoClaim(Opt))
       A->ignoreTargetSpecific();
+
+  // Every object has Control Flow Guard's tables, and its checks unless
+  // -mguard= leaves them out.
+  CC1Args.push_back(getGuardMode(DriverArgs) == "cf" ? "-cfguard"
+                                                     : "-cfguard-no-checks");
+  if (hasEHContGuard(getTriple()))
+    CC1Args.push_back("-ehcontguard");
 }
 
 void WindowsItaniumBase::addClangWarningOptions(ArgStringList &CC1Args) const {

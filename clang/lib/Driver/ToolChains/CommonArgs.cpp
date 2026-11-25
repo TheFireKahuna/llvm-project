@@ -993,9 +993,11 @@ llvm::StringRef tools::getLTOParallelism(const ArgList &Args, const Driver &D) {
   return LtoJobsArg->getValue();
 }
 
-// PS4/PS5 uses -ffunction-sections and -fdata-sections by default.
+// PS4/PS5 uses -ffunction-sections and -fdata-sections by default, and so do
+// Windows Itanium and NT-POSIX, whose linker takes a function's or a data
+// object's extent from its section.
 bool tools::isUseSeparateSections(const llvm::Triple &Triple) {
-  return Triple.isPS();
+  return Triple.isPS() || Triple.isWindowsItaniumOrNTPOSIXEnvironment();
 }
 
 void tools::addSeparateSectionFlags(const llvm::Triple &Triple,

@@ -277,7 +277,8 @@ void llvm::emitLinkerFlagsForGlobalCOFF(raw_ostream &OS, const GlobalValue *GV,
 
 void llvm::emitLinkerFlagsForUsedCOFF(raw_ostream &OS, const GlobalValue *GV,
                                       const Triple &T, Mangler &M) {
-  if (!T.isWindowsMSVCEnvironment())
+  if (!T.isWindowsMSVCEnvironment() &&
+      !T.isWindowsItaniumOrNTPOSIXEnvironment())
     return;
 
   OS << " /INCLUDE:";

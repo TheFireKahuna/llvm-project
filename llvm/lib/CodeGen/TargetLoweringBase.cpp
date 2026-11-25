@@ -2216,7 +2216,7 @@ void TargetLoweringBase::insertSSPDeclarations(
     return;
 
   StringRef StackGuardVarName = getLibcallImplName(StackGuardImpl);
-  M.getOrInsertGlobal(
+  GlobalVariable *Guard = M.getOrInsertGlobal(
       StackGuardVarName, PointerType::getUnqual(M.getContext()), [=, &M]() {
         auto *GV = new GlobalVariable(M, PointerType::getUnqual(M.getContext()),
                                       false, GlobalVariable::ExternalLinkage,
@@ -2233,6 +2233,12 @@ void TargetLoweringBase::insertSSPDeclarations(
 
         return GV;
       });
+
+  // Every Windows Itanium image defines its own security cookie, so it is
+  // read directly, a declaration the module already made included.
+  if (M.getTargetTriple().isGenericWindowsItaniumEnvironment() &&
+      !Guard->hasDLLImportStorageClass())
+    Guard->setDSOLocal(true);
 }
 
 // Currently only support "standard" __stack_chk_guard.

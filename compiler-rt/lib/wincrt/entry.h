@@ -20,11 +20,9 @@ WINCRT_WRAP_UCRT
 
 // The process's exit-list state, which every copy of the termination
 // registries finds through the locator the linker writes for it in the
-// executable's MZ header. Nothing in the image names it, so the linker is
-// told to keep it.
-extern "C" wincrt::ExitState __wincrt_exit_state = {
+// executable's MZ header. Nothing in the image names it.
+extern "C" [[gnu::used, gnu::retain]] wincrt::ExitState __wincrt_exit_state = {
     wincrt::ExitStateVersion, sizeof(wincrt::ExitState)};
-#pragma comment(linker, "/include:__wincrt_exit_state")
 
 namespace wincrt {
 

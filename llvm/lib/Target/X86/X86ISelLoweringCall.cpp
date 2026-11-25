@@ -630,7 +630,6 @@ void X86TargetLowering::insertSSPDeclarations(
       F->setCallingConv(CallingConv::X86_FastCall);
       F->addParamAttr(0, Attribute::AttrKind::InReg);
     }
-    return;
   }
 
   StringRef GuardMode = M.getStackProtectorGuard();
