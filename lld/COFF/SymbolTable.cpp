@@ -239,6 +239,15 @@ void SymbolTable::reportUndefinedSymbol(const UndefinedDiag &undefDiag) {
 
   // Hints
   StringRef name = undefDiag.sym->getName();
+  // An MSVC DLL exports a thread-local only as its offset in the loader's
+  // template, which an access adds to that DLL's entry of the TEB's array.
+  StringRef var = isTlsRecordPointerName(name) ? name.slice(6, name.size() - 4)
+                                               : name;
+  if (Symbol *offset = find(("__imp___tls_offset_" + var).str()))
+    diag << "\nNOTE: " << toString(offset->getFile()) << " offers " << var
+         << " as a thread-local of the loader's template, through link.exe's "
+         << "/experimental:tlsDllInterface (__tls_offset_" << var
+         << "), which only foreign code can reach.";
   if (name.consume_front("__imp_")) {
     Symbol *imp = find(name);
     if (imp && imp->isLazy()) {
@@ -456,6 +465,11 @@ void SymbolTable::reportUnresolvable() {
       }
     }
     if (name.contains("_PchSym_"))
+      continue;
+    // The link defines the bounds of the loader's template after the code of
+    // bitcode is generated.
+    if (is_contained({"_tls_start", "_tls_end"},
+                     machine == I386 ? name.drop_front() : name))
       continue;
     if ((ctx.config.autoImport || sym->forkReferenced) &&
         (impSymbol(name) ||

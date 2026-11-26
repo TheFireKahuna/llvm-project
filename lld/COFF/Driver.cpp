@@ -3350,12 +3350,18 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachSymtab([](SymbolTable &symtab) { symtab.compileBitcodeFiles(); });
   // LTO's output repeats in its directives the bitcode's llvm.linker.options,
   // which were applied with it, except /guardsym. Of those directives and of
-  // those that module assembly and code generation add, only /guardsym is read.
+  // those that module assembly and code generation add, only /guardsym and
+  // /failifmismatch, which states the object's thread-local model, are read.
   for (ObjFile *file : ArrayRef(ctx.objFileInstances).drop_front(numObjFiles)) {
-    ParsedDirectives directives = ArgParser(ctx).parseDirectives(
-        file->getDirectives(), /*symbolsOnly=*/true);
-    for (StringRef arg : directives.guardSyms)
-      parseGuardSym(arg, file);
+    SmallVector<StringRef, 16> tokens;
+    cl::TokenizeWindowsCommandLineNoCopy(file->getDirectives(), saver(), tokens);
+    for (StringRef tok : tokens) {
+      StringRef arg = tok.drop_front();
+      if (arg.consume_front_insensitive("guardsym:"))
+        parseGuardSym(arg, file);
+      else if (arg.consume_front_insensitive("failifmismatch:"))
+        checkFailIfMismatch(arg, file);
+    }
   }
 
   ctx.forEachSymtab([&](SymbolTable &symtab) {

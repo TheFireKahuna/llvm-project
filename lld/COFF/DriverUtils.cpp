@@ -985,7 +985,7 @@ opt::InputArgList ArgParser::parse(ArrayRef<const char *> argv) {
 }
 
 // Tokenizes and parses a given string as command line in .drective section.
-ParsedDirectives ArgParser::parseDirectives(StringRef s, bool symbolsOnly) {
+ParsedDirectives ArgParser::parseDirectives(StringRef s) {
   ParsedDirectives result;
   SmallVector<const char *, 16> rest;
 
@@ -1007,7 +1007,7 @@ ParsedDirectives ArgParser::parseDirectives(StringRef s, bool symbolsOnly) {
     else if (tok.starts_with_insensitive("/guardsym:") ||
              tok.starts_with_insensitive("-guardsym:"))
       result.guardSyms.push_back(tok.substr(strlen("/guardsym:")));
-    else if (!symbolsOnly) {
+    else {
       // Copy substrings that are not valid C strings. The tokenizer may have
       // already copied quoted arguments for us, so those do not need to be
       // copied again.

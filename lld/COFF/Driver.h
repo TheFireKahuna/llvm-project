@@ -66,8 +66,8 @@ public:
 
   // Tokenizes a given string and then parses as command line options in
   // .drectve section. The options that reference symbols are returned apart
-  // to be processed in fastpath; with symbolsOnly, the others are dropped.
-  ParsedDirectives parseDirectives(StringRef s, bool symbolsOnly = false);
+  // to be processed in fastpath.
+  ParsedDirectives parseDirectives(StringRef s);
 
 private:
   // Concatenate LINK environment variable.
