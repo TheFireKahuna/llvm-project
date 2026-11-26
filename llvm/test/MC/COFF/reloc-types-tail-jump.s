@@ -4,6 +4,8 @@
 // RUN: llvm-readobj -r %t/a.o | FileCheck %s --check-prefix=ASM
 // RUN: llvm-objdump -d -j '.text$over' %t/a.o | \
 // RUN:   FileCheck %s --check-prefix=OVER
+// RUN: llvm-readobj --coff-link-records %t/a.o | \
+// RUN:   FileCheck %s --check-prefix=SPANS
 // RUN: llvm-mc -triple x86_64-pc-windows-ntposix -filetype=obj %t/a.s \
 // RUN:   -o %t/a.n.o
 // RUN: llvm-readobj -r %t/a.n.o | FileCheck %s --check-prefix=ASM
@@ -20,11 +22,10 @@
 // RUN: %if aarch64-registered-target %{ llvm-readobj -r %t/m64.o | \
 // RUN:   FileCheck %s --check-prefix=MSVC64 --implicit-check-not=IMAGE_REL_LLVM %}
 
-// elsewhere; after a prefix byte it is MEM_JUMP_P1. On AArch64 a b with no
-// frame open is BRANCH_TAIL and one in a frame BRANCH26, as bl is anywhere,
-// and a fused br, whose marker states either type, FUSED_JUMP_TAIL and
-// FUSED_JUMP; a conditional branch keeps its type, and a b to a label across
-// code the linker may resize keeps its relocation, against a label.
+// On Windows Itanium and NT-POSIX a jmp is BRANCH_TAIL, which the linker may
+// delete, outside a frame or where it ends an epilogue the unwinder reads
+// without it (v2, or v1 with no push or a lone leave), else JUMP32; through a
+// pointer MEM_JUMP_TAIL or MEM_JUMP. AArch64's b and fused br follow suit.
 
 // MSVC:   IMAGE_REL_AMD64_REL32 ext
 // MSVC64: IMAGE_REL_ARM64_BRANCH26 ext
@@ -68,6 +69,13 @@
 // OVER-NEXT: 74 07                je
 // OVER-NEXT: 90                   nop
 // OVER-NEXT: ff 25 00 00 00 00    jmpq
+
+// The width of a jmp that a jcc jumps over is the linker's too: the two may
+// become one jcc of two bytes, inside which the jcc's own field lies.
+// SPANS:      Field: .text$over
+// SPANS-NEXT: Target: .text$over
+// SPANS-NEXT: 0x1 REL8
+// SPANS-NEXT: 0x4 JUMP32
 
 // A64:      Section ({{[0-9]+}}) .text {
 // A64-NEXT:   0x0 IMAGE_REL_LLVM_BRANCH_TAIL ext

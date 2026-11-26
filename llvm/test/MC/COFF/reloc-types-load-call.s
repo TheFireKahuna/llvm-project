@@ -17,12 +17,10 @@
 // RUN:   -x86-align-branch-boundary=32 -x86-align-branch=call %s -o %t.b.o
 // RUN: llvm-objdump -d -j '.text$b' %t.b.o | FileCheck %s --check-prefix=PAD
 
-// the load's field, which holds nothing: the linker writes a direct call
-// over the two where it binds the pointer, so the register is one that
-// nothing reads after the call. The call is five bytes, so the linker deletes
-// the rest: the section is listed, and states the jump across the site as a
-// span, with no relocation or label. In a section that a fused read makes one
-// whose code the linker moves, the jump has a relocation.
+// On Windows Itanium and NT-POSIX @LOAD_CALL makes a load and the call through
+// its register one site, MEM_LOAD_CALL at the load's empty field, which the
+// linker may rewrite as a five-byte direct call: a jump across it is a span,
+// or a relocation where a fused read makes the linker move the code.
 
 // CHECK:      Section ({{[0-9]+}}) .text {
 // CHECK-NEXT:   0x5 IMAGE_REL_LLVM_MEM_LOAD_CALL __imp_f

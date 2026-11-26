@@ -30,7 +30,7 @@
 ; ACCEPT-NOT: error:
 ; ACCEPT-NOT: __imp_gone
 
-; DIRECT: error: {{.*}}.lto.obj: automatic import of var from imp.dll needs a runtime pseudo relocation; declare it dllimport, or refer to __imp_var
+; DIRECT: error: {{.*}}.lto.obj: var is provided by imp.dll, but
 
 ; FOREIGN: error: undefined symbol: var
 

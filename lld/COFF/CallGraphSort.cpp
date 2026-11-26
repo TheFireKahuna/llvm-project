@@ -39,10 +39,11 @@ using SectionPair = std::pair<const SectionChunk *, const SectionChunk *>;
 // short or deleted. Of jumps that weigh the same, as all do without a profile,
 // one that would be deleted is taken before one that would only be short,
 // which could otherwise take its target from it; then the first in the
-// objects' order. With a profile the chains are sorted as nodes by the chosen
-// algorithm; without one they keep the objects' order.
-DenseMap<const SectionChunk *, int>
-coff::computeCallGraphProfileOrder(COFFLinkerContext &ctx) {
+// objects' order. The chains that the profile's pairs reach are sorted as
+// nodes by the chosen algorithm. chainNext takes each chained section's
+// successor: a chain that is not sorted stays where its first section is.
+DenseMap<const SectionChunk *, int> coff::computeCallGraphProfileOrder(
+    COFFLinkerContext &ctx, DenseMap<const Chunk *, const Chunk *> &chainNext) {
   std::vector<const SectionChunk *> sections;
   std::vector<uint64_t> sizes;
   std::vector<CallGraphEdge> edges;
@@ -90,18 +91,20 @@ coff::computeCallGraphProfileOrder(COFFLinkerContext &ctx) {
   // The edges of the jumps that may join chains, and whether each would be
   // deleted.
   std::vector<std::pair<size_t, bool>> jumps;
-  forEachBranch(ctx, [&](const SectionChunk &fromSec, uint32_t offset,
-                         const Chunk &toSec, bool chains, bool deletes) {
-    auto it = pairs.find({&fromSec, &toSec});
-    if (it != pairs.end())
-      ++it->second.first;
-    else if (!chains)
-      return;
-    if (chains)
-      jumps.push_back({edges.size(), deletes});
-    edges.push_back({getOrCreateNode(&fromSec),
-                     getOrCreateNode(cast<SectionChunk>(&toSec)), 0, offset});
-  });
+  // With no pair to count only the jumps that chain take part.
+  forEachBranch(ctx, pairs.empty(),
+                [&](const SectionChunk &fromSec, uint32_t offset,
+                    const SectionChunk &toSec, bool chains, bool deletes) {
+                  auto it = pairs.find({&fromSec, &toSec});
+                  if (it != pairs.end())
+                    ++it->second.first;
+                  else if (!chains)
+                    return;
+                  if (chains)
+                    jumps.push_back({edges.size(), deletes});
+                  edges.push_back({getOrCreateNode(&fromSec),
+                                   getOrCreateNode(&toSec), 0, offset});
+                });
   // A pair's calls share its count, and take it from the pair's own edge.
   for (CallGraphEdge &e : edges) {
     auto [calls, count] = pairs.lookup({sections[e.from], sections[e.to]});
@@ -147,8 +150,8 @@ coff::computeCallGraphProfileOrder(COFFLinkerContext &ctx) {
       sizes[j] = 0;
     sizes[i] = size;
   }
-  // The sort is given the weighted edges alone, and only a section that one
-  // of them or a chain holds is placed.
+  // The sort is given the weighted edges alone, and places only the chains
+  // that they reach.
   llvm::erase_if(edges, [](const CallGraphEdge &e) { return !e.weight; });
   std::vector<bool> placed(sections.size());
   for (CallGraphEdge &e : edges) {
@@ -161,15 +164,16 @@ coff::computeCallGraphProfileOrder(COFFLinkerContext &ctx) {
 
   // Maximum cluster size in bytes.
   constexpr uint64_t maxClusterSize = 1024 * 1024;
-  std::vector<uint64_t> heads(sections.size()), order;
-  std::iota(heads.begin(), heads.end(), 0);
+  std::vector<uint64_t> order;
   if (!edges.empty())
-    heads = sortByCallGraph(ctx.config.callGraphProfileSort, sizes, edges,
-                            maxClusterSize);
-  for (uint64_t i : heads)
-    if (!follows[i] && (placed[i] || next[i] != none))
-      for (uint64_t j = i; j != none; j = next[j])
-        order.push_back(j);
+    for (uint64_t i : sortByCallGraph(ctx.config.callGraphProfileSort, sizes,
+                                      edges, maxClusterSize))
+      if (placed[i])
+        for (uint64_t j = i; j != none; j = next[j])
+          order.push_back(j);
+  for (uint64_t i = 0, e = sections.size(); i != e; ++i)
+    if (next[i] != none)
+      chainNext[sections[i]] = sections[next[i]];
 
   DenseMap<const SectionChunk *, int> orderMap;
   // Sections will be sorted by increasing order. Absent sections will have

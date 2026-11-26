@@ -685,7 +685,8 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       auto *x = dyn_cast_or_null<Undefined>(find(impName));
       bool weak = x && (x->weakKind == Symbol::NoLibrary ||
                         x->weakKind == Symbol::Library);
-      if (sym->strongImport && weak)
+      if (sym->strongImport && weak &&
+          (x->forkReferenced || sym->forkReferenced))
         imp = nullptr;
       // For an object for Windows Itanium or NT-POSIX, __imp_X of a weak
       // external X whose alternate is an import is that import's address

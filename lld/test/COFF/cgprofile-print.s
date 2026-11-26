@@ -5,7 +5,7 @@
 # RUN: echo "B C 50" >> %t.call_graph
 # RUN: echo "C D 40" >> %t.call_graph
 # RUN: echo "D B 10" >> %t.call_graph
-# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /print-symbol-order:%t3
+# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /print-symbol-order:%t3 /call-graph-profile-sort:hfsort
 # RUN: FileCheck %s --input-file %t3
 
 # CHECK: B

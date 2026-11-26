@@ -341,8 +341,6 @@ public:
   // whose symbol then keeps nothing live and is ignored by ICF, as in link.exe.
   Symbol *getRelocTarget(const coff_relocation &rel) const;
 
-  // Whether rel marks a fused site that has no field of its own.
-
   // The relocations the scan kept for this section, or null.
   ScannedSection *getScanned() const;
 
@@ -352,8 +350,9 @@ public:
   Symbol *getTarget(size_t i, const ScannedSection *s) const;
 
   // Where the byte at an input offset is in the output. A stored input offset
-  // into a section the link may resize goes through this.
-  uint32_t getOutputOffset(uint32_t offset) const;
+  // into a section the link may resize goes through this. With end, the offset
+  // is where an instruction ends, before any padding that follows it.
+  uint32_t getOutputOffset(uint32_t offset, bool end = false) const;
 
   ArrayRef<coff_relocation> getRelocs() const {
     return llvm::ArrayRef(relocsData, relocsSize);
@@ -432,10 +431,9 @@ public:
   // CodeView.
   bool resizable : 1;
 
-  // Whether the link moves the code of this resizable section: it is no
-  // x86-64 section, or has a relocation that COFF::relocationMovesCode names.
-  // Any other keeps its bytes where they are, but for a jump that ends it,
-  // which the link may delete, and each of its sites keeps its length.
+  // Whether the link moves the code of this resizable section freely: it is
+  // no x86-64 section, or has a relocation that COFF::relocationMovesCode
+  // names. Any other is compacted by the spans it states.
   bool movable : 1;
 
   // Whether the object states as spans the values that depend on this
@@ -455,9 +453,8 @@ public:
 
   // Of the places 0, 16, 32 and 48 bytes into a 64-byte line, as bits 0 to
   // 3, those where this chunk may not begin: a loop of it that a line is to
-  // keep would cross one there. Never all four. The object states those of
-  // the loops whose offsets are its own, and the solve of a resized section
-  // adds those of the loops it lays out.
+  // keep would cross one there. Never all four. The object states some, and
+  // the pass over a resized section those of the loops it lays out.
   mutable uint8_t linePlacesBarred = 0;
 
   // The COMDAT selection if this is a COMDAT chunk.
@@ -793,15 +790,13 @@ public:
   Defined *getTarget() const { return sym; }
   void setTarget(Defined *s) { sym = s; }
 
-  // How roots and live sections use the pointer. A Load reaches the target
-  // instead where the scan rewrites it: an x86-64 one always, and ARM64's
-  // when every instruction that refers to the pointer is a Load. The pointer
-  // is left out when they all reach the target and nothing keeps it. The scan
-  // sets the bits from several threads.
+  // How roots and live sections use the pointer, which the scan sets from
+  // several threads: a Load reaches the target where the scan rewrites it.
+  // The pointer is left out unless a use reads or keeps it.
   enum Use : uint8_t { Keep = 1, Load = 2, Read = 4 };
   std::atomic<uint8_t> uses = 0;
   bool isBypassed() const { return (uses & (Load | Read)) == Load; }
-  bool isLive() const { return !isBypassed() || (uses & Keep); }
+  bool isLive() const { return uses & (Keep | Read); }
   // The compiler's .refptr cell that this pointer binds, if any. The cell
   // stays the pointer, so that it keeps one address, and this one is never
   // written.

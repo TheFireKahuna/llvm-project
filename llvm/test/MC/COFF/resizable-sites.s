@@ -1,18 +1,17 @@
 // RUN: llvm-mc -triple x86_64-pc-windows-ntposix -mattr=+egpr -filetype=obj \
 // RUN:   --defsym X64=1 %s -o %t.x.o
 // RUN: llvm-readobj -r --coff-link-records %t.x.o | FileCheck %s --check-prefix=X64
-// RUN: llvm-mc -triple aarch64-pc-windows-ntposix -filetype=obj %s -o %t.a.o
-// RUN: llvm-readobj -r --coff-link-records %t.a.o | FileCheck %s --check-prefix=A64
+// RUN: %if aarch64-registered-target %{ llvm-mc -triple aarch64-pc-windows-ntposix -filetype=obj %s -o %t.a.o %}
+// RUN: %if aarch64-registered-target %{ llvm-readobj -r --coff-link-records %t.a.o | FileCheck %s --check-prefix=A64 %}
 
-// On Windows Itanium and NT-POSIX the linker may change the size of the code
-// at a relocation of the types COFF::relocationMayResizeCode names, so the
-// assembler resolves no distance across such code, whether an instruction or
-// a .reloc marker states the type. Each section holds one site between a
-// label and an lea, or an adr, of that label: across a site the linker may
-// resize the address has a relocation against a label that moves with the
-// code, and the section is listed as resizable; across any other site the
-// loads a pointer the linker may bind, an import pointer or a .refptr cell. Padding that a marker states ends at the
-// marker, so a label there lies after it.
+// On Windows Itanium and NT-POSIX each section holds one site between a label
+// and an lea or adr of it: across a site the linker may resize, the address
+// names a label and the section is resizable; across any other the distance is
+// written. A trailing fused read makes an x86-64 section resizable. An ARM64
+// adrp is resizable with the instruction after it, which the linker may fold
+// with it where it is an add, or a load of a word, signed word or doubleword
+// into an integer register, of the address into the adrp's register, its
+// field the low bits of the adrp's addend, and not alone.
 
 // X64: Section ({{[0-9]+}}) .text$jump {
 // X64-NEXT:   0x5 IMAGE_REL_AMD64_SREL32 $L
@@ -67,7 +66,7 @@
 // X64-NEXT: }
 // X64-NEXT: Section ({{[0-9]+}}) .text$scale {
 // X64-NEXT:   0x0 IMAGE_REL_LLVM_TLS_SCALE -
-// X64-NEXT:   0xA IMAGE_REL_AMD64_REL32 place
+// X64-NEXT:   0xA IMAGE_REL_LLVM_REL32_INSN place
 // X64-NEXT:   0x11 IMAGE_REL_AMD64_SREL32 $L
 // X64-NEXT: }
 // X64-NEXT: Section ({{[0-9]+}}) .text$align {
@@ -108,17 +107,35 @@
 // X64-NEXT: ResizableSection: .text$cell (
 // X64-NEXT: }
 
-// A64: Section ({{[0-9]+}}) .text$adrp {
+// A64: Section ({{[0-9]+}}) .text$add {
 // A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
-// A64-NEXT:   0x4 IMAGE_REL_ARM64_REL21 $L
-// A64-NEXT: }
-// A64-NEXT: Section ({{[0-9]+}}) .text$add {
-// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEOFFSET_12A ext
-// A64-NEXT:   0x4 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12A ext
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
 // A64-NEXT: }
 // A64-NEXT: Section ({{[0-9]+}}) .text$ldr {
-// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEOFFSET_12L __imp_f
-// A64-NEXT:   0x4 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$ldrw {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$ldrsw {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$addk {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12A ext
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$ldrk {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
 // A64-NEXT: }
 // A64-NEXT: Section ({{[0-9]+}}) .text$read {
 // A64-NEXT:   0x0 IMAGE_REL_LLVM_FUSED_READ __imp_f
@@ -155,10 +172,36 @@
 // A64-NEXT:   0x0 IMAGE_REL_LLVM_FUSED_JUMP_TAIL __imp_f
 // A64-NEXT:   0x4 IMAGE_REL_ARM64_REL21 $L
 // A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$adrp {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$str {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$ldrh {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$ldrd {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$prfm {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$other {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
+// A64-NEXT: }
 // A64:      Kind: Sections
-// A64-NEXT: ResizableSection: .text$adrp (
 // A64-NEXT: ResizableSection: .text$add (
 // A64-NEXT: ResizableSection: .text$ldr (
+// A64-NEXT: ResizableSection: .text$ldrw (
+// A64-NEXT: ResizableSection: .text$ldrsw (
+// A64-NEXT: ResizableSection: .text$addk (
+// A64-NEXT: ResizableSection: .text$ldrk (
 // A64-NEXT: ResizableSection: .text$read (
 // A64-NEXT: ResizableSection: .text$tail (
 // A64-NEXT: ResizableSection: .text$test (
@@ -167,56 +210,28 @@
 // A64-NEXT: }
 
 .ifdef X64
-  .section .text$jump,"xr"
-.Ljump:
-  jmp .Ljump
-  leaq .Ljump(%rip), %rcx
+// A section with one site, the lea of its label and, for fsite, a fused read.
+.macro site name, insn:vararg
+  .section .text$\name,"xr"
+.L\name:
+  \insn
+  leaq .L\name(%rip), %rcx
+.endm
+.macro fsite name, insn:vararg
+  site \name, \insn
   movq __imp_f@FUSED(%rip), %rdx
+.endm
 
-  .section .text$jcc,"xr"
-.Ljcc:
-  je .Ljcc
-  leaq .Ljcc(%rip), %rcx
-
-  .section .text$tail,"xr"
-.Ltail:
-  jmp ext
-  leaq .Ltail(%rip), %rcx
-
-  .section .text$memcall,"xr"
-.Lmemcall:
-  callq *__imp_f(%rip)
-  leaq .Lmemcall(%rip), %rcx
-
-  .section .text$memjump,"xr"
-.Lmemjump:
-  jmpq *__imp_f(%rip)
-  leaq .Lmemjump(%rip), %rcx
-
-  .section .text$memjumpp1,"xr"
-.Lmemjumpp1:
-  rex64 jmpq *__imp_f(%rip)
-  leaq .Lmemjumpp1(%rip), %rcx
-
-  .section .text$load,"xr"
-.Lload:
-  movq __imp_f(%rip), %rax
-  leaq .Lload(%rip), %rcx
-
-  .section .text$loadrex2,"xr"
-.Lloadrex2:
-  movq __imp_f(%rip), %r16
-  leaq .Lloadrex2(%rip), %rcx
-
-  .section .text$read,"xr"
-.Lread:
-  movq __imp_f@FUSED(%rip), %rax
-  leaq .Lread(%rip), %rcx
-
-  .section .text$readrex2,"xr"
-.Lreadrex2:
-  movq __imp_f@FUSED(%rip), %r16
-  leaq .Lreadrex2(%rip), %rcx
+  fsite jump, jmp .Ljump
+  fsite jcc, je .Ljcc
+  fsite tail, jmp ext
+  fsite memcall, callq *__imp_f(%rip)
+  fsite memjump, jmpq *__imp_f(%rip)
+  fsite memjumpp1, rex64 jmpq *__imp_f(%rip)
+  fsite load, movq __imp_f(%rip), %rax
+  fsite loadrex2, movq __imp_f(%rip), %r16
+  site read, movq __imp_f@FUSED(%rip), %rax
+  site readrex2, movq __imp_f@FUSED(%rip), %r16
 
   .section .text$test,"xr"
 .Ltest:
@@ -238,62 +253,46 @@
   nop
   leaq .Lalign(%rip), %rcx
 
-  .section .text$call,"xr"
-.Lcall:
-  callq ext
-  leaq .Lcall(%rip), %rcx
-
-  .section .text$lea,"xr"
-.Llea:
-  leaq ext+8(%rip), %rax
-  leaq .Llea(%rip), %rcx
-
-  .section .text$tpoff,"xr"
-.Ltpoff:
-  movl tv@TPOFF(%r14), %eax
-  leaq .Ltpoff(%rip), %rcx
-
-  .section .text$cell,"xr"
-.Lcell:
-  movq .refptr.f(%rip), %rax
-  leaq .Lcell(%rip), %rcx
-
-  .section .text$var,"xr"
-.Lvar:
-  movq var(%rip), %rax
-  leaq .Lvar(%rip), %rcx
+  site call, callq ext
+  site lea, leaq ext+8(%rip), %rax
+  site tpoff, movl tv@TPOFF(%r14), %eax
+  fsite cell, movq .refptr.f(%rip), %rax
+  site var, movq var(%rip), %rax
 
 .else
-  .section .text$adrp,"xr"
-.Ladrp:
-  adrp x0, ext
-  adr x2, .Ladrp
+// A section with one site, which rsite marks, and the adr of its label. The
+// site of pair is an adrp of to and the instruction after it.
+.macro site name, insn:vararg
+  .section .text$\name,"xr"
+.L\name:
+  \insn
+  adr x2, .L\name
+.endm
+.macro rsite name, type, insn:vararg
+  .section .text$\name,"xr"
+.L\name:
+  .reloc ., \type, __imp_f
+  \insn
+  adr x2, .L\name
+.endm
 
-  .section .text$add,"xr"
-.Ladd:
-  add x0, x0, :lo12:ext
-  adr x2, .Ladd
+.macro pair name, to, low:vararg
+  .section .text$\name,"xr"
+.L\name:
+  adrp x0, \to
+  \low
+  adr x2, .L\name
+.endm
 
-  .section .text$ldr,"xr"
-.Lldr:
-  ldr x0, [x0, :lo12:__imp_f]
-  adr x2, .Lldr
-
-  .section .text$read,"xr"
-.Lread:
-  ldr x0, [x0, :fused_lo12:__imp_f]
-  adr x2, .Lread
-
-  .section .text$tail,"xr"
-.Ltail:
-  b ext
-  adr x2, .Ltail
-
-  .section .text$test,"xr"
-.Ltest:
-  .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_f
-  cbz x8, ext
-  adr x2, .Ltest
+  pair add, ext, add x0, x0, :lo12:ext
+  pair ldr, ext, ldr x0, [x0, :lo12:ext]
+  pair ldrw, ext, ldr w0, [x0, :lo12:ext]
+  pair ldrsw, ext, ldrsw x0, [x0, :lo12:ext]
+  pair addk, ext+8, add x0, x0, :lo12:ext+8
+  pair ldrk, ext-8, ldr x0, [x0, :lo12:ext-8]
+  site read, ldr x0, [x0, :fused_lo12:__imp_f]
+  site tail, b ext
+  rsite test, IMAGE_REL_LLVM_FUSED_TEST, cbz x8, ext
 
   .section .text$scale,"xr"
 .Lscale:
@@ -305,26 +304,16 @@
   madd x0, x1, x9, x8
   adr x2, .Lb2
 
-  .section .text$call,"xr"
-.Lcall:
-  bl ext
-  adr x2, .Lcall
-
-  .section .text$fcall,"xr"
-.Lfcall:
-  .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_f
-  blr x8
-  adr x2, .Lfcall
-
-  .section .text$adr,"xr"
-.Ladr:
-  adr x1, ext
-  adr x2, .Ladr
-
-  .section .text$cbz,"xr"
-.Lcbz:
-  cbz x0, ext
-  adr x2, .Lcbz
-
+  site call, bl ext
+  rsite fcall, IMAGE_REL_LLVM_FUSED_CALL, blr x8
+  site adr, adr x1, ext
+  site cbz, cbz x0, ext
+  rsite fjump, IMAGE_REL_LLVM_FUSED_JUMP, br x8
+  site adrp, adrp x0, ext
+  pair str, ext, str x1, [x0, :lo12:ext]
+  pair ldrh, ext, ldrh w0, [x0, :lo12:ext]
+  pair ldrd, ext, ldr d0, [x0, :lo12:ext]
+  pair prfm, ext, prfm pldl1keep, [x0, :lo12:ext]
+  pair other, ext, ldr x1, [x0, :lo12:ext]
 
 .endif

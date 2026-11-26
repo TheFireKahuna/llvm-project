@@ -184,6 +184,48 @@ public:
   uint32_t characteristics = 0;
 };
 
+// The unwind data of the ARM64 range thunks that a branch inside an unwind
+// frame reaches, which ntdll would otherwise unwind as a leaf with the frame
+// open: in .rdata, for each set of codes, a record that runs them at each of
+// a thunk's three words; in .pdata, an entry for each thunk.
+class ThunkUnwindChunk : public NonSectionChunk {
+public:
+  explicit ThunkUnwindChunk(ThunkUnwindChunk *records = nullptr)
+      : records(records) {
+    setAlignment(records ? 4 : 1);
+  }
+  size_t getSize() const override {
+    return records ? 8 * thunks.size() : bytes.size();
+  }
+  void writeTo(uint8_t *buf) const override {
+    if (!records)
+      return (void)memcpy(buf, bytes.data(), bytes.size());
+    for (auto [thunk, at] : thunks) {
+      write32le(buf, thunk->getRVA());
+      write32le(buf + 4, records->getRVA() + at);
+      buf += 8;
+    }
+  }
+  void add(Chunk *thunk, StringRef codes) {
+    auto [it, fresh] = records->offsets.insert({codes, records->bytes.size()});
+    if (fresh)
+      llvm::append_range(records->bytes,
+                         getBodyRecord(thunk->getSize() / 4, codes));
+    records->setAlignment(4);
+    thunks.push_back({thunk, it->second});
+  }
+  void clear() {
+    thunks.clear();
+    records->offsets.clear();
+    records->bytes.clear();
+  }
+
+  ThunkUnwindChunk *records;
+  std::vector<std::pair<Chunk *, uint32_t>> thunks;
+  DenseMap<StringRef, uint32_t> offsets;
+  std::vector<uint8_t> bytes;
+};
+
 // PartialSection represents a group of chunks that contribute to an
 // OutputSection. Collating a collection of PartialSections of same name and
 // characteristics constitutes the OutputSection.
@@ -225,6 +267,7 @@ private:
   void placeFillWords();
   void findFillRanges();
   void placeImportSlotSections();
+  bool placesImportTablesFirst() const;
   void checkImportSlots();
   void appendImportThunks();
   void locateImportTables();
@@ -239,11 +282,14 @@ private:
   void assignAddresses();
   bool isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
                  MachineTypes machine);
-  std::pair<Defined *, bool> getThunk(DenseMap<uint64_t, Defined *> &lastThunks,
-                                      Defined *target, uint64_t p,
+  using ThunkMap = DenseMap<std::pair<uint64_t, StringRef>, Defined *>;
+  std::pair<Defined *, bool> getThunk(ThunkMap &lastThunks, Defined *target,
+                                      StringRef codes, uint64_t p,
                                       uint16_t type, int margin,
                                       MachineTypes machine);
   bool createThunks(OutputSection *os, int margin);
+  bool isNarrowMiss(const SectionChunk &sc, bool own, uint64_t p,
+                    uint16_t type);
   bool verifyRanges(const std::vector<Chunk *> chunks);
   void createECCodeMap();
   void finalizeAddresses();
@@ -347,6 +393,10 @@ private:
   std::vector<std::pair<RVATableChunk *, StringRef>> rvaTables;
   // The scanned relocations range thunks redirected, with their targets.
   std::vector<std::pair<Relocation *, Symbol *>> thunkRedirects;
+  // The narrow ARM64 branches, by section and relocation, that a layout left
+  // out of reach.
+  DenseSet<std::pair<const SectionChunk *, uint32_t>> narrowMisses;
+  ThunkUnwindChunk *thunkUnwind = nullptr;
 
   DebugDirectoryChunk *debugDirectory = nullptr;
   std::vector<std::pair<COFF::DebugType, Chunk *>> debugRecords;
@@ -492,6 +542,34 @@ static uint16_t getRangeType(const ScannedSection *s, size_t i, uint16_t type) {
              : type;
 }
 
+// The ARM64 unwind codes in effect at a branch of sc at offset, r its scanned
+// relocation if any, that does not call: those of a frame that covers it,
+// which a thunk it reaches is inside too.
+static StringRef getBranchCodes(const SectionChunk &sc, uint32_t offset,
+                                const Relocation *r) {
+  bool edge;
+  std::optional<std::string> codes;
+  if (sc.getArch() == Triple::aarch64 && !(r && r->expr == R_LOCAL_CALL) &&
+      read32(sc, offset) >> 26 != 0x25)
+    codes = getUnwindCodesAt(sc, offset, edge);
+  return codes ? saver().save(*codes) : StringRef();
+}
+
+static bool isNarrowBranch(uint16_t type, MachineTypes machine) {
+  return isAnyArm64(machine) &&
+         (type == IMAGE_REL_ARM64_BRANCH19 || type == IMAGE_REL_ARM64_BRANCH14);
+}
+
+// Whether a narrow branch of sc at p that misses its target takes no thunk:
+// one to its own chunk in resizable code, which keeps its size instead
+// (fixMisfits), and one that a thunk after sc would not reach either.
+bool Writer::isNarrowMiss(const SectionChunk &sc, bool own, uint64_t p,
+                          uint16_t type) {
+  return own ? sc.resizable
+             : !isInRange(type, sc.getRVA() + sc.getSize(), p, 0,
+                          sc.getMachine());
+}
+
 // Whether c ends in a deleted jump and falls into the chunk after it.
 static bool fallsThrough(const Chunk *c) {
   auto *sc = dyn_cast<SectionChunk>(c);
@@ -532,12 +610,13 @@ bool Writer::isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
   }
 }
 
-// Return the last thunk for the given target if it is in range,
-// or create a new one.
-std::pair<Defined *, bool>
-Writer::getThunk(DenseMap<uint64_t, Defined *> &lastThunks, Defined *target,
-                 uint64_t p, uint16_t type, int margin, MachineTypes machine) {
-  Defined *&lastThunk = lastThunks[target->getRVA()];
+// Return the last thunk for the given target and unwind codes if it is in
+// range, or create a new one.
+std::pair<Defined *, bool> Writer::getThunk(ThunkMap &lastThunks,
+                                            Defined *target, StringRef codes,
+                                            uint64_t p, uint16_t type,
+                                            int margin, MachineTypes machine) {
+  Defined *&lastThunk = lastThunks[{target->getRVA(), codes}];
   if (lastThunk && isInRange(type, lastThunk->getRVA(), p, margin, machine))
     return {lastThunk, false};
   Chunk *c;
@@ -547,6 +626,8 @@ Writer::getThunk(DenseMap<uint64_t, Defined *> &lastThunks, Defined *target,
     break;
   case Triple::aarch64:
     c = make<RangeExtensionThunkARM64>(machine, target);
+    if (!codes.empty())
+      thunkUnwind->add(c, codes);
     break;
   default:
     llvm_unreachable("Unexpected architecture");
@@ -569,9 +650,10 @@ Writer::getThunk(DenseMap<uint64_t, Defined *> &lastThunks, Defined *target,
 // the previously created thunks) and retry with a wider margin.
 bool Writer::createThunks(OutputSection *os, int margin) {
   bool addressesChanged = false;
-  DenseMap<uint64_t, Defined *> lastThunks;
+  ThunkMap lastThunks;
   DenseMap<std::pair<ObjFile *, Defined *>, uint32_t> thunkSymtabIndices;
   size_t thunksSize = 0;
+  SmallVector<std::tuple<Relocation *, uint64_t, uint16_t, StringRef>, 0> late;
   // Recheck Chunks.size() each iteration, since we can insert more
   // elements into it.
   for (size_t i = 0; i != os->chunks.size(); ++i) {
@@ -602,7 +684,9 @@ bool Writer::createThunks(OutputSection *os, int margin) {
     ScannedSection *ss = sc->getScanned();
     for (size_t j = 0, e = originalRelocs.size(); j < e; ++j) {
       const coff_relocation &rel = originalRelocs[j];
-      Symbol *relocTarget = sc->getTarget(j, ss);
+      // The object's target: an unscanned section's relocations may name the
+      // thunks of a pass that was thrown away.
+      Symbol *relocTarget = ss ? ss->relocs[j].sym : sc->getRelocTarget(rel);
       if (isDeleted(ss, j))
         continue;
       uint16_t type = getRangeType(ss, j, rel.Type);
@@ -624,12 +708,34 @@ bool Writer::createThunks(OutputSection *os, int margin) {
         continue;
       uint64_t s = sym->getRVA();
 
-      if (isInRange(type, s, p, margin, machine))
+      // No thunk changes the distance to a target in the site's own chunk.
+      // A narrow branch is judged by its distance until a layout leaves it
+      // out of reach.
+      auto *d = dyn_cast<DefinedRegular>(sym);
+      bool own = d && d->getChunk() == sc;
+      bool retargeted = ss && ctx.retargets.contains(&ss->relocs[j]);
+      if (isNarrowBranch(type, machine) && !retargeted &&
+          isNarrowMiss(*sc, own, p - thunksSize, type))
         continue;
+      if (own || (isNarrowBranch(type, machine) &&
+                  !narrowMisses.contains({sc, uint32_t(j)}))
+              ? isInRange(type, s, p - thunksSize, 0, machine)
+              : isInRange(type, s, p, margin, machine))
+        continue;
+
+      // A branch the scan took past jumps waits for the pass's thunks.
+      StringRef codes = thunkUnwind
+                            ? getBranchCodes(*sc, rel.VirtualAddress,
+                                             ss ? &ss->relocs[j] : nullptr)
+                            : StringRef();
+      if (retargeted) {
+        late.push_back({&ss->relocs[j], p, type, codes});
+        continue;
+      }
 
       // If the target isn't in range, hook it up to an existing or new thunk.
       auto [thunk, wasNew] =
-          getThunk(lastThunks, sym, p, type, margin, machine);
+          getThunk(lastThunks, sym, codes, p, type, margin, machine);
       if (wasNew) {
         Chunk *thunkChunk = thunk->getChunk();
         thunkChunk->setRVA(
@@ -691,7 +797,23 @@ bool Writer::createThunks(OutputSection *os, int margin) {
 
     sc->setRelocs(newRelocs);
   }
-  return addressesChanged;
+  // Then each takes a thunk of its target that it reaches, and otherwise goes
+  // back to the first jump, which reaches the target and costs no thunk. A
+  // pass that adds no thunk moves nothing.
+  int m = thunksSize ? margin : 0;
+  for (auto [r, p, type, codes] : late) {
+    auto *to = cast<Defined>(r->sym);
+    Defined *thunk = lastThunks.lookup({to->getRVA(), codes});
+    if (thunk && isInRange(type, thunk->getRVA(), p, m, ctx.config.machine)) {
+      thunkRedirects.emplace_back(r, to);
+      r->sym = thunk;
+    } else if (!isInRange(type, to->getRVA(), p, m, ctx.config.machine)) {
+      auto it = ctx.retargets.find(r);
+      r->sym = it->second;
+      ctx.retargets.erase(it);
+    }
+  }
+  return addressesChanged || !late.empty();
 }
 
 // Create a code map for CHPE metadata.
@@ -737,12 +859,15 @@ void Writer::createECCodeMap() {
 }
 
 // Verify that all relocations are in range, with no extra margin requirements.
+// Each narrow branch out of reach is noted; one that no thunk after its
+// section reaches is an error, and one to its own chunk in resizable code is
+// its fit check's.
 bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
+  bool ok = true;
   for (Chunk *c : chunks) {
     SectionChunk *sc = dyn_cast<SectionChunk>(c);
     if (!sc) {
-      if (!cast<NonSectionChunk>(c)->verifyRanges())
-        return false;
+      ok &= cast<NonSectionChunk>(c)->verifyRanges();
       continue;
     }
     MachineTypes machine = sc->getMachine();
@@ -750,23 +875,35 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
     ArrayRef<coff_relocation> relocs = sc->getRelocs();
     ScannedSection *ss = sc->getScanned();
     for (const coff_relocation &rel : relocs) {
-      Symbol *relocTarget = sc->getTarget(&rel - relocs.begin(), ss);
-
-      Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
-      if (!sym || isDeleted(ss, &rel - relocs.begin()))
+      uint32_t i = &rel - relocs.begin();
+      Defined *sym = dyn_cast_or_null<Defined>(sc->getTarget(i, ss));
+      if (!sym || isDeleted(ss, i))
         continue;
 
       uint64_t p = sc->getRVA() + sc->getOutputOffset(rel.VirtualAddress);
       if (isAnyArm64(machine) && isAbsoluteZero(sym))
         continue;
-      uint64_t s = sym->getRVA();
-
-      if (!isInRange(getRangeType(ss, &rel - relocs.begin(), rel.Type), s, p, 0,
-                     machine))
-        return false;
+      uint16_t type = getRangeType(ss, i, rel.Type);
+      if (isInRange(type, sym->getRVA(), p, 0, machine))
+        continue;
+      if (isNarrowBranch(type, machine) &&
+          !(ss && ctx.retargets.contains(&ss->relocs[i]))) {
+        auto *d = dyn_cast<DefinedRegular>(sym);
+        bool own = d && d->getChunk() == sc;
+        bool first = narrowMisses.insert({sc, i}).second;
+        if (isNarrowMiss(*sc, own, p, type)) {
+          if (first && !own)
+            errAt(*sc, rel.VirtualAddress)
+                << "a branch to " << toString(ctx, *sym)
+                << " is out of range, and so is a range extension thunk "
+                   "after the section";
+          continue;
+        }
+      }
+      ok = false;
     }
   }
-  return true;
+  return ok;
 }
 
 // Assign addresses and add thunks if necessary.
@@ -829,20 +966,33 @@ void Writer::finalizeAddresses() {
   int margin = 1024 * 100;
   // Once the layout has settled, every span has its value and the unwind
   // records of two functions may be equal. Folding them moves what follows
-  // them, which must leave every choice the passes made in place: a record
-  // that was folded cannot follow its function again.
-  bool merged = false;
-  auto settled = [&] {
-    if (merged)
-      Err(ctx) << "folding equal unwind records moved an address out of the "
-                  "reach relaxation chose for it; link with /opt:noicf";
-    return merged;
+  // them. Where that changes a choice the passes made, a folded record may no
+  // longer describe its function, so the records are unfolded, for good, and
+  // the passes go on.
+  bool merged = false, refolded = false;
+  UnwindFolds folds;
+  std::vector<std::vector<Chunk *>> unfolded;
+  auto unfold = [&] {
+    if (unfolded.empty())
+      return false;
+    for (auto [c, repl] : folds) {
+      c->repl = repl;
+      c->live = c == repl;
+    }
+    for (size_t i = 0, e = unfolded.size(); i != e; ++i) {
+      origNumChunks +=
+          unfolded[i].size() - ctx.outputSections[i]->chunks.size();
+      ctx.outputSections[i]->chunks = std::move(unfolded[i]);
+    }
+    unfolded.clear();
+    Log(ctx) << "unfolded the unwind records";
+    assignAddresses();
+    return true;
   };
   while (true) {
     if (relax && relaxOnce(ctx)) {
-      if (settled())
-        return;
-      assignAddresses();
+      if (!unfold())
+        assignAddresses();
       continue;
     }
 
@@ -853,28 +1003,35 @@ void Writer::finalizeAddresses() {
     if (thunks) {
       llvm::TimeTraceScope timeScope3("Verify ranges");
       for (OutputSection *sec : ctx.outputSections) {
-        if (!verifyRanges(sec->chunks)) {
-          rangesOk = false;
-          break;
-        }
+        rangesOk &= verifyRanges(sec->chunks);
         numChunks += sec->chunks.size();
       }
     }
     if (rangesOk) {
       if (fixMisfits(ctx)) {
-        if (settled())
-          return;
+        if (!unfold())
+          assignAddresses();
+        continue;
+      }
+      // An ARM64 fold that an earlier layout unfolded may reach in this one,
+      // where code grew towards data that did not move: once, it folds again.
+      if (relax && !std::exchange(refolded, true) && relaxOnce(ctx, true)) {
         assignAddresses();
         continue;
       }
       if (relax && !merged) {
         merged = true;
-        if (size_t removed = mergeUnwindRecords(ctx)) {
-          for (OutputSection *sec : ctx.outputSections)
+        folds = mergeUnwindRecords(ctx);
+        if (!folds.empty()) {
+          size_t removed = 0;
+          for (OutputSection *sec : ctx.outputSections) {
+            unfolded.push_back(sec->chunks);
             llvm::erase_if(sec->chunks, [](Chunk *c) {
               auto *sc = dyn_cast<SectionChunk>(c);
               return sc && !sc->live;
             });
+            removed += unfolded.back().size() - sec->chunks.size();
+          }
           origNumChunks -= removed;
           Log(ctx) << "folded " << removed << " unwind records";
           assignAddresses();
@@ -888,8 +1045,8 @@ void Writer::finalizeAddresses() {
     }
 
     llvm::TimeTraceScope timeScope2("Add thunks pass");
-    if (settled())
-      return;
+    if (unfold())
+      continue;
     if (pass >= 10)
       Fatal(ctx) << "adding thunks hasn't converged after " << pass
                  << " passes";
@@ -903,6 +1060,8 @@ void Writer::finalizeAddresses() {
       for (auto [r, sym] : thunkRedirects)
         r->sym = sym;
       thunkRedirects.clear();
+      if (thunkUnwind)
+        thunkUnwind->clear();
       margin *= 2;
     }
 
@@ -1294,12 +1453,34 @@ void lld::coff::setTlsForm(COFFLinkerContext &ctx) {
 }
 
 void Writer::sortSections() {
-  if (ctx.config.callGraphProfileSort != CGProfileSortKind::None &&
-      (ctx.hasForkObject || !ctx.config.callGraphProfile.empty()))
-    callGraphOrder = computeCallGraphProfileOrder(ctx);
+  // The section that follows each one a jump chains.
+  DenseMap<const Chunk *, const Chunk *> chainNext;
+  // The profile is read only where a sort is chosen, and jumps join chains
+  // without one, though not under /order.
+  if (!ctx.config.callGraphProfile.empty() ||
+      (ctx.hasForkObject && ctx.config.order.empty()))
+    callGraphOrder = computeCallGraphProfileOrder(ctx, chainNext);
   if (!callGraphOrder.empty() || !ctx.config.order.empty())
     for (auto it : partialSections)
       sortBySectionOrder(it.second->chunks);
+
+  // A chain is laid out in a row where its first section is. Its sections
+  // have one name, so they are all in one group.
+  DenseSet<const Chunk *> follows;
+  for (auto [c, next] : chainNext)
+    follows.insert(next);
+  for (auto it : partialSections) {
+    std::vector<Chunk *> &chunks = it.second->chunks;
+    if (llvm::none_of(chunks, [&](Chunk *c) { return follows.contains(c); }))
+      continue;
+    std::vector<Chunk *> row;
+    row.reserve(chunks.size());
+    for (const Chunk *c : chunks)
+      if (!follows.contains(c))
+        for (; c; c = chainNext.lookup(c))
+          row.push_back(const_cast<Chunk *>(c));
+    chunks = std::move(row);
+  }
 }
 
 // The size of the import address table directory: the tables, and the
@@ -1382,14 +1563,6 @@ void Writer::placeImportSlots() {
     if (outName == ".tls" && !sc->file->tlsModel) {
       report() << ", in the loader's thread-local template, which threads "
                   "copy before the image's fill runs";
-      continue;
-    }
-    // The loader copies an executable's thread-local data into the main
-    // thread's block before it binds the image's imports.
-    if (outName == ".tls" && !ctx.config.dll) {
-      report() << " in the thread-local data of an executable, which the "
-                  "main thread would read unbound; set the variable when "
-                  "the program starts";
       continue;
     }
     // Unwind data keeps its place among the image's tables.
@@ -1617,13 +1790,23 @@ void Writer::findFillRanges() {
              << "sections are aligned to " << pageSize << " bytes or more";
 }
 
-// Lays out the read-only sections that hold in-place import slots and keep
-// their place so that the import address table directory covers them with
-// nothing else between: the tables start .rdata, its $ groups follow them
-// where one holds a slot, and each other read-only output section that holds
-// one comes just before .rdata.
+// Whether the import address tables start .rdata: where a section holds an
+// in-place import slot, and in every image with an object for Windows Itanium
+// or NT-POSIX, whose ARM64 code then reaches an import's pointer from the end
+// of .text, by one literal load within its megabyte. ARM64EC places its own.
+bool Writer::placesImportTablesFirst() const {
+  return !slotSections.empty() ||
+         (ctx.hasForkObject && !isArm64EC(ctx.config.machine));
+}
+
+// Lays out the import address tables at the start of .rdata, and the
+// read-only sections that hold in-place import slots and keep their place so
+// that the import address table directory covers them with nothing else
+// between: .rdata's $ groups follow the tables where one holds a slot, and
+// each other read-only output section that holds one comes just before
+// .rdata.
 void Writer::placeImportSlotSections() {
-  if (slotSections.empty())
+  if (!placesImportTablesFirst())
     return;
   const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
   std::vector<Chunk *> start;
@@ -1956,7 +2139,7 @@ void Writer::createSections() {
 
     // placeImportSlotSections puts the import address tables, and with them
     // .rdata's $ groups, at the start of .rdata.
-    if (!slotSections.empty() && outChars == (data | r) &&
+    if (placesImportTablesFirst() && outChars == (data | r) &&
         (pSec->name == ".idata$5" ||
          (slotRdataGroups && pSec->name.starts_with(".rdata$"))))
       continue;
@@ -2544,6 +2727,11 @@ void Writer::mergeSection(const std::map<StringRef, StringRef>::value_type &p) {
 
 void Writer::mergeSections() {
   llvm::TimeTraceScope timeScope("Merge sections");
+  if (!pdataSec->chunks.empty() && ctx.config.machine == ARM64) {
+    thunkUnwind = make<ThunkUnwindChunk>(make<ThunkUnwindChunk>());
+    rdataSec->addChunk(thunkUnwind->records);
+    pdataSec->addChunk(thunkUnwind);
+  }
   if (!pdataSec->chunks.empty()) {
     if (isArm64EC(ctx.config.machine)) {
       // On ARM64EC .pdata may contain both ARM64 and X64 data. Split them by

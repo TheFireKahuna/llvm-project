@@ -1,8 +1,9 @@
 # REQUIRES: x86, aarch64
 
-## Weakness belongs to the reference: a fork object with no weak reference to
-## fin refers to it strongly through __imp_fin (loading the member, no null
-## default); a hidden or protected weak reference keeps its null default.
+## Weakness belongs to the reference: an object with no weak reference to fin
+## refers to it strongly through __imp_fin (loading the member, no null
+## default), whichever producer made it, unless the link has no fork object;
+## a hidden or protected weak reference keeps its null default.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 
@@ -36,6 +37,12 @@
 # DEFINE:     FileCheck --check-prefix=WEAK %s && \
 # DEFINE:   llvm-objdump -d a.exe | FileCheck --check-prefix=%{a}-weak %s && \
 # DEFINE:   %{link} foreign.obj weak.obj def.lib 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=LOAD %s && \
+# DEFINE:   %{link} weak.obj foreign.obj def.lib 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=LOAD %s && \
+# DEFINE:   llvm-mc -filetype=obj -triple=%{t}-windows-msvc %{a}/weak.s \
+# DEFINE:     -o foreign-weak.obj && \
+# DEFINE:   %{link} foreign.obj foreign-weak.obj def.lib 2>&1 | \
 # DEFINE:     FileCheck --check-prefix=WEAK %s && \
 # DEFINE:   lld-link -machine:%{a} -dll -noentry def.obj -export:fin \
 # DEFINE:     -out:def.dll -implib:imp.lib && \
@@ -61,13 +68,11 @@
 # x64-weak-NEXT:  movq $0x0, %rax
 
 # arm64-LABEL: <main>:
-# arm64-NEXT:  adrp x16, 0x[[#%x,PAGE:]]
-# arm64-NEXT:  add x16, x16, #0x[[#%x,OFF:]]
+# arm64-NEXT:  adr x16, 0x[[#%x,FIN:]]
 # arm64-NEXT:  blr x16
-# arm64:       {{0*}}[[#%x,PAGE+OFF]] <fin>:
+# arm64:       {{0*}}[[#FIN]] <fin>:
 
 # arm64-weak-LABEL: <other>:
-# arm64-weak-NEXT:  nop
 # arm64-weak-NEXT:  mov x0, #0x0
 
 #--- x64/strong.s

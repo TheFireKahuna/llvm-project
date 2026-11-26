@@ -111,39 +111,67 @@ inline DelayGuardChunk *toDelayGuard(Symbol *leaf) {
       cast<DefinedSynthetic>(leaf)->getChunk());
 }
 
-// The guard of an ARM64 adrp, relocation index of sc, of a delay-loaded
-// function's address into reg, placed after sc. A site in code that moves is
-// the gate's adrp and ldr and a tbnz of its bit 0 to the guard's +12, ahead
-// of the adrp; any other is a b to the guard, which tests the gate itself.
-// Unbound, the guard saves x30 and the site's address, calls the ensure stub
-// and restores x30; then it is the site's adrp of target and a b back.
+// The guard of an ARM64 adrp, relocation index of sc, of target into reg,
+// placed after sc: for each gate a block that loads the gate into reg and
+// tbz past the rest of the block when bound, which saves x30 and the site's
+// address, calls the gate's ensure stub and restores x30; then the site's
+// adrp and a b back. A site in code that moves is, for each gate, the gate's
+// adrp and ldr and a tbnz of its bit 0 to its block's +12, ahead of the
+// adrp; any other is a b to the first block. The site's address is an adrp
+// and add where its section may pass 1 MB. Where a block's bl does not reach
+// its ensure stub, it calls a veneer after the b back instead, an adrp, add
+// and br of reg, which no unwind data covers: ntdll unwinds it as a leaf,
+// which returns to the block.
 class DelayGuardA64Chunk : public NonSectionCodeChunk {
 public:
-  DelayGuardA64Chunk(SectionChunk *sc, uint32_t index, Defined *gate,
-                     Defined *ensure, Defined *target, uint8_t reg, bool far)
-      : sc(sc), index(index), gate(gate), ensure(ensure), target(target),
-        reg(reg), far(far) {
+  DelayGuardA64Chunk(SectionChunk *sc, uint32_t index,
+                     SmallVector<DelayGuardChunk::Gate, 1> gates,
+                     Defined *target, uint8_t reg, bool farAdr)
+      : sc(sc), index(index), target(target), gates(std::move(gates)), reg(reg),
+        farAdr(farAdr) {
     setAlignment(4);
   }
-  size_t getSize() const override { return 36; }
+  // The block of a gate, and in it the instructions to the stp, which change
+  // only reg, then those of the call and the restore.
+  unsigned getBlock() const { return 28 + 4 * farAdr; }
+  unsigned getHead() const { return 5 + farAdr; }
+  size_t getSize() const override {
+    return gates.size() * (getBlock() + 12 * farCall) + 8;
+  }
   MachineTypes getMachine() const override { return ARM64; }
   void writeTo(uint8_t *buf) const override;
+  bool verifyRanges() override;
+  uint32_t extendRanges() override;
 
   SectionChunk *sc;
   uint32_t index;
-  Defined *gate, *ensure, *target;
+  Defined *target;
+  SmallVector<DelayGuardChunk::Gate, 1> gates;
   uint8_t reg;
-  // Whether an inline site reaches the guard by tbz over a b.
-  bool far;
+  // Whether an inline site reaches a block by tbz over a b, which the layout
+  // decides.
+  bool far = false, farAdr, farCall = false;
   // The unwind codes that ntdll runs for the site.
   std::string codes;
 };
 
-// The guard of site s, an ARM64 adrp of a delay-loaded function's entry, as
-// the symbol of its chunk; far as DelayGuardA64Chunk states it. None where
-// the site's function has packed unwind data, which has no codes to read.
-Defined *addDelayGuardA64(COFFLinkerContext &ctx, const DelayGuardSite &s,
-                          bool far);
+// The guard of site s, an ARM64 adrp, as the symbol of its chunk. A site in
+// its function's prologue or an epilogue becomes a branch to the guard, which
+// keeps the code's size. None where the function's unwind data is neither its
+// own nor packed.
+Defined *addDelayGuardA64(COFFLinkerContext &ctx, const DelayGuardSite &s);
+
+// The ARM64 unwind codes that ntdll runs for a PC at off in sc, the codes of
+// the function table entry that covers it as far as they apply there: empty
+// for a leaf, none where its unwind data is neither its own nor packed. edge
+// says that off is in a prologue or an epilogue.
+std::optional<std::string> getUnwindCodesAt(const SectionChunk &sc,
+                                            uint32_t off, bool &edge);
+
+// An ARM64 unwind record of code that the link writes, words instructions
+// long, each of which ntdll unwinds by codes, after an end_c that makes every
+// point the body.
+std::vector<uint8_t> getBodyRecord(uint32_t words, StringRef codes);
 
 // Leaves ImportFile::observed set on the functions of delay-loaded DLLs whose
 // address is their DLL's own in this image: those an object observes, where

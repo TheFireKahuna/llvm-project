@@ -95,7 +95,7 @@ struct Insn {
 struct ReadInsn {
   uint8_t size;
   // Whether it reads the memory, other than as a call or jump through it, and
-  // the bytes it reads where the operand states them, else 64.
+  // the bytes it reads where the operand states them, else 0.
   bool reads;
   uint8_t width;
   // Whether it uses the stack pointer.
@@ -126,8 +126,6 @@ struct FusedInsn {
 // again.
 class X86Decoder {
 public:
-  // Null where this linker was built without the x86 target.
-  static std::unique_ptr<X86Decoder> create();
   ~X86Decoder();
 
   // Decodes the instruction at the start of code, which is at address.
@@ -174,10 +172,12 @@ public:
   // memory relative to rip.
   bool decodeRead(ArrayRef<uint8_t> code, ReadInsn &insn);
 
-  // The decoder of the calling thread.
+  // The decoder of the calling thread; null where this linker was built
+  // without the x86 target.
   static X86Decoder *get();
 
 private:
+  static std::unique_ptr<X86Decoder> create();
   struct Impl;
   X86Decoder(std::unique_ptr<Impl> impl);
   std::unique_ptr<Impl> impl;
@@ -201,7 +201,6 @@ public:
 private:
   std::mutex mu;
   llvm::DenseMap<const ObjFile *, std::unique_ptr<Object>> objects;
-  std::vector<std::unique_ptr<X86Decoder>> decoders;
 };
 
 // Whether the 32-bit field at offset o of c is that of an x86-64 lea of 64

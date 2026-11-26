@@ -638,32 +638,25 @@ void ObjFile::parse() {
           // Then a count and that many sections with loops a cache line is
           // to keep, each its symbol, then the places 0, 16, 32 and 48 bytes
           // into a 64-byte line, as bits 0 to 3, at which it may not begin,
-          // plus sixteen times a count, and that many loops whose offsets the
-          // link decides: the size of each less one, plus thirty-two times
-          // the distance of its offset from the last one's.
+          // plus sixteen times a count, and that many loops for the link to
+          // bar by, which relaxChunk reads.
           for (count = c && !data.eof(c) ? data.getULEB128(c) : 0; c && count;
                --count) {
             uint64_t index = data.getULEB128(c), head = data.getULEB128(c);
-            uint64_t begin = c.tell(), end = 0;
-            for (uint64_t n = head >> 4, at = 0; c && n; --n) {
-              uint64_t loop = data.getULEB128(c);
-              at += loop >> 5;
-              end = at + (loop & 31) + 1;
-            }
+            uint64_t begin = c.tell();
+            for (uint64_t n = head >> 4; c && n; --n)
+              data.getULEB128(c);
             if (!c)
               break;
-            auto *d = index < coffObj->getNumberOfSymbols()
-                          ? dyn_cast_or_null<DefinedRegular>(symbols[index])
-                          : nullptr;
-            if (index >= coffObj->getNumberOfSymbols() || (head & 15) == 15 ||
-                (d && end > d->getChunk()->header->SizeOfRawData))
+            if (index >= coffObj->getNumberOfSymbols() || (head & 15) == 15)
               return createStringError("section " + Twine(index) +
-                                       " keeps loops within a line that it "
-                                       "cannot hold");
-            if (!d)
-              continue;
-            d->getChunk()->linePlacesBarred = head & 15;
-            lineLoops[d->getChunk()] = payload.substr(begin, c.tell() - begin);
+                                       " barred from places " +
+                                       Twine(head & 15) + " of a line");
+            if (auto *d = dyn_cast_or_null<DefinedRegular>(symbols[index])) {
+              d->getChunk()->linePlacesBarred = head & 15;
+              lineLoops[d->getChunk()] =
+                  payload.substr(begin, c.tell() - begin);
+            }
           }
           return c.takeError();
         }
@@ -708,10 +701,12 @@ void ObjFile::parse() {
               return createStringError(Twine(count) +
                                        " spans, which the group does not hold");
             uint64_t begin = c.tell();
+            bool jumps = false;
             for (uint64_t n = count; c && n; --n) {
               uint64_t head = data.getULEB128(c);
               uint32_t kind = head & 15;
               offset += head >> 4;
+              jumps |= kind == SpanJump32;
               int64_t operand = kind == SpanAddend32 ? data.getSLEB128(c)
                                 : kind >= SpanData   ? data.getULEB128(c)
                                                      : 0;
@@ -729,8 +724,9 @@ void ObjFile::parse() {
                                          " is outside its section");
             }
             if (c && secs[0] && secs[1])
-              spanLists.push_back(
-                  {secs[0], secs[1], payload.substr(begin, c.tell() - begin)});
+              spanLists.push_back({secs[0], secs[1],
+                                   payload.substr(begin, c.tell() - begin),
+                                   jumps});
           }
           return c.takeError();
         }
@@ -1260,23 +1256,26 @@ void ObjFile::initializeSymbols() {
   for (auto [sym, aux, kind] : weakAliases)
     addWeakAlias(sym, symbols[aux->TagIndex], kind);
 
-  // Weakness belongs to the reference. An object for Windows Itanium or
-  // NT-POSIX reaches X through __imp_X, so one that keeps no weak reference
-  // to X refers to X strongly, which cancels a weak reference of another
-  // object in either order.
+  // Weakness belongs to the reference. An object reaches X through __imp_X,
+  // so one that keeps no weak reference to X refers to X strongly, which
+  // cancels a weak reference of another object in either order, where an
+  // object for Windows Itanium or NT-POSIX names X or __imp_X: a link of
+  // other producers' objects alone binds as theirs do.
+  auto ours = [](Symbol *x, Symbol *imp) {
+    return x->forkReferenced || imp->forkReferenced;
+  };
   for (Symbol *x : weakRefs)
     if (Symbol *imp = symtab.find(("__imp_" + x->getName()).str());
-        imp && imp->strongImport)
+        imp && imp->strongImport && ours(x, imp))
       symtab.addStrongReference(x);
-  if (forkObject)
-    for (Symbol *imp : imps) {
-      Symbol *x = symtab.find(imp->getName().substr(strlen("__imp_")));
-      if (is_contained(weakRefs, x))
-        continue;
-      imp->strongImport = true;
-      if (x)
-        symtab.addStrongReference(x);
-    }
+  for (Symbol *imp : imps) {
+    Symbol *x = symtab.find(imp->getName().substr(strlen("__imp_")));
+    if (is_contained(weakRefs, x))
+      continue;
+    imp->strongImport = true;
+    if (x && ours(x, imp))
+      symtab.addStrongReference(x);
+  }
 
   // Free the memory used by sparseChunks now that symbol loading is finished.
   decltype(sparseChunks)().swap(sparseChunks);

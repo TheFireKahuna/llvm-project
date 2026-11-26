@@ -95,24 +95,20 @@
 # A64-LOCAL:      Contents of section .data:
 # A64-LOCAL-NEXT: 00100040 01000000
 # A64-LABEL:      <main>:
-# A64-NEXT:       adrp x8, 0x140001000
-# A64-NEXT:       add x8, x8, #0x[[#%x,WRAP:]]
+# A64-NEXT:       adr x8, 0x[[#%x,WRAP:]]
 # A64-NEXT:       blr x8
-# A64-NEXT:       adrp x8, 0x140001000
-# A64-NEXT:       add x8, x8, #0x[[#WRAP]]
+# A64-NEXT:       adr x8, 0x[[#WRAP]]
 # A64-NEXT:       blr x8
 # A64-NEXT:       bl {{.*}} <__wrap_foo>
-# A64-LOCAL-NEXT: adrp x8, 0x140001000
-# A64-LOCAL-NEXT: add x8, x8, #0x0
+# A64-LOCAL-NEXT: adr x8, {{.*}} <foo>
 # A64-DLL-NEXT:   ldr x8, {{.*}} <__imp_foo>
 # A64-NEXT:       blr x8
 # A64-NEXT:       bl {{.*}} <foo>
 # A64-NEXT:       ret
 # A64-EMPTY:
-# A64-NEXT:       {{0*}}[[#%x,0x140001000+WRAP]] <__wrap_foo>:
+# A64-NEXT:       {{0*}}[[#WRAP]] <__wrap_foo>:
 # A64-NEXT:       add w0, w0, #0x1
-# A64-LOCAL-NEXT: adrp x8, 0x140001000
-# A64-LOCAL-NEXT: add x8, x8, #0x0
+# A64-LOCAL-NEXT: adr x8, {{.*}} <foo>
 # A64-DLL-NEXT:   ldr x8, {{.*}} <__imp_foo>
 # A64-NEXT:       br x8
 
@@ -135,7 +131,7 @@
 # WRAPPED-NEXT:  callq {{.*}} <__wrap_foo>
 
 # REAL-LABEL: <main>:
-# REAL-NEXT:  : e8 {{.*}} callq
+# REAL-NEXT:  : 67 e8 {{.*}} callq
 
 # NONE-NOT: Import
 
@@ -146,7 +142,8 @@
 # ABSENT-NOT: error:
 
 # LTO-LABEL: <__wrap_foo>:
-# LTO:       jmp {{.*}} <foo>
+# LTO-NOT:   jmp
+# LTO:       <foo>:
 # LTO-DLL-LABEL: <__wrap_foo>:
 # LTO-DLL:       jmpq *{{.*}} <__imp_foo>
 
@@ -165,6 +162,7 @@ main:
 __wrap_foo:
   incl %eax
   jmpq *__imp___real_foo(%rip)
+  int3
   .data
   .quad __real_foo
 
@@ -190,6 +188,7 @@ __wrap_foo:
   adrp x8, __imp___real_foo
   ldr x8, [x8, :lo12:__imp___real_foo]
   br x8
+  brk #0
   .data
   .xword __real_foo
 

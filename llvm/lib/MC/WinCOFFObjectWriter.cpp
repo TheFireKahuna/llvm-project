@@ -1115,7 +1115,11 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     // resolved names one, which is a label whatever the symbol resolves to.
     Reloc.Symb = getOrCreateSecRelSymbol(A, Asm->getSymbolOffset(A));
   } else if (UseSectionSymbol && COFF::isAnyArm64(Header.Machine) &&
-             Reloc.Data.Type == COFF::IMAGE_REL_ARM64_BRANCH26) {
+             is_contained<uint16_t>({COFF::IMAGE_REL_ARM64_BRANCH26,
+                                     COFF::IMAGE_REL_LLVM_BRANCH_TAIL,
+                                     COFF::IMAGE_REL_ARM64_BRANCH19,
+                                     COFF::IMAGE_REL_ARM64_BRANCH14},
+                                    Reloc.Data.Type)) {
     // The field of an ARM64 branch holds no offset from a symbol, so a target
     // in another section, a part of the branch's function there, is a label.
     Reloc.Symb = getOrCreateSecRelSymbol(A, Asm->getSymbolOffset(A));

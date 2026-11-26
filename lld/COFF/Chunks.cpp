@@ -183,6 +183,8 @@ static void applySecIdx(uint8_t *off, OutputSection *os,
 bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
                                uint64_t s, uint64_t p,
                                uint64_t imageBase) const {
+  if (isRel32Insn(type))
+    return addRel32(off, s - p - 4 - (type & 15));
   switch (type) {
   case IMAGE_REL_AMD64_ADDR32:
     add32(off, s + imageBase);
@@ -201,6 +203,8 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_LLVM_MEM_JUMP_P1:
   case IMAGE_REL_LLVM_LEA:
   case IMAGE_REL_LLVM_LEA_OFFSET:
+  case IMAGE_REL_LLVM_LEA_REX2:
+  case IMAGE_REL_LLVM_LEA_OFFSET_REX2:
   case IMAGE_REL_LLVM_LEA_NARROW:
   case IMAGE_REL_LLVM_GOTTPOFF32:
   case IMAGE_REL_AMD64_REL32:    return addRel32(off, s - p - 4);
@@ -355,8 +359,7 @@ void SectionChunk::applyRelARM(uint8_t *off, uint16_t type, OutputSection *os,
 // the page offset from the current instruction to the target.
 void applyArm64Addr(uint8_t *off, uint64_t s, uint64_t p, int shift) {
   uint32_t orig = read32le(off);
-  int64_t imm =
-      SignExtend64<21>(((orig >> 29) & 0x3) | ((orig >> 3) & 0x1FFFFC));
+  int64_t imm = getPageOffsetImm(orig, IMAGE_REL_ARM64_REL21);
   s += imm;
   imm = (s >> shift) - (p >> shift);
   uint32_t immLo = (imm & 0x3) << 29;
@@ -393,6 +396,8 @@ uint32_t getArm64LdrScale(uint32_t insn) {
 }
 
 int64_t getPageOffsetImm(uint32_t insn, uint16_t type) {
+  if (type == IMAGE_REL_ARM64_PAGEBASE_REL21 || type == IMAGE_REL_ARM64_REL21)
+    return SignExtend64<21>((insn >> 29 & 3) | (insn >> 3 & 0x1ffffc));
   uint32_t imm = (insn >> 10) & 0xfff;
   if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L)
     return SignExtend64<12>(imm << getArm64LdrScale(insn));

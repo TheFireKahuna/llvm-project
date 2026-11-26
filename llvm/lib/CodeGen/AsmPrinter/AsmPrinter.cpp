@@ -5559,7 +5559,7 @@ bool AsmPrinter::hasOnlySetters(
     bool AtCalls = From.getInt(), Open = !AtCalls;
     for (; I != Block->rend() && (Open || AtCalls); ++I) {
       Open |= AtCalls && (I->isCall() || I->isInlineAsm());
-      if (!Open || !I->modifiesRegister(Reg, TRI))
+      if (!Open || I->isKill() || !I->modifiesRegister(Reg, TRI))
         continue;
       if (!Is(*I))
         return false;
@@ -5600,7 +5600,10 @@ void AsmPrinter::forEachReader(MachineInstr &Def,
           DebugValues.push_back(&*I);
         continue;
       }
-      // An undef use, as of a zeroing idiom, reads no value.
+      // A kill changes no bit of a register, and an undef use, as of a
+      // zeroing idiom, reads no value.
+      if (I->isKill())
+        continue;
       if (any_of(I->operands(), [&](const MachineOperand &MO) {
             return MO.isReg() && MO.readsReg() && MO.getReg() &&
                    TRI->regsOverlap(MO.getReg(), Reg);

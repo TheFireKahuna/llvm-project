@@ -9,7 +9,7 @@
 # RUN: echo "B C 50" >> %t.call_graph
 # RUN: echo "C D 40" >> %t.call_graph
 # RUN: echo "D B 10" >> %t.call_graph
-# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /debug:symtab
+# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /debug:symtab /call-graph-profile-sort:hfsort
 # RUN: llvm-nm --numeric-sort %t2 | FileCheck %s 
 
 # NOSORT: 140001000 T A

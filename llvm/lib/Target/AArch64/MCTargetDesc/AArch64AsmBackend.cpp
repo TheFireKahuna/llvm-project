@@ -146,6 +146,16 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
                                  uint64_t Value, MCContext &Ctx,
                                  const Triple &TheTriple, bool IsResolved) {
   int64_t SignedValue = static_cast<int64_t>(Value);
+  // MSVC link.exe and lld apply no offset from the symbol of a branch.
+  if (TheTriple.isOSBinFormatCOFF() && !IsResolved && SignedValue != 0 &&
+      is_contained({AArch64::fixup_aarch64_pcrel_branch14,
+                    AArch64::fixup_aarch64_pcrel_branch19,
+                    AArch64::fixup_aarch64_pcrel_branch26,
+                    AArch64::fixup_aarch64_pcrel_call26,
+                    AArch64::fixup_aarch64_pcrel_tail26},
+                   Fixup.getKind()))
+    Ctx.reportError(Fixup.getLoc(), "cannot perform a PC-relative fixup with "
+                                    "a non-zero symbol offset");
   switch (Fixup.getKind()) {
   default:
     llvm_unreachable("Unknown fixup kind!");
@@ -335,13 +345,6 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
   case AArch64::fixup_aarch64_pcrel_branch26:
   case AArch64::fixup_aarch64_pcrel_call26:
   case AArch64::fixup_aarch64_pcrel_tail26:
-    if (TheTriple.isOSBinFormatCOFF() && !IsResolved && SignedValue != 0) {
-      // MSVC link.exe and lld do not support this relocation type
-      // with a non-zero offset
-      Ctx.reportError(Fixup.getLoc(),
-                      "cannot perform a PC-relative fixup with a non-zero "
-                      "symbol offset");
-    }
     // Signed 28-bit immediate
     if (!isInt<28>(SignedValue))
       Ctx.reportError(Fixup.getLoc(), "fixup value out of range");

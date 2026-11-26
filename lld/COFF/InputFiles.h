@@ -173,10 +173,11 @@ struct SwitchTable {
 // The spans that the link records state of the fields of one section over
 // one code section, llvm::COFF::SpanKind, as the records hold them: each a
 // field that holds the distance between two points of the code. They were
-// checked when the file was read.
+// checked when the file was read. jumps says that one is a SpanJump32.
 struct SpanList {
   SectionChunk *field, *target;
   StringRef spans;
+  bool jumps;
 };
 
 // A fact of the site of a relocation of a section that an object states: an
@@ -294,8 +295,7 @@ public:
   std::vector<RelocFact> siteFacts;
 
   // Each section that the link records list with loops a cache line is to
-  // keep, and its loops whose offsets the link decides, as the record has
-  // them.
+  // keep, and the loops the link is to bar it by, as the record has them.
   llvm::DenseMap<const SectionChunk *, StringRef> lineLoops;
 
   // The relocations of each section whose instructions the link rewrites or

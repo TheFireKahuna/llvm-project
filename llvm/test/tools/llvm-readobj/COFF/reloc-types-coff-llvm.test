@@ -39,11 +39,8 @@
 # CHECK:      Type: IMAGE_REL_LLVM_SSPAN_SLEB (32789)
 # CHECK:      Type: IMAGE_REL_LLVM_USPAN8 (32791)
 # CHECK:      Type: IMAGE_REL_LLVM_USPAN16 (32792)
-# CHECK:      Type: IMAGE_REL_LLVM_FUSED_CALL (32832)
-# CHECK:      Type: IMAGE_REL_LLVM_FUSED_JUMP (32833)
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_READ (32834)
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_TEST (32838)
-# CHECK:      Type: IMAGE_REL_LLVM_FUSED_JUMP_TAIL (32839)
 # CHECK:      Type: IMAGE_REL_LLVM_TLS_SCALE (32852)
 # CHECK-NEXT: Symbol: -
 # CHECK-NEXT: SymbolIndex: 7
@@ -65,6 +62,8 @@
 # X64:        Type: IMAGE_REL_LLVM_MEM_JUMP_TAIL (32810)
 # X64:        Type: IMAGE_REL_LLVM_LEA_NARROW (32811)
 # X64:        Type: IMAGE_REL_LLVM_MEM_LOAD_CALL (32812)
+# X64:        Type: IMAGE_REL_LLVM_LEA_REX2 (32813)
+# X64:        Type: IMAGE_REL_LLVM_LEA_OFFSET_REX2 (32814)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_READ_REX2 (32835)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_ACCESS (32836)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_INDEX (32837)
@@ -84,6 +83,9 @@
 # A64:        Type: IMAGE_REL_LLVM_LOGIMM (32819)
 # A64:        Type: IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL (32820)
 # A64:        Type: IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL (32821)
+# A64:        Type: IMAGE_REL_LLVM_FUSED_CALL (32832)
+# A64:        Type: IMAGE_REL_LLVM_FUSED_JUMP (32833)
+# A64:        Type: IMAGE_REL_LLVM_FUSED_JUMP_TAIL (32839)
 # A64:        Type: IMAGE_REL_LLVM_TPOFF_HIGH12A (32849)
 # A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12A (32850)
 # A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12L (32851)
@@ -106,11 +108,8 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_SSPAN_SLEB }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_USPAN8 }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_USPAN16 }
-      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_CALL }
-      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_TEST }
-      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP_TAIL }
       - { VirtualAddress: 0, SymbolTableIndex: 7, Type: IMAGE_REL_LLVM_TLS_SCALE }
 symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]
 
@@ -136,6 +135,8 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_JUMP_TAIL }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA_NARROW }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_LOAD_CALL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA_REX2 }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA_OFFSET_REX2 }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ_REX2 }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_ACCESS }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_INDEX }
@@ -161,6 +162,9 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LOGIMM }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_CALL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP_TAIL }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_HIGH12A }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_LOW12A }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_LOW12L }

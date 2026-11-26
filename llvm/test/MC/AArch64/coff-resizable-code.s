@@ -17,9 +17,10 @@
 // RUN:   FileCheck %s --check-prefix=ERR --implicit-check-not=error:
 
 // On Windows Itanium and NT-POSIX the linker may delete an instruction of an
-// adrp and the add or the load of its address, and a b that no unwind frame
-// covers. A section with one is listed in the Sections group of the link
-// records where every value that depends on its layout is a relocation.
+// adrp and the add, or the load of a word or doubleword, of its address into
+// its register, and a b that no unwind frame covers. A section with one is
+// listed in the Sections group of the link records where every value that
+// depends on its layout is a relocation.
 //
 // A branch, an adr or a bl whose distance crosses such an instruction keeps
 // its relocation, against a label, also where it names a symbol; one whose
@@ -65,22 +66,29 @@
 
 // CHECK:        Section ({{[0-9]+}}) .text$l {
 // CHECK-NEXT:     0x8 IMAGE_REL_ARM64_PAGEBASE_REL21 var
+// CHECK-NEXT:     0xC IMAGE_REL_ARM64_PAGEOFFSET_12A var
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text$p {
 // CHECK-NEXT:     0x4 IMAGE_REL_ARM64_PAGEBASE_REL21 var
+// CHECK-NEXT:     0x8 IMAGE_REL_ARM64_PAGEOFFSET_12A var
 // CHECK-NEXT:   }
 
 // The unwind data of a function with such an instruction is not packed, and
 // its length and the start of each epilogue scope are SSPAN_WORDS18 from a
 // label at the function's start, which its .pdata entry names too. A function
-// whose length the linker cannot change keeps its packed entry.
+// whose length the linker cannot change keeps its packed entry, also with an
+// adrp and a store or a byte load, which the linker never folds.
 
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text$u {
-// CHECK-NEXT:     0x18 IMAGE_REL_ARM64_PAGEBASE_REL21 var
-// CHECK-NEXT:     0x1C IMAGE_REL_ARM64_PAGEOFFSET_12A var
-// CHECK-NEXT:     0x2C IMAGE_REL_ARM64_BRANCH26 $L{{[0-9a-f]+}}
-// CHECK-NEXT:     0x40 IMAGE_REL_ARM64_PAGEBASE_REL21 var
-// CHECK-NEXT:     0x44 IMAGE_REL_ARM64_PAGEOFFSET_12A var
+// CHECK-NEXT:     0x8 IMAGE_REL_ARM64_PAGEBASE_REL21 var
+// CHECK-NEXT:     0xC IMAGE_REL_ARM64_PAGEOFFSET_12L var
+// CHECK-NEXT:     0x10 IMAGE_REL_ARM64_PAGEBASE_REL21 var
+// CHECK-NEXT:     0x14 IMAGE_REL_ARM64_PAGEOFFSET_12L var
+// CHECK-NEXT:     0x28 IMAGE_REL_ARM64_PAGEBASE_REL21 var
+// CHECK-NEXT:     0x2C IMAGE_REL_ARM64_PAGEOFFSET_12A var
+// CHECK-NEXT:     0x3C IMAGE_REL_ARM64_BRANCH26 $L{{[0-9a-f]+}}
+// CHECK-NEXT:     0x50 IMAGE_REL_ARM64_PAGEBASE_REL21 var
+// CHECK-NEXT:     0x54 IMAGE_REL_ARM64_PAGEOFFSET_12A var
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Section ({{[0-9]+}}) .xdata {
 // CHECK-NEXT:     0x0 IMAGE_REL_LLVM_SSPAN_WORDS18 [[ATEND:\$L[0-9a-f]+]]
@@ -116,13 +124,13 @@
 // CHECK-NEXT:     ComplexType: Null
 // CHECK-NEXT:     StorageClass: Label
 // CHECK:          Name: [[ATEND]]
-// CHECK-NEXT:     Value: 56
+// CHECK-NEXT:     Value: 72
 // CHECK:          Name: [[UNPACKED]]
-// CHECK-NEXT:     Value: 20
-// CHECK:          Name: [[EPILOGUE]]
 // CHECK-NEXT:     Value: 36
+// CHECK:          Name: [[EPILOGUE]]
+// CHECK-NEXT:     Value: 52
 // CHECK:          Name: [[END]]
-// CHECK-NEXT:     Value: 84
+// CHECK-NEXT:     Value: 100
 
 // A section is not listed where its layout decides a value that has no
 // relocation: data alignment after the first such instruction in .text$d, a
@@ -163,7 +171,7 @@
 
 // UNWIND:      Function: packed
 // UNWIND-NEXT: Fragment: No
-// UNWIND-NEXT: FunctionLength: 20
+// UNWIND-NEXT: FunctionLength: 36
 // UNWIND:      Function: unpacked
 // UNWIND:        FunctionLength: 36
 // UNWIND:        EpiloguePacked: No
@@ -225,6 +233,7 @@ f:
 
   .section .text$d,"xr"
   adrp x0, var
+  add x0, x0, :lo12:var
   .p2align 3, 0
 
   .section .text$e,"xr"
@@ -237,6 +246,8 @@ epilogue:
   .seh_startepilogue
   adrp x0, var
   .seh_nop
+  add x0, x0, :lo12:var
+  .seh_nop
   add sp, sp, #16
   .seh_stackalloc 16
   .seh_endepilogue
@@ -247,6 +258,7 @@ epilogue:
   cbz x0, .Lliteral
   ldr x0, .Lliteral
   adrp x1, var
+  add x1, x1, :lo12:var
 .Lliteral:
   .xword 0
 
@@ -256,6 +268,8 @@ prologue:
   sub sp, sp, #16
   .seh_stackalloc 16
   adrp x0, var
+  .seh_nop
+  add x0, x0, :lo12:var
   .seh_nop
   .seh_endprologue
   .seh_startepilogue
@@ -273,6 +287,10 @@ packed:
   mov x29, sp
   .seh_set_fp
   .seh_endprologue
+  adrp x0, var
+  str x1, [x0, :lo12:var]
+  adrp x0, var
+  ldrb w0, [x0, :lo12:var]
   bl packed
   .seh_startepilogue
   ldp x29, x30, [sp], #16
@@ -321,15 +339,18 @@ atend:
   .hword (.Lafter - .Lloop) >> 2
 
 // The field of such an immediate holds its constant, which an add takes as
-// unsigned and a load as a signed number of bytes, and an entry of a
-// compressed jump table is not negative.
+// unsigned and a load as a signed number of bytes, an entry of a compressed
+// jump table is not negative, and an adrp's addend has 21 bits.
 .ifdef ERR
   .section .text$x,"xr"
 .Lx:
   adrp x0, var
+  add x0, x0, :lo12:var
 .Ly:
 // ERR-DAG: [[#@LINE+1]]:{{[0-9]+}}: error: fixup value out of range
-  add x1, x1, #(.Ly - .Lx - 8)
+  adrp x1, var+0x100000
+// ERR-DAG: [[#@LINE+1]]:{{[0-9]+}}: error: fixup value out of range
+  add x1, x1, #(.Ly - .Lx - 12)
 // ERR-DAG: [[#@LINE+1]]:{{[0-9]+}}: error: fixup value out of range
   ldr x1, [x1, #(.Ly - .Lx + 2048)]
   .section .rdata,"dr"

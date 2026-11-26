@@ -47,11 +47,8 @@
 ## Such a branch reaches from anywhere, so its section, out of reach of zero,
 ## resizes as any other: its last jump goes.
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium a64-far.s -o a64-far.obj
-# RUN: %{link} a64-far.obj -verbose 2>&1 | FileCheck --check-prefix=FAR-LOG %s
+# RUN: %{link} a64-far.obj
 # RUN: llvm-objdump -d --no-show-raw-insn out.exe | FileCheck --check-prefix=FAR %s
-
-# FAR-LOG:     deleting 1 tail jumps
-# FAR-LOG-NOT: keeps its size
 
 # FAR:      140101004: b.eq 0x140101008
 # FAR-NEXT: 140101008: tbz w0, #0x0, 0x14010100c

@@ -39,7 +39,7 @@ namespace lld::coff {
 class ICF {
 public:
   ICF(COFFLinkerContext &c, bool unwind) : unwind(unwind), ctx(c) {}
-  size_t run();
+  UnwindFolds run();
 
 private:
   bool addUnwindRecord(SectionChunk *c);
@@ -71,6 +71,10 @@ private:
   // only in what their spans measure.
   bool unwind;
   llvm::DenseMap<const SectionChunk *, SmallVector<uint8_t, 0>> records;
+  // The unwind info of each associative code section, a part of the function
+  // it is associative to: the function's .pdata sections that name it.
+  llvm::DenseMap<const SectionChunk *, SmallVector<const SectionChunk *, 1>>
+      partUnwind;
   int cnt = 0;
   std::atomic<bool> repeat = {false};
 
@@ -146,8 +150,19 @@ template <bool constant> void ICF::segregate(size_t begin, size_t end) {
 }
 
 // Returns true if two sections' associative children, i.e. exception handling
-// metadata such as .pdata and .xdata, are equal.
+// metadata such as .pdata and .xdata, are equal. A part of a function in an
+// associative section has no children, and its unwind info, which its code
+// does not show where it has no prologue of its own, is among the function's:
+// two parts are equal only where that is.
 bool ICF::assocEquals(const SectionChunk *a, const SectionChunk *b) {
+  auto eqClasses = [&](const SectionChunk *ia, const SectionChunk *ib) {
+    return ia->eqClass[cnt % 2] == ib->eqClass[cnt % 2];
+  };
+  auto pa = partUnwind.find(a), pb = partUnwind.find(b);
+  if ((pa == partUnwind.end()) != (pb == partUnwind.end()) ||
+      (pa != partUnwind.end() &&
+       !llvm::equal(pa->second, pb->second, eqClasses)))
+    return false;
   // Ignore associated metadata sections that don't participate in ICF, such as
   // debug info and CFGuard metadata.
   auto considerForICF = [](const SectionChunk &assoc) {
@@ -332,18 +347,30 @@ bool ICF::addUnwindRecord(SectionChunk *c) {
 // Merge identical COMDAT sections.
 // Two sections are considered the same if their section headers,
 // contents and relocations are all the same.
-size_t ICF::run() {
+UnwindFolds ICF::run() {
   llvm::TimeTraceScope timeScope("ICF");
   ScopedTimer t(ctx.icfTimer);
 
   // Collect only mergeable sections and group by hash value.
   uint32_t nextId = 1;
+  std::vector<SectionChunk *> followers;
   for (Chunk *c : ctx.driver.getChunks()) {
     if (auto *sc = dyn_cast<SectionChunk>(c)) {
+      if (!unwind && sc->live && sc->getSectionName() == ".pdata")
+        for (const coff_relocation &r : sc->getRelocs())
+          if (auto *d = dyn_cast_or_null<DefinedRegular>(sc->getRelocTarget(r)))
+            if (SectionChunk *part = d->getChunk();
+                part->selection == COFF::IMAGE_COMDAT_SELECT_ASSOCIATIVE &&
+                (part->getOutputCharacteristics() & COFF::IMAGE_SCN_MEM_EXECUTE))
+              if (auto &records = partUnwind[part];
+                  records.empty() || records.back() != sc)
+                records.push_back(sc);
       if (unwind ? addUnwindRecord(sc) : isEligible(sc))
         chunks.push_back(sc);
       else
         sc->eqClass[0] = nextId++;
+      if (unwind && sc->repl != sc)
+        followers.push_back(sc);
     }
   }
 
@@ -400,7 +427,6 @@ size_t ICF::run() {
   Log(ctx) << "ICF needed " << Twine(cnt) << " iterations";
 
   // Merge sections in the same classes.
-  std::atomic<size_t> removed = 0;
   forEachClass([&](size_t begin, size_t end) {
     if (end - begin == 1)
       return;
@@ -410,16 +436,27 @@ size_t ICF::run() {
       Log(ctx) << "  Removed " << chunks[i]->getDebugName();
       chunks[begin]->replace(chunks[i]);
     }
-    removed += end - begin - 1;
   });
-  return removed;
+
+  // A record folded now may be the one an earlier pass folded others into:
+  // they follow it, so that every symbol in them reaches a live record.
+  UnwindFolds folds;
+  if (unwind) {
+    for (SectionChunk *c : chunks)
+      if (!c->live)
+        folds.push_back({c, c});
+    for (SectionChunk *c : followers)
+      if (!c->repl->live)
+        folds.push_back({c, std::exchange(c->repl, c->repl->repl)});
+  }
+  return folds;
 }
 
 // Entry point to ICF.
 void doICF(COFFLinkerContext &ctx) { ICF(ctx, /*unwind=*/false).run(); }
 
-size_t mergeUnwindRecords(COFFLinkerContext &ctx) {
-  return ctx.config.doICF == ICFLevel::None ? 0
+UnwindFolds mergeUnwindRecords(COFFLinkerContext &ctx) {
+  return ctx.config.doICF == ICFLevel::None ? UnwindFolds()
                                             : ICF(ctx, /*unwind=*/true).run();
 }
 } // namespace lld::coff

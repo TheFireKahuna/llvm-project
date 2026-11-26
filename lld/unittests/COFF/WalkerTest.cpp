@@ -29,9 +29,8 @@ using namespace lld::coff;
 
 namespace {
 bool decode(std::initializer_list<uint8_t> code, Insn &insn) {
-  static std::unique_ptr<X86Decoder> decoder = X86Decoder::create();
-  return decoder->decode(ArrayRef<uint8_t>(code.begin(), code.size()), 0x1000,
-                         insn);
+  return X86Decoder::get()->decode(ArrayRef<uint8_t>(code.begin(), code.size()),
+                                   0x1000, insn);
 }
 
 // Every instruction of LLVM's tables that takes a field is encoded with a
@@ -56,7 +55,7 @@ TEST(WalkerTest, FieldsOfEveryOpcode) {
       target->createMCCodeEmitter(*mii, ctx));
   std::unique_ptr<MCAsmBackend> backend(
       target->createMCAsmBackend(*sti, *mri, MCTargetOptions()));
-  std::unique_ptr<X86Decoder> decoder = X86Decoder::create();
+  X86Decoder *decoder = X86Decoder::get();
   ASSERT_TRUE(decoder);
   const MCExpr *symbol =
       MCSymbolRefExpr::create(ctx.getOrCreateSymbol("symbol"), ctx);

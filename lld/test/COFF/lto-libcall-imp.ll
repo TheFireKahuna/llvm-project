@@ -21,9 +21,7 @@
 ; DEFINE:     -verbose 2>&1 | FileCheck %s && \
 ; DEFINE:   %{link} -out:thin.exe thin.bc builtins.lib -verbose 2>&1 | \
 ; DEFINE:     FileCheck %s && \
-; DEFINE:   llvm-objdump -d full.exe > image.txt && \
-; DEFINE:   llvm-objdump -s -j .rdata full.exe >> image.txt && \
-; DEFINE:   FileCheck --check-prefix=IMAGE-%{a} %s < image.txt
+; DEFINE:   llvm-objdump -d full.exe | FileCheck --check-prefix=IMAGE-%{a} %s
 
 ; RUN: %{run}
 ; REDEFINE: %{a} = arm64
@@ -34,18 +32,14 @@
 ; CHECK:     Loading lazy __udivmodti4 from builtins.lib for __imp___udivmodti4
 ; CHECK-NOT: undefined symbol
 
-;; The pointer that __udivti3 reads holds __udivmodti4's address; on ARM64
-;; the adrp and ldr that only load it reach __udivmodti4 directly.
+;; __udivti3's jump through the pointer reaches __udivmodti4 directly.
 ; IMAGE-x64:      <__udivti3>:
-; IMAGE-x64-NEXT: <__imp___udivmodti4>
-; IMAGE-x64:      000000[[B4:..]][[B3:..]][[B2:..]][[B1:..]][[B0:..]] <__udivmodti4>:
-; IMAGE-x64:      Contents of section .rdata:
-; IMAGE-x64-NEXT: [[B0]][[B1]][[B2]][[B3]] [[B4]]000000
+; IMAGE-x64-NEXT: jmp 0x[[#%x,MOD:]] <__udivmodti4>
+; IMAGE-x64:      [[#%.16x,MOD]] <__udivmodti4>:
 
 ; IMAGE-arm64:      <__udivti3>:
-; IMAGE-arm64-NEXT: adrp x16, 0x[[#%x,PAGE:]]
-; IMAGE-arm64-NEXT: add x16, x16, #0x[[#%x,OFF:]]
-; IMAGE-arm64:      [[#%.16x,PAGE+OFF]] <__udivmodti4>:
+; IMAGE-arm64-NEXT: adr x16, 0x[[#%x,MOD:]]
+; IMAGE-arm64:      [[#%.16x,MOD]] <__udivmodti4>:
 
 ;--- main.ll
 define i64 @main(i128 %a, i128 %b) {

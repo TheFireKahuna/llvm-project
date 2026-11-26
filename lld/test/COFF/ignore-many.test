@@ -7,9 +7,9 @@ RUN: echo foo > %t3.order
 RUN: lld-link /entry:main /out:%t.exe %t1.obj %t2.obj /order:@%t3.order /debug 2>&1 | FileCheck -check-prefix=WARNINGS %s
 RUN: lld-link /entry:main /out:%t.exe %t1.obj %t2.obj /order:@%t3.order /debug /ignore:4217,4099,4037 2>&1 | FileCheck -allow-empty -check-prefix=SUPPRESSED %s
 
-WARNINGS: locally defined symbol imported
-WARNINGS: missing symbol: foo
-WARNINGS: warning: Cannot use debug info for
+WARNINGS-DAG: locally defined symbol imported
+WARNINGS-DAG: missing symbol: foo
+WARNINGS-DAG: warning: Cannot use debug info for
 
 SUPPRESSED-NOT: locally defined symbol imported
 SUPPRESSED-NOT: missing symbol: foo

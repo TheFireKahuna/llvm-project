@@ -1307,31 +1307,42 @@ static Defined *getGateName(COFFLinkerContext &ctx, const char *prefix,
                          : ctx.symtab.addSynthetic(saver().save(n), nullptr));
 }
 
+// The gates of the DLLs whose words value may reach: an import's entry
+// its DLL's, and a delay-bound section, or a local import's pointer to one,
+// those of the DLLs whose words it holds or reaches.
+static SmallVector<DelayGuardChunk::Gate, 1> getGates(COFFLinkerContext &ctx,
+                                                      Defined *value) {
+  SmallSetVector<StringRef, 1> dlls;
+  if (auto *cell = dyn_cast<DefinedImportData>(value))
+    dlls.insert(saver().save(cell->getDLLName().lower()));
+  else if (auto *li = dyn_cast<DefinedLocalImport>(value))
+    dlls = ctx.delayBound.lookup(li->getTarget()->getChunk()).dlls;
+  else
+    dlls = ctx.delayBound.lookup(value->getChunk()).dlls;
+  SmallVector<DelayGuardChunk::Gate, 1> gates;
+  for (StringRef dll : dlls)
+    gates.push_back({getGateName(ctx, "__gate_", dll),
+                     getGateName(ctx, "__gate_thunk_", dll),
+                     getGateName(ctx, "__ensure_", dll)});
+  return gates;
+}
+
 Defined *getDelayGuard(COFFLinkerContext &ctx, const DelayGuardSite &g,
                        bool called) {
   // A replay loads the gates into rax.
   unsigned reg = std::max<int8_t>(g.reg, 0);
-  Defined *&leaf =
-      ctx.delayGuards[{g.value, g.addend, reg | g.address << 8, g.insn}];
+  Defined *&leaf = ctx.delayGuards[{
+      g.value, g.addend, reg | g.address << 8 | g.before << 9, g.insn}];
   if (!leaf) {
-    SmallSetVector<StringRef, 1> dlls;
-    if (auto *cell = dyn_cast<DefinedImportData>(g.value))
-      dlls.insert(saver().save(cell->getDLLName().lower()));
-    else if (auto *li = dyn_cast<DefinedLocalImport>(g.value))
-      dlls = ctx.delayBound.lookup(li->getTarget()->getChunk()).dlls;
-    else
-      dlls = ctx.delayBound.lookup(g.value->getChunk()).dlls;
+    SmallVector<DelayGuardChunk::Gate, 1> gates = getGates(ctx, g.value);
     // A jrcxz reaches the call of its gate's ensure stub over five tests.
-    if (dlls.size() > 5)
+    if (gates.size() > 5) {
       errAt(*g.chunk, g.chunk->getRelocs()[g.index].VirtualAddress)
           << "reaches " << g.value->getName()
           << ", which holds the addresses of functions of more than five "
              "delay-loaded DLLs";
-    SmallVector<DelayGuardChunk::Gate, 1> gates;
-    for (StringRef dll : dlls.getArrayRef().take_front(5))
-      gates.push_back({getGateName(ctx, "__gate_", dll),
-                       getGateName(ctx, "__gate_thunk_", dll),
-                       getGateName(ctx, "__ensure_", dll)});
+      gates.resize(5);
+    }
     leaf = make<DefinedSynthetic>(
         "__delay_guard", make<DelayGuardChunk>(g, reg, std::move(gates)));
   }
@@ -1339,28 +1350,68 @@ Defined *getDelayGuard(COFFLinkerContext &ctx, const DelayGuardSite &g,
   return leaf;
 }
 
-// adrp and ldr of the gate, tbz of its bit 0 to the tail; adr of the site,
-// stp x30 and it, bl of the ensure stub, ldr x30; the tail: adrp of target,
-// b back past the site's adrp.
+// For each gate, adrp and ldr of it and tbz of its bit 0 to the next; adr of
+// the site, stp x30 and it, bl of the ensure stub or its veneer, ldr x30.
+// Then the site's adrp of target, b back past it, and the veneers.
 void DelayGuardA64Chunk::writeTo(uint8_t *buf) const {
   const Relocation &r = sc->getScanned()->relocs[index];
   uint64_t site = sc->getRVA() + sc->getOutputOffset(r.offset), p = getRVA();
-  uint64_t back = site + (r.expr == R_GUARD ? 16 + 4 * far : 4);
-  const uint32_t words[] = {
-      0x90000000u | reg, 0xf9400000u | reg * 33, 0x36000000u | 5 << 5 | reg,
-      0x10000000u | reg, 0xa9bf03feu | reg << 10, 0x94000000, 0xf84107fe,
-      0x90000000u | reg, 0x14000000};
-  for (size_t i = 0; i != std::size(words); ++i)
-    write32le(buf + 4 * i, words[i]);
-  applyArm64Addr(buf, gate->getRVA(), p, 12);
-  applyArm64Ldr(buf + 4, gate->getRVA() & 0xfff);
-  if (!isInt<21>(site - (p + 12)))
-    Err(sc->file->symtab.ctx) << sc->getSectionName() << " of " << sc->file
-                              << " is over 1 MB, beyond its guard's adr";
-  aarch64::writeAdr(buf + 12, reg, site - (p + 12));
-  applyArm64Branch26(buf + 20, ensure->getRVA() - (p + 20));
-  applyArm64Addr(buf + 28, target->getRVA(), p + 28, 12);
-  applyArm64Branch26(buf + 32, back - (p + 32));
+  uint64_t back =
+      site + (r.expr == R_GUARD ? gates.size() * (12 + 4 * far) + 4 : 4);
+  auto put = [&](uint32_t insn) {
+    write32le(buf, insn);
+    buf += 4, p += 4;
+  };
+  auto adrp = [&](uint32_t insn, uint64_t s, bool add) {
+    put(insn);
+    applyArm64Addr(buf - 4, s, p - 4, 12);
+    if (add)
+      put(0x91000000 | reg * 33), applyArm64Imm(buf - 4, s & 0xfff, 0);
+  };
+  for (const DelayGuardChunk::Gate &g : gates) {
+    adrp(0x90000000 | reg, g.gate->getRVA(), false);
+    put(0xf9400000 | reg * 33);
+    applyArm64Ldr(buf - 4, g.gate->getRVA() & 0xfff);
+    put(0x36000000 | (getBlock() / 4 - 2) << 5 | reg);
+    if (farAdr) {
+      adrp(0x90000000 | reg, site, true);
+    } else {
+      if (!isInt<21>(site - p))
+        Err(sc->file->symtab.ctx) << sc->getSectionName() << " of " << sc->file
+                                  << " is over 1 MB, beyond its guard's adr";
+      put(0x10000000 | reg), applyArm64Addr(buf - 4, site, p - 4, 0);
+    }
+    put(0xa9bf03fe | reg << 10);
+    put(0x94000000);
+    applyArm64Branch26(buf - 4,
+                       (farCall ? getRVA() + getSize() - 12 * (gates.end() - &g)
+                                : g.ensure->getRVA()) -
+                           (p - 4));
+    put(0xf84107fe);
+  }
+  adrp(read32le(sc->getContents().data() + r.offset), target->getRVA(), false);
+  put(0x14000000);
+  applyArm64Branch26(buf - 4, back - (p - 4));
+  for (const DelayGuardChunk::Gate &g :
+       farCall ? gates : ArrayRef<DelayGuardChunk::Gate>()) {
+    adrp(0x90000000 | reg, g.ensure->getRVA(), true);
+    put(0xd61f0000 | reg << 5);
+  }
+}
+
+// Whether each block's bl reaches its ensure stub from anywhere in the guard.
+bool DelayGuardA64Chunk::verifyRanges() {
+  return farCall || llvm::all_of(gates, [&](const DelayGuardChunk::Gate &g) {
+           int64_t s = g.ensure->getRVA();
+           return isInt<28>(s - rva) && isInt<28>(s - (rva + getSize()));
+         });
+}
+
+uint32_t DelayGuardA64Chunk::extendRanges() {
+  if (verifyRanges())
+    return 0;
+  farCall = true;
+  return 12 * gates.size();
 }
 
 
@@ -2027,16 +2078,116 @@ static unsigned getUnwindCodeSize(uint8_t c) {
 }
 static bool isUnwindEnd(uint8_t c) { return (c & 0xfe) == 0xe4; }
 
+// The unwind information that ntdll makes of packed ARM64 unwind data w
+// before it unwinds (RtlpExpandCompactToFull): one header word, then the
+// codes of the canonical prologue, those of the last instruction first, and
+// one allocation of any size. With flag 1 one epilogue at the end shares
+// them past the set_fp, or with the home area saved is a copy of them
+// without its nops; with flag 2 an end_c leaves neither.
+static std::vector<uint8_t> expandPackedUnwind(uint32_t w) {
+  unsigned flag = w & 3, regF = w >> 13 & 7, regI = w >> 16 & 15,
+           cr = w >> 21 & 3, ints = regI + (cr == 1), fps = regF ? regF + 1 : 0;
+  // The saved registers and the locals, in words.
+  unsigned saved = ints + fps ? ints + fps + 8 * (w >> 20 & 1) : 0;
+  saved = (saved + 1) & ~1u;
+  int local = 2 * (w >> 23) - saved;
+  // The codes, each's bytes last first, as the prologue runs.
+  std::vector<uint8_t> c = {0xe4};
+  auto put = [&](uint32_t v, unsigned n) {
+    for (unsigned i = 0; i != n; ++i)
+      c.push_back(v >> 8 * i);
+  };
+  auto alloc = [&](uint32_t bytes) {
+    if (bytes >= 0x4000)
+      put(0xe0000000 | bytes >> 4, 4);
+    else if (bytes >= 0x200)
+      put(0xc000 | bytes >> 4, 2);
+    else
+      put(bytes >> 4 & 0x1f, 1);
+  };
+  bool started = false, fp = false;
+  unsigned off = 0, i = 0;
+  if (cr == 2)
+    put(0xfc, 1);
+  if (ints) {
+    if (regI == 1 && cr == 1)
+      alloc(saved * 8), started = true;
+    for (; i != (regI & ~1u); i += 2, off += 2, started = true)
+      put((started ? 0xc800 | off : 0xcc00 | (saved - 1)) | i << 6, 2);
+    if (regI & 1 && cr == 1)
+      put(0xd600 | (i / 2 & 7) << 6 | off, 2), off += 2;
+    else if (regI & 1)
+      put(started ? 0xd000 | i << 6 | off : 0xd400 | (saved - 1), 2), ++off;
+    else if (cr == 1)
+      put(started ? 0xd2c0 | off : 0xd560 | (saved - 1), 2), ++off;
+    started = true;
+  }
+  for (i = 0; i != (fps & ~1u); i += 2, off += 2, started = true)
+    put((started ? 0xd800 | off : 0xda00 | (saved - 1)) | i << 6, 2);
+  if (fps & 1)
+    put(started ? 0xdc00 | i << 6 | off : 0xde00 | i << 5 | (saved - 1), 2);
+  int home = -1;
+  if (w >> 20 & 1 && started)
+    home = c.size(), put(0xe3e3e3e3, 4);
+  if (local > 0 && cr >= 2) {
+    if (local > 0x40)
+      alloc(local * 8), put(0x40, 1);
+    else
+      put(0x80 | (local - 1), 1);
+    put(0xe1, 1), fp = true;
+  } else if (local > 0) {
+    alloc(local * 8);
+  }
+  if (flag == 2)
+    put(0xe5, 1);
+  std::reverse(c.begin(), c.end());
+  uint32_t n = c.size(),
+           header = (w >> 2 & 0x7ff) | (flag == 2 ? 0 : 1 << 21 | fp << 22);
+  if (home >= 0 && flag != 2) {
+    for (uint32_t j = 0; j != n; ++j)
+      if (j + home + 4 < n || j + home + 1 > n)
+        c.push_back(c[j]);
+    header += n << 22;
+  }
+  header |= (c.size() + 3) / 4 << 27;
+  std::vector<uint8_t> x(4);
+  write32le(x.data(), header);
+  llvm::append_range(x, c);
+  x.resize(alignTo(x.size(), 4));
+  return x;
+}
+
+std::vector<uint8_t> getBodyRecord(uint32_t words, StringRef codes) {
+  std::vector<uint8_t> v(8, 0);
+  v.push_back(0xe5);
+  llvm::append_range(v, codes);
+  v.push_back(0xe4);
+  v.resize(alignTo(v.size(), 4), 0xe3);
+  uint32_t n = v.size() / 4 - 2;
+  if (n < 32)
+    v.erase(v.begin(), v.begin() + 4);
+  write32le(v.data(), words | (n < 32 ? n << 27 : 0));
+  if (n >= 32)
+    write32le(v.data() + 4, n << 16);
+  return v;
+}
+
 // The codes of the ARM64 function that covers off in sc that ntdll runs for
 // a PC there (RtlpUnwindFunctionFull): of the function table entry that
 // starts last at or before off, the prologue's less those of the
 // instructions not yet run, an epilogue's less those it has run, else all,
-// to the end; none where no entry covers off, which is a leaf.
-static std::optional<std::string> getUnwindCodesAt(const SectionChunk &sc,
-                                                   uint32_t off) {
+// to the end; none where no entry covers off, which is a leaf. edge says
+// that off is in the prologue or an epilogue.
+std::optional<std::string> getUnwindCodesAt(const SectionChunk &sc,
+                                            uint32_t off, bool &edge) {
   const SectionChunk *xdata = nullptr;
   uint32_t begin = 0, info = 0;
   bool found = false;
+  edge = false;
+  // Where the link resized sc, its symbols have their output offsets.
+  ScannedSection *s = sc.resizable ? sc.getScanned() : nullptr;
+  if (s && !(s->aux && s->aux->resized))
+    s = nullptr;
   for (Chunk *c : sc.file->getChunks()) {
     auto *pdata = dyn_cast_or_null<SectionChunk>(c);
     if (!pdata || !pdata->getSectionName().starts_with(".pdata"))
@@ -2046,7 +2197,8 @@ static std::optional<std::string> getUnwindCodesAt(const SectionChunk &sc,
       auto *f = dyn_cast_or_null<DefinedRegular>(pdata->getRelocTarget(rel));
       uint32_t at = rel.VirtualAddress, start;
       if (at % 8 || at + 8 > d.size() || !f || f->getChunk() != &sc ||
-          (start = f->getValue() + read32le(&d[at])) > off ||
+          (start = (s ? getInputOffset(*s, f) : f->getValue()) +
+                   read32le(&d[at])) > off ||
           (found && start < begin))
         continue;
       found = true, begin = start, xdata = nullptr;
@@ -2060,10 +2212,14 @@ static std::optional<std::string> getUnwindCodesAt(const SectionChunk &sc,
   }
   if (!found)
     return std::string();
-  // Packed unwind data has no codes to read.
-  if (!xdata || info + 8 > xdata->getSize())
+  std::vector<uint8_t> packed;
+  ArrayRef<uint8_t> x;
+  if (xdata && info + 8 <= xdata->getSize())
+    x = xdata->getContents().drop_front(info);
+  else if (!xdata && (info & 3) && (info & 3) != 3)
+    x = packed = expandPackedUnwind(info);
+  else
     return std::nullopt;
-  ArrayRef<uint8_t> x = xdata->getContents().drop_front(info);
   ARM::WinEH::ExceptionDataRecord h(
       reinterpret_cast<const support::ulittle32_t *>(x.data()), true);
   uint32_t k = (off - begin) / 4, scopes = h.E() ? 0 : h.EpilogueCount();
@@ -2087,12 +2243,12 @@ static std::optional<std::string> getUnwindCodesAt(const SectionChunk &sc,
   };
   size_t start = 0;
   if (unsigned prologue = count(0); k < prologue) {
-    start = skip(0, prologue - k);
+    start = skip(0, prologue - k), edge = true;
   } else if (h.E()) {
     unsigned epilogue = h.FunctionLengthInBytesAArch64() / 4 -
                         count(h.EpilogueCount()) - 1;
     if (k >= epilogue)
-      start = skip(h.EpilogueCount(), k - epilogue);
+      start = skip(h.EpilogueCount(), k - epilogue), edge = true;
   } else {
     for (uint32_t i = 0; i != scopes; ++i) {
       uint32_t w = read32le(&x[4 * (ARM::WinEH::HeaderWords(h) + i)]);
@@ -2100,7 +2256,7 @@ static std::optional<std::string> getUnwindCodesAt(const SectionChunk &sc,
       if (k < from)
         break;
       if (k < from + count(index) + 1) {
-        start = skip(index, k - from);
+        start = skip(index, k - from), edge = true;
         break;
       }
     }
@@ -2112,16 +2268,17 @@ static std::optional<std::string> getUnwindCodesAt(const SectionChunk &sc,
                      codes.begin() + std::min(end, codes.size()));
 }
 
-Defined *addDelayGuardA64(COFFLinkerContext &ctx, const DelayGuardSite &s,
-                          bool far) {
+Defined *addDelayGuardA64(COFFLinkerContext &ctx, const DelayGuardSite &s) {
+  bool edge;
   std::optional<std::string> codes = getUnwindCodesAt(
-      *s.chunk, s.chunk->getRelocs()[s.index].VirtualAddress);
+      *s.chunk, s.chunk->getRelocs()[s.index].VirtualAddress, edge);
   if (!codes)
     return nullptr;
-  std::string dll = cast<DefinedImportData>(s.value)->getDLLName().lower();
-  auto *g = make<DelayGuardA64Chunk>(
-      s.chunk, s.index, getGateName(ctx, "__gate_", dll),
-      getGateName(ctx, "__ensure_", dll), s.value, s.reg, far);
+  if (edge)
+    s.chunk->getScanned()->relocs[s.index].expr = R_GUARD_CALL;
+  auto *g =
+      make<DelayGuardA64Chunk>(s.chunk, s.index, getGates(ctx, s.value),
+                               s.value, s.reg, s.chunk->getSize() > 0x80000);
   g->codes = std::move(*codes);
   ctx.delayGuardsA64.push_back(g);
   return make<DefinedSynthetic>("__delay_guard", g);
@@ -2160,40 +2317,37 @@ Chunk *DelayLoadContents::newEnsureChunk(Chunk *list) {
         thunks.push_back(toDelayGuard(leaf));
       pdata.push_back(entries);
     }
-    // An ARM64 guard's head, the gate's test with the site's address and
-    // the stp, and its tail, the site's adrp and the b back, change only the
-    // site's register: their codes are those ntdll runs for the site, after
-    // an end_c that makes every point the body. The bl and the restore
-    // after it report the site, with x30 from the guard's +8 then +0, and
-    // the 16 bytes: the dispatcher unwinds a call at its bl.
+    // An ARM64 guard's head of each block, the gate's test with the site's
+    // address and the stp, and its tail, the site's adrp and the b back,
+    // change only the site's register: their codes are those ntdll runs for
+    // the site, after an end_c that makes every point the body. The call and
+    // the restore after it report the site, with x30 from the guard's +8
+    // then +0, and the 16 bytes: the dispatcher unwinds a call at its bl.
+    // Past 31 words of codes the header has its second word.
     if (!x64 && !ctx.delayGuardsA64.empty()) {
-      static const uint8_t call[] = {0x02, 0, 0,    0x10, 0xe5, 0xd2,
-                                     0xc1, 0xec, 0xd2, 0xc0, 0x01, 0xe4};
-      Chunk *calls = newStub(ARM64, false, call);
-      unwindinfo.push_back(calls);
       std::map<std::string, Chunk *> shared;
-      auto body = [&](uint32_t words, const std::string &codes) {
-        std::string key = char(words) + codes;
-        Chunk *&c = shared[key];
-        if (!c) {
-          auto *v = make<std::vector<uint8_t>>(4, 0);
-          v->push_back(0xe5);
-          llvm::append_range(*v, codes);
-          v->push_back(0xe4);
-          v->resize(alignTo(v->size(), 4), 0xe3);
-          write32le(v->data(), words | (v->size() / 4 - 1) << 27);
-          unwindinfo.push_back(c = newStub(ARM64, false, *v));
-        }
+      auto record = [&](uint32_t words, StringRef codes) {
+        Chunk *&c = shared[(Twine(char(words)) + codes).str()];
+        if (!c)
+          unwindinfo.push_back(c = newStub(ARM64, false,
+                                           *make<std::vector<uint8_t>>(
+                                               getBodyRecord(words, codes))));
         return c;
       };
       static const uint8_t entry[8] = {};
       for (Chunk *c : ctx.delayGuardsA64) {
         auto *g = static_cast<DelayGuardA64Chunk *>(c);
-        for (auto [at, unwind] :
-             {std::pair(0, body(5, g->codes)), std::pair(20, calls),
-              std::pair(28, body(2, g->codes))})
-          pdata.push_back(newStub(ARM64, false, entry,
-                                  {{0, g, uint32_t(at)}, {4, unwind}}));
+        auto add = [&](uint32_t at, Chunk *unwind) {
+          pdata.push_back(
+              newStub(ARM64, false, entry, {{0, g, at}, {4, unwind}}));
+        };
+        for (size_t i = 0, e = g->gates.size(); i != e; ++i) {
+          add(i * g->getBlock(), record(g->getHead(), g->codes));
+          add(i * g->getBlock() + 4 * g->getHead(),
+              record(g->getBlock() / 4 - g->getHead(),
+                     "\xd2\xc1\xec\xd2\xc0\x01"));
+        }
+        add(g->gates.size() * g->getBlock(), record(2, g->codes));
       }
     }
   }

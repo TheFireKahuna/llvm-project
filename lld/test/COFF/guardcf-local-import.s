@@ -15,7 +15,7 @@
 # DEFINE:     -o cell.obj && \
 # DEFINE:   lld-link -dll -noentry -guard:cf -out:use.dll -map:use.map \
 # DEFINE:     defs.obj use.obj cell.obj -export:taken -export:kept \
-# DEFINE:     -export:called -export:celled && \
+# DEFINE:     -export:called -export:celled -call-graph-profile-sort:none && \
 # DEFINE:   llvm-readobj --coff-load-config use.dll
 # DEFINE: %{map} = FileCheck %s --check-prefix=MAP --input-file=use.map \
 # DEFINE:   --implicit-check-not=__imp_taken --implicit-check-not=.refptr

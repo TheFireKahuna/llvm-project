@@ -12,6 +12,7 @@
 #include "Config.h"
 #include "DebugTypes.h"
 #include "Driver.h"
+#include "Relocations.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "TypeMerger.h"
@@ -22,6 +23,7 @@
 #include "llvm/DebugInfo/CodeView/DebugLinesSubsection.h"
 #include "llvm/DebugInfo/CodeView/DebugSubsectionRecord.h"
 #include "llvm/DebugInfo/CodeView/RecordName.h"
+#include "llvm/DebugInfo/CodeView/SymbolDeserializer.h"
 #include "llvm/DebugInfo/CodeView/SymbolRecordHelpers.h"
 #include "llvm/DebugInfo/CodeView/SymbolSerializer.h"
 #include "llvm/DebugInfo/CodeView/TypeIndexDiscovery.h"
@@ -57,10 +59,50 @@ using namespace lld;
 using namespace lld::coff;
 
 using llvm::object::coff_section;
+using namespace llvm::support::endian;
 using llvm::pdb::StringTableFixup;
 
 namespace {
 class DebugSHandler;
+
+// A point of code that the link resized, from which CodeView measures
+// distances: its chunk, with the relocations the scan kept for it, its offset
+// there in the object and in the image, and the offset in its debug section
+// of the relocation that names it.
+struct CodeBase {
+  const SectionChunk *chunk = nullptr;
+  const ScannedSection *scanned = nullptr;
+  uint32_t offset = 0;
+  uint32_t outputOffset = 0;
+  uint32_t reloc = 0;
+
+  explicit operator bool() const { return chunk; }
+  // The distance in the image to the point that the object has d bytes on,
+  // or with end to where the instruction that ends there ends.
+  uint32_t map(uint32_t d, bool end = false) const {
+    if (!chunk)
+      return d;
+    return getOutputOffset(*chunk, *scanned, offset + d, end) - outputOffset;
+  }
+};
+
+// What the copy of the symbol records of one subsection keeps to remap their
+// distances across resized code.
+struct CodeRemap {
+  // The start of the procedure whose records are being copied, then that of
+  // each S_SEPCODE that follows its end: what an inline site's annotations
+  // count code offsets from.
+  SmallVector<CodeBase, 2> code;
+  // Whether this pass reports what it cannot remap.
+  bool warn;
+  BumpPtrAllocator alloc;
+  // Where the subsection's records end in their section.
+  uint32_t end = 0;
+
+  bool resized() const {
+    return any_of(code, [](const CodeBase &b) { return bool(b); });
+  }
+};
 
 class PDBLinker {
   friend DebugSHandler;
@@ -68,6 +110,9 @@ class PDBLinker {
 public:
   PDBLinker(COFFLinkerContext &ctx)
       : builder(bAlloc()), tMerger(ctx, bAlloc()), ctx(ctx) {
+    for (ObjFile *file : ctx.objFileInstances)
+      for (auto &[c, s] : file->relocations)
+        resizedCode |= s.aux && s.aux->resized;
     // This isn't strictly necessary, but link.exe usually puts an empty string
     // as the first "valid" string in the string table, so we do the same in
     // order to maintain as much byte-for-byte compatibility as possible.
@@ -121,10 +166,16 @@ public:
   // Copy the symbol record, relocate it, and fix the alignment if necessary.
   // Rewrite type indices in the record. Replace unrecognized symbol records
   // with S_SKIP records.
+  // With remap, the record's distances across resized code are those of the
+  // image, and the record may have another length or be several.
   void writeSymbolRecord(SectionChunk *debugChunk,
                          ArrayRef<uint8_t> sectionContents, CVSymbol sym,
                          size_t alignedSize, uint32_t &nextRelocIndex,
-                         std::vector<uint8_t> &storage);
+                         std::vector<uint8_t> &storage, CodeRemap *remap);
+
+  void remapSymbolRecord(SectionChunk *debugChunk, CVSymbol sym,
+                         uint32_t relocIndex, std::vector<uint8_t> &storage,
+                         CodeRemap &remap);
 
   /// Add the section map, section contributions and fixups to the PDB.
   void addSections(ArrayRef<uint8_t> sectionTable, ArrayRef<uint8_t> fixups);
@@ -147,6 +198,10 @@ private:
   TypeMerger tMerger;
 
   COFFLinkerContext &ctx;
+
+  // Whether the link changed the size of any code, whose CodeView is then
+  // remapped.
+  bool resizedCode = false;
 
   /// PDBs use a single global string table for filenames in the file checksum
   /// table.
@@ -204,10 +259,18 @@ class DebugSHandler {
   /// handleDebugS call.
   uint32_t nextRelocIndex = 0;
 
+  /// The file checksum table of the PDB's module, whose layout is that of the
+  /// object's.
+  std::shared_ptr<DebugChecksumsSubsection> newChecksums =
+      std::make_shared<DebugChecksumsSubsection>(linker.pdbStrTab);
+
   void advanceRelocIndex(SectionChunk *debugChunk, ArrayRef<uint8_t> subsec);
 
   void addUnrelocatedSubsection(SectionChunk *debugChunk,
                                 const DebugSubsectionRecord &ss);
+
+  bool addRemappedLines(SectionChunk *debugChunk, ArrayRef<uint8_t> subsec,
+                        CodeBase base);
 
   void addFrameDataSubsection(SectionChunk *debugChunk,
                               const DebugSubsectionRecord &ss);
@@ -535,6 +598,303 @@ static void replaceWithSkipRecord(MutableArrayRef<uint8_t> recordBytes) {
   prefix->RecordLen = recordBytes.size() - 2;
 }
 
+// Returns the point that the first section-relative relocation of debugChunk
+// in [begin, end) names, where that is in resized code. The relocations
+// before relocIndex lie before begin.
+static CodeBase getCodeBase(const SectionChunk &debugChunk, uint32_t relocIndex,
+                            uint32_t begin, uint32_t end) {
+  ArrayRef<coff_relocation> rels = debugChunk.getRelocs();
+  uint16_t secRel = debugChunk.getArch() == Triple::x86_64
+                        ? uint16_t(COFF::IMAGE_REL_AMD64_SECREL)
+                        : uint16_t(COFF::IMAGE_REL_ARM64_SECREL);
+  for (; relocIndex < rels.size(); ++relocIndex) {
+    const coff_relocation &rel = rels[relocIndex];
+    if (rel.VirtualAddress >= end)
+      break;
+    if (rel.VirtualAddress < begin || rel.Type != secRel)
+      continue;
+    // Debug information describes the body of a function override.
+    auto *d = dyn_cast_or_null<Defined>(debugChunk.getRelocTarget(rel));
+    if (FunctionOverrideThunk *t = FunctionOverrideThunk::get(d))
+      d = t->fo.body;
+    auto *dr = dyn_cast_or_null<DefinedRegular>(d);
+    SectionChunk *c = dr && dr->data ? dr->getChunk() : nullptr;
+    ScannedSection *s = c && c->resizable ? c->getScanned() : nullptr;
+    if (!s || !s->aux || !s->aux->resized)
+      break;
+    uint32_t offset = getInputOffset(*s, dr) +
+                      read32le(&debugChunk.getContents()[rel.VirtualAddress]);
+    return {c, s, offset, getOutputOffset(*c, *s, offset), rel.VirtualAddress};
+  }
+  return {};
+}
+
+// Writes to out the annotations of an inline site, whose code offsets are
+// from the first of code or the one they select, as the image has them. An
+// entry whose instructions the link deleted keeps its place and covers no
+// byte, as one that MC wrote for no instruction does. Returns false if the
+// link cannot remap them.
+static bool remapAnnotations(ArrayRef<uint8_t> annotations,
+                             ArrayRef<CodeBase> code,
+                             SmallVectorImpl<char> &out) {
+  CodeBase base = code[0];
+  uint32_t in = 0, at = 0;
+  int32_t line = 0;
+  bool pending = false;
+  auto flushLine = [&] {
+    if (pending) {
+      compressAnnotation(BinaryAnnotationsOpCode::ChangeLineOffset, out);
+      compressAnnotation(encodeSignedNumber(line), out);
+    }
+    pending = false;
+  };
+  // The distance in the image over the next d bytes of the object.
+  auto advance = [&](uint32_t d) {
+    uint32_t from = std::exchange(at, base.map(in += d));
+    return at - from;
+  };
+  for (const DecodedAnnotation &a : make_range(
+           BinaryAnnotationIterator(annotations), BinaryAnnotationIterator())) {
+    switch (a.OpCode) {
+    case BinaryAnnotationsOpCode::Invalid:
+      break;
+    // A line offset is written with the code offset that follows it.
+    case BinaryAnnotationsOpCode::ChangeLineOffset:
+      flushLine();
+      pending = true;
+      line = a.S1;
+      break;
+    case BinaryAnnotationsOpCode::ChangeCodeOffset:
+      compressLineAndCodeDelta(pending ? line : 0, advance(a.U1), out);
+      pending = false;
+      break;
+    case BinaryAnnotationsOpCode::ChangeCodeOffsetAndLineOffset:
+      flushLine();
+      compressLineAndCodeDelta(a.S1, advance(a.U1), out);
+      break;
+    // The offset goes on from the end of the length.
+    case BinaryAnnotationsOpCode::ChangeCodeLength:
+      flushLine();
+      compressAnnotation(a.OpCode, out);
+      compressAnnotation(advance(a.U1), out);
+      break;
+    // The offsets that follow are from the start of separated code.
+    case BinaryAnnotationsOpCode::ChangeCodeOffsetBase:
+      if (a.U1 >= code.size())
+        return false;
+      flushLine();
+      out.append(a.Bytes.begin(), a.Bytes.end());
+      base = code[a.U1];
+      in = at = 0;
+      break;
+    // These set an offset in a way MC does not write.
+    case BinaryAnnotationsOpCode::CodeOffset:
+    case BinaryAnnotationsOpCode::ChangeCodeLengthAndCodeOffset:
+      return false;
+    default:
+      flushLine();
+      out.append(a.Bytes.begin(), a.Bytes.end());
+      break;
+    }
+  }
+  flushLine();
+  return true;
+}
+
+// Gives the S_DEFRANGE* record rec of length bytes, whose range is at off in
+// it and begins at base, the range and the gaps of the image. Returns false,
+// with the record as it was, if one record cannot hold them.
+static bool remapDefRange(uint8_t *rec, size_t length, size_t off,
+                          CodeBase base) {
+  uint8_t *range = rec + off + offsetof(LocalVariableAddrRange, Range);
+  uint32_t size = base.map(read16le(range));
+  if (size > MaxDefRange)
+    return false;
+  write16le(range, size);
+  for (uint8_t *gap = range + 2; gap + 4 <= rec + length; gap += 4) {
+    uint32_t begin = read16le(gap), end = begin + read16le(gap + 2);
+    write16le(gap, base.map(begin));
+    write16le(gap + 2, base.map(end) - base.map(begin));
+  }
+  return true;
+}
+
+// Replaces the S_DEFRANGE* record sym, which ends out in size bytes and whose
+// range begins at base, with the records that hold its range and gaps in the
+// image, packed as MC packs them.
+template <class T>
+static void splitDefRange(CVSymbol sym, size_t size, CodeBase base,
+                          BumpPtrAllocator &alloc, std::vector<uint8_t> &out) {
+  T rec(SymbolRecordKind(sym.kind()));
+  if (Error e = SymbolDeserializer::deserializeAs<T>(sym, rec)) {
+    consumeError(std::move(e));
+    return;
+  }
+  out.resize(out.size() - size);
+  alloc.Reset();
+  // The ranges between the gaps: where each begins, and what MC packs.
+  SmallVector<uint32_t, 4> starts;
+  SmallVector<std::pair<unsigned, unsigned>, 4> sizes;
+  uint32_t begin = 0, last = 0;
+  auto add = [&](uint32_t end) {
+    uint32_t b = base.map(begin), e = base.map(end);
+    starts.push_back(b);
+    sizes.push_back({b - last, e - b});
+    last = e;
+  };
+  for (const LocalVariableAddrGap &g : rec.Gaps) {
+    add(g.GapStartOffset);
+    begin = g.GapStartOffset + g.Range;
+  }
+  add(rec.Range.Range);
+  uint32_t start = rec.Range.OffsetStart;
+  packDefRange(sizes, [&](size_t i, size_t j, unsigned bias, uint16_t size) {
+    rec.Range.OffsetStart = start + starts[i] + bias;
+    rec.Range.Range = size;
+    rec.Gaps.clear();
+    for (size_t k = i + 1; k != j; ++k)
+      rec.Gaps.push_back({uint16_t(starts[k] - sizes[k].first - starts[i]),
+                          uint16_t(sizes[k].first)});
+    CVSymbol s =
+        SymbolSerializer::writeOneSymbol(rec, alloc, CodeViewContainer::Pdb);
+    out.insert(out.end(), s.data().begin(), s.data().end());
+  });
+}
+
+// Gives the record that ends storage, the copy of sym, the distances that the
+// image has across the code that the link resized. A record whose length that
+// changes is serialised anew, and a range of a variable that the format's
+// records cannot hold becomes several.
+void PDBLinker::remapSymbolRecord(SectionChunk *debugChunk, CVSymbol sym,
+                                  uint32_t relocIndex,
+                                  std::vector<uint8_t> &storage,
+                                  CodeRemap &remap) {
+  size_t size = alignTo(sym.length(), alignOf(CodeViewContainer::Pdb));
+  uint8_t *rec = storage.data() + storage.size() - size;
+  uint32_t va = sym.data().data() - debugChunk->getContents().data();
+  CodeBase base = getCodeBase(*debugChunk, relocIndex, va, va + sym.length());
+  auto remap32 = [&](size_t off) {
+    write32le(rec + off, base.map(read32le(rec + off)));
+  };
+  auto warn = [&](const Twine &what) {
+    if (remap.warn)
+      Warn(ctx) << debugChunk->file << ": " << what
+                << " is not remapped to the code that the link resized";
+  };
+  auto remap16 = [&](size_t off, bool end = false) {
+    uint32_t v = base.map(read16le(rec + off), end);
+    if (!isUInt<16>(v))
+      warn("a length of more than 16 bits");
+    write16le(rec + off, v);
+  };
+  // The record without the padding of its copy.
+  CVSymbol copy(ArrayRef(rec, sym.length()));
+  SymbolKind kind = sym.kind();
+  switch (kind) {
+  // The code size and the offsets at which debugging starts and ends.
+  case S_GPROC32:
+  case S_LPROC32:
+  case S_GPROC32_ID:
+  case S_LPROC32_ID:
+    if (base)
+      for (size_t off : {16, 20, 24})
+        remap32(off);
+    remap.code.assign(1, base);
+    // The procedure's separated code follows the end of its scope.
+    for (uint32_t at = va + sym.length(), depth = 1, len; at + 4 <= remap.end;
+         at += len) {
+      const uint8_t *next = debugChunk->getContents().data() + at;
+      len = 2 + read16le(next);
+      SymbolKind k = SymbolKind(uint16_t(read16le(next + 2)));
+      if (depth == 0 && k == S_SEPCODE)
+        remap.code.push_back(
+            getCodeBase(*debugChunk, relocIndex, at, at + len));
+      else if (depth == 0)
+        break;
+      if (symbolOpensScope(k))
+        ++depth;
+      else if (symbolEndsScope(k))
+        --depth;
+    }
+    return;
+  case S_BLOCK32:
+  case S_WITH32:
+  case S_SEPCODE:
+    if (base)
+      remap32(12);
+    return;
+  case S_THUNK32:
+    if (base)
+      remap16(22);
+    return;
+  // The size of the call, which ends at its return address.
+  case S_HEAPALLOCSITE:
+    if (base)
+      remap16(10, /*end=*/true);
+    return;
+  // These hold addresses, which their relocations give, and no distance.
+  case S_LABEL32:
+  case S_CALLSITEINFO:
+  case S_ANNOTATION:
+  case S_ARMSWITCHTABLE:
+  case S_LDATA32:
+  case S_GDATA32:
+  case S_LTHREAD32:
+  case S_GTHREAD32:
+    return;
+  case S_INLINESITE2:
+    if (remap.resized())
+      warn("an S_INLINESITE2 record");
+    return;
+  // The annotations go where they were if they are as long as they were.
+  case S_INLINESITE: {
+    if (!remap.resized() || sym.length() < 16)
+      return;
+    SmallVector<char, 64> out;
+    if (!remapAnnotations(ArrayRef(rec + 16, sym.length() - 16), remap.code,
+                          out) ||
+        out.size() > MaxRecordLength - 16) {
+      warn("the line table of an inline site");
+      out.clear();
+    }
+    if (alignTo(16 + out.size(), 4) == size) {
+      memcpy(rec + 16, out.data(), out.size());
+      memset(rec + 16 + out.size(), 0, size - 16 - out.size());
+      return;
+    }
+    InlineSiteSym site(SymbolRecordKind::InlineSiteSym);
+    cantFail(SymbolDeserializer::deserializeAs(copy, site));
+    site.AnnotationData.assign(out.begin(), out.end());
+    storage.resize(storage.size() - size);
+    remap.alloc.Reset();
+    CVSymbol s = SymbolSerializer::writeOneSymbol(site, remap.alloc,
+                                                  CodeViewContainer::Pdb);
+    storage.insert(storage.end(), s.data().begin(), s.data().end());
+    return;
+  }
+#define DEFRANGE(Kind, Type)                                                   \
+  case Kind:                                                                   \
+    if (base && !remapDefRange(rec, sym.length(), base.reloc - va, base))      \
+      splitDefRange<Type>(copy, size, base, remap.alloc, storage);             \
+    return;
+    DEFRANGE(S_DEFRANGE, DefRangeSym)
+    DEFRANGE(S_DEFRANGE_SUBFIELD, DefRangeSubfieldSym)
+    DEFRANGE(S_DEFRANGE_REGISTER, DefRangeRegisterSym)
+    DEFRANGE(S_DEFRANGE_FRAMEPOINTER_REL, DefRangeFramePointerRelSym)
+    DEFRANGE(S_DEFRANGE_SUBFIELD_REGISTER, DefRangeSubfieldRegisterSym)
+    DEFRANGE(S_DEFRANGE_REGISTER_REL, DefRangeRegisterRelSym)
+    DEFRANGE(S_DEFRANGE_REGISTER_REL_INDIR, DefRangeRegisterRelIndirSym)
+#undef DEFRANGE
+  // Another procedure's inline sites are not this one's.
+  default:
+    if (symbolOpensScope(kind))
+      remap.code.clear();
+    if (base)
+      warn("a symbol record of kind 0x" + utohexstr(kind));
+    return;
+  }
+}
+
 // Copy the symbol record, relocate it, and fix the alignment if necessary.
 // Rewrite type indices in the record. Replace unrecognized symbol records with
 // S_SKIP records.
@@ -542,7 +902,9 @@ void PDBLinker::writeSymbolRecord(SectionChunk *debugChunk,
                                   ArrayRef<uint8_t> sectionContents,
                                   CVSymbol sym, size_t alignedSize,
                                   uint32_t &nextRelocIndex,
-                                  std::vector<uint8_t> &storage) {
+                                  std::vector<uint8_t> &storage,
+                                  CodeRemap *remap) {
+  uint32_t relocIndex = nextRelocIndex;
   // Allocate space for the new record at the end of the storage.
   storage.resize(storage.size() + alignedSize);
   auto recordBytes = MutableArrayRef<uint8_t>(storage).take_back(alignedSize);
@@ -563,6 +925,9 @@ void PDBLinker::writeSymbolRecord(SectionChunk *debugChunk,
   // An object file may have S_xxx_ID symbols, but these get converted to
   // "real" symbols in a PDB.
   translateIdSymbols(recordBytes, source);
+
+  if (remap)
+    remapSymbolRecord(debugChunk, sym, relocIndex, storage, *remap);
 }
 
 void PDBLinker::analyzeSymbolSubsection(
@@ -575,9 +940,12 @@ void PDBLinker::analyzeSymbolSubsection(
   uint32_t scopeLevel = 0;
   std::vector<uint8_t> storage;
   ArrayRef<uint8_t> sectionContents = debugChunk->getContents();
+  CodeRemap remap{{}, /*warn=*/true, {}};
+  ArrayRef<coff_relocation> rels = debugChunk->getRelocs();
 
   ArrayRef<uint8_t> symsBuffer;
   cantFail(symData.readBytes(0, symData.getLength(), symsBuffer));
+  remap.end = symsBuffer.end() - sectionContents.begin();
 
   if (symsBuffer.empty())
     Warn(ctx) << "empty symbols subsection in " << file->getName();
@@ -598,13 +966,32 @@ void PDBLinker::analyzeSymbolSubsection(
         if (symbolGoesInGlobalsStream(sym, scopeLevel)) {
           storage.clear();
           writeSymbolRecord(debugChunk, sectionContents, sym, alignedSize,
-                            nextRelocIndex, storage);
+                            nextRelocIndex, storage,
+                            resizedCode ? &remap : nullptr);
           addGlobalSymbol(builder.getGsiBuilder(),
                           file->moduleDBI->getModuleIndex(), moduleSymOffset,
                           storage);
 
           if (ctx.pdbStats.has_value())
             ++ctx.pdbStats->globalSymbols;
+        } else if (resizedCode) {
+          // Where the link resized code, a record that may hold a distance
+          // across it may have another length in the PDB: one with a
+          // relocation, and one that opens a scope, as an inline site does,
+          // whose distances are from its procedure's start. The length does
+          // not depend on what its relocations and type indices become.
+          uint32_t va = sym.data().data() - sectionContents.data();
+          while (nextRelocIndex < rels.size() &&
+                 rels[nextRelocIndex].VirtualAddress < va)
+            ++nextRelocIndex;
+          if (symbolOpensScope(sym.kind()) ||
+              (nextRelocIndex < rels.size() &&
+               rels[nextRelocIndex].VirtualAddress < va + sym.length())) {
+            storage.assign(sym.data().begin(), sym.data().end());
+            storage.resize(alignedSize);
+            remapSymbolRecord(debugChunk, sym, nextRelocIndex, storage, remap);
+            alignedSize = storage.size();
+          }
         }
 
         // Update the module stream offset and record any string table index
@@ -658,9 +1045,11 @@ Error PDBLinker::writeAllModuleSymbolRecords(ObjFile *file,
       uint32_t moduleSymStart = writer.getOffset();
       scopes.clear();
       storage.clear();
+      CodeRemap remap{{}, /*warn=*/false, {}};
       ArrayRef<uint8_t> symsBuffer;
       BinaryStreamRef sr = ss.getRecordData();
       cantFail(sr.readBytes(0, sr.getLength(), symsBuffer));
+      remap.end = symsBuffer.end() - sectionContents.begin();
       auto ec = forEachCodeViewRecord<CVSymbol>(
           symsBuffer, [&](CVSymbol sym) -> llvm::Error {
             // Track the current scope. Only update records in the postmerge
@@ -675,7 +1064,8 @@ Error PDBLinker::writeAllModuleSymbolRecords(ObjFile *file,
               uint32_t alignedSize =
                   alignTo(sym.length(), alignOf(CodeViewContainer::Pdb));
               writeSymbolRecord(debugChunk, sectionContents, sym, alignedSize,
-                                nextRelocIndex, storage);
+                                nextRelocIndex, storage,
+                                resizedCode ? &remap : nullptr);
             }
             return Error::success();
           });
@@ -881,9 +1271,83 @@ void DebugSHandler::addUnrelocatedSubsection(SectionChunk *debugChunk,
   BinaryStreamRef sr = ss.getRecordData();
   cantFail(sr.readBytes(0, sr.getLength(), subsec));
   advanceRelocIndex(debugChunk, subsec);
+  if (ss.kind() == DebugSubsectionKind::Lines && linker.resizedCode) {
+    uint32_t va = subsec.data() - debugChunk->getContents().data();
+    CodeBase base = getCodeBase(*debugChunk, nextRelocIndex, va, va + 4);
+    if (base && addRemappedLines(debugChunk, subsec, base))
+      return;
+  }
   file.moduleDBI->addDebugSubsection(
       std::make_shared<UnrelocatedDebugSubsection>(ss.kind(), debugChunk,
                                                    subsec, nextRelocIndex));
+}
+
+// Adds the line table of code that the link resized, which begins at base,
+// with the offsets and the size that the code has in the image. An entry of
+// which no byte is left, as the link deleted its instructions, is left out,
+// so each entry that remains begins an instruction of its function. Returns
+// false where the table cannot be read.
+bool DebugSHandler::addRemappedLines(SectionChunk *debugChunk,
+                                     ArrayRef<uint8_t> subsec, CodeBase base) {
+  DebugLinesSubsectionRef ref;
+  if (Error e =
+          ref.initialize(BinaryStreamReader(subsec, endianness::little))) {
+    consumeError(std::move(e));
+    Warn(ctx) << &file
+              << ": a line table is not remapped to the code that "
+                 "the link resized";
+    return false;
+  }
+  uint8_t header[sizeof(LineFragmentHeader)];
+  uint32_t relocIndex = nextRelocIndex;
+  debugChunk->writeAndRelocateSubsection(debugChunk->getContents(),
+                                         subsec.take_front(sizeof(header)),
+                                         relocIndex, header);
+  auto *h = reinterpret_cast<const LineFragmentHeader *>(header);
+  auto lines =
+      std::make_shared<DebugLinesSubsection>(*newChecksums, linker.pdbStrTab);
+  uint32_t size = base.map(h->CodeSize);
+  lines->setRelocationAddress(h->RelocSegment, h->RelocOffset);
+  lines->setFlags(LineFlags(uint16_t(h->Flags)));
+  lines->setCodeSize(size);
+
+  // An entry covers nothing if a later one that the object has elsewhere is
+  // at its offset in the image, or if it is at its function's end there.
+  SmallVector<std::pair<uint32_t, uint32_t>, 0> offsets;
+  for (const LineColumnEntry &block : ref)
+    for (const LineNumberEntry &l : block.LineNumbers)
+      offsets.push_back({l.Offset, base.map(l.Offset)});
+  for (size_t i = offsets.size(), last = 0; i-- != 0;) {
+    auto &[in, out] = offsets[i];
+    if (i + 1 != offsets.size() && offsets[i + 1].second == out)
+      in = in == last ? in : ~0u;
+    else
+      last = in;
+    if (out >= size && in < h->CodeSize)
+      in = ~0u;
+  }
+  size_t i = 0;
+  for (const LineColumnEntry &block : ref) {
+    bool created = false;
+    auto col = block.Columns.begin();
+    for (const LineNumberEntry &l : block.LineNumbers) {
+      if (offsets[i].first != ~0u) {
+        if (!created)
+          lines->createBlock(uint32_t(block.NameIndex));
+        created = true;
+        if (ref.hasColumnInfo())
+          lines->addLineAndColumnInfo(offsets[i].second, LineInfo(l.Flags),
+                                      col->StartColumn, col->EndColumn);
+        else
+          lines->addLineInfo(offsets[i].second, LineInfo(l.Flags));
+      }
+      ++i;
+      if (ref.hasColumnInfo())
+        ++col;
+    }
+  }
+  file.moduleDBI->addDebugSubsection(lines);
+  return true;
 }
 
 void DebugSHandler::addFrameDataSubsection(SectionChunk *debugChunk,
@@ -895,6 +1359,12 @@ void DebugSHandler::addFrameDataSubsection(SectionChunk *debugChunk,
   BinaryStreamRef sr = ss.getRecordData();
   cantFail(sr.readBytes(0, sr.getLength(), subsec));
   advanceRelocIndex(debugChunk, subsec);
+  uint32_t va = subsec.data() - debugChunk->getContents().data();
+  if (linker.resizedCode &&
+      getCodeBase(*debugChunk, nextRelocIndex, va, va + 4))
+    Warn(ctx) << &file
+              << ": frame data is not remapped to the code that the "
+                 "link resized";
   frameDataSubsecs.push_back({debugChunk, subsec, nextRelocIndex});
 }
 
@@ -979,7 +1449,6 @@ void DebugSHandler::finish() {
   // subsections. The new checksum table must have the exact same layout and
   // size as the original. Otherwise, the file references in the line and
   // inlinee line tables will be incorrect.
-  auto newChecksums = std::make_unique<DebugChecksumsSubsection>(linker.pdbStrTab);
   for (const FileChecksumEntry &fc : checksums) {
     SmallString<128> filename =
         exitOnErr(cvStrTab.getString(fc.FileNameOffset));

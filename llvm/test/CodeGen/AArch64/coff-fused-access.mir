@@ -8,12 +8,15 @@
 --- |
   @v = external dllimport global i32
   declare dllimport void @f()
+  declare void @g()
   define void @merged() { ret void }
   define void @split() { ret void }
   define void @copied() { ret void }
   define void @other_base() { ret void }
   define void @kept() { ret void }
   define void @unoptimized() noinline optnone { ret void }
+  define void @pad() { ret void }
+  define void @pad_clobbered() { ret void }
 ...
 
 # Loads of one pointer into one register, as tail merging leaves them, reach
@@ -48,14 +51,14 @@ body:             |
     RET undef $lr
 ...
 
-# The linker binds each section's sites alone: a load in another section
-# reaches no access.
+# The linker binds a function's sites as one: a load in its cold part reaches
+# an access as one in the access's section does.
 # CHECK-LABEL: split:
-# CHECK:         ldr x8, [x8, :lo12:__imp_v]
-# CHECK-NOT:     .reloc
-# CHECK:         ldr w0, [x8]
+# CHECK:         ldr x8, [x8, :fused_lo12:__imp_v]
+# CHECK:         .reloc {{.*}}, IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL, __imp_v
+# CHECK-NEXT:    ldr w0, [x8]
 # CHECK-LABEL: split.cold:
-# CHECK:         ldr x8, [x8, :lo12:__imp_v]
+# CHECK:         ldr x8, [x8, :fused_lo12:__imp_v]
 ---
 name:            split
 tracksRegLiveness: true
@@ -150,4 +153,59 @@ body:             |
     renamable $x8 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @v
     renamable $w0 = LDRWui killed renamable $x8, 1
     RET undef $lr, implicit $w0
+...
+
+# A landing pad takes a register as an exception leaves the block that
+# enters it, at a call, so what the block writes after its calls does not
+# reach the pad, and a register that a call clobbers holds nothing there.
+# CHECK-LABEL: pad:
+# CHECK:         ldr x19, [x19, :fused_lo12:__imp_f]
+# CHECK:         .reloc {{.*}}, IMAGE_REL_LLVM_FUSED_CALL, __imp_f
+# CHECK-NEXT:    blr x19
+# CHECK:         mov x19, xzr
+# CHECK:         .reloc {{.*}}, IMAGE_REL_LLVM_FUSED_CALL, __imp_f
+# CHECK-NEXT:    blr x19
+---
+name:            pad
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $lr
+    renamable $x19 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $x19 = LDRXui killed renamable $x19, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    EH_LABEL <mcsymbol .Ltmp0>
+    BLR renamable $x19, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp
+    EH_LABEL <mcsymbol .Ltmp1>
+    $x19 = ORRXrs $xzr, $xzr, 0
+  bb.1:
+    RET undef $lr
+  bb.2 (landing-pad):
+    liveins: $x19
+    BLR killed renamable $x19, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp
+    RET undef $lr
+...
+
+# CHECK-LABEL: pad_clobbered:
+# CHECK:         ldr x8, [x8, :lo12:__imp_f]
+# CHECK-NOT:     .reloc
+# CHECK:         blr x8
+---
+name:            pad_clobbered
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $x8 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    EH_LABEL <mcsymbol .Ltmp2>
+    BL @g, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp
+    EH_LABEL <mcsymbol .Ltmp3>
+  bb.1:
+    RET undef $lr
+  bb.2 (landing-pad):
+    liveins: $x8
+    BLR killed renamable $x8, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp
+    RET undef $lr
 ...

@@ -44,6 +44,9 @@ __declspec(dllimport) PVOID WINAPI ResolveDelayLoadedAPI(
 __declspec(dllimport) PVOID WINAPI DelayLoadFailureHook(LPCSTR DllName,
                                                         LPCSTR ProcName);
 
+// The builtins' binding of what a library's list names (fill_windows.c).
+void __llvm_delay_resolve(const void *List);
+
 // Defined in assembly, and read as volatile so that the linker's values are.
 extern const volatile IMAGE_LOAD_CONFIG_DIRECTORY64 _load_config_used;
 
@@ -233,17 +236,42 @@ FARPROC WINAPI __delayLoadHelper2(const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor,
 // Resolves every delayed import of one library now, reporting a failure as a
 // call through the import would. The result is an error only for a library the
 // image does not delay-load, or a failure whose exception a handler resumed.
+//
+// A library whose functions' addresses are its own has several descriptors:
+// its own first, and one for each run of read-only words that hold such an
+// address, whose table goes on to the next zero word and names the ordinal
+// 0xFFFF for a word that is no import. The descriptor of the library's gate
+// is the one that names the library's list where a bound table would be, with
+// no time stamp. The gate tells that every word of the library is bound, the
+// writable ones included, which only the list names, so it is left to the
+// builtins, which bind it last.
 HRESULT WINAPI __HrLoadAllImportsForDll(LPCSTR DllName) {
-  const IMAGE_DELAYLOAD_DESCRIPTOR *Descriptor = findDescriptor(DllName);
-  if (!Descriptor)
-    return HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
-  for (auto *Slot =
-           fromRva<IMAGE_THUNK_DATA>(Descriptor->ImportAddressTableRVA);
-       Slot->u1.Function; ++Slot)
-    if (isUnbound(*Slot) &&
-        !__delayLoadHelper2(Descriptor, reinterpret_cast<FARPROC *>(Slot)))
-      return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
-  return S_OK;
+  auto *Headers = fromRva<const IMAGE_NT_HEADERS>(__ImageBase.e_lfanew);
+  DWORD Rva =
+      Headers->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT]
+          .VirtualAddress;
+  HRESULT Result = HRESULT_FROM_WIN32(ERROR_MOD_NOT_FOUND);
+  const void *List = nullptr;
+  for (auto *D = fromRva<const IMAGE_DELAYLOAD_DESCRIPTOR>(Rva);
+       Rva && D->DllNameRVA; ++D) {
+    if (_stricmp(fromRva<const char>(D->DllNameRVA), DllName))
+      continue;
+    Result = S_OK;
+    if (D->BoundImportAddressTableRVA && !D->TimeDateStamp) {
+      List = fromRva<const void>(D->BoundImportAddressTableRVA);
+      continue;
+    }
+    auto *Slots = fromRva<IMAGE_THUNK_DATA>(D->ImportAddressTableRVA);
+    auto *Names = fromRva<const IMAGE_THUNK_DATA>(D->ImportNameTableRVA);
+    for (size_t I = 0; Slots[I].u1.Function; ++I)
+      if (isUnbound(Slots[I]) &&
+          Names[I].u1.Ordinal != (IMAGE_ORDINAL_FLAG | 0xffff) &&
+          !__delayLoadHelper2(D, reinterpret_cast<FARPROC *>(&Slots[I])))
+        return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);
+  }
+  if (List)
+    __llvm_delay_resolve(List);
+  return Result;
 }
 
 // Restores the table the image started with and frees the library, so that a

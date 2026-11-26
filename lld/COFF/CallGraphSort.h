@@ -12,11 +12,13 @@
 #include "llvm/ADT/DenseMap.h"
 
 namespace lld::coff {
+class Chunk;
 class SectionChunk;
 class COFFLinkerContext;
 
-llvm::DenseMap<const SectionChunk *, int>
-computeCallGraphProfileOrder(COFFLinkerContext &ctx);
+llvm::DenseMap<const SectionChunk *, int> computeCallGraphProfileOrder(
+    COFFLinkerContext &ctx,
+    llvm::DenseMap<const Chunk *, const Chunk *> &chainNext);
 } // namespace lld::coff
 
 #endif

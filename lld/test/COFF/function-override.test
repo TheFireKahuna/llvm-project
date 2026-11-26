@@ -74,10 +74,12 @@ CHECK-NEXT:     }
 CHECK-NEXT:   ]
 CHECK-NEXT: ]
 
-The stub of X copies the prefix the compiler wrote before X.
+The stub of X copies the prefix the compiler wrote before X, 12 bytes, and its
+entry is on a 16-byte boundary, as a Control Flow Guard target's is: the 4
+bytes before the copy are not the stub's to write.
 
 DISASM:      Contents of section .text:
-DISASM:       140001070 90909090 90909090 909090b8 78563412
+DISASM:       140001070 cccccccc 90909090 909090b8 78563412
 DISASM-NEXT:  140001080 e9abffff ffcccccc cccccccc cccccccc
 DISASM-NEXT:  140001090 e9abffff ffcccccc cccccccc cccccccc
 DISASM-NEXT:  1400010a0 e9abffff ff
@@ -172,8 +174,9 @@ main:
   .section .text$mn,"xr",one_only,X
   .globl X
   .p2align 4
+  .fill 4, 1, 0x90
 __cfi_X:
-  .fill 11, 1, 0x90
+  .fill 7, 1, 0x90
   movl $0x12345678, %eax
 X:
   .globl "X_$fo_default$"

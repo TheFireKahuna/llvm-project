@@ -134,8 +134,8 @@ public:
   // symbol, which resolves the reference as such an object needs.
   unsigned forkReferenced : 1;
 
-  // True if this is __imp_X and such an object that keeps no weak reference
-  // to X refers to it, which is a strong reference to X.
+  // True if this is __imp_X and an object that keeps no weak reference to X
+  // refers to it, which is a strong reference to X.
   unsigned strongImport : 1;
 
   // True if we've seen both a lazy and an undefined symbol with this symbol

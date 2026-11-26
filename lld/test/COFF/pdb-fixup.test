@@ -34,7 +34,7 @@
 # X64-NEXT: 000B | 0000  | 00003024 | 00005014
 # X64-NEXT: 8010 | 4000  | 00003028 | 00001020
 # X64-NEXT: 000F | 8000  | 00003028 | 00001010
-# X64-NEXT: 8040 | 0000  | 0000302C | 00003008
+# X64-NEXT: 8049 | 0000  | 0000302C | 00003008
 # X64-NEXT: 0003 | 8000  | 00004000 | 00001000
 # X64-NEXT: 0003 | 8000  | 00004004 | 00001000
 # X64-NEXT: 0003 | 0000  | 00004008 | [[XDATA:[0-9A-F]+]]
@@ -84,7 +84,7 @@ sections:
       - { VirtualAddress: 40, SymbolName: lab, Type: IMAGE_REL_LLVM_SSPAN8 }
       - { VirtualAddress: 40, SymbolName: f2, Type: IMAGE_REL_AMD64_PAIR }
       - { VirtualAddress: 41, SymbolTableIndex: 0, Type: IMAGE_REL_LLVM_ALIGN }
-      - { VirtualAddress: 44, SymbolName: st, Type: IMAGE_REL_LLVM_FUSED_CALL }
+      - { VirtualAddress: 44, SymbolName: st, Type: IMAGE_REL_LLVM_FUSED_TEST_REG }
   - Name:            .pdata
     Characteristics: [ IMAGE_SCN_CNT_INITIALIZED_DATA, IMAGE_SCN_MEM_READ ]
     Alignment:       4

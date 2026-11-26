@@ -10,7 +10,7 @@
 # RUN: echo "F G 6" >> %t.call_graph
 # RUN: echo "G H 5" >> %t.call_graph
 # RUN: echo "H I 4" >> %t.call_graph
-# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /debug:symtab
+# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /debug:symtab /call-graph-profile-sort:hfsort
 # RUN: llvm-nm --numeric-sort %t2 | FileCheck %s
 
     .section    .text,"ax",one_only,A

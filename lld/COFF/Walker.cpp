@@ -25,7 +25,6 @@
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrAnalysis.h"
-#include "llvm/MC/MCInstPrinter.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
@@ -41,6 +40,12 @@
 #include <map>
 #include <set>
 #if LLVM_HAS_X86_TARGET
+// The operands' types, before the register classes whose names they share.
+#define GET_INSTRINFO_OPERAND_TYPES_ENUM
+#define GET_INSTRINFO_OPERAND_TYPE
+#define GET_INSTRINFO_MEM_OPERAND_SIZE
+#include "X86GenInstrInfo.inc"
+
 #include "MCTargetDesc/X86BaseInfo.h"
 #endif
 
@@ -113,7 +118,6 @@ struct X86Decoder::Impl {
   std::unique_ptr<MCDisassembler> dis;
   std::unique_ptr<MCInstrAnalysis> mia;
   std::unique_ptr<MCCodeEmitter> emitter;
-  std::unique_ptr<MCInstPrinter> printer;
   Recorder *recorder;
   MCRegister cs;
   const MCExpr *zero;
@@ -146,8 +150,6 @@ std::unique_ptr<X86Decoder> X86Decoder::create() {
   m->dis.reset(target->createMCDisassembler(*m->sti, *m->ctx));
   m->mia.reset(target->createMCInstrAnalysis(m->mii.get()));
   m->emitter.reset(target->createMCCodeEmitter(*m->mii, *m->ctx));
-  m->printer.reset(
-      target->createMCInstPrinter(triple, 1, *m->mai, *m->mii, *m->mri));
   m->zero = MCConstantExpr::create(0, *m->ctx);
   MCRegister eip;
   for (unsigned r = 1, e = m->mri->getNumRegs(); r != e; ++r) {
@@ -350,17 +352,14 @@ bool X86Decoder::decodeRead(ArrayRef<uint8_t> code, ReadInsn &insn) {
                        !inst.getOperand(1 + X86::AddrSegmentReg).getReg()
                    ? m.mri->getEncodingValue(inst.getOperand(0).getReg())
                    : -1;
-  // The size of a memory operand is the printer's alone to state.
-  std::string text;
-  raw_string_ostream os(text);
-  m.printer->printInst(&inst, 0, "", *m.sti, os);
-  insn.width = 64;
-  for (auto [name, size] : {std::pair(" byte ptr", 1), {" word ptr", 2},
-                            {" dword ptr", 4}, {" qword ptr", 8},
-                            {" tbyte ptr", 10}, {" xmmword ptr", 16},
-                            {" ymmword ptr", 32}})
-    if (StringRef(text).contains(name))
-      insn.width = size;
+  // The width of the memory operand, in the target's tables; an operand of
+  // no stated width has none.
+  int mem = X86II::getMemoryOperandNo(desc.TSFlags);
+  insn.width = mem < 0
+                   ? 0
+                   : X86::getMemOperandSize(X86::getOperandType(
+                         inst.getOpcode(), mem + X86II::getOperandBias(desc))) /
+                         8;
   return true;
 #else
   return false;
@@ -643,8 +642,8 @@ struct Walker::Object {
   void readUnwind(Place info, uint32_t begin, CodeSection &cs);
   void readDebug(uint32_t n, ArrayRef<uint8_t> d);
   std::optional<Extent> getExtent(uint32_t n, uint32_t off, Site &site);
-  bool walk(Walker &w, uint32_t n, Extent x, Site site);
-  Site classify(Walker &w, uint32_t n, const coff_relocation &rel);
+  bool walk(uint32_t n, Extent x, Site site);
+  Site classify(uint32_t n, const coff_relocation &rel);
 };
 
 RawSection &Walker::Object::section(uint32_t n) {
@@ -1289,25 +1288,14 @@ std::optional<Extent> Walker::Object::getExtent(uint32_t n, uint32_t off,
 // Decodes the function at x of section n and gives every REL32 of it its
 // answer. Returns whether the function is accepted; the branches of one that
 // is, into other sections, then prove their targets.
-bool Walker::Object::walk(Walker &w, uint32_t n, Extent x, Site site) {
+bool Walker::Object::walk(uint32_t n, Extent x, Site site) {
   CodeSection *cs = getCode(n);
   RawSection &sec = section(n);
-  std::unique_ptr<X86Decoder> dec;
-  {
-    std::lock_guard<std::mutex> lock(w.mu);
-    if (!w.decoders.empty()) {
-      dec = std::move(w.decoders.back());
-      w.decoders.pop_back();
-    }
-  }
-  if (!dec && !(dec = X86Decoder::create()))
+  X86Decoder *dec = X86Decoder::get();
+  if (!dec)
     return false;
   FunctionWalk fw(*this, *cs, *dec, n, x, site.linear);
   fw.run();
-  {
-    std::lock_guard<std::mutex> lock(w.mu);
-    w.decoders.push_back(std::move(dec));
-  }
 
   for (auto it = sec.from(x.begin);
        it != sec.rels.end() && (*it)->VirtualAddress < x.end; ++it) {
@@ -1344,8 +1332,7 @@ bool lld::coff::isRipLea64(ArrayRef<uint8_t> c, size_t o) {
           (o >= 4 && c[o - 4] == 0xd5 && (c[o - 3] & 0x88) == 0x08));
 }
 
-Site Walker::Object::classify(Walker &w, uint32_t n,
-                              const coff_relocation &rel) {
+Site Walker::Object::classify(uint32_t n, const coff_relocation &rel) {
   uint32_t off = rel.VirtualAddress;
   CodeSection *cs = getCode(n);
   if (!cs)
@@ -1363,10 +1350,19 @@ Site Walker::Object::classify(Walker &w, uint32_t n,
       (unique || (taken && (compiler || described) &&
                   !taken->count(file.getSymbol(rel.SymbolTableIndex)))) &&
       (getExtent(n, off, site), unique || site.linear)) {
-    site.kind = !unique || !unique->count({n, off}) ? SiteKind::Branch
-                : isRipLea64(section(n).data, off) ? SiteKind::Address
-                                                   : SiteKind::Operand;
-    site.reason = nullptr;
+    // A lea behind REX2 is told from one behind REX.W only where no 0xD5
+    // can be the byte before the REX.W.
+    ArrayRef<uint8_t> c = section(n).data;
+    bool rex2 = off >= 4 && c[off - 4] == 0xd5;
+    site.kind = !unique || !unique->count({n, off})   ? SiteKind::Branch
+                : !isRipLea64(c, off)                 ? SiteKind::Operand
+                : rex2 && (c[off - 3] & 0xf8) == 0x48 ? SiteKind::Refused
+                                                      : SiteKind::Address;
+    site.before = 3 + rex2;
+    site.reason = site.kind == SiteKind::Refused
+                      ? "an encoding that is a lea behind REX2 or one behind "
+                        "REX.W after a 0xD5"
+                      : nullptr;
     site.how = ", by the object's tables";
     return site;
   }
@@ -1402,7 +1398,7 @@ Site Walker::Object::classify(Walker &w, uint32_t n,
   for (bool more = true; more;) {
     more = false;
     for (Member &m : group)
-      if (!m.accepted && walk(w, m.n, m.x, m.site))
+      if (!m.accepted && walk(m.n, m.x, m.site))
         m.accepted = more = true;
   }
   getExtent(n, off, site);
@@ -1441,5 +1437,5 @@ Site Walker::classify(const SectionChunk &sc, const coff_relocation &rel) {
     std::lock_guard<std::mutex> lock(mu);
     o = objects.try_emplace(sc.file, std::move(made)).first->second.get();
   }
-  return o->classify(*this, sc.getSectionNumber(), rel);
+  return o->classify(sc.getSectionNumber(), rel);
 }

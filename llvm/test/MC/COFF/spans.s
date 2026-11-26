@@ -6,20 +6,10 @@
 // RUN: llvm-readobj -r --symbols --coff-link-records %t.n.o | \
 // RUN:   FileCheck %s --implicit-check-not=Label
 
-// On Windows Itanium and NT-POSIX the linker writes a direct call in five
-// bytes over the load of a pointer and the call through its register, and may
-// delete a jmp that ends a section. In a section where it moves code in no
-// other way, the assembler resolves every distance, gives each jump the
-// width that holds in every link, and states each value that spans such a
-// site, or alignment after the first one, in the Spans group of the link
-// records: no relocation, no label.
-//
-// A field of an instruction is REL8 or REL32, the latter with the bytes of
-// immediate that follow it. A difference of two labels is its span type with
-// the offset of the second. A field whose relocation names a temporary label
-// of the section names the section's symbol instead: the linker maps the
-// offset in an absolute field, and ADDEND32 states what any other field holds
-// besides that offset. JUMP32 is a jmp or jcc that is long as assembled and
+// On Windows Itanium and NT-POSIX, in a section where the linker only rewrites
+// a load and call into a direct call or deletes a final jmp, the assembler
+// resolves every distance and states each value spanning such a site in the
+// Spans link records, with no relocation or label.
 
 // CHECK:      Relocations [
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text {

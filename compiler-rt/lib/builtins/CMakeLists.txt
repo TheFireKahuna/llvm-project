@@ -364,6 +364,13 @@ if(WIN32_ITANIUM)
   list(APPEND GENERIC_SOURCES crt_windows.c)
 endif()
 
+# A Windows Itanium or NT-POSIX image binds the addresses of its delay-loaded
+# functions, and writes the words that only it can compute, itself.
+if(COMPILER_RT_DEFAULT_TARGET_TRIPLE MATCHES "-windows-(itanium|ntposix)$")
+  set(WINDOWS_FILL TRUE)
+  list(APPEND GENERIC_SOURCES fill_windows.c)
+endif()
+
 option(COMPILER_RT_LIBATOMIC_USE_PTHREAD
   "Whether libatomic should use pthreads if available."
   Off)

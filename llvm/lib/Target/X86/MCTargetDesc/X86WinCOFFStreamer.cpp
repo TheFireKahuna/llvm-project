@@ -447,10 +447,9 @@ void X86WinCOFFStreamer::finishImpl() {
     // The bytes of a fragment that stay in every link, of which no layout
     // has fewer: a direct call takes five from a load and its call, a direct
     // jmp of two bytes four from one through a pointer, and padding may go.
-    // A jmp that a jcc jumps over keeps its bytes: bound, the two are one jcc
-    // of 32 bits and a no-operation.
+    // A jmp that a jcc jumps over may go whole: bound, the two are one jcc.
     auto IsMemJump = [&](const MCFragment &F) {
-      return !F.getFixups().empty() && !OverJumps.contains(&F) &&
+      return !F.getFixups().empty() &&
              F.getFixups().back().getOffset() + 4 == F.getSize() &&
              (F.getFixups().back().getKind() == X86::reloc_riprel_4byte_jump ||
               F.getFixups().back().getKind() ==
@@ -461,7 +460,9 @@ void X86WinCOFFStreamer::finishImpl() {
       if (F.getKind() == MCFragment::FT_Align ||
           F.getKind() == MCFragment::FT_BoundaryAlign)
         return F.getFixedSize();
-      return F.getSize() - (CallLoads.contains(&F) ? 5 : IsMemJump(F) ? 4 : 0);
+      return F.getSize() - (CallLoads.contains(&F) ? 5
+                            : IsMemJump(F) ? OverJumps.contains(&F) ? 6 : 4
+                                           : 0);
     };
     uint64_t After = 0;
     for (MCFragment &F : Sec) {

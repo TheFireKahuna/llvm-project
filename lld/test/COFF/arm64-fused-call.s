@@ -20,14 +20,14 @@
 // RUN:   FileCheck %s --check-prefix=PLAIN
 
 // A fused read is applied as the load it is, a fused call leaves its blr and
-// a fused jump its br, so the image's code is that of an object without them.
-// The import that only fused calls and jumps reach is no indirect call target.
+// a fused jump its br, so the image's code is that of an object without them:
+// each adrp and ldr one literal load of the import's address, which is in
+// reach. The import that only fused calls and jumps reach is no indirect call
+// target.
 
-// CHECK:      adrp x8, 0x140002000
-// CHECK-NEXT: ldr x8, [x8, #0x[[#%x,]]]
+// CHECK:      ldr x8, 0x[[#%x,IAT:]]
 // CHECK-NEXT: blr x8
-// CHECK-NEXT: adrp x16, 0x140002000
-// CHECK-NEXT: ldr x16, [x16, #0x[[#%x,]]]
+// CHECK-NEXT: ldr x16, 0x[[#IAT]]
 // CHECK-NEXT: br x16
 
 // FUSED: GuardAddressTakenIatEntryCount: 0

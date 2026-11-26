@@ -18,6 +18,7 @@ add_lld_library(lldCOFF
   MarkLive.cpp
   MinGW.cpp
   PDB.cpp
+  Relaxation.cpp
   Relocations.cpp
   SymbolTable.cpp
   Symbols.cpp

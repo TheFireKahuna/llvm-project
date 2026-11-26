@@ -1,10 +1,8 @@
 # REQUIRES: x86, aarch64
 
-## The linker applies each type from 0x8000 up that the assembler writes with
-## its assembled meaning: a branch, a site, a call-only field or a fused read
-## as the field of its instruction, a span as A - B of its width, and on
-## AArch64 an absolute value's immediate. ALIGN, a fused call, a fused jump and
-## a fused test write nothing, and a branch out of range takes a thunk.
+## Each LLVM type from 0x8000 applies with its assembled meaning (fields, spans
+## as A - B, immediates); ALIGN and an AArch64 fused test write nothing; an
+## out-of-range branch takes a thunk; calls through an unbound cell stay.
 
 # RUN: llvm-mc -triple=x86_64-pc-windows-ntposix -mattr=+egpr -filetype=obj \
 # RUN:   --defsym=X64=1 %s -o %t.x.obj
@@ -27,6 +25,7 @@
 # X64:      <.text>:
 # X64-NEXT: 1000: callq 0x140001061
 # X64-NEXT: jmp 0x140001061
+# X64-NEXT: cmpq $0x0, {{.*}} # 0x140002000
 # X64-NEXT: jne 0x140001061
 # X64-NEXT: callq *{{.*}} # 0x140002000
 # X64-NEXT: jmpq *{{.*}} # 0x140002000
@@ -36,23 +35,21 @@
 # X64-NEXT: leaq {{.*}} # 0x140001061
 # X64-NEXT: leaq {{.*}} # 0x140001069
 # X64-NEXT: movq {{.*}}, %rax # 0x140002000
-# X64-NEXT: callq *%rax
-# X64-NEXT: movq {{.*}}, %rax # 0x140002000
-# X64-NEXT: jmpq *%rax
-# X64-COUNT-4: int3
+# X64-NEXT: 1048: callq *%rax
+# X64-NEXT: 104a: movq {{.*}}, %rax # 0x140002000
+# X64-NEXT: 1051: jmpq *%rax
 # X64-NEXT: 1054: jmp 0x140001060
-# X64-NEXT: 1056: nopw %cs:(%rax,%rax)
+# X64-NEXT: 1056: nop
 # X64-NEXT: 1060: retq
-# X64-NEXT: 1051: retq
+# X64-NEXT: 1061: retq
 # X64-NEXT: leal {{.*}} # 0x140002000
 
 # A64:      Contents of section .data:
 # A64-NEXT: 140003000 30100000 2ce0ffff 30300030 00000030
 # A64-NEXT: 140003010 00000000 0000000c 0c000000
 # A64:      <.text>:
-# A64-NEXT: b.ne 0x140001030
-# A64-NEXT: adrp x8, 0x140002000
-# A64-NEXT: ldr x8, [x8]
+# A64-NEXT: cbnz x8, 0x140001038
+# A64-NEXT: ldr x8, 0x140002000
 # A64-NEXT: blr x8
 # A64-NEXT: mov w0, #0x1235
 # A64-NEXT: movk w0, #0x5678
@@ -60,6 +57,7 @@
 # A64-NEXT: and x0, x1, #0xff0
 # A64-NEXT: add x3, x3, #0x34
 # A64-NEXT: ldr x4, [x3, #0x38]
+# A64-NEXT: nop
 # A64-NEXT: nop
 # A64-NEXT: nop
 # A64-NEXT: 1030: b 0x140001038
@@ -79,7 +77,7 @@ main:
 .Lm:
   callq g
   jmp g
-  .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_g
+  cmpq $0, __imp_g@FUSED(%rip)
   jne g
   callq *__imp_g(%rip)
   jmpq *__imp_g(%rip)
@@ -88,14 +86,10 @@ main:
   movq __imp_g(%rip), %r16
   leaq g(%rip), %rax
   leaq g+8(%rip), %rax
-  movq __imp_g@FUSED(%rip), %rax
-  .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_g
-  cs; cs; cs; cs
+  movq __imp_g@LOAD_CALL(%rip), %rax
   callq *%rax
   movq __imp_g@FUSED(%rip), %rax
-  .reloc ., IMAGE_REL_LLVM_FUSED_JUMP, __imp_g
   rex64 jmpq *%rax
-  int3; int3; int3; int3
   jmp .Lb
   .p2align 4
 .Lb:
@@ -119,7 +113,7 @@ g:
 main:
 .Lm:
   .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_g
-  b.ne g
+  cbnz x8, g
   adrp x8, __imp_g
   ldr x8, [x8, :fused_lo12:__imp_g]
   .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_g

@@ -5,8 +5,10 @@
 # RUN: echo "A B 100" > %t.call_graph
 # RUN: echo "A C 40" >> %t.call_graph
 # RUN: echo "C D 61" >> %t.call_graph
-# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /debug:symtab /opt:icf
+# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /debug:symtab /opt:icf /call-graph-profile-sort:hfsort
 # RUN: llvm-nm --numeric-sort %t2 | FileCheck %s
+# RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /debug:symtab /opt:icf
+# RUN: llvm-nm --numeric-sort %t2 | FileCheck %s --check-prefix=CDSORT
 # RUN: lld-link /subsystem:console /entry:A %t /call-graph-ordering-file:%t.call_graph /out:%t2 /debug:symtab
 # RUN: llvm-nm --numeric-sort %t2 | FileCheck %s --check-prefix=NOICF
 
@@ -38,6 +40,11 @@ A:
 # CHECK: 140001008 T C
 # CHECK: 140001008 T D
 # CHECK: 140001010 T B
+
+# CDSORT: 140001000 T A
+# CDSORT: 140001008 T B
+# CDSORT: 140001010 T C
+# CDSORT: 140001010 T D
 
 # NOICF: 140001000 T A
 # NOICF: 140001008 T B

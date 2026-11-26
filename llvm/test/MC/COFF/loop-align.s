@@ -37,6 +37,7 @@
 // CHECK:      Name: .text$w
 // CHECK:      IMAGE_SCN_ALIGN_64BYTES
 // REC:        ResizableSection: .text$m
+// REC-NEXT:   ResizableSection: .text$p
 // REC-NOT:    ResizableSection
 // REC-NOT:    LinePlacesBarred
 // REC:        LinePlacesBarred: .text$a (1)
@@ -62,6 +63,14 @@
 // known before layout, so its loops are kept as f's: it is barred from 0, 16
 // and 32 and its fourth loop is padded by 7, with no ALIGN.
 // REC-NEXT:   LinePlacesBarred: .text$n (7)
+
+// p's second loop holds the third, whose head an earlier layout pass laid
+// out past the second's end, before the jump that leads the second grew, and
+// which then lies within it: the second is listed and the third is kept with
+// it, with no ALIGN.
+// REC-NEXT:   LinePlacesBarred: .text$p (0)
+// REC-NEXT:   Loop: 0x3b (12)
+// REC-NEXT:   Loop: 0x47 (24)
 // REC-NOT:    LinePlacesBarred
 // CHECK:      Section ({{[0-9]+}}) .text$m {
 // CHECK-NEXT:   0x3 IMAGE_REL_LLVM_MEM_LOAD_CALL __imp_g
@@ -70,6 +79,9 @@
 // CHECK-NEXT:   0x8B IMAGE_REL_LLVM_ALIGN - (180355552)
 // CHECK-NEXT: }
 // CHECK-NEXT: Section ({{[0-9]+}}) .text$n {
+// CHECK-NEXT:   0x3 IMAGE_REL_LLVM_MEM_LOAD_CALL __imp_g
+// CHECK-NEXT: }
+// CHECK-NEXT: Section ({{[0-9]+}}) .text$p {
 // CHECK-NEXT:   0x3 IMAGE_REL_LLVM_MEM_LOAD_CALL __imp_g
 // CHECK-NEXT: }
 
@@ -258,4 +270,22 @@ n:
   loop n4, 36, 12
   ret
   .org 0x100
+
+  .section .text$p,"xr"
+p:
+  movq __imp_g@LOAD_CALL(%rip), %rax
+  callq *%rax
+  loop p1, 50, 12
+  .p2align 0, , , .Lp2_end
+.Lp2:
+  je .Lp4
+  .rept 3
+  nop
+  .endr
+  loop p3, 0, 13
+  jmp .Lp2
+.Lp2_end:
+  .fill 200, 1, 0x90
+.Lp4:
+  ret
 .endif

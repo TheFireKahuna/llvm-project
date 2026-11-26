@@ -74,6 +74,9 @@ public:
   // Whether the link moves the code of a live section, whose size may then
   // depend on the layout.
   bool hasMovingCode = false;
+  // The branches retargeted past jumps, each with the jump it named, to which
+  // it goes back where the layout leaves its new target out of its reach.
+  llvm::DenseMap<Relocation *, Symbol *> retargets;
   // The first file a link fact of which gives a function a type prefix.
   InputFile *typePrefixFile = nullptr;
   // SECTION-class symbols that name a section another object defines.
@@ -95,7 +98,8 @@ public:
   };
   llvm::DenseMap<const Chunk *, DelayBound> delayBound;
   // The leaves of delay-load guards, by what a site loads, its register with
-  // 256 where it loads an address, and the instruction a leaf replays.
+  // 256 where it loads an address and its bytes before the field above, and
+  // the instruction a leaf replays.
   llvm::MapVector<std::tuple<Symbol *, int32_t, unsigned, StringRef>,
                   Defined *>
       delayGuards;
