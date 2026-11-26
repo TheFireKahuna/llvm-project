@@ -44,3 +44,74 @@ define void @func() nounwind {
 }
 
 declare extern_weak void @weakfunc()
+
+; A weak reference that is local to the image may still be null, which ADRP
+; cannot produce, and COFF has no GOT, so it takes a stub too.
+define void @func_dso_local() nounwind {
+; CHECK-LABEL: func_dso_local:
+; CHECK:       // %bb.0:
+; CHECK-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
+; CHECK-NEXT:    adrp x8, .refptr.weakfunc_dso_local
+; CHECK-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc_dso_local]
+; CHECK-NEXT:    cbz x8, .LBB1_2
+; CHECK-NEXT:  // %bb.1:
+; CHECK-NEXT:    blr x8
+; CHECK-NEXT:  .LBB1_2:
+; CHECK-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
+; CHECK-NEXT:    ret
+;
+; FISEL-LABEL: func_dso_local:
+; FISEL:       // %bb.0:
+; FISEL-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
+; FISEL-NEXT:    adrp x8, .refptr.weakfunc_dso_local
+; FISEL-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc_dso_local]
+; FISEL-NEXT:    cbz x8, .LBB1_2
+; FISEL-NEXT:  // %bb.1:
+; FISEL-NEXT:    adrp x8, .refptr.weakfunc_dso_local
+; FISEL-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc_dso_local]
+; FISEL-NEXT:    blr x8
+; FISEL-NEXT:  .LBB1_2:
+; FISEL-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
+; FISEL-NEXT:    ret
+  %cmp = icmp ne ptr @weakfunc_dso_local, null
+  br i1 %cmp, label %1, label %2
+
+1:
+  call void @weakfunc_dso_local()
+  br label %2
+
+2:
+  ret void
+}
+
+declare extern_weak dso_local void @weakfunc_dso_local()
+
+define void @func_nonlazybind() nounwind {
+; CHECK-LABEL: func_nonlazybind:
+; CHECK:       // %bb.0:
+; CHECK-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
+; CHECK-NEXT:    adrp x8, .refptr.weakfunc_nonlazybind
+; CHECK-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc_nonlazybind]
+; CHECK-NEXT:    blr x8
+; CHECK-NEXT:    adrp x8, __imp_importfunc_nonlazybind
+; CHECK-NEXT:    ldr x8, [x8, :lo12:__imp_importfunc_nonlazybind]
+; CHECK-NEXT:    blr x8
+; CHECK-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
+; CHECK-NEXT:    ret
+;
+; FISEL-LABEL: func_nonlazybind:
+; FISEL:       // %bb.0:
+; FISEL-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
+; FISEL-NEXT:    adrp x8, .refptr.weakfunc_nonlazybind
+; FISEL-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc_nonlazybind]
+; FISEL-NEXT:    blr x8
+; FISEL-NEXT:    bl importfunc_nonlazybind
+; FISEL-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
+; FISEL-NEXT:    ret
+  call void @weakfunc_nonlazybind()
+  call void @importfunc_nonlazybind()
+  ret void
+}
+
+declare extern_weak void @weakfunc_nonlazybind() nonlazybind
+declare dllimport void @importfunc_nonlazybind() nonlazybind

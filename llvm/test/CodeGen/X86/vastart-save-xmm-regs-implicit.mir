@@ -1,0 +1,30 @@
+# RUN: llc -mtriple=x86_64-linux -mattr=+avx -run-pass=x86-expand-pseudo \
+# RUN:   -verify-machineinstrs -o - %s | FileCheck %s
+
+# VASTART_SAVE_XMM_REGS saves the XMM registers among its explicit operands
+# and nothing else: an implicit operand that follows them, here a use of
+# $ymm0, names no argument register to save.
+
+# CHECK-LABEL: name: save
+# CHECK:       bb.1:
+# CHECK-NEXT:    successors: %bb.2
+# CHECK-NEXT:    liveins:
+# CHECK-NEXT:  {{^  $}}
+# CHECK-NEXT:    VMOVAPSmr $rsp, 1, $noreg, 48, $noreg, $xmm0
+# CHECK-NEXT:    VMOVAPSmr $rsp, 1, $noreg, 64, $noreg, $xmm1
+# CHECK-NEXT:  {{^  $}}
+# CHECK-NEXT:  bb.2:
+
+---
+name: save
+tracksRegLiveness: true
+frameInfo:
+  maxAlignment: 16
+stack:
+  - { id: 0, size: 64, alignment: 16 }
+body: |
+  bb.0:
+    liveins: $al, $xmm0, $xmm1, $ymm0
+    VASTART_SAVE_XMM_REGS $al, $rsp, 1, $noreg, 16, $noreg, 32, $xmm0, $xmm1, implicit-def dead $eflags, implicit $ymm0 :: (store (s256) into %stack.0)
+    RET64
+...

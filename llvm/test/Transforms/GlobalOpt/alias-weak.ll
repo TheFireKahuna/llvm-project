@@ -3,6 +3,7 @@
 
 @f1_alias = linkonce_odr hidden alias void (), ptr @f1
 @f2_alias = linkonce_odr hidden alias void (), ptr @f2
+@f3_alias = weak_odr dso_local unnamed_addr alias void (), ptr @f3
 
 define void @foo() {
   call void @f1_alias()
@@ -19,6 +20,17 @@ define void @baz() {
   ret void
 }
 
+; `f3_alias` may be another definition at link time, but none whose address
+; can be observed, so its uses become uses of `f3`.
+define void @qux() {
+  call void @f3_alias()
+  ret void
+}
+
+define weak_odr dso_local void @f3() {
+  ret void
+}
+
 ; We cannot use `f1_alias` to replace `f1` because they are both in use
 ; and `f1_alias` could be replaced at link time.
 define internal void @f1() {
@@ -32,6 +44,7 @@ define internal void @f2() {
 ;.
 ; CHECK: @f1_alias = linkonce_odr hidden alias void (), ptr @f1
 ; CHECK: @f2_alias = linkonce_odr hidden alias void (), ptr @f2
+; CHECK: @f3_alias = weak_odr dso_local unnamed_addr alias void (), ptr @f3
 ;.
 ; CHECK-LABEL: define void @foo() local_unnamed_addr {
 ; CHECK-NEXT:    call void @f1_alias()
@@ -45,6 +58,15 @@ define internal void @f2() {
 ;
 ; CHECK-LABEL: define void @baz() local_unnamed_addr {
 ; CHECK-NEXT:    call void @f2_alias()
+; CHECK-NEXT:    ret void
+;
+;
+; CHECK-LABEL: define void @qux() local_unnamed_addr {
+; CHECK-NEXT:    call void @f3()
+; CHECK-NEXT:    ret void
+;
+;
+; CHECK-LABEL: define weak_odr dso_local void @f3() {
 ; CHECK-NEXT:    ret void
 ;
 ;

@@ -29,6 +29,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/RegAllocPBQP.h"
+#include "RegAllocBase.h"
 #include "RegisterCoalescer.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/BitVector.h"
@@ -173,7 +174,8 @@ private:
   void finalizeAlloc(MachineFunction &MF, LiveIntervals &LIS,
                      VirtRegMap &VRM) const;
 
-  void postOptimization(Spiller &VRegSpiller, LiveIntervals &LIS);
+  void postOptimization(Spiller &VRegSpiller, LiveIntervals &LIS,
+                        VirtRegMap &VRM);
 };
 
 char RegAllocPBQP::ID = 0;
@@ -783,14 +785,11 @@ void RegAllocPBQP::finalizeAlloc(MachineFunction &MF,
   }
 }
 
-void RegAllocPBQP::postOptimization(Spiller &VRegSpiller, LiveIntervals &LIS) {
+void RegAllocPBQP::postOptimization(Spiller &VRegSpiller, LiveIntervals &LIS,
+                                    VirtRegMap &VRM) {
   VRegSpiller.postOptimization();
   /// Remove dead defs because of rematerialization.
-  for (auto *DeadInst : DeadRemats) {
-    LIS.RemoveMachineInstrFromMaps(*DeadInst);
-    DeadInst->eraseFromParent();
-  }
-  DeadRemats.clear();
+  RegAllocBase::eliminateDeadRemats(DeadRemats, LIS, VRM, /*Matrix=*/nullptr);
 }
 
 bool RegAllocPBQP::runOnMachineFunction(MachineFunction &MF) {
@@ -882,7 +881,7 @@ bool RegAllocPBQP::runOnMachineFunction(MachineFunction &MF) {
 
   // Finalise allocation, allocate empty ranges.
   finalizeAlloc(MF, LIS, VRM);
-  postOptimization(*VRegSpiller, LIS);
+  postOptimization(*VRegSpiller, LIS, VRM);
   VRegsToAlloc.clear();
   EmptyIntervalVRegs.clear();
 

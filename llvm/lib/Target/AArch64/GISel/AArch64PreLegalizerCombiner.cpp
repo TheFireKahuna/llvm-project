@@ -165,6 +165,13 @@ bool matchFoldGlobalOffset(MachineInstr &MI, MachineRegisterInfo &MRI,
   if (!T->isSized() ||
       NewOffset > GV->getDataLayout().getTypeAllocSize(T))
     return false;
+
+  // An absolute symbol's MOVs take only an offset that keeps the value in
+  // their range.
+  const auto &ST = MF.getSubtarget<AArch64Subtarget>();
+  if (ST.getNumAbsoluteSymbolMOVs(GV) &&
+      !ST.getNumAbsoluteSymbolMOVs(GV, NewOffset))
+    return false;
   MatchInfo = std::make_pair(NewOffset, MinOffset);
   return true;
 }

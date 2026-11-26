@@ -167,7 +167,17 @@ static bool callHasRegMask(MachineInstr &MI) {
 static bool insertVZeroUpper(MachineBasicBlock::iterator I,
                              MachineBasicBlock &MBB,
                              const TargetInstrInfo *TII) {
-  BuildMI(MBB, I, I->getDebugLoc(), TII->get(X86::VZEROUPPER));
+  // Windows' unwinder knows an epilogue by its code: the stack release and the
+  // pops, then the return or the tail jump, and nothing between them.
+  DebugLoc DL = I->getDebugLoc();
+  if (MBB.getParent()->usesWindowsUnwindInfo())
+    for (; I != MBB.begin(); --I) {
+      MachineInstr &Prev = *std::prev(I);
+      if (!Prev.isDebugInstr() &&
+          (!Prev.getFlag(MachineInstr::FrameDestroy) || hasYmmOrZmmReg(Prev)))
+        break;
+    }
+  BuildMI(MBB, I, DL, TII->get(X86::VZEROUPPER));
   ++NumVZU;
   return true;
 }

@@ -180,16 +180,23 @@ FixupLEAsImpl::postRAConvertToLEA(MachineBasicBlock &MBB,
   case X86::MOV64rr: {
     const MachineOperand &Src = MI.getOperand(1);
     const MachineOperand &Dest = MI.getOperand(0);
-    MachineInstr *NewMI =
+    // In 64-bit mode a 32-bit LEA forms its address from 64-bit registers.
+    bool Is64_32 = MI.getOpcode() == X86::MOV32rr &&
+                   MBB.getParent()->getSubtarget<X86Subtarget>().is64Bit();
+    MachineInstrBuilder NewMI =
         BuildMI(MBB, MBBI, MI.getDebugLoc(),
-                TII->get(MI.getOpcode() == X86::MOV32rr ? X86::LEA32r
-                                                        : X86::LEA64r))
-            .add(Dest)
-            .add(Src)
-            .addImm(1)
-            .addReg(0)
-            .addImm(0)
-            .addReg(0);
+                TII->get(Is64_32                           ? X86::LEA64_32r
+                         : MI.getOpcode() == X86::MOV32rr ? X86::LEA32r
+                                                          : X86::LEA64r))
+            .add(Dest);
+    if (Is64_32)
+      NewMI.addReg(getX86SubSuperRegister(Src.getReg(), 64));
+    else
+      NewMI.add(Src);
+    NewMI.addImm(1).addReg(0).addImm(0).addReg(0);
+    if (Is64_32)
+      NewMI.addReg(Src.getReg(),
+                   RegState::Implicit | getKillRegState(Src.isKill()));
     return NewMI;
   }
   }

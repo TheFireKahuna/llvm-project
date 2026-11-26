@@ -1443,9 +1443,9 @@ MachineInstr *MachineLICMImpl::ExtractHoistableLoad(MachineInstr *MI,
 
   // Otherwise we successfully unfolded a load that we can hoist.
 
-  // Update the call info.
+  // The unfolded instruction is the same call, so it keeps the call info.
   if (MI->shouldUpdateAdditionalCallInfo())
-    MF.eraseAdditionalCallInfo(MI);
+    MF.moveAdditionalCallInfo(MI, NewMIs[1]);
 
   MI->eraseFromParent();
   return NewMIs[0];

@@ -1,0 +1,53 @@
+# RUN: llc -mtriple=x86_64-pc-windows-msvc -emit-call-site-info \
+# RUN:   -run-pass=early-machinelicm %s -o - | FileCheck %s
+
+# Hoisting the load out of a call through memory leaves a register call in the
+# loop. It is the same call, so it keeps the call's call site info and called
+# global.
+
+# CHECK:      callSites:
+# CHECK-NEXT:   - { bb: '%bb.1', offset: 3, fwdArgRegs:
+# CHECK-NEXT:       - { arg: 0, reg: '$ecx' } }
+# CHECK:      calledGlobals:
+# CHECK-NEXT:   - bb: '%bb.1'
+# CHECK-NEXT:     offset: 3
+# CHECK-NEXT:     callee: f
+# CHECK:      bb.0:
+# CHECK:        [[P:%[0-9]+]]:gr64 = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @f
+# CHECK:      bb.1:
+# CHECK:        $ecx = COPY
+# CHECK-NEXT:   CALL64r [[P]], csr_win64
+
+--- |
+  declare dllimport void @f(i32)
+  define void @g(i32 %n) { ret void }
+...
+---
+name: g
+tracksRegLiveness: true
+callSites:
+  - { bb: '%bb.1', offset: 3, fwdArgRegs: [ { arg: 0, reg: '$ecx' } ] }
+calledGlobals:
+  - { bb: '%bb.1', offset: 3, callee: f, flags: 0 }
+body: |
+  bb.0:
+    successors: %bb.1
+    liveins: $ecx
+    %2:gr32 = COPY $ecx
+    %3:gr32 = MOV32r0 implicit-def dead $eflags
+
+  bb.1:
+    successors: %bb.2, %bb.1
+    %0:gr32 = PHI %3, %bb.0, %1, %bb.1
+    ADJCALLSTACKDOWN64 32, 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+    $ecx = COPY %0
+    CALL64m $rip, 1, $noreg, target-flags(x86-dllimport) @f, $noreg, csr_win64, implicit $rsp, implicit $ssp, implicit $ecx, implicit-def $rsp, implicit-def $ssp :: (load (s64) from got)
+    ADJCALLSTACKUP64 32, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+    %1:gr32 = INC32r %0, implicit-def dead $eflags
+    %4:gr32 = SUB32rr %2, %1, implicit-def $eflags
+    JCC_1 %bb.1, 5, implicit $eflags
+    JMP_1 %bb.2
+
+  bb.2:
+    RET 0
+...

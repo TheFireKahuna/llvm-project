@@ -447,6 +447,10 @@ Register AArch64FastISel::materializeGV(const GlobalValue *GV) {
   if (FuncInfo.MF->getInfo<AArch64FunctionInfo>()->hasELFSignedGOT())
     return Register();
 
+  // An absolute symbol is materialized with MOVZ and MOVK, not ADRP.
+  if (Subtarget->getNumAbsoluteSymbolMOVs(GV))
+    return Register();
+
   unsigned OpFlags = Subtarget->ClassifyGlobalReference(GV, TM);
 
   EVT DestEVT = TLI.getValueType(DL, GV->getType(), true);

@@ -21,7 +21,7 @@ define void @dyn_alloca(i64 %n) "probe-stack"="__chkstk" {
   ; X86-NEXT:   renamable $eax = COPY $esp
   ; X86-NEXT:   PUSH32r killed renamable $eax, implicit-def $esp, implicit $esp :: (store (s32) into stack)
   ; X86-NEXT:   CALLpcrel32 @use, csr_32, implicit $esp, implicit $ssp, implicit-def $esp, implicit-def $ssp
-  ; X86-NEXT:   $esp = MOV32rr $ebp
+  ; X86-NEXT:   $esp = frame-destroy MOV32rr $ebp
   ; X86-NEXT:   $ebp = frame-destroy POP32r implicit-def $esp, implicit $esp
   ; X86-NEXT:   RET 0
   ;
@@ -42,7 +42,7 @@ define void @dyn_alloca(i64 %n) "probe-stack"="__chkstk" {
   ; X64-NEXT:   $rsp = SUB64ri32 $rsp, 32, implicit-def dead $eflags
   ; X64-NEXT:   CALL64pcrel32 @use, csr_win64, implicit $rsp, implicit $ssp, implicit $rcx, implicit-def $rsp, implicit-def $ssp
   ; X64-NEXT:   SEH_BeginEpilogue
-  ; X64-NEXT:   $rsp = MOV64rr $rbp
+  ; X64-NEXT:   $rsp = frame-destroy MOV64rr $rbp
   ; X64-NEXT:   $rbp = frame-destroy POP64r implicit-def $rsp, implicit $rsp
   ; X64-NEXT:   SEH_EndEpilogue
   ; X64-NEXT:   RET 0
@@ -62,7 +62,7 @@ define void @dyn_alloca(i64 %n) "probe-stack"="__chkstk" {
   ; LINUX-NEXT:   $rsp = SUB64rr $rsp, $rax, implicit-def dead $eflags
   ; LINUX-NEXT:   renamable $rdi = COPY $rsp
   ; LINUX-NEXT:   CALL64pcrel32 target-flags(x86-plt) @use, csr_64, implicit $rsp, implicit $ssp, implicit $rdi, implicit-def $rsp, implicit-def $ssp
-  ; LINUX-NEXT:   $rsp = MOV64rr $rbp
+  ; LINUX-NEXT:   $rsp = frame-destroy MOV64rr $rbp
   ; LINUX-NEXT:   $rbp = frame-destroy POP64r implicit-def $rsp, implicit $rsp
   ; LINUX-NEXT:   frame-destroy CFI_INSTRUCTION def_cfa $rsp, 8
   ; LINUX-NEXT:   RET 0

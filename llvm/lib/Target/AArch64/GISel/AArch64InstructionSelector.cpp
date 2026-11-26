@@ -2904,6 +2904,28 @@ bool AArch64InstructionSelector::select(MachineInstr &I) {
       OpFlags = STI.ClassifyGlobalReference(GV, TM);
     }
 
+    // An absolute symbol is an immediate, which ADRP would make PC-relative.
+    int64_t Offset = I.getOperand(1).getOffset();
+    if (unsigned NumMOVs = GV ? STI.getNumAbsoluteSymbolMOVs(GV, Offset) : 0) {
+      Register DstReg = I.getOperand(0).getReg();
+      if (NumMOVs == 2) {
+        Register HiReg = MRI.createVirtualRegister(&AArch64::GPR64RegClass);
+        MIB.buildInstr(AArch64::MOVZXi, {HiReg}, {})
+            .addGlobalAddress(GV, Offset, AArch64II::MO_G1)
+            .addImm(16);
+        MIB.buildInstr(AArch64::MOVKXi, {DstReg}, {HiReg})
+            .addGlobalAddress(GV, Offset, AArch64II::MO_G0 | AArch64II::MO_NC)
+            .addImm(0);
+      } else {
+        MIB.buildInstr(AArch64::MOVZXi, {DstReg}, {})
+            .addGlobalAddress(GV, Offset, AArch64II::MO_G0)
+            .addImm(0);
+      }
+      RBI.constrainGenericRegister(DstReg, AArch64::GPR64RegClass, MRI);
+      I.eraseFromParent();
+      return true;
+    }
+
     if (OpFlags & AArch64II::MO_GOT) {
       bool IsGOTSigned = MF.getInfo<AArch64FunctionInfo>()->hasELFSignedGOT();
       I.setDesc(TII.get(IsGOTSigned ? AArch64::LOADgotAUTH : AArch64::LOADgot));

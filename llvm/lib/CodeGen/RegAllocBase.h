@@ -150,6 +150,13 @@ protected:
   virtual void aboutToRemoveInterval(const LiveInterval &LI) {}
 
 public:
+  /// Erases the instructions that rematerialization left dead, and repairs
+  /// the live ranges of the registers they read. \p Matrix is null for an
+  /// allocator that keeps no live register matrix.
+  static void eliminateDeadRemats(SmallPtrSetImpl<MachineInstr *> &DeadRemats,
+                                  LiveIntervals &LIS, VirtRegMap &VRM,
+                                  LiveRegMatrix *Matrix);
+
   /// VerifyEnabled - True when -verify-regalloc is given.
   static bool VerifyEnabled;
 

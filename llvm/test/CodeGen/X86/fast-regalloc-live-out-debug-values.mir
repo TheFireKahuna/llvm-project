@@ -178,7 +178,7 @@ body:             |
   ; CHECK:   dead $rdx = IMPLICIT_DEF
   ; CHECK:   renamable $rcx = IMPLICIT_DEF
   ; CHECK:   renamable $eax = MOV32rm killed renamable $rax, 4, killed renamable $rcx, 0, $noreg, debug-location !44 :: (load (s32) from %ir.arrayidx3)
-  ; CHECK:   $rsp = LEA64r $rbp, 1, $noreg, -8, $noreg, debug-location !45
+  ; CHECK:   $rsp = frame-destroy LEA64r $rbp, 1, $noreg, -8, $noreg, debug-location !45
   ; CHECK:   $rbx = frame-destroy POP64r implicit-def $rsp, implicit $rsp, debug-location !45
   ; CHECK:   $rbp = frame-destroy POP64r implicit-def $rsp, implicit $rsp, debug-location !45
   ; CHECK:   CFI_INSTRUCTION def_cfa $rsp, 8, debug-location !45

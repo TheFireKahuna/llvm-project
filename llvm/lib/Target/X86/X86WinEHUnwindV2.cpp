@@ -384,7 +384,9 @@ bool runX86WinEHUnwindV2(MachineFunction &MF) {
       FrameInfos.push_back(std::move(*FI));
   }
 
-  if (FrameInfos.empty())
+  // A frame with no epilogue takes the version as well: its unwind info names
+  // none, and the unwinder then reads no code for one.
+  if (FrameInfos.empty() && !MF.hasWinCFI())
     return false;
 
   MeetsUnwindV2Criteria++;

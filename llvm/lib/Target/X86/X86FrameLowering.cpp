@@ -1571,12 +1571,15 @@ void X86FrameLowering::BuildStackAlignAND(MachineBasicBlock &MBB,
 
 bool X86FrameLowering::has128ByteRedZone(const MachineFunction &MF) const {
   // x86-64 (non Win64) has a 128 byte red zone which is guaranteed not to be
-  // clobbered by any interrupt handler.
+  // clobbered by any interrupt handler. Windows builds the frames of its
+  // exception and APC dispatchers right below the stack pointer of the thread
+  // it interrupts, so there no function has one, whatever its convention.
   assert(&STI == &MF.getSubtarget<X86Subtarget>() &&
          "MF used frame lowering for wrong subtarget");
   const Function &Fn = MF.getFunction();
   const bool IsWin64CC = STI.isCallingConvWin64(Fn.getCallingConv());
-  return Is64Bit && !IsWin64CC && !Fn.hasFnAttribute(Attribute::NoRedZone);
+  return Is64Bit && !IsWin64CC && !STI.isOSWindows() &&
+         !Fn.hasFnAttribute(Attribute::NoRedZone);
 }
 
 bool X86FrameLowering::needsDwarfCFI(const MachineFunction &MF) const {
@@ -2876,11 +2879,14 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
     if (LEAAmount != 0) {
       unsigned Opc = getLEArOpcode(Uses64BitFramePtr);
       addRegOffset(BuildMI(MBB, MBBI, DL, TII.get(Opc), StackPtr), FramePtr,
-                   false, LEAAmount);
+                   false, LEAAmount)
+          .setMIFlag(MachineInstr::FrameDestroy);
       --MBBI;
     } else {
       unsigned Opc = (Uses64BitFramePtr ? X86::MOV64rr : X86::MOV32rr);
-      BuildMI(MBB, MBBI, DL, TII.get(Opc), StackPtr).addReg(FramePtr);
+      BuildMI(MBB, MBBI, DL, TII.get(Opc), StackPtr)
+          .addReg(FramePtr)
+          .setMIFlag(MachineInstr::FrameDestroy);
       --MBBI;
     }
   } else if (NumBytes) {

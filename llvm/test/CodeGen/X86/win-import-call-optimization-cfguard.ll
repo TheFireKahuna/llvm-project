@@ -18,16 +18,16 @@ entry:
 ; CHECK:        .Limpcall1:
 ; CHECK-NEXT:     rex64 jmpq      *__guard_dispatch_icall_fptr(%rip)
 
-; CHECK-LABEL  .section   .retplne,"yi"
-; CHECK-NEXT   .asciz  "RetpolineV1"
-; CHECK-NEXT   .long   16
-; CHECK-NEXT   .secnum tc_sect
-; CHECK-NEXT   .long   10
-; CHECK-NEXT   .secoffset      .Limpcall1
-; CHECK-NEXT   .long   16
-; CHECK-NEXT   .secnum nc_sect
-; CHECK-NEXT   .long   9
-; CHECK-NEXT   .secoffset      .Limpcall0
+; CHECK-LABEL:  .section   .retplne,"yi"
+; CHECK-NEXT:   .asciz  "RetpolineV1"
+; CHECK-NEXT:   .long   16
+; CHECK-NEXT:   .secnum nc_sect
+; CHECK-NEXT:   .long   9
+; CHECK-NEXT:   .secoffset      .Limpcall0
+; CHECK-NEXT:   .long   16
+; CHECK-NEXT:   .secnum tc_sect
+; CHECK-NEXT:   .long   10
+; CHECK-NEXT:   .secoffset      .Limpcall1
 
 !llvm.module.flags = !{!0, !1}
 !0 = !{i32 1, !"import-call-optimization", i32 1}

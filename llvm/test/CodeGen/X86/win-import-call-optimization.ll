@@ -46,22 +46,22 @@ entry:
 declare dllimport void @a() local_unnamed_addr
 declare dllimport void @b() local_unnamed_addr
 
-; CHECK-LABEL  .section   .retplne,"yi"
-; CHECK-NEXT   .asciz  "RetpolineV1"
-; CHECK-NEXT   .long   24
-; CHECK-NEXT   .secnum tc_sect
-; CHECK-NEXT   .long   3
-; CHECK-NEXT   .secoffset      .Limpcall3
-; CHECK-NEXT   .long   5
-; CHECK-NEXT   .secoffset      .Limpcall4
-; CHECK-NEXT   .long   32
-; CHECK-NEXT   .secnum nc_sect
-; CHECK-NEXT   .long   3
-; CHECK-NEXT   .secoffset      .Limpcall0
-; CHECK-NEXT   .long   3
-; CHECK-NEXT   .secoffset      .Limpcall1
-; CHECK-NEXT   .long   5
-; CHECK-NEXT   .secoffset      .Limpcall2
+; CHECK-LABEL:  .section   .retplne,"yi"
+; CHECK-NEXT:   .asciz  "RetpolineV1"
+; CHECK-NEXT:   .long   32
+; CHECK-NEXT:   .secnum nc_sect
+; CHECK-NEXT:   .long   3
+; CHECK-NEXT:   .secoffset      .Limpcall0
+; CHECK-NEXT:   .long   3
+; CHECK-NEXT:   .secoffset      .Limpcall1
+; CHECK-NEXT:   .long   5
+; CHECK-NEXT:   .secoffset      .Limpcall2
+; CHECK-NEXT:   .long   24
+; CHECK-NEXT:   .secnum tc_sect
+; CHECK-NEXT:   .long   2
+; CHECK-NEXT:   .secoffset      .Limpcall3
+; CHECK-NEXT:   .long   4
+; CHECK-NEXT:   .secoffset      .Limpcall4
 
 !llvm.module.flags = !{!0}
 !0 = !{i32 1, !"import-call-optimization", i32 1}

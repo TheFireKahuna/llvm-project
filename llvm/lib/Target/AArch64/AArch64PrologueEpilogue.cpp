@@ -1108,6 +1108,11 @@ void AArch64PrologueEmitter::emitWindowsStackProbe(
         .addReg(AArch64::X15, RegState::Undef)
         .addReg(AArch64::X15, RegState::Implicit)
         .setMIFlag(MachineInstr::FrameSetup);
+    if (NeedsWinCFI) {
+      HasWinCFI = true;
+      BuildMI(MBB, MBBI, DL, TII->get(AArch64::SEH_Nop))
+          .setMIFlag(MachineInstr::FrameSetup);
+    }
   }
 
   uint64_t NumWords = (NumBytes + RealignmentPadding) >> 4;
@@ -1249,6 +1254,11 @@ void AArch64PrologueEmitter::emitWindowsStackProbe(
         .addReg(X15Scratch, RegState::Undef)
         .addReg(X15Scratch, RegState::Implicit)
         .setMIFlag(MachineInstr::FrameSetup);
+    if (NeedsWinCFI) {
+      HasWinCFI = true;
+      BuildMI(MBB, MBBI, DL, TII->get(AArch64::SEH_Nop))
+          .setMIFlag(MachineInstr::FrameSetup);
+    }
   }
 }
 
@@ -1527,8 +1537,9 @@ void AArch64EpilogueEmitter::emitEpilogue() {
            "unexpected SVE allocs after PPRs with CalleeSavesAboveFrameRecord");
     // If the callee-save area is before FP, restoring the FP implicitly
     // deallocates non-callee-save SVE allocations. Otherwise, deallocate them
-    // explicitly.
-    if (!AFI->isStackRealigned() && !MFI.hasVarSizedObjects()) {
+    // explicitly. A funclet's frame pointer is its function's, and restores
+    // no stack pointer of the funclet.
+    if (IsFunclet || (!AFI->isStackRealigned() && !MFI.hasVarSizedObjects())) {
       emitFrameOffset(MBB, FirstGPRRestoreI, DL, AArch64::SP, AArch64::SP,
                       SVEAllocs.AfterZPRs, TII, MachineInstr::FrameDestroy,
                       false, NeedsWinCFI, &HasWinCFI);

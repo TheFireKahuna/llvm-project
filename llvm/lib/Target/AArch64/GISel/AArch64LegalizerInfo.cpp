@@ -1790,6 +1790,10 @@ bool AArch64LegalizerInfo::legalizeSmallCMGlobalValue(
   if (OpFlags & AArch64II::MO_GOT)
     return true;
 
+  // The selector materializes an absolute symbol with MOVZ and MOVK.
+  if (ST->getNumAbsoluteSymbolMOVs(GV, GlobalOp.getOffset()))
+    return true;
+
   auto Offset = GlobalOp.getOffset();
   Register DstReg = MI.getOperand(0).getReg();
   auto ADRP = MIRBuilder.buildInstr(AArch64::ADRP, {LLT::pointer(0, 64)}, {})

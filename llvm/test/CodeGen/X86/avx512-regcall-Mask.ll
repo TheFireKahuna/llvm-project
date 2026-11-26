@@ -947,6 +947,7 @@ define dso_local <8 x i1> @caller_retv8i1() #0 {
 ; WIN64-NEXT:    kmovd %eax, %k0
 ; WIN64-NEXT:    vpmovm2w %k0, %zmm0
 ; WIN64-NEXT:    # kill: def $xmm0 killed $xmm0 killed $zmm0
+; WIN64-NEXT:    vzeroupper
 ; WIN64-NEXT:    vmovaps (%rsp), %xmm6 # 16-byte Reload
 ; WIN64-NEXT:    vmovaps {{[-0-9]+}}(%r{{[sb]}}p), %xmm7 # 16-byte Reload
 ; WIN64-NEXT:    .seh_startepilogue
@@ -954,7 +955,6 @@ define dso_local <8 x i1> @caller_retv8i1() #0 {
 ; WIN64-NEXT:    popq %rdi
 ; WIN64-NEXT:    popq %rsi
 ; WIN64-NEXT:    .seh_endepilogue
-; WIN64-NEXT:    vzeroupper
 ; WIN64-NEXT:    retq
 ; WIN64-NEXT:    .seh_endproc
 ;

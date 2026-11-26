@@ -2,12 +2,17 @@
 ; RUN: llc -mtriple=aarch64-linux-gnu < %s | FileCheck %s --check-prefixes=CHECK-LINUX
 ; RUN: llc -mtriple=aarch64-none-eabi < %s | FileCheck %s --check-prefixes=CHECK-LINUX
 ; RUN: llc -mtriple=aarch64-pc-windows-msvc < %s | FileCheck %s --check-prefix=CHECK-PC
+; RUN: llc -mtriple=aarch64-pc-windows-msvc -filetype=obj < %s -o /dev/null
+; RUN: llc -mtriple=aarch64-windows-gnu -filetype=obj < %s -o /dev/null
 ; RUN: llc -mtriple=aarch64-apple-darwin < %s | FileCheck %s --check-prefixes=CHECK-APPLE
 
 @trampg = internal global [36 x i8] zeroinitializer, align 8
 
 declare void @llvm.init.trampoline(ptr, ptr, ptr);
 declare ptr @llvm.adjust.trampoline(ptr);
+
+; The moves that keep the nest register across __chkstk each have an unwind
+; code, which the object RUN lines have MC check against the prologue.
 
 define ptr @f(ptr nest %x, i64 %y) {
 ; CHECK-LINUX-LABEL: f:
@@ -29,6 +34,7 @@ define ptr @f(ptr nest %x, i64 %y) {
 ; CHECK-PC-NEXT:    stp x29, x30, [sp, #-16]! // 16-byte Folded Spill
 ; CHECK-PC-NEXT:    .seh_save_fplr_x 16
 ; CHECK-PC-NEXT:    mov x9, x15
+; CHECK-PC-NEXT:    .seh_nop
 ; CHECK-PC-NEXT:    mov x15, #60876 // =0xedcc
 ; CHECK-PC-NEXT:    .seh_nop
 ; CHECK-PC-NEXT:    bl __chkstk
@@ -36,6 +42,7 @@ define ptr @f(ptr nest %x, i64 %y) {
 ; CHECK-PC-NEXT:    sub sp, sp, x15, lsl #4
 ; CHECK-PC-NEXT:    .seh_stackalloc 974016
 ; CHECK-PC-NEXT:    mov x15, x9
+; CHECK-PC-NEXT:    .seh_nop
 ; CHECK-PC-NEXT:    .seh_endprologue
 ; CHECK-PC-NEXT:    add x0, x15, x0
 ; CHECK-PC-NEXT:    .seh_startepilogue

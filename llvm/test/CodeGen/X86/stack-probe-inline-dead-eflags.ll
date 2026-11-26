@@ -136,7 +136,7 @@ define void @large_frame_align() "probe-stack"="inline-asm" {
   ; LINUX-NEXT: bb.6 (%ir-block.0):
   ; LINUX-NEXT:   $rdi = MOV64rr $rsp
   ; LINUX-NEXT:   CALL64pcrel32 target-flags(x86-plt) @use, csr_64, implicit $rsp, implicit $ssp, implicit $rdi, implicit-def $rsp, implicit-def $ssp
-  ; LINUX-NEXT:   $rsp = MOV64rr $rbp
+  ; LINUX-NEXT:   $rsp = frame-destroy MOV64rr $rbp
   ; LINUX-NEXT:   $rbp = frame-destroy POP64r implicit-def $rsp, implicit $rsp
   ; LINUX-NEXT:   frame-destroy CFI_INSTRUCTION def_cfa $rsp, 8
   ; LINUX-NEXT:   RET 0
@@ -184,7 +184,7 @@ define void @large_frame_align() "probe-stack"="inline-asm" {
   ; CORECLR-NEXT:   renamable $rcx = LEA64r $rsp, 1, $noreg, 4096, $noreg
   ; CORECLR-NEXT:   CALL64pcrel32 @use, csr_win64, implicit $rsp, implicit $ssp, implicit $rcx, implicit-def $rsp, implicit-def $ssp
   ; CORECLR-NEXT:   SEH_BeginEpilogue
-  ; CORECLR-NEXT:   $rsp = LEA64r $rbp, 1, $noreg, 44912, $noreg
+  ; CORECLR-NEXT:   $rsp = frame-destroy LEA64r $rbp, 1, $noreg, 44912, $noreg
   ; CORECLR-NEXT:   $rbp = frame-destroy POP64r implicit-def $rsp, implicit $rsp
   ; CORECLR-NEXT:   SEH_EndEpilogue
   ; CORECLR-NEXT:   RET 0

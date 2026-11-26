@@ -3008,6 +3008,7 @@ void MachineBlockPlacement::alignBlocks() {
   // loop rotations done during this layout pass.
   if (!AlignAllBlock && !AlignAllNonFallThruBlocks) {
     if (F->getFunction().hasMinSize() ||
+        F->getFunction().hasFnAttribute(Attribute::Cold) ||
         (F->getFunction().hasOptSize() && !TLI->alignLoopsWithOptSize()))
       return;
   }

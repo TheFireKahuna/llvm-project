@@ -6741,6 +6741,18 @@ SDValue AArch64TargetLowering::LowerINTRINSIC_W_CHAIN(SDValue Op,
   }
 }
 
+// Load the ThreadLocalStoragePointer from the TEB, through which Windows finds
+// a thread's TLS blocks. A pointer to the TLS array is located at offset 0x58
+// from the TEB.
+static SDValue getWindowsTLSArray(SelectionDAG &DAG, const SDLoc &DL) {
+  EVT PtrVT = DAG.getTargetLoweringInfo().getPointerTy(DAG.getDataLayout());
+  SDValue TEB = DAG.getRegister(AArch64::X18, MVT::i64);
+  SDValue TLSArray =
+      DAG.getNode(ISD::ADD, DL, PtrVT, TEB, DAG.getIntPtrConstant(0x58, DL));
+  return DAG.getLoad(PtrVT, DL, DAG.getEntryNode(), TLSArray,
+                     MachinePointerInfo());
+}
+
 SDValue AArch64TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
                                                      SelectionDAG &DAG) const {
   unsigned IntNo = Op.getConstantOperandVal(0);
@@ -6748,6 +6760,10 @@ SDValue AArch64TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   switch (IntNo) {
   default: return SDValue();    // Don't custom lower most intrinsics.
   case Intrinsic::thread_pointer: {
+    // On Windows it is the thread's TLS array, through which native TLS
+    // reaches the variables of every image.
+    if (Subtarget->isTargetWindows())
+      return getWindowsTLSArray(DAG, DL);
     EVT PtrVT = getPointerTy(DAG.getDataLayout());
     return DAG.getNode(AArch64ISD::THREAD_POINTER, DL, PtrVT);
   }
@@ -11473,6 +11489,30 @@ SDValue AArch64TargetLowering::LowerGlobalAddress(SDValue Op,
     return getGOT(GN, DAG, OpFlags);
   }
 
+  // An absolute symbol is an immediate, which ADRP would make PC-relative.
+  if (unsigned NumMOVs =
+          Subtarget->getNumAbsoluteSymbolMOVs(GV, GN->getOffset())) {
+    SDLoc DL(GN);
+    EVT Ty = getPointerTy(DAG.getDataLayout());
+    if (NumMOVs == 1)
+      return SDValue(
+          DAG.getMachineNode(AArch64::MOVZXi, DL, Ty,
+                             getTargetNode(GN, Ty, DAG, AArch64II::MO_G0),
+                             DAG.getTargetConstant(0, DL, MVT::i32)),
+          0);
+    SDValue Hi =
+        SDValue(DAG.getMachineNode(AArch64::MOVZXi, DL, Ty,
+                                   getTargetNode(GN, Ty, DAG, AArch64II::MO_G1),
+                                   DAG.getTargetConstant(16, DL, MVT::i32)),
+                0);
+    return SDValue(
+        DAG.getMachineNode(
+            AArch64::MOVKXi, DL, Ty, Hi,
+            getTargetNode(GN, Ty, DAG, AArch64II::MO_G0 | AArch64II::MO_NC),
+            DAG.getTargetConstant(0, DL, MVT::i32)),
+        0);
+  }
+
   SDValue Result;
   if (getTargetMachine().getCodeModel() == CodeModel::Large &&
       !getTargetMachine().isPositionIndependent()) {
@@ -11853,18 +11893,11 @@ AArch64TargetLowering::LowerWindowsGlobalTLSAddress(SDValue Op,
                                                     SelectionDAG &DAG) const {
   assert(Subtarget->isTargetWindows() && "Windows specific TLS lowering");
 
-  SDValue Chain = DAG.getEntryNode();
   EVT PtrVT = getPointerTy(DAG.getDataLayout());
   SDLoc DL(Op);
 
-  SDValue TEB = DAG.getRegister(AArch64::X18, MVT::i64);
-
-  // Load the ThreadLocalStoragePointer from the TEB
-  // A pointer to the TLS array is located at offset 0x58 from the TEB.
-  SDValue TLSArray =
-      DAG.getNode(ISD::ADD, DL, PtrVT, TEB, DAG.getIntPtrConstant(0x58, DL));
-  TLSArray = DAG.getLoad(PtrVT, DL, Chain, TLSArray, MachinePointerInfo());
-  Chain = TLSArray.getValue(1);
+  SDValue TLSArray = getWindowsTLSArray(DAG, DL);
+  SDValue Chain = TLSArray.getValue(1);
 
   // Load the TLS index from the C runtime;
   // This does the same as getAddr(), but without having a GlobalAddressSDNode.
@@ -11877,7 +11910,11 @@ AArch64TargetLowering::LowerWindowsGlobalTLSAddress(SDValue Op,
   SDValue ADRP = DAG.getNode(AArch64ISD::ADRP, DL, PtrVT, TLSIndexHi);
   SDValue TLSIndex =
       DAG.getNode(AArch64ISD::ADDlow, DL, PtrVT, ADRP, TLSIndexLo);
-  TLSIndex = DAG.getLoad(MVT::i32, DL, Chain, TLSIndex, MachinePointerInfo());
+  // The loader sets the TLS index before any of the image's code runs, and it
+  // never changes.
+  TLSIndex = DAG.getLoad(
+      MVT::i32, DL, Chain, TLSIndex, MachinePointerInfo(), Align(4),
+      MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable);
   Chain = TLSIndex.getValue(1);
 
   // The pointer to the thread's TLS data area is at the TLS Index scaled by 8
@@ -30720,6 +30757,12 @@ static SDValue performGlobalAddressCombine(SDNode *N, SelectionDAG &DAG,
   Type *T = GV->getValueType();
   if (!T->isSized() ||
       Offset > GV->getDataLayout().getTypeAllocSize(T))
+    return SDValue();
+
+  // An absolute symbol's MOVs take only an offset that keeps the value in
+  // their range.
+  if (Subtarget->getNumAbsoluteSymbolMOVs(GV) &&
+      !Subtarget->getNumAbsoluteSymbolMOVs(GV, Offset))
     return SDValue();
 
   SDLoc DL(GN);

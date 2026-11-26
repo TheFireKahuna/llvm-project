@@ -399,6 +399,13 @@ public:
   unsigned ClassifyGlobalReference(const GlobalValue *GV,
                                    const TargetMachine &TM) const;
 
+  /// If \p GV is an absolute symbol whose range fits in 32 bits, and the
+  /// object format can write its value into MOVZ and MOVK, return how many of
+  /// them a reference to it plus \p Offset takes: 1 below 2^16, else 2.
+  /// Return 0 for any other global.
+  unsigned getNumAbsoluteSymbolMOVs(const GlobalValue *GV,
+                                    int64_t Offset = 0) const;
+
   unsigned classifyGlobalFunctionReference(const GlobalValue *GV,
                                            const TargetMachine &TM) const;
 

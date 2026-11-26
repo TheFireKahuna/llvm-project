@@ -2233,10 +2233,12 @@ static bool mayHaveOtherReferences(GlobalValue &GV, const LLVMUsed &U) {
 
 static bool hasUsesToReplace(GlobalAlias &GA, const LLVMUsed &U,
                              bool &RenameTarget) {
-  if (GA.isWeakForLinker())
-    return false;
-
   RenameTarget = false;
+  // Another unit's definition of an ODR alias may prevail at link time; where
+  // its address is insignificant, a use may bind to the aliasee here instead.
+  if (GA.isWeakForLinker())
+    return GA.hasGlobalUnnamedAddr() && hasUseOtherThanLLVMUsed(GA, U);
+
   bool Ret = false;
   if (hasUseOtherThanLLVMUsed(GA, U))
     Ret = true;

@@ -32,11 +32,11 @@ define void @baz(<16 x double> %arg, <16 x double> %arg1) #0 {
 ; CHECK-NEXT:    vmovaps %ymm2, {{[0-9]+}}(%rsp)
 ; CHECK-NEXT:    vmovaps %ymm1, {{[0-9]+}}(%rsp)
 ; CHECK-NEXT:    vmovaps %ymm0, (%rsp)
+; CHECK-NEXT:    vzeroupper
 ; CHECK-NEXT:    vmovaps {{[-0-9]+}}(%r{{[sb]}}p), %xmm6 # 16-byte Reload
 ; CHECK-NEXT:    vmovaps {{[-0-9]+}}(%r{{[sb]}}p), %xmm7 # 16-byte Reload
 ; CHECK-NEXT:    leaq 240(%rbp), %rsp
 ; CHECK-NEXT:    popq %rbp
-; CHECK-NEXT:    vzeroupper
 ; CHECK-NEXT:    retq
 bb:
   %tmp = alloca <16 x double>

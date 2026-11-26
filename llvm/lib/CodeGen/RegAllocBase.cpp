@@ -12,8 +12,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "RegAllocBase.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/CalcSpillWeights.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveIntervals.h"
 #include "llvm/CodeGen/LiveRegMatrix.h"
@@ -160,11 +162,83 @@ void RegAllocBase::postOptimization() {
   // Verify LiveRegMatrix after spilling (no dangling pointers).
   assert(Matrix->isValid() && "LiveRegMatrix validation failed");
 
-  for (auto *DeadInst : DeadRemats) {
-    LIS->RemoveMachineInstrFromMaps(*DeadInst);
-    DeadInst->eraseFromParent();
+  eliminateDeadRemats(DeadRemats, *LIS, *VRM, Matrix);
+}
+
+void RegAllocBase::eliminateDeadRemats(
+    SmallPtrSetImpl<MachineInstr *> &DeadRemats, LiveIntervals &LIS,
+    VirtRegMap &VRM, LiveRegMatrix *Matrix) {
+  // Without remat chains a dead remat reads nothing whose live range it ends.
+  if (!VirtRegAuxInfo::getRematChainDepth(VRM.getMachineFunction())) {
+    for (MachineInstr *DeadInst : DeadRemats) {
+      LIS.RemoveMachineInstrFromMaps(*DeadInst);
+      DeadInst->eraseFromParent();
+    }
+    DeadRemats.clear();
+    return;
   }
+
+  // A dead remat may read the last value of a register that rematerializing
+  // a chain left without other uses: its live range then shrinks, and the
+  // instruction that defined it, which only the remat read, goes too. Each
+  // value an erased instruction defined leaves its register's live range, so
+  // a later shrink of that register finds no value without an instruction.
+  MachineRegisterInfo &MRI = VRM.getRegInfo();
+  SmallVector<MachineInstr *, 4> Dead(DeadRemats.begin(), DeadRemats.end());
   DeadRemats.clear();
+  // Edits a live range out of the matrix, if the allocator keeps one, so the
+  // union never holds a segment the range no longer has.
+  auto EditAssigned = [&](LiveInterval &LI, auto Edit) {
+    MCRegister PhysReg =
+        Matrix && VRM.hasPhys(LI.reg()) ? VRM.getPhys(LI.reg()) : MCRegister();
+    if (PhysReg)
+      Matrix->unassign(LI);
+    Edit();
+    if (PhysReg && !LI.empty())
+      Matrix->assign(LI, PhysReg);
+  };
+  while (!Dead.empty()) {
+    MachineInstr *DeadInst = Dead.pop_back_val();
+    SlotIndex Idx = LIS.getInstructionIndex(*DeadInst);
+    SmallSetVector<Register, 2> Uses;
+    SmallVector<std::pair<Register, SlotIndex>, 2> Defs;
+    for (const MachineOperand &MO : DeadInst->operands()) {
+      if (!MO.isReg() || !MO.getReg().isVirtual() ||
+          !LIS.hasInterval(MO.getReg()))
+        continue;
+      if (MO.isDef())
+        Defs.push_back({MO.getReg(), Idx.getRegSlot(MO.isEarlyClobber())});
+      else
+        Uses.insert(MO.getReg());
+    }
+    LIS.RemoveMachineInstrFromMaps(*DeadInst);
+    DeadInst->eraseFromParent();
+    for (auto [Reg, Pos] : Defs) {
+      if (!LIS.hasInterval(Reg))
+        continue;
+      LiveInterval &LI = LIS.getInterval(Reg);
+      if (MRI.reg_nodbg_empty(Reg) && !Uses.contains(Reg)) {
+        if (Matrix && VRM.hasPhys(Reg))
+          Matrix->unassign(LI);
+        else if (VRM.hasPhys(Reg))
+          VRM.clearVirt(Reg);
+        LIS.removeInterval(Reg);
+        continue;
+      }
+      EditAssigned(LI, [&, Pos = Pos] { LIS.removeVRegDefAt(LI, Pos); });
+    }
+    for (Register Reg : Uses) {
+      LiveInterval &LI = LIS.getInterval(Reg);
+      SmallVector<MachineInstr *, 2> NewDead;
+      EditAssigned(LI, [&] { LIS.shrinkToUses(&LI, &NewDead); });
+      for (MachineInstr *MI : NewDead) {
+        bool SawStore = false;
+        if (MI->allDefsAreDead() && MI->isSafeToMove(SawStore) &&
+            !MI->isBundled() && !is_contained(Dead, MI))
+          Dead.push_back(MI);
+      }
+    }
+  }
 }
 
 void RegAllocBase::cleanupFailedVReg(Register FailedReg, MCRegister PhysReg,

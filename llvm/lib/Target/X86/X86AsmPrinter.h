@@ -9,6 +9,7 @@
 #ifndef LLVM_LIB_TARGET_X86_X86ASMPRINTER_H
 #define LLVM_LIB_TARGET_X86_X86ASMPRINTER_H
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/FaultMaps.h"
 #include "llvm/CodeGen/StackMaps.h"
@@ -55,7 +56,7 @@ private:
     MCSymbol *CalleeSymbol;
     ImportCallKind Kind;
   };
-  DenseMap<MCSection *, std::vector<ImportCallInfo>>
+  MapVector<MCSection *, std::vector<ImportCallInfo>>
       SectionToImportedFunctionCalls;
 
   // This utility class tracks the length of a stackmap instruction's 'shadow'.

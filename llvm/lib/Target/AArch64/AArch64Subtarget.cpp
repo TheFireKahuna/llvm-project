@@ -23,6 +23,7 @@
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineScheduler.h"
+#include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/Option/LibraryOptions.h"
 #include "llvm/Support/SipHash.h"
@@ -375,11 +376,31 @@ const RegisterBankInfo *AArch64Subtarget::getRegBankInfo() const {
   return RegBankInfo.get();
 }
 
+unsigned AArch64Subtarget::getNumAbsoluteSymbolMOVs(const GlobalValue *GV,
+                                                    int64_t Offset) const {
+  // Only ELF has relocations that write an absolute value into MOVZ and MOVK.
+  if (!isTargetELF())
+    return 0;
+  std::optional<ConstantRange> CR = GV->getAbsoluteSymbolRange();
+  if (!CR)
+    return 0;
+  // The relocations check the value with its offset.
+  APInt Max = CR->add(APInt(CR->getBitWidth(), Offset, /*isSigned=*/true))
+                  .getUnsignedMax();
+  if (Max.getActiveBits() > 32)
+    return 0;
+  return Max.ult(1u << 16) ? 1 : 2;
+}
+
 /// Find the target operand flags that describe how a global value should be
 /// referenced for the current subtarget.
 unsigned
 AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
                                           const TargetMachine &TM) const {
+  // An absolute symbol is a constant, which needs no GOT entry.
+  if (getNumAbsoluteSymbolMOVs(GV))
+    return AArch64II::MO_NO_FLAG;
+
   // MachO large model always goes via a GOT, simply to get a single 8-byte
   // absolute relocation on all global addresses.
   if (TM.getCodeModel() == CodeModel::Large && isTargetMachO())
@@ -392,7 +413,13 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
   if (GV->isTagged())
     return AArch64II::MO_GOT;
 
-  if (!TM.shouldAssumeDSOLocal(GV)) {
+  // The small code model's direct accesses use ADRP, which cannot
+  // necessarily produce the value 0 (if the code is above 4GB).
+  // Same for the tiny code model, where we have a pc relative LDR. On COFF,
+  // which has no GOT, such a reference loads what one to another DLL loads.
+  if (!TM.shouldAssumeDSOLocal(GV) ||
+      ((useSmallAddressing() || TM.getCodeModel() == CodeModel::Tiny) &&
+       GV->hasExternalWeakLinkage())) {
     if (GV->hasDLLImportStorageClass()) {
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
     }
@@ -400,13 +427,6 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
       return AArch64II::MO_GOT | AArch64II::MO_COFFSTUB;
     return AArch64II::MO_GOT;
   }
-
-  // The small code model's direct accesses use ADRP, which cannot
-  // necessarily produce the value 0 (if the code is above 4GB).
-  // Same for the tiny code model, where we have a pc relative LDR.
-  if ((useSmallAddressing() || TM.getCodeModel() == CodeModel::Tiny) &&
-      GV->hasExternalWeakLinkage())
-    return AArch64II::MO_GOT;
 
   // References to tagged globals are marked with MO_NC | MO_TAGGED to indicate
   // that their nominal addresses are tagged and outside of the code model. In
@@ -424,12 +444,6 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
   // relocations available to do anything else..
   if (TM.getCodeModel() == CodeModel::Large && isTargetMachO() &&
       !GV->hasInternalLinkage())
-    return AArch64II::MO_GOT;
-
-  // NonLazyBind goes via GOT unless we know it's available locally.
-  auto *F = dyn_cast<Function>(GV);
-  if ((!isTargetMachO() || CLOpts.macho_enable_nonlazybind) && F &&
-      F->hasFnAttribute(Attribute::NonLazyBind) && !TM.shouldAssumeDSOLocal(GV))
     return AArch64II::MO_GOT;
 
   if (getTargetTriple().isOSWindowsOrUEFI()) {
@@ -450,6 +464,12 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
     // Use ClassifyGlobalReference for setting MO_DLLIMPORT/MO_COFFSTUB.
     return ClassifyGlobalReference(GV, TM);
   }
+
+  // NonLazyBind goes via GOT unless we know it's available locally.
+  auto *F = dyn_cast<Function>(GV);
+  if ((!isTargetMachO() || CLOpts.macho_enable_nonlazybind) && F &&
+      F->hasFnAttribute(Attribute::NonLazyBind) && !TM.shouldAssumeDSOLocal(GV))
+    return AArch64II::MO_GOT;
 
   return AArch64II::MO_NO_FLAG;
 }

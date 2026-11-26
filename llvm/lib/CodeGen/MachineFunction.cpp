@@ -361,7 +361,7 @@ Align MachineFunction::getPreferredAlignment() const {
 
   if (MaybeAlign A = F.getPreferredAlignment())
     PrefAlignment = *A;
-  else if (!F.hasOptSize())
+  else if (!F.hasOptSize() && !F.hasFnAttribute(Attribute::Cold))
     PrefAlignment = STI.getTargetLowering()->getPrefFunctionAlignment();
   else
     PrefAlignment = Align(1);

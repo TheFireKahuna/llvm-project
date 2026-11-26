@@ -198,9 +198,12 @@ entry:
   call void @d()
   unreachable
 }
+; A frame with no epilogue takes the version too: the unwinder then reads no
+; code for one.
 ; CHECK-LABEL:  no_return_func:
-; CHECK-NOT:    .seh_unwindversion 2
-; CHECK:        .seh_stackalloc
+; CHECK:        .seh_unwindversion 2
+; CHECK-NEXT:   subq
+; CHECK-NEXT:   .seh_stackalloc
 ; CHECK-NEXT:   .seh_endprologue
 ; CHECK-NOT:    .seh_startepilogue
 ; CHECK-NOT:    .seh_unwindv2start

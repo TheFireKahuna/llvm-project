@@ -177,6 +177,7 @@ define fastcc i64 @foo(i32 %dim1, i32 %dim2, i32 %dim3, i32 %dim4, ptr %p1, ptr 
 ; CHECK-NEXT:  .LBB0_12:
 ; CHECK-NEXT:    xorl %eax, %eax
 ; CHECK-NEXT:  .LBB0_13: # %exit
+; CHECK-NEXT:    vzeroupper
 ; CHECK-NEXT:    leaq 8(%rbp), %rsp
 ; CHECK-NEXT:    popq %rbx
 ; CHECK-NEXT:    popq %rdi
@@ -188,7 +189,6 @@ define fastcc i64 @foo(i32 %dim1, i32 %dim2, i32 %dim3, i32 %dim4, ptr %p1, ptr 
 ; CHECK-NEXT:    popq %r30
 ; CHECK-NEXT:    popq %r31
 ; CHECK-NEXT:    popq %rbp
-; CHECK-NEXT:    vzeroupper
 ; CHECK-NEXT:    retq
 entry:
   %buf1 = alloca float, i64 %stride, align 32
