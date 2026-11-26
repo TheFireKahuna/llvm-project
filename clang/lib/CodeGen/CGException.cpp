@@ -2077,6 +2077,11 @@ void CodeGenFunction::startOutlinedSEHHelper(CodeGenFunction &ParentCGF,
   CurSEHParent = ParentCGF.CurSEHParent;
 
   CGM.SetInternalFunctionAttributes(GlobalDecl(), CurFn, FnInfo);
+  // A finally block runs only where its parent calls it, from its body or its
+  // cleanup, so it is passed the parent's thread pointer; a filter is called
+  // by the personality, with none.
+  if (!IsFilter && ParentCGF.CurFn->hasFnAttribute("thread-pointer-argument"))
+    CurFn->addFnAttr("thread-pointer-argument");
   EmitCapturedLocals(ParentCGF, OutlinedStmt, IsFilter);
 }
 

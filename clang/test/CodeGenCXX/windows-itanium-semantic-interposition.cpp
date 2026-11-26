@@ -11,7 +11,9 @@
 // unit neither inlines it nor binds a call to it. So may a replacement of
 // operator new, which a DLL offers, and a function declared dllexport. A
 // hidden function stays local, and so does an inline one, every definition of
-// which is the same. Without the option every definition is local.
+// which is the same. Without the option every definition is local, and a
+// replacement of operator new, which is no function passed its thread
+// pointer, is called rather than inlined into one.
 
 typedef __SIZE_TYPE__ size_t;
 static char pool[8];
@@ -36,7 +38,6 @@ inline int i() { return 4; }
 // LOCAL-NEXT:    entry:
 // LOCAL-NEXT:      ret i32 10
 // LOCAL-LABEL:   define dso_local {{.*}}ptr @_Z5allocv(
-// LOCAL-NOT:       call
-// LOCAL:           ret
+// LOCAL:           call {{.*}}ptr @_Znw{{[my]}}(i64 {{.*}}1)
 int use() { return f() + e() + h() + i(); }
 void *alloc() { return ::operator new(1); }
