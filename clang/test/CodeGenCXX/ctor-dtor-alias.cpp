@@ -9,6 +9,8 @@
 // RUN: FileCheck --check-prefix=CHECK6 --input-file=%t %s
 
 // RUN: %clang_cc1 %s -triple i686-pc-windows-gnu -emit-llvm -o - -mconstructor-aliases -O1 -disable-llvm-passes | FileCheck --check-prefix=COFF %s
+// RUN: %clang_cc1 %s -triple x86_64-unknown-windows-itanium -emit-llvm -o - -mconstructor-aliases -O1 -disable-llvm-passes | FileCheck --check-prefix=WI %s
+// RUN: %clang_cc1 %s -triple aarch64-pc-windows-ntposix -emit-llvm -o - -mconstructor-aliases -O1 -disable-llvm-passes | FileCheck --check-prefix=WI %s
 
 namespace test1 {
 // Test that we produce the appropriate comdats when creating aliases to
@@ -26,6 +28,16 @@ namespace test1 {
 // COFF: define weak_odr {{.*}} void @_ZN5test16foobarIvEC1Ev({{.*}} comdat align
 // COFF: define weak_odr {{.*}} void @_ZN5test16foobarIvED2Ev({{.*}} comdat align
 // COFF: define weak_odr {{.*}} void @_ZN5test16foobarIvED0Ev({{.*}} comdat align
+
+// On Windows Itanium and NT-POSIX the alias is a weak external of the base
+// structor, which has a COMDAT of its own.
+// WI: $_ZN5test16foobarIvEC2Ev = comdat any
+// WI: $_ZN5test16foobarIvED2Ev = comdat any
+// WI: @_ZN5test16foobarIvEC1Ev = weak_odr dso_local unnamed_addr alias void (ptr), ptr @_ZN5test16foobarIvEC2Ev
+// WI: @_ZN5test16foobarIvED1Ev = weak_odr dso_local unnamed_addr alias void (ptr), ptr @_ZN5test16foobarIvED2Ev
+// WI: define weak_odr dso_local void @_ZN5test16foobarIvEC2Ev({{.*}} comdat
+// WI: define weak_odr dso_local void @_ZN5test16foobarIvED2Ev({{.*}} comdat
+// WI: define weak_odr dso_local void @_ZN5test16foobarIvED0Ev({{.*}} comdat
 
 template <typename T>
 struct foobar {

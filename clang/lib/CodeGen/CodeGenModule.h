@@ -1021,12 +1021,7 @@ public:
   void setDSOLocal(llvm::GlobalValue *GV) const;
 
   bool shouldMapVisibilityToDLLExport(const NamedDecl *D) const {
-    return getLangOpts().hasDefaultVisibilityExportMapping() && D &&
-           (D->getLinkageAndVisibility().getVisibility() ==
-            DefaultVisibility) &&
-           (getLangOpts().isAllDefaultVisibilityExportMapping() ||
-            (getLangOpts().isExplicitDefaultVisibilityExportMapping() &&
-             D->getLinkageAndVisibility().isVisibilityExplicit()));
+    return Context.shouldMapVisibilityToDLLExport(D);
   }
   void setDLLImportDLLExport(llvm::GlobalValue *GV, GlobalDecl D) const;
   void setDLLImportDLLExport(llvm::GlobalValue *GV, const NamedDecl *D) const;
@@ -1683,6 +1678,11 @@ public:
   bool classNeedsVectorDestructor(const CXXRecordDecl *RD);
 
   bool TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D);
+
+  /// Emit the destructor \p GD, which does nothing that the function named
+  /// \p Alternate does not, with no body: as a weak external that the linker
+  /// binds to that function.
+  void EmitDestructorAsWeakExternal(GlobalDecl GD, StringRef Alternate);
   void EmitDefinitionAsAlias(GlobalDecl Alias, GlobalDecl Target);
 
   llvm::GlobalValue *GetGlobalValue(StringRef Ref);

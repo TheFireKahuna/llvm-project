@@ -3585,6 +3585,27 @@ const CXXMethodDecl *ASTContext::getCurrentKeyFunction(const CXXRecordDecl *RD) 
   return cast_or_null<CXXMethodDecl>(Result);
 }
 
+bool ASTContext::shouldMapVisibilityToDLLExport(const NamedDecl *D) const {
+  if (!LangOpts.hasDefaultVisibilityExportMapping() || !D)
+    return false;
+  LinkageInfo LV = D->getLinkageAndVisibility();
+  return LV.getVisibility() == DefaultVisibility &&
+         (LangOpts.isAllDefaultVisibilityExportMapping() ||
+          LV.isVisibilityExplicit());
+}
+
+bool ASTContext::isVTableOwnedElsewhereAndExtensible(const CXXRecordDecl *RD) {
+  if (!getTargetInfo().getTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
+      !RD->isExternallyVisible() || RD->isEffectivelyFinal() ||
+      RD->hasAttr<DLLImportAttr>())
+    return false;
+  if (shouldMapVisibilityToDLLExport(RD))
+    return true;
+  const CXXMethodDecl *Key = getCurrentKeyFunction(RD);
+  return Key &&
+         (Key->hasAttr<DLLImportAttr>() || Key->hasAttr<DLLExportAttr>());
+}
+
 void ASTContext::setNonKeyFunction(const CXXMethodDecl *Method) {
   assert(Method == Method->getFirstDecl() &&
          "not working with method declaration from class definition");

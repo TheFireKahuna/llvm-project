@@ -1496,16 +1496,29 @@ void BitcodeFile::parse() {
   // An alias to a local symbol, which the symbol table does not list, is a
   // weak definition. Any other is a weak external, which LTO does not link
   // and whose references the link binds to its target, so the object that
-  // LTO generates defines the target.
+  // LTO generates defines the target. So is a declaration that names its
+  // alternate, which may be anywhere.
+  auto bind = [&](Symbol *s, StringRef target) {
+    Symbol *alias = symtab.addUndefined(target, this, false);
+    if (auto *u = dyn_cast<Undefined>(s))
+      u->setWeakAlias(alias);
+    alias->isUsedInRegularObj = true;
+  };
   for (auto [objSym, sym] : llvm::zip(obj->symbols(), symbols)) {
-    if (!objSym.isWeak() || !objSym.isIndirect())
+    if (!objSym.isWeak())
       continue;
-    if (Symbol *alias = symtab.find(objSym.getCOFFWeakExternalFallback())) {
+    StringRef alt = objSym.getCOFFWeakExternalFallback();
+    if (objSym.isUndefined() && !alt.empty()) {
+      bind(sym, alt);
+    } else if (!objSym.isIndirect()) {
+      continue;
+    } else if (Symbol *alias = symtab.find(alt)) {
       addWeakAlias(sym, alias);
       alias->isUsedInRegularObj = true;
-    } else if (isa<Undefined>(sym))
+    } else if (isa<Undefined>(sym)) {
       symtab.addRegular(this, sym->getName(), nullptr, getFakeSC(objSym), 0,
                         true);
+    }
   }
   directives = saver.save(obj->getCOFFLinkerOpts());
 }

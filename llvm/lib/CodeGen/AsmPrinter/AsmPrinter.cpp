@@ -3137,7 +3137,16 @@ bool AsmPrinter::doFinalization(Module &M) {
     for (const auto &GO : M.global_objects()) {
       if (!GO.hasExternalWeakLinkage())
         continue;
-      OutStreamer->emitSymbolAttribute(getSymbol(&GO), MCSA_WeakReference);
+      MCSymbol *Sym = getSymbol(&GO);
+      OutStreamer->emitSymbolAttribute(Sym, MCSA_WeakReference);
+      // A declaration cannot be an alias, so an attribute names the symbol
+      // that a COFF weak external falls back to.
+      if (const auto *F = dyn_cast<Function>(&GO))
+        if (Attribute A = F->getFnAttribute("weak-alternate"); A.isValid())
+          OutStreamer->emitAssignment(
+              Sym,
+              MCSymbolRefExpr::create(
+                  GetExternalSymbolSymbol(A.getValueAsString()), OutContext));
     }
     if (shouldEmitWeakSwiftAsyncExtendedFramePointerFlags()) {
       auto SymbolName = "swift_async_extendedFramePointerFlags";

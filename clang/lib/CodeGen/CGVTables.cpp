@@ -994,6 +994,8 @@ llvm::GlobalVariable *CodeGenVTables::GenerateConstructionVTable(
   // Create the variable that will hold the construction vtable.
   llvm::GlobalVariable *VTable =
       CGM.CreateOrReplaceCXXRuntimeVariable(Name, VTType, Linkage, Align);
+  if (hasVTableCopies(RD))
+    VTable->setComdat(CGM.getModule().getOrInsertComdat(VTable->getName()));
 
   // dynamic_cast assumes the vtable address is unique; see
   // https://github.com/llvm/llvm-project/pull/200108. The address is
@@ -1119,7 +1121,10 @@ llvm::GlobalVariable::LinkageTypes
 CodeGenModule::getVTableLinkage(const CXXRecordDecl *RD) {
   if (!RD->isExternallyVisible())
     return llvm::GlobalVariable::InternalLinkage;
-  
+
+  if (getVTables().isVTableCopied(RD))
+    return llvm::GlobalVariable::LinkOnceODRLinkage;
+
   // In windows, the linkage of vtable is not related to modules.
   bool IsInNamedModule = !getTarget().getCXXABI().isMicrosoft() &&
         RD->isInNamedModule();
@@ -1296,13 +1301,24 @@ bool CodeGenVTables::isVTableExternal(const CXXRecordDecl *RD) {
   return !keyFunction->hasBody();
 }
 
+bool CodeGenVTables::isVTableCopied(const CXXRecordDecl *RD) {
+  return CGM.getContext().isVTableOwnedElsewhereAndExtensible(RD) &&
+         isVTableExternal(RD);
+}
+
+bool CodeGenVTables::hasVTableCopies(const CXXRecordDecl *RD) {
+  return CGM.getContext().isVTableOwnedElsewhereAndExtensible(RD) &&
+         !isVTableExternal(RD);
+}
+
 /// Given that we're currently at the end of the translation unit, and
 /// we've emitted a reference to the vtable for this class, should
 /// we define that vtable?
 static bool shouldEmitVTableAtEndOfTranslationUnit(CodeGenModule &CGM,
                                                    const CXXRecordDecl *RD) {
-  // If vtable is internal then it has to be done.
-  if (!CGM.getVTables().isVTableExternal(RD))
+  // If vtable is internal, or a copy of another unit's, then it has to be done.
+  if (!CGM.getVTables().isVTableExternal(RD) ||
+      CGM.getVTables().isVTableCopied(RD))
     return true;
 
   // If it's external then maybe we will need it as available_externally.

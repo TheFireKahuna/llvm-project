@@ -229,7 +229,7 @@ struct Symbol {
   /// COFF-specific: for weak externals, returns the name of the symbol that is
   /// used as a fallback if the weak external remains undefined.
   StringRef getCOFFWeakExternalFallback() const {
-    assert(isWeak() && isIndirect());
+    assert(isWeak());
     return COFFWeakExternFallbackName;
   }
 

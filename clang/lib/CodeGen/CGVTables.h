@@ -137,6 +137,17 @@ public:
 
   bool isVTableExternal(const CXXRecordDecl *RD);
 
+  /// Whether this unit emits a discardable copy of RD's vtable, which another
+  /// unit owns: code reaches the copy as it would reach the owner's vtable, and
+  /// the linker binds the reference to the copy, so that constructing the class
+  /// stores a direct address.
+  bool isVTableCopied(const CXXRecordDecl *RD);
+
+  /// Whether this unit owns a vtable that others copy. Its definition, VTT and
+  /// construction vtables join the copies' COMDATs, so that a copy linked
+  /// beside them folds into them.
+  bool hasVTableCopies(const CXXRecordDecl *RD);
+
   /// Returns the type of a vtable with the given layout. Normally a struct of
   /// arrays of pointers, with one struct element for each vtable in the vtable
   /// group.

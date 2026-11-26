@@ -2053,7 +2053,8 @@ static void setVTableSelectiveDLLImportExport(CodeGenModule &CGM,
     return;
 
   if (CGM.getVTables().isVTableExternal(RD)) {
-    if (CXXRecordNonInlineHasAttr<DLLImportAttr>(RD))
+    if (CXXRecordNonInlineHasAttr<DLLImportAttr>(RD) &&
+        !CGM.getVTables().isVTableCopied(RD))
       VTable->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
   } else if (CXXRecordNonInlineHasAttr<DLLExportAttr>(RD))
     VTable->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
@@ -2087,7 +2088,8 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
   if (CGM.mayVTableBeDuplicated(VTable->getLinkage()))
     VTable->setUnnamedAddr(llvm::GlobalValue::UnnamedAddr::Global);
 
-  if (CGM.supportsCOMDAT() && VTable->isWeakForLinker())
+  if (CGM.supportsCOMDAT() &&
+      (VTable->isWeakForLinker() || CGVT.hasVTableCopies(RD)))
     VTable->setComdat(CGM.getModule().getOrInsertComdat(VTable->getName()));
 
   if (CGM.getTarget().hasPS4DLLImportExport())
@@ -2095,6 +2097,9 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
 
   // Set the right visibility.
   CGM.setGVProperties(VTable, RD);
+  // Code reaches a copy as it reaches the owner's vtable.
+  if (CGVT.isVTableCopied(RD))
+    VTable->setDSOLocal(false);
 
   // If this is the magic class __cxxabiv1::__fundamental_type_info,
   // we will emit the typeinfo for the fundamental types. This is the
@@ -4757,7 +4762,10 @@ static StructorCodegen getCodegenToUse(CodeGenModule &CGM,
     if (CGM.getTarget().getTriple().isOSBinFormatELF() ||
         CGM.getTarget().getTriple().isOSBinFormatWasm())
       return StructorCodegen::COMDAT;
-    return StructorCodegen::Emit;
+    // On Windows Itanium and NT-POSIX the alias is a weak external whose
+    // alternate is the base structor, which any reference to it binds to.
+    if (!CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      return StructorCodegen::Emit;
   }
 
   return StructorCodegen::Alias;
@@ -4810,6 +4818,16 @@ void ItaniumCXXABI::emitCXXStructor(GlobalDecl GD) {
       BaseDecl = GD.getWithCtorType(Ctor_Base);
     else
       BaseDecl = GD.getWithDtorType(Dtor_Base);
+
+    // A base destructor emitted as a weak external has no definition to alias
+    // or to call, so the complete destructor is one with the same alternate.
+    if (auto *Base = dyn_cast_or_null<llvm::Function>(
+            CGM.GetGlobalValue(CGM.getMangledName(BaseDecl))))
+      if (llvm::Attribute A = Base->getFnAttribute("weak-alternate");
+          A.isValid()) {
+        CGM.EmitDestructorAsWeakExternal(GD, A.getValueAsString());
+        return;
+      }
 
     if (CGType == StructorCodegen::Alias || CGType == StructorCodegen::COMDAT) {
       emitConstructorDestructorAlias(CGM, GD, BaseDecl);

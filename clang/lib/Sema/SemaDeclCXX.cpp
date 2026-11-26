@@ -19607,6 +19607,12 @@ bool Sema::DefineUsedVTables() {
       }
     }
 
+    // On Windows Itanium and NT-POSIX a unit that does not own the vtable may
+    // construct the class through a copy of it, which names the class's inline
+    // and implicit virtual members.
+    if (Context.isVTableOwnedElsewhereAndExtensible(Class))
+      DefineVTable = true;
+
     // The exception specifications for all virtual members may be needed even
     // if we are not providing an authoritative form of the vtable in this TU.
     // We may choose to emit it available_externally anyway.

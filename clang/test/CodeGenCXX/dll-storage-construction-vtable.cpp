@@ -7,7 +7,8 @@
 // RUN:   -emit-llvm -o - %s -DATTR= | FileCheck %s
 
 // An available_externally VTT refers to construction vtables of internal
-// linkage, which take no DLL storage class from their class.
+// linkage, which take no DLL storage class from their class. The class is
+// final, since Windows Itanium copies the tables of one that is not.
 
 struct ATTR Base {
   Base() {}
@@ -19,7 +20,7 @@ struct ATTR Derived : virtual Base {
   virtual void g();
 };
 
-struct ATTR More : Derived {
+struct ATTR More final : Derived {
   More() {}
   virtual void h();
 };

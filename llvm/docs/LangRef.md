@@ -2969,6 +2969,14 @@ fn -> other_fn -> other_fn ; fn is norecurse
     than `UINT_MAX`.  It's unspecified which threshold will be used when
     duplicate definitions are linked together with differing values.
 
+`"weak-alternate"="<symbol>"`
+:   On an `extern_weak` function declaration, this attribute names the symbol
+    that a reference to the function binds to when nothing defines it. On COFF
+    the declaration is emitted as a weak external of characteristic
+    `IMAGE_WEAK_EXTERN_SEARCH_ALIAS` whose alternate is `<symbol>`, which need
+    not be defined in the module, as an alias's must. Other object formats
+    have no such symbol.
+
 `vscale_range(<min>[, <max>])`
 :   This function attribute indicates `vscale` is a power-of-two within a
     specified range. `min` must be a power-of-two that is greater than 0. When

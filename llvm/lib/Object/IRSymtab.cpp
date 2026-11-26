@@ -307,6 +307,11 @@ Error Builder::addSymbol(const ModuleSymbolTable &Msymtab,
       raw_string_ostream OS(FallbackName);
       Msymtab.printSymbolName(OS, Fallback);
       setStr(Uncommon().COFFWeakExternFallbackName, Saver.save(FallbackName));
+    } else if (const auto *F = dyn_cast<Function>(GV)) {
+      // A declaration that names its alternate is a weak external of it.
+      if (Attribute Alt = F->getFnAttribute("weak-alternate"); Alt.isValid())
+        setStr(Uncommon().COFFWeakExternFallbackName,
+               Saver.save(Alt.getValueAsString()));
     }
   }
 

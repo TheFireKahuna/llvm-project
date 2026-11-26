@@ -3009,6 +3009,17 @@ public:
   /// the result of this computation can change.
   const CXXMethodDecl *getCurrentKeyFunction(const CXXRecordDecl *RD);
 
+  /// Whether -mdefault-visibility-export-mapping= exports a definition of
+  /// \p D.
+  bool shouldMapVisibilityToDLLExport(const NamedDecl *D) const;
+
+  /// On Windows Itanium and NT-POSIX, whether one image owns and exports the
+  /// vtable of \p RD while a derived class may extend it. Another image, or
+  /// another unit of the owner, then constructs the class through a discardable
+  /// copy of the vtable, which needs the class's inline virtual functions. A
+  /// class that is final in effect, or marked dllimport, has no copy.
+  bool isVTableOwnedElsewhereAndExtensible(const CXXRecordDecl *RD);
+
   /// Observe that the given method cannot be a key function.
   /// Checks the key-function cache for the method's class and clears it
   /// if matches the given declaration.

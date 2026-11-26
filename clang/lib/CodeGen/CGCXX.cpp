@@ -154,6 +154,16 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
     return false;
   }
 
+  // On Windows Itanium and NT-POSIX a base destructor that another image may
+  // define cannot be aliased, and a body that only calls it would cost every
+  // destruction a jump. The destructor is a weak external instead, which the
+  // linker binds to the base destructor wherever that is defined.
+  if (Aliasee->hasDLLImportStorageClass() &&
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    EmitDestructorAsWeakExternal(AliasDecl, Aliasee->getName());
+    return false;
+  }
+
   // If we have a weak, non-discardable alias (weak, weak_odr), like an extern
   // template instantiation or a dllexported class, avoid forming it on COFF.
   // A COFF weak external alias cannot satisfy a normal undefined symbol
@@ -199,6 +209,17 @@ bool CodeGenModule::TryEmitBaseDestructorAsAlias(const CXXDestructorDecl *D) {
   SetCommonAttributes(AliasDecl, Alias);
 
   return false;
+}
+
+void CodeGenModule::EmitDestructorAsWeakExternal(GlobalDecl GD,
+                                                 StringRef Alternate) {
+  auto *Fn = cast<llvm::Function>(getAddrOfCXXStructor(
+      GD, /*FnInfo=*/nullptr, /*FnType=*/nullptr, /*DontDefer=*/true));
+  Fn->setLinkage(llvm::Function::ExternalWeakLinkage);
+  setDSOLocal(Fn);
+  Fn->addFnAttr("weak-alternate", Alternate);
+  // Other units refer to the destructor by this name, used here or not.
+  addCompilerUsedGlobal(Fn);
 }
 
 /// Emit a definition as a global alias for another definition, unconditionally.
