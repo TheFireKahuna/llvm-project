@@ -7661,6 +7661,12 @@ ProcessDeclAttribute(Sema &S, Decl *D, const ParsedAttr &AL,
     } else if (AL.isDeclspecAttribute()) {
       S.Diag(AL.getLoc(), diag::warn_unhandled_ms_attribute_ignored)
           << AL.getAttrName() << AL.getRange();
+    } else if (AL.getKind() == ParsedAttr::AT_IFunc && isa<NamedDecl>(D) &&
+               S.Context.getTargetInfo().supportsIFunc()) {
+      // Where ifuncs serve only multiversioned functions, one whose resolver
+      // is written has no form.
+      S.Diag(AL.getLoc(), diag::err_ifunc_needs_resolver_cell)
+          << cast<NamedDecl>(D);
     } else {
       S.DiagnoseUnknownAttribute(AL);
     }

@@ -3754,6 +3754,13 @@ void CodeGenModule::SetCommonAttributes(GlobalDecl GD, llvm::GlobalValue *GV) {
   else
     GV->setVisibility(llvm::GlobalValue::DefaultVisibility);
 
+  // On Windows Itanium and NT-POSIX an ifunc's address is a stub of its own,
+  // whose type a call through the address checks.
+  if (auto *GIF = dyn_cast<llvm::GlobalIFunc>(GV);
+      GIF && isa_and_nonnull<FunctionDecl>(D) && hasFunctionTypePrefix() &&
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    setKCFIType(GD, GIF);
+
   if (D && D->hasAttr<UsedAttr>())
     addUsedOrCompilerUsedGlobal(GV);
 
@@ -4117,7 +4124,7 @@ void CodeGenModule::createCalleeTypeMetadataForIcall(const QualType &QT,
   CB->setMetadata(llvm::LLVMContext::MD_callee_type, MDN);
 }
 
-void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
+void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::GlobalObject *F) {
   const auto *FD = cast<FunctionDecl>(GD.getDecl());
   // A virtual member function carries the type of the slot it fills, and a
   // destructor the type the runtime calls it through.
@@ -4128,7 +4135,7 @@ void CodeGenModule::setKCFIType(GlobalDecl GD, llvm::Function *F) {
         MD->isVirtual() ? getItaniumVTableContext().findOriginalMethod(
                               GD.getCanonicalDecl())
                         : GD,
-        F);
+        cast<llvm::Function>(F));
   llvm::LLVMContext &Ctx = F->getContext();
   llvm::MDBuilder MDB(Ctx);
   llvm::StringRef Salt;
@@ -5642,6 +5649,19 @@ getMultiversionLinkage(CodeGenModule &CGM, GlobalDecl GD) {
   return llvm::GlobalValue::WeakODRLinkage;
 }
 
+// On Windows Itanium and NT-POSIX an image exports a multiversioned function's
+// stub alone: its versions and its resolver are the image's own.
+static llvm::Function *setImageLocal(const CodeGenModule &CGM,
+                                     llvm::Function *F) {
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      CGM.getTarget().supportsIFunc() && !F->hasLocalLinkage()) {
+    F->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    F->setDLLStorageClass(llvm::GlobalValue::DefaultStorageClass);
+    F->setDSOLocal(true);
+  }
+  return F;
+}
+
 void CodeGenModule::emitMultiVersionFunctions() {
   std::vector<GlobalDecl> MVFuncsToEmit;
   MultiVersionFuncs.swap(MVFuncsToEmit);
@@ -5665,7 +5685,7 @@ void CodeGenModule::emitMultiVersionFunctions() {
         }
         assert(Func && "This should have just been created");
       }
-      return cast<llvm::Function>(Func);
+      return setImageLocal(*this, cast<llvm::Function>(Func));
     };
 
     // For AArch64, a resolver is only emitted if a function marked with
@@ -5724,7 +5744,8 @@ void CodeGenModule::emitMultiVersionFunctions() {
       ResolverConstant = IFunc->getResolver();
       if (FD->isTargetClonesMultiVersion() &&
           !getTarget().getTriple().isAArch64() &&
-          !getTarget().getTriple().isOSAIX()) {
+          !getTarget().getTriple().isOSAIX() &&
+          !getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
         std::string MangledName = getMangledNameImpl(
             *this, GD, FD, /*OmitMultiVersionMangling=*/true);
         if (!GetGlobalValue(MangledName + ".ifunc")) {
@@ -5896,7 +5917,8 @@ void CodeGenModule::emitCPUDispatchDefinition(GlobalDecl GD) {
     llvm::erase_if(Features, [&Target](StringRef Feat) {
       return !Target.validateCpuSupports(Feat);
     });
-    Options.emplace_back(cast<llvm::Function>(Func), Features);
+    Options.emplace_back(setImageLocal(*this, cast<llvm::Function>(Func)),
+                         Features);
     ++Index;
   }
 
@@ -5935,6 +5957,9 @@ void CodeGenModule::emitCPUDispatchDefinition(GlobalDecl GD) {
     if (!isa<llvm::GlobalIFunc>(IFunc)) {
       auto *GI = llvm::GlobalIFunc::create(DeclTy, AS, Linkage, "",
                                            ResolverFunc, &getModule());
+      if (hasFunctionTypePrefix() &&
+          getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+        setKCFIType(GD, GI);
       replaceDeclarationWith(IFunc, GI);
       IFunc = GI;
     }
@@ -6058,6 +6083,7 @@ void CodeGenModule::setMultiVersionResolverAttributes(llvm::Function *Resolver,
   setGlobalVisibility(Resolver, D);
 
   setDSOLocal(Resolver);
+  setImageLocal(*this, Resolver);
 
   // Without ifuncs the resolver is the function callers reach, and the one
   // its address names, so an indirect call through that address checks the

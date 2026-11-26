@@ -280,7 +280,7 @@ void llvm::emitLinkerFlagsForGlobalCOFF(raw_ostream &OS, const GlobalValue *GV,
   }
 }
 
-const ConstantInt *llvm::getFunctionTypePrefixMarker(const Function &F) {
+const ConstantInt *llvm::getFunctionTypePrefixMarker(const GlobalObject &F) {
   const Module *M = F.getParent();
   if (!F.hasMetadata(LLVMContext::MD_kcfi_type) ||
       (M->getTargetTriple().isX86() && !M->getModuleFlag("kcfi")))
@@ -329,7 +329,8 @@ void llvm::emitLinkFactsForGlobalCOFF(
   if (GV->isDeclarationForLinker())
     return;
 
-  if (auto *F = dyn_cast<Function>(GV); F && getFunctionTypePrefixMarker(*F))
+  if (auto *F = dyn_cast<GlobalObject>(GV);
+      F && getFunctionTypePrefixMarker(*F))
     Fact(COFF::LinkFactTypePrefix,
          {F->hasMetadata("kcfi_vfn_type") ? COFF::LinkFactVfnType
                                           : COFF::LinkFactNoSecondWord});

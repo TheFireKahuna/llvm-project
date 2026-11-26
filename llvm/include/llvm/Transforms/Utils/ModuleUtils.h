@@ -14,6 +14,7 @@
 #define LLVM_TRANSFORMS_UTILS_MODULEUTILS_H
 
 #include "llvm/ADT/STLFunctionalExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/GlobalIFunc.h"
 #include "llvm/Support/Alignment.h"
@@ -35,6 +36,7 @@ class Constant;
 class ConstantStruct;
 class Value;
 class Type;
+class raw_ostream;
 
 /// Append F to the list of global ctors of module M with the given Priority.
 /// This wraps the function in the appropriate structure and stores it along
@@ -172,6 +174,35 @@ LLVM_ABI bool
 collectFunctionVersions(Function &Resolver,
                         SmallVectorImpl<Function *> &Versions,
                         function_ref<TargetTransformInfo &(Function &)> GetTTI);
+
+/// A multiversioned function whose body Windows selects as it maps the image.
+struct FunctionOverride {
+  /// The version every processor the target supports can run, which runs
+  /// where Windows selects none.
+  Function *Default = nullptr;
+  /// The other versions, highest priority first, each with the numbers of the
+  /// capabilities whose presence together selects it.
+  SmallVector<std::pair<Function *, SmallVector<uint32_t, 2>>, 4> Candidates;
+};
+
+/// Replaces each declaration of a guard in \p M, which names the thread-local
+/// variable whose record holds it, with the guard that the variable's record
+/// states, where \p M defines the variable: a module that links a unit that
+/// only declares a variable with the unit that defines it reads one guard.
+LLVM_ABI void resolveThreadLocalGuards(Module &M);
+
+/// Whether Windows can select the body of the multiversioned function \p GI,
+/// and if so its versions in \p FO: those its resolver returns, ranked as
+/// GlobalOpt ranks them. Otherwise writes the reason to \p Why if given.
+/// \p GetCapabilities adds the numbers that test a version's features beyond
+/// those every processor the target supports has, and returns a feature that
+/// has none, or an empty string.
+LLVM_ABI bool collectFunctionOverride(
+    const GlobalIFunc &GI,
+    function_ref<TargetTransformInfo &(Function &)> GetTTI,
+    function_ref<StringRef(const Function &, SmallVectorImpl<uint32_t> &)>
+        GetCapabilities,
+    FunctionOverride &FO, raw_ostream *Why = nullptr);
 
 } // End llvm namespace
 

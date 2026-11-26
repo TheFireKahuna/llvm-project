@@ -21,6 +21,7 @@
 #include "llvm/TargetParser/ARMTargetParserCommon.h"
 #include "llvm/TargetParser/SubtargetFeature.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/TargetParser/X86TargetParser.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 #include <optional>
@@ -3548,6 +3549,48 @@ TEST(TargetParserTest, testAMDGPUgetLDSBankCount) {
   EXPECT_EQ(AMDGPU::getLDSBankCount(AMDGPU::GK_GFX950), 64u);
   EXPECT_EQ(AMDGPU::getLDSBankCount(AMDGPU::GK_GFX1250), 64u);
   EXPECT_EQ(AMDGPU::getLDSBankCount(AMDGPU::GK_GFX1251), 64u);
+}
+
+TEST(TargetParserTest, FunctionOverrideCapabilities) {
+  // Windows numbers the processor capabilities that select a function's body.
+  EXPECT_EQ(X86::getFunctionOverrideCapability("ermsb"), 0x000u);
+  EXPECT_EQ(X86::getFunctionOverrideCapability("fsrm"), 0x001u);
+  EXPECT_EQ(X86::getFunctionOverrideCapability("fsrs"), 0x003u);
+  EXPECT_EQ(X86::getFunctionOverrideCapability("avx"), 0x13cu);
+  EXPECT_EQ(X86::getFunctionOverrideCapability("avx2"), 0x13du);
+  EXPECT_EQ(X86::getFunctionOverrideCapability("avx512f"), 0x13eu);
+  EXPECT_EQ(X86::getFunctionOverrideCapability("sse4.1"), 0x144u);
+  // Windows tests AVX-512 F alone, and has no number for a level or a
+  // feature it does not enable.
+  for (StringRef Unmapped : {"avx512bw", "avx512vl", "x86-64-v4", "amx-tile",
+                             "sse4.2", "znver4", ""})
+    EXPECT_FALSE(X86::getFunctionOverrideCapability(Unmapped)) << Unmapped;
+
+  auto A64 = [](StringRef Name) {
+    SmallVector<uint32_t, 2> Numbers;
+    bool Found = AArch64::getFunctionOverrideCapabilities(Name, Numbers);
+    EXPECT_EQ(Found, !Numbers.empty());
+    return Numbers;
+  };
+  EXPECT_THAT(A64("sha2"), testing::ElementsAre(0x10004u));
+  EXPECT_THAT(A64("sha3"), testing::ElementsAre(0x10005u, 0x10006u));
+  EXPECT_THAT(A64("lse"), testing::ElementsAre(0x10007u));
+  EXPECT_THAT(A64("rdm"), testing::ElementsAre(0x10009u));
+  EXPECT_THAT(A64("sm4"), testing::ElementsAre(0x1000au, 0x1000bu));
+  EXPECT_THAT(A64("dotprod"), testing::ElementsAre(0x1000cu));
+  EXPECT_THAT(A64("fp16fml"), testing::ElementsAre(0x1000du));
+  EXPECT_THAT(A64("flagm"), testing::ElementsAre(0x1000eu));
+  EXPECT_THAT(A64("flagm2"), testing::ElementsAre(0x1000fu));
+  EXPECT_THAT(A64("fcma"), testing::ElementsAre(0x10010u));
+  EXPECT_THAT(A64("rcpc"), testing::ElementsAre(0x10011u));
+  EXPECT_THAT(A64("rcpc2"), testing::ElementsAre(0x10012u));
+  EXPECT_THAT(A64("bf16"), testing::ElementsAre(0x10013u));
+  EXPECT_THAT(A64("i8mm"), testing::ElementsAre(0x10014u));
+  EXPECT_THAT(A64("fp16"), testing::ElementsAre(0x10015u));
+  // Windows shows that a processor has SVE, not that its state is enabled,
+  // and reads nothing of the registers that hold the rest.
+  for (StringRef Unmapped : {"sve", "sve2", "aes", "crc", "mops", "simd"})
+    EXPECT_TRUE(A64(Unmapped).empty()) << Unmapped;
 }
 
 TEST(TargetParserTest, testAMDGPUgetMaxWavesPerEU) {

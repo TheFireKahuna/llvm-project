@@ -532,7 +532,8 @@ def TargetELFOrMachO : TargetSpec {
   let ObjectFormats = ["ELF", "MachO"];
 }
 def TargetIFuncSupport : TargetSpec {
-  let CustomCode = [{ Target.supportsIFunc() }];
+  let CustomCode = [{ Target.supportsIFunc() &&
+                      !Target.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() }];
 }
 def TargetWindowsArm64EC : TargetSpec {
   let CustomCode = [{ Target.getTriple().isWindowsArm64EC() }];

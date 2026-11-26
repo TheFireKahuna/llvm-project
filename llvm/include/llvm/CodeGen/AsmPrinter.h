@@ -57,7 +57,9 @@ class DwarfDebug;
 class EHStreamer;
 class GCMetadataPrinter;
 class GCStrategy;
+struct FunctionOverride;
 class GlobalAlias;
+class GlobalIFunc;
 class GlobalObject;
 class GlobalValue;
 class GlobalVariable;
@@ -541,7 +543,7 @@ public:
   void emitBBAddrMapSection(const MachineFunction &MF);
 
   void emitKCFITrapEntry(const MachineFunction &MF, const MCSymbol *Symbol);
-  virtual void emitKCFITypeId(const MachineFunction &MF);
+  virtual void emitKCFITypeId(const GlobalObject &GO);
 
   void emitCallGraphSection(const MachineFunction &MF,
                             FunctionCallGraphInfo &FuncCGInfo);
@@ -762,6 +764,26 @@ public:
                                             MCSymbol *LazyPointer) {
     llvm_unreachable(
         "Mach-O IFunc lowering is not yet supported on this target");
+  }
+
+  /// On Windows Itanium and NT-POSIX, whether Windows selects the body of the
+  /// multiversioned function \p GI as it maps the image, and if so its
+  /// versions in \p FO; otherwise the reason it cannot, written to \p Why.
+  virtual bool getFunctionOverride(const GlobalIFunc &GI, FunctionOverride &FO,
+                                   raw_ostream &Why) const {
+    Why << "the target has no function overrides";
+    return false;
+  }
+
+  /// Whether \p F is only the resolver of ifuncs whose bodies Windows selects
+  /// as it maps the image. Nothing at run time calls it, so it is not emitted
+  /// and pulls in nothing it references.
+  bool isFunctionOverrideResolver(const Function &F) const;
+
+  /// Emit a jump to \p Target, the body of an ifunc's stub on Windows Itanium
+  /// and NT-POSIX, or a call of it.
+  virtual void emitCOFFIFuncBranch(const MCSymbol *Target, bool Call) {
+    llvm_unreachable("COFF IFunc lowering is not supported on this target");
   }
 
   /// Emit N NOP instructions.

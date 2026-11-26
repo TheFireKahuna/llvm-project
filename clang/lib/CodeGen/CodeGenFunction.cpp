@@ -53,6 +53,8 @@
 #include "llvm/Support/SaveAndRestore.h"
 #include "llvm/Support/SipHash.h"
 #include "llvm/Support/xxhash.h"
+#include "llvm/TargetParser/AArch64TargetParser.h"
+#include "llvm/TargetParser/X86TargetParser.h"
 #include "llvm/Transforms/Scalar/LowerExpectIntrinsic.h"
 #include "llvm/Transforms/Utils/PromoteMemToReg.h"
 #include <optional>
@@ -2963,36 +2965,60 @@ void CodeGenFunction::EmitKCFIOperandBundle(
 
 llvm::Value *
 CodeGenFunction::FormAArch64ResolverCondition(const FMVResolverOption &RO) {
-  return RO.Features.empty() ? nullptr : EmitAArch64CpuSupports(RO.Features);
+  // A resolver does not test what every processor the target supports has:
+  // whatever a unit's own flags enable, its resolver may be the one the
+  // program keeps.
+  std::vector<StringRef> Floor;
+  llvm::AArch64::getTripleBaselineFeatures(getTarget().getTriple(), Floor);
+  if (RO.Features.empty() ||
+      (!Floor.empty() &&
+       llvm::AArch64::getCpuSupportsMask(RO.Features)
+           .isSubsetOf(llvm::AArch64::getCpuSupportsMask(Floor))))
+    return nullptr;
+  return EmitAArch64CpuSupports(RO.Features);
 }
 
 llvm::Value *
 CodeGenFunction::FormX86ResolverCondition(const FMVResolverOption &RO) {
   llvm::Value *Condition = nullptr;
+  // A resolver does not test what every processor the target supports has:
+  // whatever a unit's own flags enable, its resolver may be the one the
+  // program keeps.
+  auto IsBaseline = [&](StringRef Name) {
+    return llvm::X86::isTripleBaselineFeature(getTarget().getTriple(), Name);
+  };
 
   if (RO.Architecture) {
     StringRef Arch = *RO.Architecture;
     // If arch= specifies an x86-64 micro-architecture level, test the feature
     // with __builtin_cpu_supports, otherwise use __builtin_cpu_is.
-    if (Arch.starts_with("x86-64"))
-      Condition = EmitX86CpuSupports({Arch});
-    else
+    if (!Arch.starts_with("x86-64"))
       Condition = EmitX86CpuIs(Arch);
+    else if (!IsBaseline(Arch))
+      Condition = EmitX86CpuSupports({Arch});
   }
 
-  if (!RO.Features.empty()) {
-    llvm::Value *FeatureCond = EmitX86CpuSupports(RO.Features);
+  SmallVector<StringRef, 8> Features(RO.Features);
+  llvm::erase_if(Features, IsBaseline);
+  if (!Features.empty()) {
+    llvm::Value *FeatureCond = EmitX86CpuSupports(Features);
     Condition =
         Condition ? Builder.CreateAnd(Condition, FeatureCond) : FeatureCond;
   }
   return Condition;
 }
 
-static void CreateMultiVersionResolverReturn(CodeGenModule &CGM,
-                                             llvm::Function *Resolver,
-                                             CGBuilderTy &Builder,
-                                             llvm::Function *FuncToReturn,
-                                             bool SupportsIFunc) {
+static void CreateMultiVersionResolverReturn(
+    CodeGenModule &CGM, llvm::Function *Resolver, CGBuilderTy &Builder,
+    llvm::Function *FuncToReturn, bool SupportsIFunc, bool IsFallback = false) {
+  // On Windows Itanium and NT-POSIX a resolver names the version that ends
+  // it, which every processor the target supports can run.
+  if (IsFallback && SupportsIFunc &&
+      CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    Resolver->setMetadata(
+        "resolver_fallback",
+        llvm::MDNode::get(CGM.getLLVMContext(),
+                          llvm::ValueAsMetadata::get(FuncToReturn)));
   if (SupportsIFunc) {
     Builder.CreateRet(FuncToReturn);
     return;
@@ -3264,7 +3290,7 @@ void CodeGenFunction::EmitAArch64MultiVersionResolver(
     // The 'default' or 'all features enabled' case.
     if (!Condition) {
       CreateMultiVersionResolverReturn(CGM, Resolver, Builder, RO.Function,
-                                       SupportsIFunc);
+                                       SupportsIFunc, /*IsFallback=*/true);
       return;
     }
 
@@ -3292,23 +3318,28 @@ void CodeGenFunction::EmitX86MultiVersionResolver(
     llvm::Function *Resolver, ArrayRef<FMVResolverOption> Options) {
 
   bool SupportsIFunc = getContext().getTargetInfo().supportsIFunc();
+  bool X86CpuInitialized = false;
 
   // Main function's basic block.
   llvm::BasicBlock *CurBlock = createBasicBlock("resolver_entry", Resolver);
-  Builder.SetInsertPoint(CurBlock);
-  EmitX86CpuInit();
 
   for (const FMVResolverOption &RO : Options) {
     Builder.SetInsertPoint(CurBlock);
     llvm::Value *Condition = FormX86ResolverCondition(RO);
 
-    // The 'default' or 'generic' case.
+    // The 'default' or 'generic' case, or one every processor the target
+    // supports chooses, so that no option after it is reached.
     if (!Condition) {
-      assert(&RO == Options.end() - 1 &&
-             "Default or Generic case must be last");
       CreateMultiVersionResolverReturn(CGM, Resolver, Builder, RO.Function,
-                                       SupportsIFunc);
+                                       SupportsIFunc, /*IsFallback=*/true);
       return;
+    }
+
+    if (!X86CpuInitialized) {
+      Builder.SetInsertPoint(CurBlock->begin());
+      EmitX86CpuInit();
+      X86CpuInitialized = true;
+      Builder.SetInsertPoint(CurBlock);
     }
 
     llvm::BasicBlock *RetBlock = createBasicBlock("resolver_return", Resolver);

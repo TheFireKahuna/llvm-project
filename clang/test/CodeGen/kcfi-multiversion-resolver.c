@@ -1,5 +1,4 @@
 // RUN: %clang_cc1 -triple x86_64-pc-windows-msvc -emit-llvm -fsanitize=kcfi -o - %s | FileCheck %s --check-prefixes=CHECK,NOIFUNC
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -emit-llvm -fsanitize=kcfi -o - %s | FileCheck %s --check-prefixes=CHECK,NOIFUNC
 // RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -emit-llvm -fsanitize=kcfi -o - %s | FileCheck %s --check-prefixes=CHECK,IFUNC
 
 /// Without ifuncs the resolver is the multiversioned function's own symbol,

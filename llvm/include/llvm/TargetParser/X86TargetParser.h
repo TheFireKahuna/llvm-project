@@ -18,6 +18,7 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Compiler.h"
 #include <array>
+#include <optional>
 
 namespace llvm {
 template <typename T> class SmallVectorImpl;
@@ -174,6 +175,15 @@ LLVM_ABI void getFeaturesForCPU(StringRef CPU,
 LLVM_ABI void getTripleBaselineFeatures(const Triple &TT,
                                         SmallVectorImpl<StringRef> &Features,
                                         bool NeedPlus = false);
+
+/// Whether every processor \p TT supports has \p Name, a feature or an
+/// x86-64 level.
+LLVM_ABI bool isTripleBaselineFeature(const Triple &TT, StringRef Name);
+
+/// The number of the capability by which Windows selects a function body that
+/// needs \p Feature, if it has one.
+LLVM_ABI std::optional<uint32_t>
+getFunctionOverrideCapability(StringRef Feature);
 
 /// Set or clear entries in \p Features that are implied to be enabled/disabled
 /// by the provided \p Feature.

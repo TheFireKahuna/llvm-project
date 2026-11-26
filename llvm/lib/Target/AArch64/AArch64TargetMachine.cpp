@@ -461,7 +461,10 @@ void AArch64TargetMachine::registerPassBuilderCallbacks(PassBuilder &PB) {
         if (Level != OptimizationLevel::O0)
           LPM.addPass(LoopIdiomVectorizePass());
       });
-  if (getTargetTriple().isOSWindowsOrUEFI())
+  // Windows Itanium and NT-POSIX keep an ifunc to the backend, which lowers it
+  // to a stub.
+  if (getTargetTriple().isOSWindowsOrUEFI() &&
+      !getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     PB.registerPipelineEarlySimplificationEPCallback(
         [](ModulePassManager &PM, OptimizationLevel, ThinOrFullLTOPhase) {
           PM.addPass(LowerIFuncPass());

@@ -4069,6 +4069,8 @@ def err_attribute_weakref_without_alias : Error<
   "weakref declaration of %0 must also have an alias attribute">;
 def err_alias_not_supported_on_darwin : Error <
   "aliases are not supported on darwin">;
+def err_ifunc_needs_resolver_cell : Error<
+  "ifunc %0 needs a resolver cell, which is not supported on this target">;
 def warn_attribute_non_character_array : Warning<
   "%0%select{ attribute|}1 only applies to fields or variables of character "
   "array type; type is %2">, InGroup<IgnoredAttributes>;

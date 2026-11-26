@@ -22,7 +22,8 @@
 // and in .giats$y each import pointer, whose address one of its relocations
 // takes, and sets bit 0x800 of @feat.00. A call or a jump, also through an
 // import pointer, the test of one for zero, a branch, a field through which a
-// function is only called and unwind data take no address. A symbol that has a type other than a
+// function is only called, unwind data and the candidates of a function
+// override take no address. A symbol that has a type other than a
 // function's is not listed; an undefined one without a type is, as it may be
 // a function.
 
@@ -114,4 +115,6 @@ object:
   .quad in_code
   .long called@IMGREL_CALL
   .long called@REL32_CALL
+  .section "f_$fo_rvas$","dr"
+  .long called - .
 .endif

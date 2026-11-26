@@ -1602,7 +1602,10 @@ public:
   bool supportsIFunc() const {
     if (getTriple().isOSBinFormatMachO())
       return true;
-    if (getTriple().isOSWindows() && getTriple().isAArch64())
+    if (getTriple().isOSWindows() &&
+        (getTriple().isAArch64() ||
+         (getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+          getTriple().getArch() == llvm::Triple::x86_64)))
       return true;
     if (getTriple().getArch() == llvm::Triple::ArchType::avr)
       return true;

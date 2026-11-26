@@ -84,6 +84,8 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   SDPI = GetSDPI(*MF.getFunction().getParent());
 
   Subtarget = &MF.getSubtarget<X86Subtarget>();
+  if (isFunctionOverrideResolver(MF.getFunction()))
+    return false;
 
   SMShadowTracker.startFunction(MF);
   AsyncEHRanges.clear();
@@ -440,24 +442,29 @@ uint32_t X86AsmPrinter::MaskKCFIType(uint32_t Value) {
   return getX86KCFIType(Value);
 }
 
-void X86AsmPrinter::EmitKCFITypePadding(const MachineFunction &MF,
+void X86AsmPrinter::EmitKCFITypePadding(const GlobalObject &GO,
                                         unsigned TypeBytes) {
+  // An ifunc's stub is aligned as a Control Flow Guard target, and nothing
+  // runs into it.
+  const auto *F = dyn_cast<Function>(&GO);
+  if (!F)
+    return OutStreamer->emitFill(offsetToAlignment(TypeBytes, Align(16)), 0xcc);
+
   // Keep the function entry aligned, taking patchable-function-prefix into
   // account if set.
-  int64_t PrefixBytes = MF.getFunction().getFnAttributeAsParsedInteger(
-      "patchable-function-prefix");
+  int64_t PrefixBytes =
+      F->getFnAttributeAsParsedInteger("patchable-function-prefix");
 
   // Also take the type identifier into account if we're emitting
   // one. Otherwise, just pad with nops.
   PrefixBytes += TypeBytes;
 
-  emitNops(offsetToAlignment(PrefixBytes, MF.getPreferredAlignment()));
+  emitNops(offsetToAlignment(PrefixBytes, MF->getPreferredAlignment()));
 }
 
 /// emitKCFITypeId - Emit the KCFI type information in architecture specific
 /// format.
-void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
-  const Function &F = MF.getFunction();
+void X86AsmPrinter::emitKCFITypeId(const GlobalObject &F) {
   if (!F.getParent()->getModuleFlag("kcfi"))
     return;
 
@@ -468,7 +475,7 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // If we don't have a type to emit, just emit padding if needed to maintain
   // the same alignment for all functions.
   if (!Type) {
-    EmitKCFITypePadding(MF, /*TypeBytes=*/0);
+    EmitKCFITypePadding(F, /*TypeBytes=*/0);
     return;
   }
 
@@ -478,9 +485,9 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // symbols for weak parent functions. On COFF, however, a linker treats an
   // external symbol that only a discarded COMDAT copy defines as undefined, so
   // keep the symbol local there, which lets a copy without type data prevail.
-  MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + MF.getName());
+  MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + F.getName());
   if (!TM.getTargetTriple().isOSBinFormatCOFF())
-    emitLinkage(&MF.getFunction(), FnSym);
+    emitLinkage(&F, FnSym);
   if (MAI.hasDotTypeDotSizeDirective())
     OutStreamer->emitSymbolAttribute(FnSym, MCSA_ELF_TypeFunction);
 
@@ -494,7 +501,7 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     // before them, which the nopl states by its base register. The symbol
     // follows the padding and so marks the prefix's start.
     const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
-    EmitKCFITypePadding(MF, VfnMD ? 16 : 12);
+    EmitKCFITypePadding(F, VfnMD ? 16 : 12);
     OutStreamer->emitLabel(FnSym);
     if (VfnMD)
       OutStreamer->emitInt32(MaskKCFIType(
@@ -506,10 +513,10 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
                      .addImm(static_cast<int32_t>(Marker->getZExtValue()))
                      .addReg(X86::NoRegister);
     Nop.setFlags(X86::IP_USE_DISP32);
-    EmitAndCountInstruction(Nop);
+    OutStreamer->emitInstruction(Nop, *Subtarget);
   } else {
     OutStreamer->emitLabel(FnSym);
-    EmitKCFITypePadding(MF, 5);
+    EmitKCFITypePadding(F, 5);
   }
   unsigned DestReg = X86::EAX;
 
@@ -529,11 +536,11 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     const unsigned ArityToRegMap[8] = {X86::EAX, X86::ECX, X86::EDX, X86::EBX,
                                        X86::ESP, X86::EBP, X86::ESI, X86::EDI};
     int Arity;
-    if (MF.getInfo<X86MachineFunctionInfo>()->getArgumentStackSize() > 0) {
+    if (MF->getInfo<X86MachineFunctionInfo>()->getArgumentStackSize() > 0) {
       Arity = 7;
     } else {
       Arity = 0;
-      for (const auto &LI : MF.getRegInfo().liveins()) {
+      for (const auto &LI : MF->getRegInfo().liveins()) {
         auto Reg = LI.first;
         if (X86::GR8RegClass.contains(Reg) || X86::GR16RegClass.contains(Reg) ||
             X86::GR32RegClass.contains(Reg) ||
@@ -545,9 +552,10 @@ void X86AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
     DestReg = ArityToRegMap[Arity];
   }
 
-  EmitAndCountInstruction(MCInstBuilder(X86::MOV32ri)
-                              .addReg(DestReg)
-                              .addImm(MaskKCFIType(Type->getZExtValue())));
+  OutStreamer->emitInstruction(MCInstBuilder(X86::MOV32ri)
+                                   .addReg(DestReg)
+                                   .addImm(MaskKCFIType(Type->getZExtValue())),
+                               *Subtarget);
 
   if (MAI.hasDotTypeDotSizeDirective()) {
     MCSymbol *EndSym = OutContext.createTempSymbol("cfi_func_end");
@@ -909,6 +917,19 @@ void X86AsmPrinter::PrintIntelMemReference(const MachineInstr *MI,
 const MCSubtargetInfo *X86AsmPrinter::getIFuncMCSubtargetInfo() const {
   assert(Subtarget);
   return Subtarget;
+}
+
+bool X86AsmPrinter::getFunctionOverride(const GlobalIFunc &GI,
+                                        FunctionOverride &FO,
+                                        raw_ostream &Why) const {
+  return Subtarget && Subtarget->getFunctionOverride(GI, &FO, &Why);
+}
+
+void X86AsmPrinter::emitCOFFIFuncBranch(const MCSymbol *Target, bool Call) {
+  OutStreamer->emitInstruction(
+      MCInstBuilder(Call ? X86::CALL64pcrel32 : X86::JMP_4)
+          .addExpr(MCSymbolRefExpr::create(Target, OutContext)),
+      *Subtarget);
 }
 
 void X86AsmPrinter::emitMachOIFuncStubBody(Module &M, const GlobalIFunc &GI,

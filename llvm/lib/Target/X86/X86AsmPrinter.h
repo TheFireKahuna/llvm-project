@@ -127,7 +127,7 @@ private:
 
   // KCFI specific lowering for X86.
   uint32_t MaskKCFIType(uint32_t Value);
-  void EmitKCFITypePadding(const MachineFunction &MF, unsigned TypeBytes);
+  void EmitKCFITypePadding(const GlobalObject &GO, unsigned TypeBytes);
   void LowerKCFI_CHECK(const MachineInstr &MI);
 
   // Address sanitizer specific lowering for X86.
@@ -148,6 +148,9 @@ private:
   void PrintIntelMemReference(const MachineInstr *MI, unsigned OpNo,
                               raw_ostream &O, StringRef Modifier = {});
   const MCSubtargetInfo *getIFuncMCSubtargetInfo() const override;
+  bool getFunctionOverride(const GlobalIFunc &GI, FunctionOverride &FO,
+                           raw_ostream &Why) const override;
+  void emitCOFFIFuncBranch(const MCSymbol *Target, bool Call) override;
   void emitMachOIFuncStubBody(Module &M, const GlobalIFunc &GI,
                               MCSymbol *LazyPointer) override;
   void emitMachOIFuncStubHelperBody(Module &M, const GlobalIFunc &GI,
@@ -208,7 +211,7 @@ public:
   COFF::FusedUse getLoweredFusedUse(const MachineInstr &MI, unsigned &RegOp);
   void emitFunctionBodyStart() override;
   void emitFunctionBodyEnd() override;
-  void emitKCFITypeId(const MachineFunction &MF) override;
+  void emitKCFITypeId(const GlobalObject &GO) override;
 
   bool shouldEmitWeakSwiftAsyncExtendedFramePointerFlags() const override {
     return ShouldEmitWeakSwiftAsyncExtendedFramePointerFlags;

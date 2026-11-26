@@ -246,7 +246,10 @@ uint32_t ModuleSymbolTable::getSymbolFlags(Symbol S) const {
   if (GV->getName().starts_with("llvm."))
     Res |= BasicSymbolRef::SF_FormatSpecific;
   else if (auto *Var = dyn_cast<GlobalVariable>(GV)) {
-    if (Var->getSection() == "llvm.metadata")
+    // A declaration that names the thread-local variable whose record holds
+    // it, a guard, has no symbol: code reaches it through the variable's.
+    if (Var->getSection() == "llvm.metadata" ||
+        (Var->isDeclaration() && Var->getMetadata("tls_record")))
       Res |= BasicSymbolRef::SF_FormatSpecific;
   }
 

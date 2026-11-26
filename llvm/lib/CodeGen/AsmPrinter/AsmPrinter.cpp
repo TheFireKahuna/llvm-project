@@ -131,6 +131,7 @@
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/Target/TargetOptions.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
@@ -1099,7 +1100,7 @@ void AsmPrinter::emitFunctionHeader() {
     emitFunctionPrefix({F.getPrefixData()});
 
   // Emit KCFI type information before patchable-function-prefix nops.
-  emitKCFITypeId(*MF);
+  emitKCFITypeId(F);
 
   // Emit M NOPs for -fpatchable-function-entry=N,M where M>0. We arbitrarily
   // place prefix data before NOPs.
@@ -1698,10 +1699,9 @@ void AsmPrinter::emitKCFITrapEntry(const MachineFunction &MF,
   OutStreamer->popSection();
 }
 
-void AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
-  const Function &F = MF.getFunction();
-  if (const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type))
-    emitGlobalConstant(F.getDataLayout(),
+void AsmPrinter::emitKCFITypeId(const GlobalObject &GO) {
+  if (const MDNode *MD = GO.getMetadata(LLVMContext::MD_kcfi_type))
+    emitGlobalConstant(GO.getDataLayout(),
                        mdconst::extract<ConstantInt>(MD->getOperand(0)));
 }
 
@@ -2829,6 +2829,15 @@ void AsmPrinter::emitGlobalAlias(const Module &M, const GlobalAlias &GA) {
   }
 }
 
+bool AsmPrinter::isFunctionOverrideResolver(const Function &F) const {
+  FunctionOverride FO;
+  return !F.use_empty() && all_of(F.users(), [&](const User *U) {
+    auto *GI = dyn_cast<GlobalIFunc>(U);
+    return GI && GI->getResolverFunction() == &F &&
+           getFunctionOverride(*GI, FO, nulls());
+  });
+}
+
 void AsmPrinter::emitGlobalIFunc(Module &M, const GlobalIFunc &GI) {
   auto EmitLinkage = [&](MCSymbol *Sym) {
     if (GI.hasExternalLinkage() || !MAI.getWeakRefDirective())
@@ -2852,6 +2861,112 @@ void AsmPrinter::emitGlobalIFunc(Module &M, const GlobalIFunc &GI) {
     if (LocalAlias != Name)
       OutStreamer->emitAssignment(LocalAlias, Expr);
 
+    return;
+  }
+
+  // On Windows Itanium and NT-POSIX an ifunc is a stub, the function's
+  // address: its type prefix, then a branch. Where Windows can select a
+  // multiversioned function's body as it maps the image, the branch is to
+  // the version every processor runs, and sections in Microsoft's
+  // function-override convention, keyed on that version X, hold the diagram
+  // and the versions it selects among.
+  if (M.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    FunctionOverride FO;
+    std::string Why;
+    raw_string_ostream OS(Why);
+    if (!getFunctionOverride(GI, FO, OS))
+      reportFatalUsageError(Twine("ifunc '") + GI.getName() +
+                            "' needs a resolver cell, which is not supported "
+                            "on this platform: " + Why);
+    MCSymbol *Stub = getSymbol(&GI);
+    MCSymbol *X = getSymbol(FO.Default);
+    // An inline or weak function's stub is a COMDAT, so that it has one
+    // address.
+    OutStreamer->switchSection(
+        GI.isWeakForLinker()
+            ? OutContext.getCOFFSection(
+                  ".text",
+                  COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
+                      COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_LNK_COMDAT,
+                  Stub->getName(), COFF::IMAGE_COMDAT_SELECT_ANY)
+            : getObjFileLowering().SectionForGlobal(&GI, SectionKind::getText(),
+                                                    TM));
+    if (!GI.hasLocalLinkage())
+      OutStreamer->emitSymbolAttribute(Stub, MCSA_Global);
+    OutStreamer->beginCOFFSymbolDef(Stub);
+    OutStreamer->emitCOFFSymbolStorageClass(
+        GI.hasLocalLinkage() ? COFF::IMAGE_SYM_CLASS_STATIC
+                             : COFF::IMAGE_SYM_CLASS_EXTERNAL);
+    OutStreamer->emitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_FUNCTION
+                                    << COFF::SCT_COMPLEX_TYPE_SHIFT);
+    OutStreamer->endCOFFSymbolDef();
+    emitAlignment(Align(16));
+    emitKCFITypeId(GI);
+    OutStreamer->emitLabel(Stub);
+    emitCOFFIFuncBranch(X, /*Call=*/false);
+    if (FO.Candidates.empty())
+      return;
+
+    bool Local = FO.Default->hasLocalLinkage();
+    auto GetSymbol = [&](const char *Suffix) {
+      MCSymbol *Sym = OutContext.getOrCreateSymbol(X->getName() + Suffix);
+      if (!Local)
+        OutStreamer->emitSymbolAttribute(Sym, MCSA_Global);
+      return Sym;
+    };
+    auto GetSection = [&](const char *Suffix, int Selection) {
+      return OutContext.getCOFFSection(
+          (X->getName() + Suffix).str(), COFF::IMAGE_SCN_LNK_COMDAT,
+          (X->getName() + "_$fo$").str(), Selection);
+    };
+    if (!FO.Default->isDeclaration())
+      OutStreamer->emitAssignment(GetSymbol("_$fo_default$"),
+                                  MCSymbolRefExpr::create(X, OutContext));
+
+    // The diagram is a chain. A test's false edge leads to the next
+    // candidate's first test, and its true edge to the candidate's next test
+    // or, after the last, to the leaf that selects it; the terminal after
+    // the last candidate keeps the stub's target. Every edge leads forward.
+    size_t Nodes = 1;
+    for (const auto &Candidate : FO.Candidates)
+      Nodes += Candidate.second.size() + 1;
+    OutStreamer->switchSection(
+        GetSection("_$fo_bdd$", COFF::IMAGE_COMDAT_SELECT_ANY));
+    OutStreamer->emitLabel(GetSymbol("_$fo$"));
+    OutStreamer->emitInt32(1);
+    OutStreamer->emitInt32(Nodes * 8);
+    for (size_t Node = 0, I = 0, E = FO.Candidates.size(); I != E; ++I) {
+      size_t Leaf = Node + FO.Candidates[I].second.size();
+      for (uint32_t Capability : FO.Candidates[I].second) {
+        OutStreamer->emitInt16(Leaf + 1);
+        OutStreamer->emitInt16(++Node);
+        OutStreamer->emitInt32(Capability);
+      }
+      OutStreamer->emitInt16(Leaf);
+      OutStreamer->emitInt16(Leaf);
+      OutStreamer->emitInt32(I);
+      ++Node;
+    }
+    OutStreamer->emitInt64(0);
+
+    // Microsoft's objects name each candidate by a REL32 on x86-64 and by a
+    // BRANCH26 on AArch64, a bl's relocation.
+    OutStreamer->switchSection(
+        GetSection("_$fo_rvas$", COFF::IMAGE_COMDAT_SELECT_ASSOCIATIVE));
+    for (const auto &Candidate : FO.Candidates) {
+      MCSymbol *Sym = getSymbol(Candidate.first);
+      if (M.getTargetTriple().isAArch64()) {
+        emitCOFFIFuncBranch(Sym, /*Call=*/true);
+        continue;
+      }
+      MCSymbol *End = OutContext.createTempSymbol();
+      OutStreamer->emitValue(
+          MCBinaryExpr::createSub(MCSymbolRefExpr::create(Sym, OutContext),
+                                  MCSymbolRefExpr::create(End, OutContext),
+                                  OutContext),
+          4);
+      OutStreamer->emitLabel(End);
+    }
     return;
   }
 

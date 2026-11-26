@@ -20,14 +20,17 @@
 #include "GISel/AArch64LegalizerInfo.h"
 #include "GISel/AArch64RegisterBankInfo.h"
 #include "MCTargetDesc/AArch64AddressingModes.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/IR/ConstantRange.h"
+#include "llvm/IR/GlobalIFunc.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/Option/LibraryOptions.h"
 #include "llvm/Support/SipHash.h"
 #include "llvm/TargetParser/AArch64TargetParser.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 using namespace llvm;
 
@@ -443,6 +446,40 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
   return AArch64II::MO_NO_FLAG;
 }
 
+bool AArch64Subtarget::getFunctionOverride(const GlobalIFunc &GI,
+                                           const TargetMachine &TM,
+                                           FunctionOverride *FO,
+                                           raw_ostream *Why) const {
+  if (!getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return false;
+  std::optional<TargetTransformInfo> TTI;
+  auto GetTTI = [&](Function &F) -> TargetTransformInfo & {
+    return TTI.emplace(TM.getTargetTransformInfo(F));
+  };
+  // A version is tested on the features its resolver tests: those it names
+  // with the ones they imply, less those every processor the target supports
+  // has.
+  std::vector<StringRef> Floor;
+  AArch64::getTripleBaselineFeatures(getTargetTriple(), Floor);
+  auto GetCapabilities = [&](const Function &Version,
+                             SmallVectorImpl<uint32_t> &Capabilities) {
+    SmallVector<StringRef, 8> Features;
+    Version.getFnAttribute("fmv-features")
+        .getValueAsString()
+        .split(Features, ',', -1, /*KeepEmpty=*/false);
+    APInt Tested = AArch64::getCpuSupportsMask(Features) &
+                   ~AArch64::getCpuSupportsMask(Floor);
+    for (const AArch64::FMVInfo &Info : AArch64::getFMVInfo())
+      if (Info.FeatureBit && Tested[*Info.FeatureBit] &&
+          !AArch64::getFunctionOverrideCapabilities(Info.Name, Capabilities))
+        return Info.Name;
+    return StringRef();
+  };
+  FunctionOverride Versions;
+  return collectFunctionOverride(GI, GetTTI, GetCapabilities,
+                                 FO ? *FO : Versions, Why);
+}
+
 unsigned AArch64Subtarget::classifyGlobalFunctionReference(
     const GlobalValue *GV, const TargetMachine &TM) const {
   // MachO large model always goes via a GOT, because we don't have the
@@ -465,6 +502,12 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
         return AArch64II::MO_ARM64EC_CALLMANGLE;
       }
     }
+
+    // A call of a function whose body Windows selects is a site Windows
+    // rewrites, so it stays direct.
+    if (auto *GI = dyn_cast<GlobalIFunc>(GV);
+        GI && getFunctionOverride(*GI, TM))
+      return AArch64II::MO_NO_FLAG;
 
     // On Windows Itanium and NT-POSIX a call binds through the linker's thunk,
     // as through a PLT entry on ELF, unless the function is known to be

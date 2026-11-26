@@ -739,7 +739,8 @@ inline bool relocationMovesCode(uint16_t Type) {
 /// Returns true if the relocations in section \p SectionName may take the
 /// address of the functions they name, which Control Flow Guard then lists
 /// as indirect call targets. Unwind data and debug info only describe the
-/// functions they name.
+/// functions they name, and the candidates of a function override are
+/// reached only by the branches Windows rewrites.
 LLVM_ABI bool isGuardCFAddressTakingSection(StringRef SectionName);
 
 /// Returns true if a relocation of \p Type in an object for \p Machine may

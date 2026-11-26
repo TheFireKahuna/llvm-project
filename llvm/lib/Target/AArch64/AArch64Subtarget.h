@@ -51,6 +51,8 @@ enum class UncheckedLdStMode { Never, Safe, Always };
 #include "AArch64GenSubtargetInfo.inc"
 
 namespace llvm {
+struct FunctionOverride;
+class GlobalIFunc;
 class GlobalValue;
 class StringRef;
 
@@ -407,6 +409,13 @@ public:
   /// Return 0 for any other global.
   unsigned getNumAbsoluteSymbolMOVs(const GlobalValue *GV,
                                     int64_t Offset = 0) const;
+
+  /// Whether Windows selects the body of the multiversioned function \p GI as
+  /// it maps the image, and if so its versions in \p FO. Otherwise its stub
+  /// jumps through a cell, for the reason written to \p Why.
+  bool getFunctionOverride(const GlobalIFunc &GI, const TargetMachine &TM,
+                           FunctionOverride *FO = nullptr,
+                           raw_ostream *Why = nullptr) const;
 
   unsigned classifyGlobalFunctionReference(const GlobalValue *GV,
                                            const TargetMachine &TM) const;

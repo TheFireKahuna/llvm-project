@@ -65,6 +65,36 @@ std::optional<AArch64::FMVInfo> getFMVInfoFrom(StringRef Feature) {
   return FMV;
 }
 
+void AArch64::getTripleBaselineFeatures(const Triple &TT,
+                                        std::vector<StringRef> &Features) {
+  // The hardware floor of Windows Itanium and NT-POSIX. It is a feature set
+  // and not an architecture version: Armv8.2-A cores back-port LSE2, whose
+  // 16-byte atomic accesses are what exclude the older ones.
+  if (TT.isAArch64() && TT.isWindowsItaniumOrNTPOSIXEnvironment())
+    Features.insert(Features.end(),
+                    {"+v8.2a", "+neon", "+crc", "+lse", "+lse2", "+rcpc",
+                     "+rcpc-immo", "+flagm", "+dotprod", "+fullfp16", "+rdm",
+                     "+aes", "+sha2", "+ccpp", "+pauth"});
+}
+
+bool AArch64::getFunctionOverrideCapabilities(
+    StringRef Name, SmallVectorImpl<uint32_t> &Capabilities) {
+  // Windows sets 0x10000 plus a bit from the boot processor's ID registers.
+  static constexpr std::pair<StringLiteral, uint32_t> Map[] = {
+      {"sha2", 0x10004},  {"sha3", 0x10005},    {"sha3", 0x10006},
+      {"lse", 0x10007},   {"rdm", 0x10009},     {"sm4", 0x1000a},
+      {"sm4", 0x1000b},   {"dotprod", 0x1000c}, {"fp16fml", 0x1000d},
+      {"flagm", 0x1000e}, {"flagm2", 0x1000f},  {"fcma", 0x10010},
+      {"rcpc", 0x10011},  {"rcpc2", 0x10012},   {"bf16", 0x10013},
+      {"i8mm", 0x10014},  {"fp16", 0x10015},
+  };
+  size_t Size = Capabilities.size();
+  for (auto [Feature, Number] : Map)
+    if (Feature == Name)
+      Capabilities.push_back(Number);
+  return Capabilities.size() != Size;
+}
+
 APInt AArch64::getFMVPriority(ArrayRef<StringRef> Features) {
   // Transitively enable the Arch Extensions which correspond to each feature.
   ExtensionSet FeatureBits;

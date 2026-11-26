@@ -281,3 +281,19 @@ X86_FEATURE       (LVI_LOAD_HARDENING,          "lvi-load-hardening")
 #undef X86_FEATURE_COMPAT
 #undef X86_FEATURE
 #undef X86_MICROARCH_LEVEL
+
+// The numbers of the processor capabilities by which Windows selects a
+// function's body as it maps an image, the tests of a function-override
+// dynamic relocation's decision diagram. Windows sets a vector capability
+// only where it enabled the state, and reads an unknown number as absent.
+#ifndef X86_FUNCTION_OVERRIDE_CAPABILITY
+#define X86_FUNCTION_OVERRIDE_CAPABILITY(STR, NUMBER)
+#endif
+X86_FUNCTION_OVERRIDE_CAPABILITY("ermsb",   0x000)
+X86_FUNCTION_OVERRIDE_CAPABILITY("fsrm",    0x001)
+X86_FUNCTION_OVERRIDE_CAPABILITY("fsrs",    0x003)
+X86_FUNCTION_OVERRIDE_CAPABILITY("avx",     0x13c)
+X86_FUNCTION_OVERRIDE_CAPABILITY("avx2",    0x13d)
+X86_FUNCTION_OVERRIDE_CAPABILITY("avx512f", 0x13e)
+X86_FUNCTION_OVERRIDE_CAPABILITY("sse4.1",  0x144)
+#undef X86_FUNCTION_OVERRIDE_CAPABILITY

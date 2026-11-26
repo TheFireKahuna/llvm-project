@@ -268,6 +268,19 @@ targetFeatureToExtension(StringRef TargetFeature);
 // Parse a name as defined by the Extension class in tablegen.
 LLVM_ABI std::optional<ExtensionInfo> parseArchExtension(StringRef Extension);
 
+// Fill in the target features that every processor \p TT supports has,
+// whatever CPU a compilation names, for a target that states such a floor.
+LLVM_ABI void getTripleBaselineFeatures(const Triple &TT,
+                                        std::vector<StringRef> &Features);
+
+// Adds to \p Capabilities the numbers of the capabilities by which Windows
+// selects a function body that needs the FMV feature \p Name, the tests of a
+// function-override dynamic relocation's decision diagram. Returns false if
+// the feature has none.
+LLVM_ABI bool
+getFunctionOverrideCapabilities(StringRef Name,
+                                SmallVectorImpl<uint32_t> &Capabilities);
+
 // Parse a name as defined by the FMVInfo class in tablegen.
 LLVM_ABI std::optional<FMVInfo> parseFMVExtension(StringRef Extension);
 

@@ -18,6 +18,7 @@
 #include "X86.h"
 #include "X86MacroFusion.h"
 #include "X86TargetMachine.h"
+#include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelector.h"
@@ -25,6 +26,7 @@
 #include "llvm/IR/Attributes.h"
 #include "llvm/IR/ConstantRange.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/GlobalIFunc.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Option/LibraryOptions.h"
@@ -34,6 +36,8 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Target/TargetMachine.h"
 #include "llvm/TargetParser/Triple.h"
+#include "llvm/TargetParser/X86TargetParser.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 #if defined(_MSC_VER)
 #include <intrin.h>
@@ -182,6 +186,37 @@ unsigned char X86Subtarget::classifyGlobalReference(const GlobalValue *GV,
   return X86II::MO_GOT;
 }
 
+bool X86Subtarget::getFunctionOverride(const GlobalIFunc &GI,
+                                       FunctionOverride *FO,
+                                       raw_ostream *Why) const {
+  if (!is64Bit() || !TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment())
+    return false;
+  std::optional<TargetTransformInfo> TTI;
+  auto GetTTI = [&](Function &F) -> TargetTransformInfo & {
+    return TTI.emplace(TM.getTargetTransformInfo(F));
+  };
+  auto GetCapabilities = [&](const Function &Version,
+                             SmallVectorImpl<uint32_t> &Capabilities) {
+    SmallVector<StringRef, 8> Features;
+    Version.getFnAttribute("fmv-features")
+        .getValueAsString()
+        .split(Features, ',', -1, /*KeepEmpty=*/false);
+    for (StringRef Feature : Features) {
+      if (X86::isTripleBaselineFeature(TargetTriple, Feature))
+        continue;
+      std::optional<uint32_t> Capability =
+          X86::getFunctionOverrideCapability(Feature);
+      if (!Capability)
+        return Feature;
+      Capabilities.push_back(*Capability);
+    }
+    return StringRef();
+  };
+  FunctionOverride Versions;
+  return collectFunctionOverride(GI, GetTTI, GetCapabilities,
+                                 FO ? *FO : Versions, Why);
+}
+
 unsigned char
 X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV) const {
   return classifyGlobalFunctionReference(GV, *GV->getParent());
@@ -203,6 +238,11 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
     // PLT is to be avoided. An extern_weak function has no thunk to bind to,
     // and a library call takes the pointer under -fplt too.
     if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+      // A call of a function whose body Windows selects is a site Windows
+      // rewrites, so it stays direct.
+      if (auto *GI = dyn_cast_or_null<GlobalIFunc>(GV);
+          GI && getFunctionOverride(*GI))
+        return X86II::MO_NO_FLAG;
       const auto *F = dyn_cast_or_null<Function>(GV);
       if (!GV || GV->hasDLLImportStorageClass() ||
           GV->hasExternalWeakLinkage() ||

@@ -547,3 +547,72 @@ bool llvm::collectFunctionVersions(
         return false;
   return true;
 }
+
+void llvm::resolveThreadLocalGuards(Module &M) {
+  // What a thread-local variable's record names: its guard, or for a guard's
+  // declaration the variable.
+  auto Named = [](const GlobalVariable *GV) {
+    const MDNode *Record = GV->getMetadata("tls_record");
+    return mdconst::dyn_extract_or_null<GlobalVariable>(
+        Record ? Record->getOperand(0).get() : nullptr);
+  };
+  for (GlobalVariable &GV : make_early_inc_range(M.globals()))
+    if (GlobalVariable *Var = GV.isDeclaration() ? Named(&GV) : nullptr;
+        Var && !Var->isDeclarationForLinker())
+      if (GlobalVariable *Guard = Named(Var)) {
+        GV.replaceAllUsesWith(Guard);
+        GV.eraseFromParent();
+      }
+}
+
+bool llvm::collectFunctionOverride(
+    const GlobalIFunc &GI,
+    function_ref<TargetTransformInfo &(Function &)> GetTTI,
+    function_ref<StringRef(const Function &, SmallVectorImpl<uint32_t> &)>
+        GetCapabilities,
+    FunctionOverride &FO, raw_ostream *Why) {
+  auto Fail = [&](const Twine &Reason) {
+    if (Why)
+      *Why << Reason;
+    return false;
+  };
+  auto *Resolver = const_cast<Function *>(GI.getResolverFunction());
+  SmallVector<Function *> Versions;
+  if (GI.isInterposable())
+    return Fail("it may be replaced at link time");
+  if (!Resolver || Resolver->isDeclaration() || Resolver->isInterposable())
+    return Fail("its resolver is not defined in this module for good");
+  if (!collectFunctionVersions(*Resolver, Versions, GetTTI))
+    return Fail("its resolver returns other than versions of a "
+                "multiversioned function");
+  SmallVector<std::pair<APInt, Function *>> Ranked;
+  for (Function *V : Versions)
+    Ranked.emplace_back(GetTTI(*V).getPriorityMask(*V), V);
+  sort(Ranked, [](const auto &L, const auto &R) {
+    return L.first != R.first ? L.first.ugt(R.first)
+                              : L.second->getName() < R.second->getName();
+  });
+  Ranked.erase(unique(Ranked), Ranked.end());
+
+  // The resolver is read as a chain: the first version in priority order
+  // whose features the processor has, ending at the one that needs none.
+  FO = FunctionOverride();
+  for (size_t I = 0, E = Ranked.size(); I != E; ++I) {
+    Function *V = Ranked[I].second;
+    if (FO.Default)
+      return Fail("version '" + V->getName() + "' ranks below '" +
+                  FO.Default->getName() + "', which needs no feature");
+    if (I && Ranked[I - 1].first == Ranked[I].first)
+      return Fail("versions '" + Ranked[I - 1].second->getName() + "' and '" +
+                  V->getName() + "' have one priority");
+    SmallVector<uint32_t, 2> Capabilities;
+    if (StringRef Feature = GetCapabilities(*V, Capabilities); !Feature.empty())
+      return Fail("version '" + V->getName() + "' needs '" + Feature +
+                  "', which Windows selects no body by");
+    if (Capabilities.empty())
+      FO.Default = V;
+    else
+      FO.Candidates.emplace_back(V, std::move(Capabilities));
+  }
+  return FO.Default || Fail("no version runs on every processor");
+}

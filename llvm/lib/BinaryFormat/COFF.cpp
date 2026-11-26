@@ -83,7 +83,8 @@ void llvm::COFF::encodeLinkFact(raw_ostream &OS, uint64_t Symbol, uint64_t Tag,
 
 bool llvm::COFF::isGuardCFAddressTakingSection(StringRef SectionName) {
   return SectionName.split('$').first != ".pdata" &&
-         !SectionName.starts_with(".debug");
+         !SectionName.starts_with(".debug") &&
+         !SectionName.ends_with("_$fo_rvas$");
 }
 
 bool llvm::COFF::isGuardCFAddressTakingRelocation(uint16_t Machine,

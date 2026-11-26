@@ -35,6 +35,8 @@
 namespace llvm {
 
 class CallLowering;
+struct FunctionOverride;
+class GlobalIFunc;
 class GlobalValue;
 class InstructionSelector;
 class LegalizerInfo;
@@ -423,6 +425,13 @@ public:
   unsigned char classifyGlobalReference(const GlobalValue *GV) const;
 
   /// Classify a global function reference for the current subtarget.
+  /// Whether Windows selects the body of the multiversioned function \p GI as
+  /// it maps the image, and if so its versions in \p FO. Otherwise its stub
+  /// jumps through a cell, for the reason written to \p Why.
+  bool getFunctionOverride(const GlobalIFunc &GI,
+                           FunctionOverride *FO = nullptr,
+                           raw_ostream *Why = nullptr) const;
+
   unsigned char classifyGlobalFunctionReference(const GlobalValue *GV,
                                                 const Module &M) const;
   unsigned char

@@ -732,6 +732,29 @@ void llvm::X86::getTripleBaselineFeatures(const Triple &TT,
     Features.push_back(Name.drop_front(!NeedPlus));
 }
 
+bool llvm::X86::isTripleBaselineFeature(const Triple &TT, StringRef Name) {
+  SmallVector<StringRef, 64> Features;
+  getTripleBaselineFeatures(TT, Features);
+  StringMap<bool> Baseline;
+  for (StringRef F : Features) {
+    Baseline[F] = true;
+    updateImpliedFeatures(F, true, Baseline);
+  }
+  if (!Name.starts_with("x86-64"))
+    return Baseline.lookup(Name);
+  Features.clear();
+  getFeaturesForCPU(Name, Features);
+  return all_of(Features, [&](StringRef F) { return Baseline.lookup(F); });
+}
+
+std::optional<uint32_t>
+llvm::X86::getFunctionOverrideCapability(StringRef Feature) {
+  return StringSwitch<std::optional<uint32_t>>(Feature)
+#define X86_FUNCTION_OVERRIDE_CAPABILITY(STR, NUMBER) .Case(STR, NUMBER)
+#include "llvm/TargetParser/X86TargetParser.def"
+      .Default(std::nullopt);
+}
+
 // For each feature that is (transitively) implied by this feature, set it.
 static void getImpliedEnabledFeatures(FeatureBitset &Bits,
                                       const FeatureBitset &Implies) {

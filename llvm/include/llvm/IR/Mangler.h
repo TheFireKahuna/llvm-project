@@ -24,6 +24,7 @@ namespace llvm {
 class ConstantInt;
 class DataLayout;
 class Function;
+class GlobalObject;
 class GlobalValue;
 template <typename T> class SmallVectorImpl;
 class Triple;
@@ -72,7 +73,7 @@ LLVM_ABI void emitLinkerFlagsForGlobalCOFF(raw_ostream &OS,
 /// Returns the marker of the type prefix that \p F is emitted with, or null
 /// if it has none: the function-type-prefix flag of the module of a function
 /// with !kcfi_type, which x86 emits type data for only under the kcfi flag.
-LLVM_ABI const ConstantInt *getFunctionTypePrefixMarker(const Function &F);
+LLVM_ABI const ConstantInt *getFunctionTypePrefixMarker(const GlobalObject &F);
 
 /// An operand of a link fact: a symbol or a number.
 struct LinkFactOperand {

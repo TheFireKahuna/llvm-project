@@ -160,7 +160,7 @@ public:
       HwasanMemaccessTuple;
   std::map<HwasanMemaccessTuple, MCSymbol *> HwasanMemaccessSymbols;
   void LowerKCFI_CHECK(const MachineInstr &MI);
-  void emitKCFITypeId(const MachineFunction &MF) override;
+  void emitKCFITypeId(const GlobalObject &GO) override;
   void LowerHWASAN_CHECK_MEMACCESS(const MachineInstr &MI);
   void emitHwasanMemaccessSymbols(Module &M);
   void emitGuardTailCallThunk(Module &M);
@@ -319,6 +319,8 @@ public:
 
     AArch64FI = MF.getInfo<AArch64FunctionInfo>();
     STI = &MF.getSubtarget<AArch64Subtarget>();
+    if (isFunctionOverrideResolver(MF.getFunction()))
+      return false;
 
     SetupMachineFunction(MF);
 
@@ -585,6 +587,14 @@ private:
   const MCSubtargetInfo *getIFuncMCSubtargetInfo() const override {
     assert(STI);
     return STI;
+  }
+  bool getFunctionOverride(const GlobalIFunc &GI, FunctionOverride &FO,
+                           raw_ostream &Why) const override {
+    return STI && STI->getFunctionOverride(GI, TM, &FO, &Why);
+  }
+  void emitCOFFIFuncBranch(const MCSymbol *Target, bool Call) override {
+    EmitToStreamer(MCInstBuilder(Call ? AArch64::BL : AArch64::B)
+                       .addExpr(MCSymbolRefExpr::create(Target, OutContext)));
   }
   void emitMachOIFuncStubBody(Module &M, const GlobalIFunc &GI,
                               MCSymbol *LazyPointer) override;
@@ -887,11 +897,10 @@ void AArch64AsmPrinter::LowerPATCHABLE_EVENT_CALL(const MachineInstr &MI,
   }
 }
 
-void AArch64AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
-  const Function &F = MF.getFunction();
+void AArch64AsmPrinter::emitKCFITypeId(const GlobalObject &F) {
   const ConstantInt *Marker = getFunctionTypePrefixMarker(F);
   if (!Marker)
-    return AsmPrinter::emitKCFITypeId(MF);
+    return AsmPrinter::emitKCFITypeId(F);
   const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type);
 
   // A function type prefix holds the bytes x86 emits: the pattern with the
@@ -900,11 +909,17 @@ void AArch64AsmPrinter::emitKCFITypeId(const MachineFunction &MF) {
   // Control Flow Guard can make a target valid alone, and the symbol marks the
   // prefix's start, as on x86.
   const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
-  unsigned PrefixBytes =
-      (VfnMD ? 16 : 12) +
-      4 * F.getFnAttributeAsParsedInteger("patchable-function-prefix");
+  unsigned PrefixBytes = VfnMD ? 16 : 12;
   emitAlignment(Align(16));
-  emitNops(offsetToAlignment(PrefixBytes, Align(16)) / 4);
+  // Nothing runs into an ifunc's stub.
+  if (const auto *Fn = dyn_cast<Function>(&F))
+    emitNops(
+        offsetToAlignment(PrefixBytes + 4 * Fn->getFnAttributeAsParsedInteger(
+                                                "patchable-function-prefix"),
+                          Align(16)) /
+        4);
+  else
+    OutStreamer->emitZeros(offsetToAlignment(PrefixBytes, Align(16)));
   OutStreamer->emitLabel(OutContext.getOrCreateSymbol("__cfi_" + F.getName()));
   if (VfnMD)
     OutStreamer->emitInt32(
