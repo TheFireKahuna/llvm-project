@@ -335,10 +335,14 @@ Error Builder::addSymbol(const ModuleSymbolTable &Msymtab,
       Msymtab.printSymbolName(OS, Fallback);
       setStr(Uncommon().COFFWeakExternFallbackName, Saver.save(FallbackName));
     } else if (const auto *F = dyn_cast<Function>(GV)) {
-      // A declaration that names its alternate is a weak external of it.
+      // A declaration that names its alternate is a weak external of it,
+      // whose symbol passed the thread pointer falls back to the alternate's.
       if (Attribute Alt = F->getFnAttribute("weak-alternate"); Alt.isValid())
         setStr(Uncommon().COFFWeakExternFallbackName,
-               Saver.save(Alt.getValueAsString()));
+               Saver.save(Alt.getValueAsString() +
+                          (F->hasFnAttribute("thread-pointer-argument")
+                               ? "$tp"
+                               : "")));
     }
   }
 

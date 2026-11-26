@@ -563,6 +563,9 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
 
       StringRef impName = name.substr(strlen("__imp_"));
       Defined *imp = findLocalSym(impName);
+      // X$tp that nothing defines is X, where X is defined.
+      if (!imp && sym->forkReferenced && impName.ends_with("$tp"))
+        imp = findLocalSym(impName.drop_back(3));
       if (!imp && isEC()) {
         // Try to use the mangled symbol on ARM64EC.
         std::optional<std::string> mangledName =
