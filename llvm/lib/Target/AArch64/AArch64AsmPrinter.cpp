@@ -920,7 +920,8 @@ void AArch64AsmPrinter::emitKCFITypeId(const GlobalObject &F) {
         4);
   else
     OutStreamer->emitZeros(offsetToAlignment(PrefixBytes, Align(16)));
-  OutStreamer->emitLabel(OutContext.getOrCreateSymbol("__cfi_" + F.getName()));
+  OutStreamer->emitLabel(
+      OutContext.getOrCreateSymbol("__cfi_" + getSymbol(&F)->getName()));
   if (VfnMD)
     OutStreamer->emitInt32(
         mdconst::extract<ConstantInt>(VfnMD->getOperand(0))->getZExtValue());

@@ -485,7 +485,11 @@ void X86AsmPrinter::emitKCFITypeId(const GlobalObject &F) {
   // symbols for weak parent functions. On COFF, however, a linker treats an
   // external symbol that only a discarded COMDAT copy defines as undefined, so
   // keep the symbol local there, which lets a copy without type data prevail.
-  MCSymbol *FnSym = OutContext.getOrCreateSymbol("__cfi_" + F.getName());
+  // A function type prefix is named after the function's symbol, as a linker
+  // finds it.
+  MCSymbol *FnSym = OutContext.getOrCreateSymbol(
+      "__cfi_" + (getFunctionTypePrefixMarker(F) ? getSymbol(&F)->getName()
+                                                 : F.getName()));
   if (!TM.getTargetTriple().isOSBinFormatCOFF())
     emitLinkage(&F, FnSym);
   if (MAI.hasDotTypeDotSizeDirective())

@@ -27,7 +27,8 @@ EHPersonality llvm::classifyEHPersonality(const Value *Pers) {
   if (!F || !F->getValueType() || !F->getValueType()->isFunctionTy())
     return EHPersonality::Unknown;
 
-  StringRef Name = F->getName();
+  // A name the mangler leaves as it is, as a plain entry's, is the symbol.
+  StringRef Name = GlobalValue::dropLLVMManglingEscape(F->getName());
   if (F->getParent()->getTargetTriple().isWindowsArm64EC()) {
     // ARM64EC function symbols are mangled by prefixing them with "#".
     // Demangle them by skipping this prefix.

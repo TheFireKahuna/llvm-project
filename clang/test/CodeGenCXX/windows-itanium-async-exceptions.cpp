@@ -182,7 +182,7 @@ int g();
 
 // A goto ahead, out of the scope of the operator delete and through the
 // temporary's cleanup.
-// ASM-LABEL: _Z4jumpv:
+// ASM-LABEL: {{^}}_Z4jumpv$tp:
 // ASM:       # %out
 // ASM-NEXT:    movq $0,
 Q *jump() {
@@ -193,7 +193,7 @@ out:
 }
 
 // Two such scopes, neither inside the other, meet where they are both ended.
-// ASM-LABEL: _Z8siblingsv:
+// ASM-LABEL: {{^}}_Z8siblingsv$tp:
 // ASM:       # %out
 // ASM-NEXT:    movq p(%rip), %rax
 // ASM-NEXT:    movl $5, (%rax)
@@ -205,7 +205,7 @@ out:
 }
 
 // The jumps of a loop and a return.
-// ASM-LABEL: _Z4loopv:
+// ASM-LABEL: {{^}}_Z4loopv$tp:
 // ASM:       # %cleanup.cont
 // ASM-NEXT:    #
 // ASM-NEXT:    movq p(%rip), %rax
@@ -243,7 +243,7 @@ void loop() {
 // CHECK-NEXT:    %cleanup.dest = load i32, ptr %cleanup.dest.slot
 // CHECK-NEXT:    switch i32 %cleanup.dest, label %{{.*}} [
 // CHECK-NEXT:      i32 2, label %out
-// ASM-LABEL: _Z6nestedv:
+// ASM-LABEL: {{^}}_Z6nestedv$tp:
 // ASM:       # %out
 // ASM-NEXT:    movq p(%rip), %rax
 // ASM-NEXT:    movl $8, (%rax)
