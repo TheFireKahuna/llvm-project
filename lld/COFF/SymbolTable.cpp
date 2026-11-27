@@ -582,6 +582,19 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
           (x->weakKind == Symbol::NoLibrary ||
            x->weakKind == Symbol::Library))
         imp = nullptr;
+      // For an object for Windows Itanium or NT-POSIX, __imp_X of a weak
+      // external X whose alternate is an import is that import's address
+      // table entry, as X is its thunk or the variable it points to.
+      auto *thunk = dyn_cast_or_null<DefinedImportThunk>(imp);
+      Symbol *entry = thunk ? thunk->wrappedSym
+                      : isa_and_nonnull<DefinedImportData>(imp)
+                          ? impSymbol(imp->getName())
+                          : nullptr;
+      if (entry && sym->forkReferenced) {
+        undef->setWeakAlias(entry);
+        aliases.push_back(undef);
+        continue;
+      }
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
         localImports.push_back(cast<DefinedLocalImport>(sym));
