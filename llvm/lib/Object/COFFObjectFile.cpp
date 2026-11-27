@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/iterator_range.h"
@@ -22,10 +23,13 @@
 #include "llvm/Support/BinaryStreamReader.h"
 #include "llvm/Support/DataExtractor.h"
 #include "llvm/Support/Endian.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/LEB128.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/MemoryBufferRef.h"
+#include "llvm/Support/raw_ostream.h"
 #include <algorithm>
 #include <cassert>
 #include <cinttypes>
@@ -2720,4 +2724,120 @@ Error object::readCOFFLinkFacts(
         return E;
   }
   return C.takeError();
+}
+
+Error object::readCOFFLinkImages(StringRef Payload,
+                                 std::vector<COFFLinkImage> &Images) {
+  DataExtractor Data(Payload, /*IsLittleEndian=*/true);
+  DataExtractor::Cursor C(0);
+  // What a count counts takes Min bytes or more each, which bounds it.
+  auto Count = [&](const Twine &What, unsigned Min) -> Expected<uint64_t> {
+    uint64_t N = Data.getULEB128(C);
+    if (C && N > (Payload.size() - C.tell()) / Min)
+      return createStringError(object_error::parse_failed,
+                               Twine(N) + " " + What +
+                                   ", which the group does not hold");
+    return N;
+  };
+  auto Name = [&] { return Data.getBytes(C, Data.getULEB128(C)); };
+
+  Expected<uint64_t> NumImages = Count("images", 4);
+  if (!NumImages)
+    return NumImages.takeError();
+  Images.resize(*NumImages);
+  for (COFFLinkImage &Image : Images) {
+    Image.Name = Name();
+    Expected<uint64_t> NumImports = Count("imports", 1);
+    if (!NumImports)
+      return NumImports.takeError();
+    for (uint64_t I = 0; C && I != *NumImports; ++I) {
+      uint64_t Import = Data.getULEB128(C);
+      if (C && Import / 2 >= Images.size())
+        return createStringError(object_error::parse_failed,
+                                 "import from image " + Twine(Import / 2) +
+                                     ", which the group does not have");
+      Image.Imports.push_back(Import);
+    }
+    Expected<uint64_t> NumFields = Count("fields", 2);
+    if (!NumFields)
+      return NumFields.takeError();
+    for (uint64_t I = 0; C && I != *NumFields; ++I) {
+      uint64_t Tag = Data.getULEB128(C);
+      uint64_t Size = Data.getULEB128(C);
+      if (C && Size > Payload.size() - C.tell())
+        return createStringError(object_error::parse_failed,
+                                 "a field longer than the group");
+      uint64_t End = C.tell() + Size;
+      if (C && Tag != COFF::LinkImageKept) {
+        if (Tag & COFF::LinkRecordCritical)
+          return createStringError(object_error::parse_failed,
+                                   "unknown critical field " + Twine(Tag));
+        C.seek(End);
+        continue;
+      }
+      Expected<uint64_t> NumKept = Count("entities", 5);
+      if (!NumKept)
+        return NumKept.takeError();
+      for (uint64_t K = 0; C && K != *NumKept; ++K) {
+        COFFLinkImage::Entity E;
+        E.Name = Name();
+        uint64_t Flags = Data.getULEB128(C);
+        E.Size = Data.getULEB128(C);
+        uint64_t Log2Align = Data.getULEB128(C);
+        E.CheckSum = Flags & COFF::LinkImageEntityCheckSum ? Data.getU32(C) : 0;
+        if (C && (Flags > 0xFF || Log2Align > 13 ||
+                  (Flags >> COFF::LinkImageEntityInitShift & 7) >
+                      COFF::LinkFactDynamicUnordered))
+          return createStringError(object_error::parse_failed,
+                                   "entity " + E.Name + " of " + Image.Name +
+                                       " is out of range");
+        E.Flags = Flags;
+        E.Log2Align = Log2Align;
+        Image.Kept.push_back(E);
+      }
+      if (C && C.tell() != End)
+        return createStringError(object_error::parse_failed,
+                                 "the entities of " + Image.Name +
+                                     " do not fill their field");
+    }
+    if (C && Image.Name.empty())
+      return createStringError(object_error::parse_failed,
+                               "an image with no name");
+  }
+  if (C && !Data.eof(C))
+    return createStringError(object_error::parse_failed,
+                             "bytes after the last image");
+  return C.takeError();
+}
+
+void object::writeCOFFLinkImages(raw_ostream &OS,
+                                 ArrayRef<COFFLinkImage> Images) {
+  auto Name = [](raw_ostream &OS, StringRef Name) {
+    encodeULEB128(Name.size(), OS);
+    OS << Name;
+  };
+  encodeULEB128(Images.size(), OS);
+  for (const COFFLinkImage &Image : Images) {
+    Name(OS, Image.Name);
+    encodeULEB128(Image.Imports.size(), OS);
+    for (uint32_t Import : Image.Imports)
+      encodeULEB128(Import, OS);
+    encodeULEB128(!Image.Kept.empty(), OS);
+    if (Image.Kept.empty())
+      continue;
+    SmallString<0> Kept;
+    raw_svector_ostream KeptOS(Kept);
+    encodeULEB128(Image.Kept.size(), KeptOS);
+    for (const COFFLinkImage::Entity &E : Image.Kept) {
+      Name(KeptOS, E.Name);
+      encodeULEB128(E.Flags, KeptOS);
+      encodeULEB128(E.Size, KeptOS);
+      encodeULEB128(E.Log2Align, KeptOS);
+      if (E.Flags & COFF::LinkImageEntityCheckSum)
+        support::endian::write(KeptOS, E.CheckSum, llvm::endianness::little);
+    }
+    encodeULEB128(COFF::LinkImageKept, OS);
+    encodeULEB128(Kept.size(), OS);
+    OS << Kept;
+  }
 }

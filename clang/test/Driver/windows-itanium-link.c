@@ -96,7 +96,7 @@
 // RUN:   --implicit-check-not=-defaultlib: --implicit-check-not=-nodefaultlib:
 // RUN: %{cxx-x64} -nolibc -rdynamic 2>&1 | FileCheck --check-prefix=NOLIBC %s \
 // RUN:   --implicit-check-not=wincrt --implicit-check-not=ucrt.lib \
-// RUN:   --implicit-check-not=rdynamic --implicit-check-not=-export
+// RUN:   --implicit-check-not=rdynamic --implicit-check-not='"-export'
 // NODEFAULTLIBS:      lld-link{{(.exe)?}}" "-out:a.exe" "-lldignoreenv"
 // NODEFAULTLIBS-SAME: "-manifest:embed"
 // NODEFAULTLIBS-SAME: "-manifestinput:{{[^"]*}}segment_heap.manifest"

@@ -1,13 +1,8 @@
 # REQUIRES: x86, aarch64
 
-## Weakness belongs to the reference. An object for Windows Itanium or
-## NT-POSIX reaches fin through __imp_fin, so one that keeps no weak reference
-## to fin refers to fin strongly: beside another object's weak reference, in
-## either order, it drops the null default and loads the archive member that
-## defines fin, wherever the archive is read, and an absent fin is an undefined
-## symbol, never a call through null. The object that keeps fin weak refers to
-## it weakly through its pointer too, and a foreign object's __imp_fin is no
-## reference to fin.
+## Weakness belongs to the reference: a fork object with no weak reference to
+## fin refers to it strongly through __imp_fin (loading the member, no null
+## default); a hidden or protected weak reference keeps its null default.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 
@@ -18,12 +13,14 @@
 # DEFINE:   -debug:symtab -verbose -out:a.exe
 # DEFINE: %{check} = FileCheck --check-prefix=LOAD %s && \
 # DEFINE:   llvm-objdump -d a.exe | FileCheck --check-prefix=%{a} %s
-# DEFINE: %{run} = \
-# DEFINE:   %{mc} %{a}/strong.s -o strong.obj && \
+# DEFINE: %{own} = \
+# DEFINE:   llvm-objdump -d a.exe | FileCheck --check-prefix=%{a}-weak %s && \
+# DEFINE:   llvm-readobj --coff-imports a.exe | FileCheck --allow-empty \
+# DEFINE:     --implicit-check-not=def.dll %s
+# DEFINE: %{run} = %{mc} %{a}/strong.s -o strong.obj && \
 # DEFINE:   %{mc} %{a}/weak.s -o weak.obj && \
 # DEFINE:   llvm-mc -filetype=obj -triple=%{t}-windows-msvc %{a}/strong.s \
-# DEFINE:     -o foreign.obj && \
-# DEFINE:   %{mc} %{a}/def.s -o def.obj && \
+# DEFINE:     -o foreign.obj && %{mc} def.s -o def.obj && \
 # DEFINE:   llvm-lib -machine:%{a} def.obj -out:def.lib && \
 # DEFINE:   %{link} strong.obj weak.obj def.lib 2>&1 | %{check} && \
 # DEFINE:   %{link} weak.obj strong.obj def.lib 2>&1 | %{check} && \
@@ -39,7 +36,14 @@
 # DEFINE:     FileCheck --check-prefix=WEAK %s && \
 # DEFINE:   llvm-objdump -d a.exe | FileCheck --check-prefix=%{a}-weak %s && \
 # DEFINE:   %{link} foreign.obj weak.obj def.lib 2>&1 | \
-# DEFINE:     FileCheck --check-prefix=WEAK %s
+# DEFINE:     FileCheck --check-prefix=WEAK %s && \
+# DEFINE:   lld-link -machine:%{a} -dll -noentry def.obj -export:fin \
+# DEFINE:     -out:def.dll -implib:imp.lib && \
+# DEFINE:   %{mc} %{a}/weak.s --defsym VIS=3 -o hidden.obj && \
+# DEFINE:   %{mc} %{a}/weak.s --defsym VIS=2 -o protected.obj && \
+# DEFINE:   %{link} -entry:other hidden.obj imp.lib && %{own} && \
+# DEFINE:   %{link} -entry:other imp.lib hidden.obj && %{own} && \
+# DEFINE:   %{link} -entry:other protected.obj imp.lib && %{own}
 
 # RUN: %{run}
 # REDEFINE: %{a} = arm64
@@ -72,17 +76,21 @@ main:
   callq *__imp_fin(%rip)
   retq
 
+## VIS states the weak reference's visibility.
 #--- x64/weak.s
 .globl other
 other:
   movq __imp_fin(%rip), %rax
   retq
 .weak fin
+.ifdef VIS
+.link_fact fin, 1, VIS
+.endif
 
-#--- x64/def.s
+#--- def.s
 .globl fin
 fin:
-  retq
+  ret
 
 #--- arm64/strong.s
 .globl main
@@ -99,8 +107,6 @@ other:
   ldr x0, [x0, :lo12:__imp_fin]
   ret
 .weak fin
-
-#--- arm64/def.s
-.globl fin
-fin:
-  ret
+.ifdef VIS
+.link_fact fin, 1, VIS
+.endif

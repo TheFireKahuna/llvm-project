@@ -1,14 +1,8 @@
 # REQUIRES: x86, aarch64
 
-## For a reference from an object for Windows Itanium or NT-POSIX, which
-## reaches a function that may be imported through __imp_f, a definition of f
-## in the link beats an import library's pointer, as an executable's
-## definition beats a shared object's on ELF: in every order of the referring
-## object, the definition, in an object or in an archive member that the link
-## loads, and the import library, the reference binds the definition and
-## nothing is imported. Data binds so too, except vague data, which keeps the
-## import. A foreign object's reference keeps the errors of a link without
-## such objects.
+## A fork object's reference through __imp_f binds a definition in the link
+## over an import library's pointer in every input order, except a vague
+## variable the DLL offers; a foreign reference keeps the usual errors.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 
@@ -23,11 +17,14 @@
 # DEFINE: %{run} = %{mc} %{a}/main.s -o main.obj && \
 # DEFINE:   llvm-mc -filetype=obj -triple=%{t}-windows-msvc %{a}/main.s \
 # DEFINE:     -o foreign.obj && \
-# DEFINE:   %{mc} %{a}/def.s -o def.obj && %{mc} %{a}/usev.s -o usev.obj && \
+# DEFINE:   %{mc} def.s -o def.obj && %{mc} %{a}/usev.s -o usev.obj && \
 # DEFINE:   %{mc} data.s -o data.obj && %{mc} vague.s -o vague.obj && \
+# DEFINE:   %{mc} comdat.s -o comdat.obj && %{mc} %{a}/usew.s -o usew.obj && \
 # DEFINE:   llvm-lib -machine:%{a} def.obj -out:def.lib && \
 # DEFINE:   lld-link -machine:%{a} -dll -noentry -out:f.dll def.obj data.obj \
 # DEFINE:     -export:f -export:v,data -implib:f.lib && \
+# DEFINE:   lld-link -machine:%{a} -dll -noentry -out:w.dll comdat.obj \
+# DEFINE:     -export:w,data -export:_ZTV1X,data -implib:w.lib && \
 # DEFINE:   %{link} main.obj def.obj f.lib 2>&1 | %{check} && \
 # DEFINE:   %{link} main.obj f.lib def.obj 2>&1 | %{check} && \
 # DEFINE:   %{link} def.obj main.obj f.lib 2>&1 | %{check} && \
@@ -43,6 +40,10 @@
 # DEFINE:   %{link} -opt:noref main.obj f.lib def.lib 2>&1 | %{check} && \
 # DEFINE:   %{link} main.obj usev.obj def.obj data.obj f.lib 2>&1 | \
 # DEFINE:     %{check} && \
+# DEFINE:   %{link} -opt:noref main.obj usew.obj def.obj comdat.obj w.lib \
+# DEFINE:     2>&1 | %{check} && \
+# DEFINE:   %{link} -opt:noref main.obj usew.obj def.obj w.lib comdat.obj \
+# DEFINE:     2>&1 | %{check} && \
 # DEFINE:   %{link} -opt:noref main.obj usev.obj def.obj f.lib vague.obj && \
 # DEFINE:   llvm-readobj --coff-imports a.exe | \
 # DEFINE:     FileCheck --check-prefix=VAGUE %s && \
@@ -85,11 +86,11 @@ u:
   movq __imp_v(%rip), %rax
   retq
 
-#--- x64/def.s
-.globl f, g
-f:
-  retq
-g:
+#--- x64/usew.s
+.globl u2
+u2:
+  movq __imp_w(%rip), %rax
+  movq __imp__ZTV1X(%rip), %rax
   retq
 
 #--- arm64/main.s
@@ -108,14 +109,23 @@ u:
   ldr x0, [x0, :lo12:__imp_v]
   ret
 
-#--- arm64/def.s
+#--- arm64/usew.s
+.globl u2
+u2:
+  adrp x0, __imp_w
+  ldr x0, [x0, :lo12:__imp_w]
+  adrp x1, __imp__ZTV1X
+  ldr x1, [x1, :lo12:__imp__ZTV1X]
+  ret
+
+## Shared by both machines.
+#--- def.s
 .globl f, g
 f:
   ret
 g:
   ret
 
-## Shared by both machines.
 #--- data.s
   .data
   .globl v
@@ -127,3 +137,15 @@ v:
   .globl v
 v:
   .quad 1
+  .link_fact v, 1, 1
+  .link_fact v, 2, 1
+
+#--- comdat.s
+  .section .data$w,"dw",one_only,w
+  .globl w
+w:
+  .quad 2
+  .section .rdata$_ZTV1X,"dr",discard,_ZTV1X
+  .globl _ZTV1X
+_ZTV1X:
+  .quad 0

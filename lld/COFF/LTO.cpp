@@ -218,6 +218,11 @@ void BitcodeCompiler::add(BitcodeFile &f) {
       if (e.sym)
         exportedSyms.insert(e.sym);
 
+  // A DLL offers the vague entities it keeps to images that no input shows,
+  // so their symbols are not LTO's to internalize.
+  const auto &entities = f.symtab.vagueEntities;
+  bool offers = ctx.config.dll && !entities.empty();
+
   // Provide a resolution to the LTO API for each symbol.
   for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
     Symbol *sym = symBodies[symNum];
@@ -230,7 +235,10 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // Once IRObjectFile is fixed to report only one symbol this hack can
     // be removed.
     r.Prevailing = !objSym.isUndefined() && sym->getFile() == &f;
-    r.VisibleToRegularObj = sym->isUsedInRegularObj;
+    r.VisibleToRegularObj =
+        sym->isUsedInRegularObj ||
+        (offers && sym->visibility != COFF::LinkFactHidden &&
+         entities.count(sym));
     r.ExportDynamic = exportedSyms.contains(sym);
     r.FinalDefinitionInLinkageUnit = isFinalInImage(f.symtab, sym);
     // The object LTO generates defines the symbol again. It is undefined only

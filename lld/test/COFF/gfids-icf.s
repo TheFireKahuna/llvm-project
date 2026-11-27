@@ -38,6 +38,21 @@
 # CHECK-NEXT:   0x14000{{.*}}
 # CHECK-NEXT: ]
 
+# In an object for Windows Itanium, whose address-significance table alone
+# says which addresses are significant, they fold too; exported, they do not.
+# RUN: llvm-mc -triple x86_64-windows-itanium %s -filetype=obj -o %t.fork.obj
+# RUN: lld-link %t.fork.obj -guard:cf,nolongjmp -out:%t.fork.exe -opt:icf -entry:main
+# RUN: llvm-readobj --file-headers --coff-load-config %t.fork.exe | FileCheck %s --check-prefix=CHECK
+# RUN: lld-link %t.fork.obj -guard:cf,nolongjmp -out:%t.fork-exp.exe -opt:icf -entry:main -export:icf1 -export:icf2
+# RUN: llvm-readobj --coff-exports %t.fork-exp.exe | FileCheck %s --check-prefix=EXPORTS
+# RUN: llvm-readobj --coff-load-config %t.fork-exp.exe | FileCheck %s --check-prefix=EXPORTS-FIDS
+
+# EXPORTS:      Name: icf1
+# EXPORTS-NEXT: RVA: 0x[[#%X,ICF1:]]
+# EXPORTS:      Name: icf2
+# EXPORTS-NEXT: RVA: 0x[[#%X,ICF1+16]]
+# EXPORTS-FIDS: GuardCFFunctionCount: 3
+
 # A function /guardsym suppresses does not fold with a valid one.
 # RUN: lld-link %t.obj -guard:cf,nolongjmp -out:%t-sym.exe -opt:icf -entry:main -guardsym:icf2,S
 # RUN: llvm-readobj --coff-load-config %t-sym.exe | FileCheck %s --check-prefix=SYM
@@ -118,3 +133,5 @@ _load_config_used:
         .quad __guard_fids_count
         .long __guard_flags
         .fill 128, 1, 0
+
+        .addrsig

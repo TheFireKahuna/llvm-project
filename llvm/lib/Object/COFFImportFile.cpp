@@ -247,11 +247,12 @@ public:
   NewArchiveMember createNullThunk(std::vector<uint8_t> &Buffer);
 
   // Create a short import file which is described in PE/COFF spec 7. Import
-  // Library Format.
+  // Library Format. It imports from DLL, or from the library's where that is
+  // empty.
   NewArchiveMember createShortImport(StringRef Sym, uint16_t Ordinal,
                                      ImportType Type, ImportNameType NameType,
-                                     StringRef ExportName,
-                                     MachineTypes Machine);
+                                     StringRef ExportName, MachineTypes Machine,
+                                     StringRef DLL = {});
 
   // Create a weak external file which is described in PE/COFF Aux Format 3.
   NewArchiveMember createWeakExternal(StringRef Sym, StringRef Weak, bool Imp,
@@ -545,8 +546,11 @@ NewArchiveMember ObjectFactory::createNullThunk(std::vector<uint8_t> &Buffer) {
 NewArchiveMember
 ObjectFactory::createShortImport(StringRef Sym, uint16_t Ordinal,
                                  ImportType ImportType, ImportNameType NameType,
-                                 StringRef ExportName, MachineTypes Machine) {
-  size_t ImpSize = ImportName.size() + Sym.size() + 2; // +2 for NULs
+                                 StringRef ExportName, MachineTypes Machine,
+                                 StringRef DLL) {
+  if (DLL.empty())
+    DLL = ImportName;
+  size_t ImpSize = DLL.size() + Sym.size() + 2; // +2 for NULs
   if (!ExportName.empty())
     ImpSize += ExportName.size() + 1;
   size_t Size = sizeof(coff_import_header) + ImpSize;
@@ -567,13 +571,13 @@ ObjectFactory::createShortImport(StringRef Sym, uint16_t Ordinal,
   // Write symbol name and DLL name.
   memcpy(P, Sym.data(), Sym.size());
   P += Sym.size() + 1;
-  memcpy(P, ImportName.data(), ImportName.size());
+  memcpy(P, DLL.data(), DLL.size());
   if (!ExportName.empty()) {
-    P += ImportName.size() + 1;
+    P += DLL.size() + 1;
     memcpy(P, ExportName.data(), ExportName.size());
   }
 
-  return {MemoryBufferRef(StringRef(Buf, Size), ImportName)};
+  return {MemoryBufferRef(StringRef(Buf, Size), DLL)};
 }
 
 NewArchiveMember ObjectFactory::createWeakExternal(StringRef Sym,
@@ -661,7 +665,8 @@ NewArchiveMember ObjectFactory::createWeakExternal(StringRef Sym,
 Error writeImportLibrary(StringRef ImportName, StringRef Path,
                          ArrayRef<COFFShortExport> Exports,
                          MachineTypes Machine, bool MinGW,
-                         ArrayRef<COFFShortExport> NativeExports) {
+                         ArrayRef<COFFShortExport> NativeExports,
+                         ArrayRef<MemoryBufferRef> ExtraMembers) {
 
   MachineTypes NativeMachine = Machine;
   if (isArm64EC(Machine)) {
@@ -771,8 +776,8 @@ Error writeImportLibrary(StringRef ImportName, StringRef Path,
       }
 
       RegularImports[applyNameType(NameType, Name)] = Name;
-      Members.push_back(OF.createShortImport(Name, E.Ordinal, ImportType,
-                                             NameType, ExportName, M));
+      Members.push_back(OF.createShortImport(
+          Name, E.Ordinal, ImportType, NameType, ExportName, M, E.DLLName));
     }
     for (const auto &D : Renames) {
       auto It = RegularImports.find(D.Export->ImportName);
@@ -796,6 +801,8 @@ Error writeImportLibrary(StringRef ImportName, StringRef Path,
     return e;
   if (Error e = addExports(NativeExports, NativeMachine))
     return e;
+  for (MemoryBufferRef Member : ExtraMembers)
+    Members.emplace_back(Member);
 
   return writeArchive(Path, Members, SymtabWritingMode::NormalSymtab,
                       object::Archive::K_COFF,

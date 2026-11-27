@@ -183,6 +183,8 @@ private:
   void handleReproFile(StringRef path, InputOpt inputOpt);
 
   void createImportLibrary(bool asLib);
+  // Returns the member of the import library that holds its link records.
+  std::string createLinkRecords(StringRef libName);
 
   // Used by the resolver to parse .drectve section contents.
   void parseDirectives(InputFile *file);

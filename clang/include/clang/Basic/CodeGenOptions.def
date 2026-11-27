@@ -463,6 +463,8 @@ CODEGENOPT(ForceEmitVTables, 1, 0, Benign)
 
 /// Whether to emit an address-significance table into the object file.
 CODEGENOPT(Addrsig, 1, 0, Benign)
+/// Whether vague variables have GCC's unique binding.
+CODEGENOPT(GnuUnique, 1, 0, Benign)
 
 /// Whether to emit unused static constants.
 CODEGENOPT(KeepStaticConsts, 1, 0, Benign)

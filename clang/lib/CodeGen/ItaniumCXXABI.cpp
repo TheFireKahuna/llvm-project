@@ -2801,6 +2801,15 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
       CGF.CGM.getLLVMContext(),
       CGF.CGM.getDataLayout().getDefaultGlobalsAddressSpace());
 
+  // On Windows Itanium and NT-POSIX an image may bind another's instance of
+  // a variable with vague linkage, and its link reads how the variable is
+  // initialized: where control first passes its declaration, or with the
+  // image that defines it.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      var->isWeakForLinker() && !D.getTLSKind())
+    var->addAttribute("dynamic-init",
+                      D.isLocalVarDecl() ? "guarded" : "unordered");
+
   // Create the guard variable if we don't already have it (as we
   // might if we're double-emitting this function body).
   llvm::GlobalVariable *guard = CGM.getStaticLocalDeclGuardAddress(&D);
@@ -2825,6 +2834,9 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
     // If the variable is thread-local, so is its guard variable.
     guard->setThreadLocalMode(var->getThreadLocalMode());
     guard->setAlignment(guardAlignment.getAsAlign());
+    // A program that has one instance of the variable has one of its guard.
+    if (var->hasAttribute("gnu-unique"))
+      guard->addAttribute("gnu-unique");
 
     // The ABI says: "It is suggested that it be emitted in the same COMDAT
     // group as the associated data object." In practice, this doesn't work for
@@ -4383,6 +4395,12 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
   llvm::GlobalVariable *GV = new llvm::GlobalVariable(
       M, CGM.Int8Ty, /*isConstant=*/true, Linkage, /*Initializer=*/nullptr,
       IsPlaceholder ? Twine(IncompletePrefix) + Name : Twine(Name));
+  // An image may bind another's type_info object with vague linkage, which
+  // its link tells from other data: two images that keep their own do not
+  // hold two instances of anything.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      GV->isWeakForLinker())
+    GV->addAttribute("type-info");
 
   // Add the vtable pointer.
   BuildVTablePointer(cast<Type>(Ty), GV);

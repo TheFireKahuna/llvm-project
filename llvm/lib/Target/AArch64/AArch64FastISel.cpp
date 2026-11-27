@@ -3180,8 +3180,10 @@ bool AArch64FastISel::fastLowerCall(CallLoweringInfo &CLI) {
     return false;
 
   // ELF -fno-plt compiled intrinsic calls do not have the nonlazybind
-  // attribute. Check "RtLibUseGOT" instead.
-  if (MF->getFunction().getParent()->getRtLibUseGOT())
+  // attribute. Check "RtLibUseGOT" instead. Windows Itanium and NT-POSIX
+  // reach a library call through its import pointer in every mode.
+  if (MF->getFunction().getParent()->getRtLibUseGOT() ||
+      Subtarget->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     return false;
 
   // Let SDISel handle vararg functions.

@@ -336,6 +336,18 @@ void WindowsItaniumBase::addClangTargetOptions(
   if (hasEHContGuard(getTriple()))
     CC1Args.push_back("-ehcontguard");
 
+  // A variable with vague linkage is unique, as GCC makes it on ELF.
+  if (DriverArgs.hasFlag(options::OPT_fgnu_unique, options::OPT_fno_gnu_unique,
+                         true))
+    CC1Args.push_back("-fgnu-unique");
+
+  // An explicit default or protected visibility is an image's boundary, as it
+  // is a shared object's on ELF.
+  if (!DriverArgs.hasArg(options::OPT_mdefault_visibility_export_mapping_EQ))
+    CC1Args.push_back("-mdefault-visibility-export-mapping=explicit");
+  DriverArgs.AddLastArg(CC1Args,
+                        options::OPT_mdefault_visibility_export_mapping_EQ);
+
   // Every function is preceded by its type id, whether or not KCFI checks
   // calls. The id ignores pointee types, so that a unit without the checks can
   // be called from one with them, and an option that would compute or encode

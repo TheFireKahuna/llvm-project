@@ -110,7 +110,7 @@ protected:
         forkReferenced(false), strongImport(false), pendingArchiveLoad(false),
         isGCRoot(false), isRuntimePseudoReloc(false), deferUndefined(false),
         canInline(true), isWeak(false), weakKind(Alias), typePrefix(0),
-        nameSize(n.size()),
+        visibility(0), nameSize(n.size()),
         nameData(n.empty() ? nullptr : n.data()) {
     assert((!n.empty() || k <= LastDefinedCOFFKind) &&
            "If the name is empty, the Symbol must be a DefinedCOFF.");
@@ -175,6 +175,12 @@ public:
   // The type prefix that a link fact gives the function: 0 for none, or 1
   // and the llvm::COFF::LinkFactSecondWord of the prefix.
   unsigned typePrefix : 2;
+
+  // The greatest llvm::COFF::LinkFactVisibilityState that a link fact states
+  // for the symbol, so one from Protected on is of a symbol that no other
+  // image defines. Below that it says something of a vague entity only, which
+  // is unique where every copy of it is.
+  unsigned visibility : 2;
 
 protected:
   // Symbol name length. Assume symbol lengths fit in a 32-bit integer.
@@ -561,11 +567,13 @@ void replaceSymbol(Symbol *s, ArgT &&... arg) {
   bool isUsedInRegularObj = s->isUsedInRegularObj;
   bool forkReferenced = s->forkReferenced;
   bool strongImport = s->strongImport;
+  unsigned visibility = s->visibility;
   new (s) T(std::forward<ArgT>(arg)...);
   s->canInline = canInline;
   s->isUsedInRegularObj = isUsedInRegularObj;
   s->forkReferenced = forkReferenced;
   s->strongImport = strongImport;
+  s->visibility = visibility;
 }
 } // namespace coff
 

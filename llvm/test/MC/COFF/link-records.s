@@ -33,7 +33,7 @@
 // CHECK-NEXT:       IMAGE_SCN_LNK_INFO (0x200)
 // CHECK-NEXT:     ]
 // CHECK-NEXT:     SectionData (
-// CHECK-NEXT:       0000: 4C4C5243 01000109 0F020305 11080103  |LLRC............|
+// CHECK-NEXT:       0000: 4C4C5243 01000109 0F140305 11080115  |LLRC............|
 // CHECK-NEXT:       0010: 00                                   |.|
 // CHECK-NEXT:     )
 // CHECK:      Symbols [
@@ -46,14 +46,14 @@
 // CHECK-NEXT:     Kind: Symbols (0x1)
 // CHECK-NEXT:     Fact {
 // CHECK-NEXT:       Symbol: f (15)
-// CHECK-NEXT:       Tag: 0x2
+// CHECK-NEXT:       Tag: 0x14
 // CHECK-NEXT:       Operands (
 // CHECK-NEXT:         0000: 051108 
 // CHECK-NEXT:       )
 // CHECK-NEXT:     }
 // CHECK-NEXT:     Fact {
 // CHECK-NEXT:       Symbol: .text (1)
-// CHECK-NEXT:       Tag: 0x3
+// CHECK-NEXT:       Tag: 0x15
 // CHECK-NEXT:       Operands (
 // CHECK-NEXT:       )
 // CHECK-NEXT:     }
@@ -98,8 +98,8 @@ f:
 .Ltemporary:
   ret
 x = 7
-  .link_fact f, 2, 5, g, x + 1
-  .link_fact .Ltemporary, 3
+  .link_fact f, 20, 5, g, x + 1
+  .link_fact .Ltemporary, 21
 .ifdef ERR
   .link_fact f, 0, f + 1
 .endif

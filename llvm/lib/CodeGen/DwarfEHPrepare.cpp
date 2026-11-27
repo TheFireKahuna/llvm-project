@@ -235,6 +235,12 @@ bool DwarfEHPrepare::InsertUnwindResumeCalls() {
     DoesRewindFunctionNeedExceptionObject = true;
   }
   RewindFunction = F.getParent()->getOrInsertFunction(RewindName, FTy);
+  // Windows Itanium and NT-POSIX call the runtime through its import pointer
+  // whatever the PLT mode.
+  if (auto *Fn = dyn_cast<Function>(RewindFunction.getCallee());
+      Fn && Fn->isDeclaration() &&
+      TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment())
+    Fn->addFnAttr(Attribute::NonLazyBind);
 
   // Create the basic block where the _Unwind_Resume call will live.
   if (ResumesLeft == 1) {

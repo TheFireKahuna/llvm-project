@@ -1152,6 +1152,183 @@ std::string LinkerDriver::getImportName(bool asLib) {
   return std::string(out);
 }
 
+// Returns the images that lib, an import library, states in its link records:
+// its DLL and every image loaded with it. A library of another linker has no
+// records and states none.
+static std::vector<COFFLinkImage> readLinkImages(COFFLinkerContext &ctx,
+                                                 ArchiveFile *lib) {
+  std::vector<COFFLinkImage> images;
+  std::optional<MemoryBufferRef> mb = lib->findMember(LinkRecordsMemberSymbol);
+  if (!mb)
+    return images;
+  auto read = [&]() -> Error {
+    Expected<std::unique_ptr<COFFObjectFile>> obj =
+        ObjectFile::createCOFFObjectFile(*mb);
+    if (!obj)
+      return obj.takeError();
+    bool seen = false;
+    for (const SectionRef &sec : (*obj)->sections()) {
+      Expected<StringRef> name = sec.getName();
+      if (!name)
+        return name.takeError();
+      if (*name != ".llvm_link_records")
+        continue;
+      Expected<StringRef> contents = sec.getContents();
+      if (!contents)
+        return contents.takeError();
+      uint64_t flags;
+      if (Error e = readCOFFLinkRecords(
+              *contents, flags, [&](uint64_t kind, StringRef payload) {
+                if (kind != LinkRecordImages)
+                  return kind & LinkRecordCritical
+                             ? createStringError("unknown critical kind " +
+                                                 Twine(kind))
+                             : Error::success();
+                if (std::exchange(seen, true))
+                  return createStringError("two Images groups");
+                return readCOFFLinkImages(payload, images);
+              }))
+        return e;
+    }
+    // An image is stated once, under one name.
+    StringSet<> names;
+    for (const COFFLinkImage &image : images)
+      if (!names.insert(image.Name.lower()).second)
+        return createStringError("two images named " + image.Name);
+    return Error::success();
+  };
+  if (Error e = read()) {
+    Err(ctx) << lib << ": link records: " << std::move(e);
+    images.clear();
+  }
+  return images;
+}
+
+// The import library of a DLL with an object for Windows Itanium or NT-POSIX
+// states, in a member that no link loads, the DLL and every image that is
+// loaded with it, each with the images it imports from and the vague entities
+// it keeps. A link that reads the library so sees which images keep an
+// entity and whether a path of imports joins them, for images whose own
+// libraries it does not read as well.
+std::string LinkerDriver::createLinkRecords(StringRef libName) {
+  std::vector<COFFLinkImage> images(1);
+  images[0].Name = libName;
+  // Whether a library stated the image, and whether its own did, which is
+  // what a library that repeats it read.
+  std::vector<uint8_t> stated(1, 2);
+  StringMap<uint32_t> indices;
+  indices[libName.lower()] = 0;
+  auto indexOf = [&](StringRef name) {
+    auto [it, inserted] = indices.try_emplace(name.lower(), images.size());
+    if (inserted) {
+      images.emplace_back().Name = name;
+      stated.push_back(0);
+    }
+    return it->second;
+  };
+
+  // The DLLs that the image imports from, by name, so that the order of the
+  // inputs changes nothing.
+  std::map<std::string, ImportFile *> imports;
+  for (ImportFile *file : ctx.importFileInstances)
+    if (file->live)
+      imports.try_emplace(StringRef(file->dllName).lower(), file);
+  StringMap<ArchiveFile *> libs;
+  for (auto [lib, named] : archives)
+    libs.try_emplace(lib->getName(), lib);
+  SmallPtrSet<ArchiveFile *, 8> read;
+  for (auto &[name, file] : imports) {
+    uint32_t index = indexOf(file->dllName);
+    images[0].Imports.push_back(index * 2 +
+                                ctx.config.delayLoads.contains(name));
+    ArchiveFile *lib = libs.lookup(file->parentName);
+    if (!lib || !read.insert(lib).second)
+      continue;
+    std::vector<COFFLinkImage> theirs = readLinkImages(ctx, lib);
+    std::vector<uint32_t> to;
+    for (const COFFLinkImage &image : theirs)
+      to.push_back(indexOf(image.Name));
+    for (size_t i = 0, e = theirs.size(); i != e; ++i) {
+      uint8_t by = i == 0 ? 2 : 1;
+      if (stated[to[i]] >= by)
+        continue;
+      stated[to[i]] = by;
+      COFFLinkImage &image = images[to[i]];
+      image.Kept = std::move(theirs[i].Kept);
+      image.Imports.clear();
+      for (uint32_t import : theirs[i].Imports)
+        image.Imports.push_back(to[import / 2] * 2 + import % 2);
+    }
+  }
+
+  // What the DLL keeps: each entity once, under the name of its definition.
+  for (auto &[sym, entity] : ctx.symtab.vagueEntities) {
+    DefinedRegular *d = ctx.symtab.getKeptEntity(sym);
+    if (!d || entity.descriptor || d->getChunk()->sym != d)
+      continue;
+    SectionChunk *c = d->getChunk();
+    bool function = c->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE;
+    COFFLinkImage::Entity e;
+    e.Name = sym->getName();
+    e.Flags = sym->visibility | entity.init << LinkImageEntityInitShift |
+              (d->file->forkObject ? 0 : LinkImageEntityForeign) |
+              (function ? LinkImageEntityFunction : 0);
+    e.Size = function ? 0 : c->getSize();
+    e.Log2Align = Log2_32(c->getAlignment());
+    e.CheckSum = 0;
+    if (!function && entity.init == LinkFactConstantImmutable) {
+      e.Flags |= LinkImageEntityCheckSum;
+      e.CheckSum = c->checksum;
+    }
+    images[0].Kept.push_back(e);
+  }
+  llvm::sort(images[0].Kept,
+             [](const COFFLinkImage::Entity &a,
+                const COFFLinkImage::Entity &b) { return a.Name < b.Name; });
+
+  // The member is an object with the records in the section that holds an
+  // object's and one absolute symbol, which the library's index lists.
+  SmallString<0> records(StringRef(LinkRecordsMagic, sizeof(LinkRecordsMagic)));
+  raw_svector_ostream os(records);
+  encodeULEB128(LinkRecordsVersion, os);
+  encodeULEB128(0, os);
+  SmallString<0> group;
+  raw_svector_ostream groupOS(group);
+  writeCOFFLinkImages(groupOS, images);
+  encodeULEB128(LinkRecordImages, os);
+  encodeULEB128(group.size(), os);
+  os << group;
+
+  StringRef section = ".llvm_link_records";
+  coff_file_header header = {};
+  header.Machine = ctx.config.machine;
+  header.NumberOfSections = 1;
+  header.PointerToSymbolTable =
+      sizeof(header) + sizeof(coff_section) + records.size();
+  header.NumberOfSymbols = 1;
+  coff_section sec = {};
+  memcpy(sec.Name, "/4", 2);
+  sec.SizeOfRawData = records.size();
+  sec.PointerToRawData = sizeof(header) + sizeof(sec);
+  sec.Characteristics = IMAGE_SCN_LNK_INFO | IMAGE_SCN_ALIGN_1BYTES;
+  coff_symbol16 symbol = {};
+  symbol.Name.Offset.Offset = 4 + section.size() + 1;
+  symbol.SectionNumber = IMAGE_SYM_ABSOLUTE;
+  symbol.StorageClass = IMAGE_SYM_CLASS_EXTERNAL;
+  support::ulittle32_t strings(4 + section.size() + 1 +
+                               sizeof(LinkRecordsMemberSymbol));
+  std::string object;
+  raw_string_ostream objectOS(object);
+  objectOS.write(reinterpret_cast<const char *>(&header), sizeof(header));
+  objectOS.write(reinterpret_cast<const char *>(&sec), sizeof(sec));
+  objectOS << records;
+  objectOS.write(reinterpret_cast<const char *>(&symbol), sizeof(symbol));
+  objectOS.write(reinterpret_cast<const char *>(&strings), sizeof(strings));
+  objectOS << section << '\0';
+  objectOS.write(LinkRecordsMemberSymbol, sizeof(LinkRecordsMemberSymbol));
+  return object;
+}
+
 void LinkerDriver::createImportLibrary(bool asLib) {
   llvm::TimeTraceScope timeScope("Create import library");
   std::vector<COFFShortExport> exports, nativeExports;
@@ -1176,6 +1353,15 @@ void LinkerDriver::createImportLibrary(bool asLib) {
       e2.Data = e1.data;
       e2.Private = e1.isPrivate;
       e2.Constant = e1.constant;
+      // A forwarded offer is imported from the DLL that keeps the entity, as
+      // the library that this link read imports it.
+      if (e1.owner) {
+        e2.DLLName = e1.owner->dllName;
+        e2.Noname = e1.owner->externalName.empty();
+        if (e1.owner->externalName != e1.name)
+          e2.ExportAs = std::string(e1.owner->externalName);
+        e2.Ordinal = e1.owner->hdr->OrdinalHint;
+      }
       exports.push_back(e2);
     };
     for (Export &e1 : symtab.exports) {
@@ -1197,9 +1383,19 @@ void LinkerDriver::createImportLibrary(bool asLib) {
   std::string libName = getImportName(asLib);
   std::string path = getImplibPath();
 
+  std::string records;
+  SmallVector<MemoryBufferRef, 1> extra;
+  if (ctx.hasForkObject && !ctx.symtab.isEC() && !ctx.hybridSymtab) {
+    records = createLinkRecords(libName);
+    extra.emplace_back(records, libName);
+  }
+  auto write = [&](StringRef path) {
+    return writeImportLibrary(libName, path, exports, ctx.config.machine,
+                              ctx.config.mingw, nativeExports, extra);
+  };
+
   if (!ctx.config.incremental) {
-    checkError(writeImportLibrary(libName, path, exports, ctx.config.machine,
-                                  ctx.config.mingw, nativeExports));
+    checkError(write(path));
     return;
   }
 
@@ -1208,8 +1404,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
   ErrorOr<std::unique_ptr<MemoryBuffer>> oldBuf = MemoryBuffer::getFile(
       path, /*IsText=*/false, /*RequiresNullTerminator=*/false);
   if (!oldBuf) {
-    checkError(writeImportLibrary(libName, path, exports, ctx.config.machine,
-                                  ctx.config.mingw, nativeExports));
+    checkError(write(path));
     return;
   }
 
@@ -1219,9 +1414,7 @@ void LinkerDriver::createImportLibrary(bool asLib) {
     Fatal(ctx) << "cannot create temporary file for import library " << path
                << ": " << ec.message();
 
-  if (Error e =
-          writeImportLibrary(libName, tmpName, exports, ctx.config.machine,
-                             ctx.config.mingw, nativeExports)) {
+  if (Error e = write(tmpName)) {
     checkError(std::move(e));
     return;
   }
@@ -3133,6 +3326,21 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (config->ltoValidateAllVtablesHaveTypeInfos)
     ltoValidateAllVtablesHaveTypeInfos(ctx, args);
 
+  // A DLL's offer of a vague entity is an import library's pointer for the
+  // entity's name.
+  auto preemptVagueEntities = [&] {
+    ctx.forEachSymtab([](SymbolTable &symtab) {
+      symtab.preemptVagueEntities([&](StringRef name) {
+        auto *imp = dyn_cast_or_null<DefinedImportData>(
+            symtab.find(("__imp_" + name).str()));
+        return imp && symtab.honoursOffer(imp->file) ? imp : nullptr;
+      });
+    });
+  };
+  preemptVagueEntities();
+  if (errorCount())
+    return;
+
   // Do LTO by compiling bitcode input files to a set of native COFF files then
   // link those files (unless -thinlto-index-only was given, in which case we
   // resolve symbols and write indices, but don't generate native code or link).
@@ -3169,6 +3377,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (ctx.hasForkObject)
     while (loadImportPartners())
       run();
+  preemptVagueEntities();
 
   // A definition that replaced an import's thunk, in whatever order the two
   // were loaded, takes the import's pointer too.
@@ -3272,7 +3481,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
 
     markLive(ctx);
   }
-  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.bindLocalImports(); });
+  ctx.forEachSymtab([](SymbolTable &symtab) {
+    // A reference that still names something in a preempted group has
+    // nothing to bind, and is reported as one to any discarded section.
+    for (SectionChunk *c : symtab.preempted)
+      c->live = false;
+    symtab.bindLocalImports();
+  });
 
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {
@@ -3297,6 +3512,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       }
     }
   }
+
+  ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.addOffers(); });
 
   // Windows specific -- when we are creating a .dll file, we also
   // need to create a .lib file. In MinGW mode, we only do that when the

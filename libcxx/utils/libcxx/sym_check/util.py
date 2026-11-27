@@ -100,7 +100,14 @@ def is_xcoff_or_big_ar(filename):
     )
 
 
+def is_pe(filename):
+    with open(filename, "rb") as f:
+        return f.read(2) == b"MZ"
+
+
 def is_library_file(filename):
+    if is_pe(filename):
+        return True
     if sys.platform == "darwin":
         return is_mach_o(filename)
     elif sys.platform.startswith("aix"):

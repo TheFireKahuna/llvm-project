@@ -2561,8 +2561,16 @@ constexpr auto LinkRecordKinds = BUILD_ENUM_STRINGS(LinkRecordKindDefs);
 
 constexpr EnumStringDef<COFF::LinkFactTag> LinkFactTagDefs[] = {
     {{"TypePrefix"}, COFF::LinkFactTypePrefix},
+    {{"Visibility"}, COFF::LinkFactVisibility},
+    {{"Init"}, COFF::LinkFactInit},
+    {{"Descriptor"}, COFF::LinkFactDescriptor},
+    {{"AddressSignificant"}, COFF::LinkFactAddressSignificant},
 };
 constexpr auto LinkFactTags = BUILD_ENUM_STRINGS(LinkFactTagDefs);
+
+// By COFF::LinkFactVisibilityState.
+static const char *const LinkVisibilityNames[] = {"Unique", "Default",
+                                                  "Protected", "Hidden"};
 
 void COFFDumper::printCOFFLinkRecords() {
   for (SectionRef Sec : Obj->sections()) {
@@ -2662,6 +2670,37 @@ void COFFDumper::printCOFFLinkRecords() {
                   }
                 }
                 return C.takeError();
+              }
+              if (Kind == COFF::LinkRecordImages) {
+                std::vector<COFFLinkImage> Images;
+                if (Error E = readCOFFLinkImages(Payload, Images))
+                  return E;
+                for (const COFFLinkImage &Image : Images) {
+                  DictScope I(W, "Image");
+                  W.printString("Name", Image.Name);
+                  for (uint32_t Import : Image.Imports)
+                    W.printString(Import % 2 ? "DelayLoads" : "Imports",
+                                  Images[Import / 2].Name);
+                  for (const COFFLinkImage::Entity &E : Image.Kept) {
+                    DictScope K(W, "Entity");
+                    W.printString("Name", E.Name);
+                    W.printString("Visibility",
+                                  LinkVisibilityNames[E.Flags % 4]);
+                    if (E.Flags & COFF::LinkImageEntityFunction)
+                      W.printString("Kind", "Function");
+                    else
+                      W.printNumber("Init",
+                                    E.Flags >> COFF::LinkImageEntityInitShift &
+                                        7);
+                    if (E.Flags & COFF::LinkImageEntityForeign)
+                      W.printString("Provenance", "Foreign");
+                    W.printNumber("Size", E.Size);
+                    W.printNumber("Alignment", 1u << E.Log2Align);
+                    if (E.Flags & COFF::LinkImageEntityCheckSum)
+                      W.printHex("CheckSum", E.CheckSum);
+                  }
+                }
+                return Error::success();
               }
               if (Kind != COFF::LinkRecordSymbols) {
                 W.printBinaryBlock("Payload", Payload);

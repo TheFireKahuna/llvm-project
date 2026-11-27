@@ -1443,7 +1443,10 @@ bool CodeGenModule::HasHiddenLTOVisibility(const CXXRecordDecl *RD) {
   if (!isExternallyVisible(LV.getLinkage()))
     return true;
 
-  if (!getTriple().isOSBinFormatCOFF() &&
+  // On Windows Itanium and NT-POSIX visibility is an image's boundary, as it
+  // is a shared object's on ELF.
+  if ((!getTriple().isOSBinFormatCOFF() ||
+       getTriple().isWindowsItaniumOrNTPOSIXEnvironment()) &&
       LV.getVisibility() != HiddenVisibility)
     return false;
 

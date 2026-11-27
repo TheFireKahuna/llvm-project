@@ -2179,6 +2179,14 @@ defm addrsig : BoolFOption<"addrsig",
   NegFlag<SetFalse, [], [ClangOption], "Don't emit">,
   BothFlags<[], [ClangOption, CLOption],
           " an address-significance table">>;
+defm gnu_unique : BoolFOption<"gnu-unique",
+  CodeGenOpts<"GnuUnique">, DefaultFalse,
+  PosFlag<SetTrue, [], [ClangOption, CC1Option], "Give">,
+  NegFlag<SetFalse, [], [ClangOption], "Do not give">,
+  BothFlags<[], [ClangOption],
+          " inline variables, static data members of templates and static "
+          "variables of inline functions GCC's unique binding, which keeps "
+          "one instance of each in a process">>;
 defm blocks : OptInCC1FFlag<"blocks", "Enable the 'blocks' language feature",
                             "", "", [ClangOption, CLOption]>;
 def fbootclasspath_EQ : Joined<["-"], "fbootclasspath=">, Group<f_Group>;

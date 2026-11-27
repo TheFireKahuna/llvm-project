@@ -14,10 +14,11 @@
 ; RUN: %if aarch64-registered-target %{ %{a64} < %t.noplt.ll | %{form}=A64,A64-NOPLT %}
 ; RUN: %if aarch64-registered-target %{ %{a64} -O0 < %t.noplt.ll | %{form}=A64-O0 %}
 
-; only declares, or a variable whose definition another may replace, may be
-; another image's unless it is dso_local, as on ELF. Its address is loaded
-; from its import pointer, which the linker makes the address itself where the
-; symbol is in the image, and there is no .refptr stub. A call binds through
+; On Windows Itanium and NT-POSIX what may be another image's, as on ELF, is
+; reached through its import pointer, with no .refptr stub. A call binds
+; through the linker's thunk unless the callee is nonlazybind or the module has
+; RtLibUseGOT; a library call goes through the import pointer in every mode.
+; Other Windows targets are unchanged.
 
 declare void @plain()
 declare void @nolazy() nonlazybind
@@ -31,6 +32,7 @@ declare void @take(ptr)
 @local_var = external dso_local global i32
 @exported_var = external dllexport global i32
 @vague = linkonce_odr global i32 0
+@vague_alias = alias i32, ptr @vague
 @tls = external thread_local global i32
 
 define void @defined() {
@@ -106,21 +108,49 @@ define void @tail_call() {
 
 define void @library_call(ptr %d, ptr %s, i64 %n) {
 ; X64-LABEL: library_call:
-; X64-PLT:        callq memcpy
-; X64-NOPLT:      movq __imp_memcpy@LOAD_CALL(%rip), %rax
-; X64-NOPLT-NEXT: callq *%rax
+; X64:            movq __imp_memcpy@LOAD_CALL(%rip), %rax
+; X64-NEXT:       callq *%rax
 ; X64-O0-LABEL: library_call:
 ; X64-O0:         movq __imp_memcpy@LOAD_CALL(%rip), %rax
 ; X64-O0-NEXT:    callq *%rax
 ; MSVC-LABEL: library_call:
 ; MSVC:           callq memcpy
 ; A64-LABEL: library_call:
-; A64-PLT:        bl memcpy
-; A64-NOPLT:      adrp x8, __imp_memcpy
+; A64:            adrp x8, __imp_memcpy
 ; A64-O0-LABEL: library_call:
 ; A64-O0:         adrp x8, __imp_memcpy
   call void @llvm.memcpy.p0.p0.i64(ptr %d, ptr %s, i64 %n, i1 false)
   ret void
+}
+
+; Instruction selection at -O0 reaches what may be another image's through its
+; pointer, as at -O2.
+define void @own_calls() {
+; A64-O0-LABEL: own_calls:
+; A64-O0:         ldr x8, [x8, :fused_lo12:__imp_plain]
+; A64-O0:         blr x8
+; A64-O0:         ldr x0, [x0, :fused_lo12:__imp_plain]
+; A64-O0:         br x0
+  call void @plain()
+  tail call void @plain()
+  ret void
+}
+
+; The rewind function that exception lowering declares is the runtime's, and is
+; reached through its import pointer in every mode.
+define void @rewind() personality ptr @__gxx_personality_v0 {
+; X64-LABEL: rewind:
+; X64:            movq __imp__Unwind_Resume@LOAD_CALL(%rip), %rax
+; X64-NEXT:       callq *%rax
+; A64-LABEL: rewind:
+; A64:            ldr x8, [x8, :fused_lo12:__imp__Unwind_Resume]
+  invoke void @local() to label %ok unwind label %lp
+ok:
+  ret void
+lp:
+  %l = landingpad { ptr, i32 } cleanup
+  call void @local()
+  resume { ptr, i32 } %l
 }
 
 define void @addresses() {
@@ -129,6 +159,7 @@ define void @addresses() {
 ; X64:            movq __imp_weak(%rip), %r{{cx|di}}
 ; X64:            movq __imp_var(%rip), %r{{cx|di}}
 ; X64:            movq __imp_vague(%rip), %r{{cx|di}}
+; X64:            movq __imp_vague_alias(%rip), %r{{cx|di}}
 ; X64:            leaq local(%rip), %r{{cx|di}}
 ; X64:            leaq hidden(%rip), %r{{cx|di}}
 ; X64:            leaq defined(%rip), %r{{cx|di}}
@@ -143,11 +174,13 @@ define void @addresses() {
 ; MSVC:           movq .refptr.weak(%rip), %rcx
 ; MSVC:           leaq var(%rip), %rcx
 ; MSVC:           leaq vague(%rip), %rcx
+; MSVC:           leaq vague_alias(%rip), %rcx
 ; A64-LABEL: addresses:
 ; A64:            ldr x0, [x0, :lo12:__imp_plain]
 ; A64:            ldr x0, [x0, :lo12:__imp_weak]
 ; A64:            ldr x0, [x0, :lo12:__imp_var]
 ; A64:            ldr x0, [x0, :lo12:__imp_vague]
+; A64:            ldr x0, [x0, :lo12:__imp_vague_alias]
 ; A64:            add x0, x0, :lo12:local
 ; A64:            add x0, x0, :lo12:hidden
 ; A64:            add x0, x0, :lo12:defined
@@ -160,6 +193,7 @@ define void @addresses() {
   call void @take(ptr @weak)
   call void @take(ptr @var)
   call void @take(ptr @vague)
+  call void @take(ptr @vague_alias)
   call void @take(ptr @local)
   call void @take(ptr @hidden)
   call void @take(ptr @defined)
@@ -218,5 +252,6 @@ define i32 @narrow() {
 ; MSVC:         .addrsig_sym var
 
 declare void @llvm.memcpy.p0.p0.i64(ptr, ptr, i64, i1)
+declare i32 @__gxx_personality_v0(...)
 ;NOPLT: !llvm.module.flags = !{!0}
 ;NOPLT: !0 = !{i32 7, !"RtLibUseGOT", i32 1}

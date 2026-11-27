@@ -124,32 +124,37 @@
 
 ## The Symbols group holds link facts, each the index of a symbol, a tag, the
 ## size of its operands and the operands: a type prefix with a second type on
-## a, a fact of the non-critical tag 2 with three bytes of operands, and a
+## a, a fact of the non-critical tag 20 with three bytes of operands, and a
 ## fact of @comp.id, which is no symbol of the link. The prefix key states the
 ## size of every patchable prefix of the image, so a type prefix in an image
 ## no object of which carries the key is an error.
 # DEFINE: %{key} = -failifmismatch:_WIN_ITANIUM_KCFI_PREFIX=00000010.0
-# RUN: yaml2obj -DDATA=4C4C52430100010E03000101030203AABBCC00000100 obj.yaml -o facts.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010E03000101031403AABBCC00000100 obj.yaml -o facts.obj
 # RUN: %{link} facts.obj %{key}
 # RUN: not %{link} facts.obj 2>&1 | FileCheck --check-prefix=NOKEY %s
 # NOKEY: error: facts.obj: a function has a type prefix, and no object carries /failifmismatch:_WIN_ITANIUM_KCFI_PREFIX
 
-## A fact of the critical tag 3, a fact of a symbol the object does not have,
+## A fact of the critical tag 21, a fact of a symbol the object does not have,
 ## a type prefix with no operand, operands longer than the group, a second
-## word that is not assigned, and a second Symbols group.
-# RUN: yaml2obj -DDATA=4C4C524301000103030300 obj.yaml -o tag.obj
+## word, a visibility and an initialization that are not assigned, and a
+## second Symbols group.
+# RUN: yaml2obj -DDATA=4C4C524301000103031500 obj.yaml -o tag.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010463000100 obj.yaml -o index.obj
 # RUN: yaml2obj -DDATA=4C4C524301000103030000 obj.yaml -o operands.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010403000500 obj.yaml -o fsize.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010403000102 obj.yaml -o prefix.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010403010104 obj.yaml -o visibility.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010403020104 obj.yaml -o init.obj
 # RUN: yaml2obj -DDATA=4C4C5243010001000100 obj.yaml -o two.obj
-# RUN: not %{link} tag.obj index.obj operands.obj fsize.obj prefix.obj two.obj \
-# RUN:   2>&1 | FileCheck --check-prefix=BAD %s
-# BAD: error: tag.obj: .llvm_link_records: unknown critical tag 3
+# RUN: not %{link} tag.obj index.obj operands.obj fsize.obj prefix.obj \
+# RUN:   visibility.obj init.obj two.obj 2>&1 | FileCheck --check-prefix=BAD %s
+# BAD: error: tag.obj: .llvm_link_records: unknown critical tag 21
 # BAD: error: index.obj: .llvm_link_records: fact of symbol 99, which the file does not have
 # BAD: error: operands.obj: .llvm_link_records: unable to decode LEB128 at offset 0x00000000: malformed uleb128, extends past end
 # BAD: error: fsize.obj: .llvm_link_records: unexpected end of data at offset 0x4 while reading [0x3, 0x8)
 # BAD: error: prefix.obj: .llvm_link_records: type prefix of symbol 3 is out of range
+# BAD: error: visibility.obj: .llvm_link_records: visibility of symbol 3 is out of range
+# BAD: error: init.obj: .llvm_link_records: initialization of symbol 3 is out of range
 # BAD: error: two.obj: .llvm_link_records: two Symbols groups
 
 ## Bitcode with a fact, and the object LTO makes of it, link.

@@ -36,7 +36,9 @@
 // CC1-DAG:     "-stack-protector" "2"
 // CC1-DAG:     "-ftrivial-auto-var-init=zero"
 // CC1-DAG:     "-cfguard"
+// CC1-DAG:     "-fgnu-unique"
 // CC1-DAG:     "-fsanitize-cfi-icall-generalize-pointers"
+// CC1-DAG:     "-mdefault-visibility-export-mapping=explicit"
 // CC1-X64-DAG: "-ehcontguard"
 
 // PlayStation's flavour of Windows Itanium and the 32-bit targets keep the
@@ -53,7 +55,9 @@
 // for the target, so a check must trap.
 // RUN: %{x64} -fno-ms-extensions -fno-declspec -fno-use-cxa-atexit -fno-stack-protector \
 // RUN:   -ftrivial-auto-var-init=uninitialized -mguard=none -g -fsanitize=undefined \
-// RUN:   -fsanitize-trap=undefined 2>&1 | FileCheck --check-prefix=USER %s --implicit-check-not=error: \
+// RUN:   -fsanitize-trap=undefined -fno-gnu-unique -mdefault-visibility-export-mapping=all 2>&1 \
+// RUN:   | FileCheck --check-prefix=USER %s --implicit-check-not=error: --implicit-check-not=mapping=explicit \
+// RUN:   --implicit-check-not=-fgnu-unique \
 // RUN:   --implicit-check-not=-fms-extensions --implicit-check-not=-fms-compatibility-version \
 // RUN:   --implicit-check-not=-fdeclspec --implicit-check-not=-stack-protector \
 // RUN:   --implicit-check-not=-ftrivial-auto-var-init=zero --implicit-check-not='"-cfguard"'
@@ -61,6 +65,7 @@
 // USER-DAG: "-ftrivial-auto-var-init=uninitialized"
 // USER-DAG: "-cfguard-no-checks"
 // USER-DAG: "-gcodeview"
+// USER-DAG: "-mdefault-visibility-export-mapping=all"
 // USER-DAG: "-fsanitize-trap=
 
 // A user's -fms-compatibility-version= and -ftrivial-auto-var-init-max-size=,

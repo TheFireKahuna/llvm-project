@@ -943,6 +943,14 @@ void CodeGenModule::checkAliases() {
       continue;
     }
 
+    // On Windows Itanium and NT-POSIX an alias of a variable with vague
+    // linkage, which is known to be one only now, is a name of the instance
+    // that the link chooses, as the variable is.
+    if (isa<llvm::GlobalVariable>(GV) && GV->isWeakForLinker() &&
+        !GV->isDSOLocal() && Alias->hasDefaultVisibility() &&
+        getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      Alias->setDSOLocal(false);
+
     if (!IsIFunc) {
       GlobalDecl AliaseeGD;
       if (!lookupRepresentativeDecl(GV->getName(), AliaseeGD) ||
@@ -2658,6 +2666,15 @@ void CodeGenModule::setGVPropertiesAux(llvm::GlobalValue *GV,
                                        const NamedDecl *D) const {
   setGlobalVisibility(GV, D);
   setDSOLocal(GV);
+  // On Windows Itanium and NT-POSIX a variable with vague linkage has one
+  // instance among the images that import from each other, as it has one in
+  // a process on ELF: the link binds each name of it to the instance of a DLL
+  // that the image imports from, or to the image's own. Its guard follows it.
+  if (const auto *VD = dyn_cast_or_null<VarDecl>(D);
+      VD && !VD->getTLSKind() && GV->isWeakForLinker() &&
+      GV->hasDefaultVisibility() &&
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    GV->setDSOLocal(false);
   // On Windows Itanium and NT-POSIX a function or variable that is declared
   // dllexport is defined in this image.
   if (isa_and_nonnull<DeclaratorDecl>(D) && D->hasAttr<DLLExportAttr>() &&
@@ -6005,6 +6022,15 @@ bool CodeGenModule::shouldDropDLLAttribute(const Decl *D,
   if (SC == llvm::GlobalValue::DefaultStorageClass)
     return false;
   const Decl *MRD = D->getMostRecentDecl();
+  // On Windows Itanium and NT-POSIX a declaration that states nothing keeps
+  // an import the compiler knows of, as a runtime function's.
+  if (const auto *FD = dyn_cast<FunctionDecl>(MRD);
+      FD && SC == llvm::GlobalValue::DLLImportStorageClass &&
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment() && !FD->isDefined() &&
+      llvm::none_of(FD->redecls(), [](const FunctionDecl *R) {
+        return R->hasAttr<DLLImportAttr>() || R->hasAttr<DLLExportAttr>();
+      }))
+    return false;
   return (((SC == llvm::GlobalValue::DLLImportStorageClass &&
             !MRD->hasAttr<DLLImportAttr>()) ||
            (SC == llvm::GlobalValue::DLLExportStorageClass &&
@@ -6321,11 +6347,15 @@ static void setWindowsItaniumDLLImport(CodeGenModule &CGM, bool Local,
   // dllimport. For Mingw and MSVC, don't. We don't really know if the user
   // will link their standard library statically or dynamically. Marking
   // functions imported when they are not imported can cause linker errors
-  // and warnings.
-  if (!Local && CGM.getTriple().isWindowsItaniumEnvironment() &&
+  // and warnings. On Windows Itanium and NT-POSIX, where the linker makes an
+  // import local, only the runtime's own export withholds the mark.
+  bool LinkerLocal = CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  if (!Local &&
+      (LinkerLocal || CGM.getTriple().isWindowsItaniumEnvironment()) &&
       !CGM.getCodeGenOpts().LTOVisibilityPublicStd) {
     const FunctionDecl *FD = GetRuntimeFunctionDecl(CGM.getContext(), Name);
-    if (!FD || FD->hasAttr<DLLImportAttr>()) {
+    if (!FD || (LinkerLocal ? !FD->hasAttr<DLLExportAttr>()
+                            : FD->hasAttr<DLLImportAttr>())) {
       F->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
       F->setLinkage(llvm::GlobalValue::ExternalLinkage);
     }
@@ -6872,6 +6902,13 @@ bool CodeGenModule::supportsCOMDAT() const {
   return getTriple().supportsCOMDAT();
 }
 
+void CodeGenModule::setGnuUnique(const VarDecl &D, llvm::GlobalVariable &GV) {
+  GVALinkage Linkage = getContext().GetGVALinkageForVariable(&D);
+  if (CodeGenOpts.GnuUnique &&
+      (Linkage == GVA_DiscardableODR || Linkage == GVA_StrongODR))
+    GV.addAttribute("gnu-unique");
+}
+
 void CodeGenModule::maybeSetTrivialComdat(const Decl &D,
                                           llvm::GlobalObject &GO) {
   if (!CodeGenUtils::shouldBeInCOMDAT(getContext(), D))
@@ -7145,6 +7182,7 @@ void CodeGenModule::EmitGlobalVarDefinition(const VarDecl *D,
     Linkage = llvm::GlobalValue::ExternalLinkage;
 
   GV->setLinkage(Linkage);
+  setGnuUnique(*D, *GV);
   if (D->hasAttr<DLLImportAttr>())
     GV->setDLLStorageClass(llvm::GlobalVariable::DLLImportStorageClass);
   else if (D->hasAttr<DLLExportAttr>())

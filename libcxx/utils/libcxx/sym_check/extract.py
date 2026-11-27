@@ -276,6 +276,49 @@ class AIXDumpExtractor(object):
         return out.find("SHROBJ") != -1
 
 
+class COFFExportExtractor(object):
+    """
+    COFFExportExtractor - Extract the exports of a PE image, its ABI, using
+    llvm-readobj. An export whose address is in a code section is a function;
+    any other, a forwarder included, is data.
+    """
+
+    @staticmethod
+    def find_tool():
+        return shutil.which("llvm-readobj")
+
+    def __init__(self, static_lib):
+        self.tool = self.find_tool()
+        if self.tool is None:
+            print("ERROR: Could not find llvm-readobj")
+            sys.exit(1)
+
+    def extract(self, lib):
+        cmd = [self.tool, "--sections", "--coff-exports", lib]
+        sections, *exports = subprocess.check_output(cmd).decode().split("Export {")
+        code = []
+        for section in sections.split("Section {")[1:]:
+            fields = dict(re.findall(r"(\w+): (0x[0-9A-F]+)", section))
+            if "IMAGE_SCN_CNT_CODE" in section:
+                start = int(fields["VirtualAddress"], 16)
+                code.append((start, start + int(fields["VirtualSize"], 16)))
+        syms = []
+        for export in exports:
+            name = re.search(r"Name: (.*)", export).group(1).strip()
+            rva = re.search(r"RVA: (0x[0-9A-F]+)", export)
+            if not name or name in extract_ignore_names:
+                continue
+            is_code = rva and any(s <= int(rva.group(1), 16) < e for s, e in code)
+            syms.append(
+                {
+                    "name": name,
+                    "type": "FUNC" if is_code else "OBJECT",
+                    "is_defined": True,
+                }
+            )
+        return syms
+
+
 def is_static_library(lib_file):
     """
     Determine if a given library is static or shared.
@@ -296,7 +339,9 @@ def extract_symbols(lib_file, static_lib=None):
     """
     if static_lib is None:
         static_lib = is_static_library(lib_file)
-    if sys.platform.startswith("aix"):
+    if util.is_pe(lib_file):
+        extractor = COFFExportExtractor(static_lib=static_lib)
+    elif sys.platform.startswith("aix"):
         extractor = AIXDumpExtractor(static_lib=static_lib)
     elif ReadElfExtractor.find_tool() and not static_lib:
         extractor = ReadElfExtractor(static_lib=static_lib)

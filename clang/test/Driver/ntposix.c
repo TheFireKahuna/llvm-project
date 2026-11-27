@@ -23,8 +23,10 @@
 // CC1-DAG:     "-fdeclspec"
 // CC1-DAG:     "-exception-model=seh"
 // CC1-DAG:     "-cfguard-no-checks"
+// CC1-DAG:     "-fgnu-unique"
 // CC1-DAG:     "-fsanitize-cfi-icall-generalize-pointers"
 // CC1-DAG:     "-ehcontguard"
+// CC1-DAG:     "-mdefault-visibility-export-mapping=explicit"
 // CC1-A64-DAG: "-target-feature" "+lse2"
 
 // A user's frame-pointer options still apply; Control Flow Guard's checks are

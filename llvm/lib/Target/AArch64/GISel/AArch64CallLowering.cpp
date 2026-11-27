@@ -1397,6 +1397,15 @@ bool AArch64CallLowering::lowerCall(MachineIRBuilder &MIRBuilder,
       Info.CallConv == CallingConv::ARM64EC_Thunk_X64)
     return false;
 
+  // A function the call reaches through its pointer is loaded, as
+  // SelectionDAG loads it.
+  if (const GlobalValue *GV =
+          Info.Callee.isGlobal() ? Info.Callee.getGlobal() : nullptr;
+      GV && (Subtarget.classifyGlobalFunctionReference(GV, MF.getTarget()) &
+             AArch64II::MO_GOT))
+    Info.Callee = MachineOperand::CreateReg(
+        MIRBuilder.buildGlobalValue(LLT::pointer(0, 64), GV).getReg(0), false);
+
   SmallVector<ArgInfo, 8> OutArgs;
   for (auto &OrigArg : Info.OrigArgs) {
     splitToValueTypes(OrigArg, OutArgs, DL, Info.CallConv);
@@ -1464,8 +1473,10 @@ bool AArch64CallLowering::lowerCall(MachineIRBuilder &MIRBuilder,
     Opc = AArch64::BLR_BTI;
   else {
     // For an intrinsic call (e.g. memset), use GOT if "RtLibUseGOT" (-fno-plt)
-    // is set.
-    if (Info.Callee.isSymbol() && F.getParent()->getRtLibUseGOT()) {
+    // is set, or the import pointer on Windows Itanium and NT-POSIX.
+    if (Info.Callee.isSymbol() &&
+        (F.getParent()->getRtLibUseGOT() ||
+         Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
       auto MIB = MIRBuilder.buildInstr(TargetOpcode::G_GLOBAL_VALUE);
       DstOp(getLLTForType(*F.getType(), DL)).addDefToMIB(MRI, MIB);
       MIB.addExternalSymbol(Info.Callee.getSymbolName(), AArch64II::MO_GOT);

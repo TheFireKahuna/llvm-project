@@ -1169,6 +1169,46 @@ enum LinkFactTag : uint64_t {
   /// The function has a type prefix. The operand is what the prefix holds
   /// before its marker, a LinkFactSecondWord.
   LinkFactTypePrefix = 0,
+  /// The visibility of the symbol, a LinkFactVisibilityState. Critical.
+  /// Every name of a vague entity states it: of a definition that the images
+  /// of a process share, each image binding the one that an image it imports
+  /// from keeps, of an alias of one and of what shares its COMDAT. So does a
+  /// weak reference whose visibility is not default, which no other image's
+  /// definition satisfies.
+  LinkFactVisibility = 1,
+  /// The symbol is a variable that is a name of a vague entity. The operand
+  /// is how it is initialized, a LinkFactInitKind.
+  LinkFactInit = 2,
+  /// The variable is a type_info object. Critical.
+  LinkFactDescriptor = 3,
+  /// The symbol is a function that is a name of a vague entity and whose
+  /// address is significant in this unit. A unit states no other function.
+  /// Critical.
+  LinkFactAddressSignificant = 5,
+};
+
+/// The states are in the order of constraint: the copies of one name have
+/// the greatest state that one of them states.
+enum LinkFactVisibilityState : uint64_t {
+  /// Default visibility, and one instance in the process even where the
+  /// image binds its own references to its definitions: GCC's unique
+  /// binding, which a variable alone has.
+  LinkFactUnique = 0,
+  LinkFactDefault = 1,
+  LinkFactProtected = 2,
+  LinkFactHidden = 3,
+};
+
+/// From the least that a reader may assume of the variable to the most.
+enum LinkFactInitKind : uint64_t {
+  /// A constant with a constant initializer that no definition replaces.
+  LinkFactConstantImmutable = 0,
+  LinkFactConstantMutable = 1,
+  /// Initialized under its guard variable when control first passes its
+  /// declaration.
+  LinkFactDynamicGuarded = 2,
+  /// Initialized under its guard variable with its image.
+  LinkFactDynamicUnordered = 3,
 };
 
 enum LinkFactSecondWord : uint64_t {
@@ -1224,6 +1264,46 @@ constexpr uint16_t SpanTypes[] = {
     IMAGE_REL_LLVM_SSPAN_ULEB,    IMAGE_REL_LLVM_SSPAN_SLEB,
     IMAGE_REL_LLVM_USPAN8,        IMAGE_REL_LLVM_USPAN16,
     IMAGE_REL_LLVM_SSPAN_EPILOGV2};
+
+/// The name of the one symbol of the member of a DLL's import library that
+/// holds the DLL's link records. Nothing refers to it, so no link loads the
+/// member: a linker that knows the records reads them where they are.
+static const char LinkRecordsMemberSymbol[] = "__llvm_link_records$lib";
+
+/// The payload of an Images group is a count and that many images: a DLL and
+/// then every image that is loaded with it. Each is its name, a count and
+/// that many imports, and a count and that many fields. A name is its size
+/// and its bytes. An import is twice the index of an image of the group that
+/// the image imports from, plus one where it loads that image late. A field
+/// is a tag, the size of its payload and the payload, and a reader skips one
+/// whose tag it does not know, unless the tag is critical.
+enum LinkImageField : uint64_t {
+  /// The vague entities that the image keeps, type_info objects apart: a
+  /// count, then each as its name, its LinkImageEntityFlags, its size in
+  /// bytes, the logarithm of its alignment and, where the flags say so, the
+  /// 32 bits of its section's checksum. Critical.
+  LinkImageKept = 1,
+};
+
+/// An entity's LinkFactVisibilityState is in bits 0 and 1 and a variable's
+/// LinkFactInitKind in bits 2 to 4.
+enum LinkImageEntityFlags : uint64_t {
+  LinkImageEntityInitShift = 2,
+  /// No object states the entity: the linker derived that it is one.
+  LinkImageEntityForeign = 0x20,
+  LinkImageEntityFunction = 0x40,
+  /// A constant that an image may read in its own copy, whose bytes the
+  /// checksum that follows the entity tells.
+  LinkImageEntityCheckSum = 0x80,
+};
+
+/// Returns whether a definition named \p Name, in a COMDAT of its own, may be
+/// a vague entity. A name of the Microsoft C++ ABI or one that starts with a
+/// dot is none, and neither is a virtual table, a VTT, a construction virtual
+/// table or a type name, which each image keeps, nor a guard variable or a
+/// thread-local wrapper or initialization function, which follow their
+/// variables.
+LLVM_ABI bool isVagueEntityName(StringRef Name);
 
 /// Writes a link fact whose operands are numbers.
 LLVM_ABI void encodeLinkFact(raw_ostream &OS, uint64_t Symbol, uint64_t Tag,

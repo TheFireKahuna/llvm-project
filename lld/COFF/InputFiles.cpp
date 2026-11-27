@@ -147,6 +147,13 @@ ArchiveFile::ArchiveFile(COFFLinkerContext &ctx, MemoryBufferRef m,
   file.swap(f);
 }
 
+std::optional<MemoryBufferRef> ArchiveFile::findMember(StringRef name) {
+  std::optional<Archive::Child> c = CHECK(file->findSym(name), this);
+  if (!c)
+    return std::nullopt;
+  return CHECK(c->getMemoryBufferRef(), this);
+}
+
 void ArchiveFile::parse() {
   COFFLinkerContext &ctx = symtab.ctx;
   SymbolTable *archiveSymtab = &symtab;
@@ -314,6 +321,45 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols) {
                 }
                 return Error::success();
               }
+              case LinkFactVisibility:
+              case LinkFactInit: {
+                DataExtractor data(operands, /*IsLittleEndian=*/true);
+                DataExtractor::Cursor c(0);
+                uint64_t value = data.getULEB128(c);
+                if (!c)
+                  return c.takeError();
+                bool init = tag == LinkFactInit;
+                if (value > (init ? LinkFactDynamicUnordered : LinkFactHidden))
+                  return createStringError(
+                      Twine(init ? "initialization" : "visibility") +
+                      " of symbol " + Twine(index) + " is out of range");
+                if (!apply || !sym)
+                  return Error::success();
+                // Every copy of a symbol and every reference to it states the
+                // same symbol, which takes the most that one of them states.
+                if (init) {
+                  SymbolTable::VagueEntity &e = symtab.vagueEntities[sym];
+                  e.init = std::max<unsigned>(e.init, value);
+                } else {
+                  // A definition that the link keeps out of its exports is
+                  // the image's alone, as a hidden one is.
+                  LinkerDriver &driver = symtab.ctx.driver;
+                  if (isa<Defined>(sym) && sym->getFile() == this &&
+                      (driver.isLocalByVersionScript(sym->getName()) ||
+                       driver.isExcludedLib(this)))
+                    value = LinkFactHidden;
+                  sym->visibility = std::max<unsigned>(sym->visibility, value);
+                }
+                return Error::success();
+              }
+              case LinkFactDescriptor:
+              case LinkFactAddressSignificant:
+                if (apply && sym) {
+                  SymbolTable::VagueEntity &e = symtab.vagueEntities[sym];
+                  e.descriptor |= tag == LinkFactDescriptor;
+                  e.function |= tag == LinkFactAddressSignificant;
+                }
+                return Error::success();
               default:
                 if (tag & LinkRecordCritical)
                   return createStringError("unknown critical tag " +
@@ -1500,14 +1546,23 @@ ImportThunkChunk *ImportFile::makeImportThunk() {
 
 // For a reference from an object for Windows Itanium or NT-POSIX, a
 // definition in the link beats an import library's pointer, as an
-// executable's definition beats a shared object's on ELF. Vague data keeps
-// the import, where a DLL's instance stands for the image's.
+// executable's definition beats a shared object's on ELF. A vague variable
+// keeps the import where the image takes the DLL's offer: the DLL's instance
+// then stands for the image's, whatever refers to the pointer. No other
+// image's definition is that of a hidden or protected symbol, so a weak
+// reference to one that the link does not define keeps its default.
 bool ImportFile::yieldsToDefinition(Symbol *imp) const {
-  if (!imp || !imp->forkReferenced || symtab.isEC())
+  if (!imp || symtab.isEC())
     return false;
-  auto *d = dyn_cast_or_null<DefinedRegular>(
-      symtab.find(imp->getName().substr(strlen("__imp_"))));
-  return d && !(d->isCOMDAT && hdr->getType() != llvm::COFF::IMPORT_CODE);
+  Symbol *x = symtab.find(imp->getName().substr(strlen("__imp_")));
+  bool isProtected =
+      x && x->visibility >= LinkFactProtected && !isa<DefinedImportData>(x);
+  auto *d = dyn_cast_or_null<DefinedRegular>(x);
+  if (auto it = symtab.vagueEntities.find(x);
+      d && it != symtab.vagueEntities.end() && !it->second.function)
+    return isProtected || hdr->getType() == llvm::COFF::IMPORT_CODE ||
+           !symtab.honoursOffer(this);
+  return imp->forkReferenced && (isProtected || d);
 }
 
 void ImportFile::parse() {
@@ -1724,8 +1779,8 @@ void BitcodeFile::parse() {
 
   // An alias to a local symbol, which the symbol table does not list, is a
   // weak definition. Any other is a weak external, which LTO does not link
-  // and whose references the link binds to its target, so the object that
-  // LTO generates defines the target. So is a declaration that names its
+  // and which the link binds, as it does the references to it, to its target,
+  // so the object that LTO generates defines the target. So is a declaration that names its
   // alternate, which may be anywhere.
   auto bind = [&](Symbol *s, StringRef target) {
     Symbol *alias = symtab.addUndefined(target, this, false);
@@ -1743,7 +1798,7 @@ void BitcodeFile::parse() {
       continue;
     } else if (Symbol *alias = symtab.find(alt)) {
       addWeakAlias(sym, alias);
-      alias->isUsedInRegularObj = true;
+      sym->isUsedInRegularObj = alias->isUsedInRegularObj = true;
     } else if (isa<Undefined>(sym)) {
       symtab.addRegular(this, sym->getName(), nullptr, getFakeSC(objSym), 0,
                         true);

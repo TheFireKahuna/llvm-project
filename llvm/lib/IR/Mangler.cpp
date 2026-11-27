@@ -289,17 +289,73 @@ const ConstantInt *llvm::getFunctionTypePrefixMarker(const Function &F) {
       M->getModuleFlag("function-type-prefix"));
 }
 
+// Whether GV is a name of a vague entity: a definition that each unit that
+// needs it emits and of which a process has one. So is every alias of one
+// and whatever shares its COMDAT, a guard variable among them, which move
+// with it. A thread-local variable is shared otherwise. A function with any
+// other linkage may differ from the definition that replaces it, so its
+// calls could not stay with its image.
+static bool isVagueEntity(const GlobalValue *GV) {
+  const GlobalObject *GO = GV->getAliaseeObject();
+  if (!GO || GV->isThreadLocal() || GV->hasLocalLinkage() ||
+      isa<GlobalIFunc>(GV))
+    return false;
+  if (GO != GV)
+    return isVagueEntity(GO);
+  if (const Comdat *C = GO->getComdat(); C && C->getName() != GO->getName()) {
+    const GlobalValue *Key = GO->getParent()->getNamedValue(C->getName());
+    return Key && Key->getComdat() == C && isa<GlobalObject>(Key) &&
+           isVagueEntity(Key);
+  }
+  if (!COFF::isVagueEntityName(GO->getName()))
+    return false;
+  if (isa<Function>(GO))
+    return GO->hasLinkOnceODRLinkage() || GO->hasWeakODRLinkage();
+  return GO->hasLinkOnceLinkage() || GO->hasWeakLinkage();
+}
+
 void llvm::emitLinkFactsForGlobalCOFF(
     const GlobalValue *GV, const Triple &TT,
     function_ref<void(uint64_t Tag, ArrayRef<uint64_t> Operands)> Fact) {
-  if (!TT.isWindowsItaniumOrNTPOSIXEnvironment() ||
-      GV->isDeclarationForLinker())
+  if (!TT.isWindowsItaniumOrNTPOSIXEnvironment())
+    return;
+
+  auto *Var = dyn_cast_or_null<GlobalVariable>(GV->getAliaseeObject());
+  uint64_t State = GV->hasHiddenVisibility()      ? COFF::LinkFactHidden
+                   : GV->hasProtectedVisibility() ? COFF::LinkFactProtected
+                   : Var && Var->hasAttribute("gnu-unique")
+                       ? COFF::LinkFactUnique
+                       : COFF::LinkFactDefault;
+  if (GV->hasExternalWeakLinkage() && State > COFF::LinkFactDefault)
+    Fact(COFF::LinkFactVisibility, {State});
+  if (GV->isDeclarationForLinker())
     return;
 
   if (auto *F = dyn_cast<Function>(GV); F && getFunctionTypePrefixMarker(*F))
     Fact(COFF::LinkFactTypePrefix,
          {F->hasMetadata("kcfi_vfn_type") ? COFF::LinkFactVfnType
                                           : COFF::LinkFactNoSecondWord});
+
+  // Only an observable entity is stated: data, and a function whose address
+  // is significant. A hidden function states nothing, each image keeping
+  // its own.
+  if (!isVagueEntity(GV) || (!Var && (State == COFF::LinkFactHidden ||
+                                      GV->hasAtLeastLocalUnnamedAddr())))
+    return;
+  Fact(COFF::LinkFactVisibility, {State});
+  if (!Var) {
+    Fact(COFF::LinkFactAddressSignificant, {});
+    return;
+  }
+  StringRef Dynamic = Var->getAttribute("dynamic-init").getValueAsString();
+  Fact(COFF::LinkFactInit,
+       {Dynamic == "guarded"     ? COFF::LinkFactDynamicGuarded
+        : Dynamic == "unordered" ? COFF::LinkFactDynamicUnordered
+        : Var->isConstant() && Var->hasDefinitiveInitializer()
+            ? COFF::LinkFactConstantImmutable
+            : COFF::LinkFactConstantMutable});
+  if (Var->hasAttribute("type-info"))
+    Fact(COFF::LinkFactDescriptor, {});
 }
 
 void llvm::emitLinkerFlagsForUsedCOFF(raw_ostream &OS, const GlobalValue *GV,

@@ -1,6 +1,10 @@
+;; Link facts travel as .link_fact, in the Symbols link records and in the
+;; bitcode symbol table: a type prefix (tag 0) and, for every name of a vague
+;; entity, its visibility (1: 0 unique, 1 default, 2 protected, 3 hidden),
+;; initialization (2), type_info (3) and address significance (5).
 
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %s \
-; RUN:   | FileCheck %s --check-prefix=ASM --implicit-check-not=.link_fact
+; RUN:   | FileCheck %s --check-prefixes=ASM,VAGUE --implicit-check-not=.link_fact
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -filetype=obj %s -o %t.o
 ; RUN: llvm-readobj --coff-link-records %t.o | FileCheck %s --check-prefix=OBJ
 ; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-ntposix -filetype=obj %s -o %t.a64.o %}
@@ -14,7 +18,7 @@
 ; RUN:   %s -o %t.other.bc
 ; RUN: llvm-lto2 dump-symtab %t.other.bc | FileCheck %s --check-prefix=SYMTAB
 
-;; Neither a declaration nor a function of another environment has a fact.
+;; Nothing of another environment has a fact.
 ; RUN: llc -mtriple=x86_64-pc-windows-msvc < %s \
 ; RUN:   | FileCheck %s --allow-empty --implicit-check-not=.link_fact
 ; RUN: opt -mtriple=x86_64-pc-windows-msvc %s -o %t.msvc.bc
@@ -25,11 +29,10 @@
 ;; module with the kcfi flag, and AArch64 in either.
 ; RUN: sed 's/!{!0, !1}/!{!1}/' %s > %t.nokcfi.ll
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %t.nokcfi.ll | FileCheck %s \
-; RUN:   --check-prefix=NOKCFI --implicit-check-not=.link_fact \
+; RUN:   --check-prefixes=NOKCFI,VAGUE --implicit-check-not=.link_fact \
 ; RUN:   --implicit-check-not=__cfi_
 ; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-ntposix < %t.nokcfi.ll \
 ; RUN:   | FileCheck %s --check-prefixes=ASM,VAGUE,PREFIX --implicit-check-not=.link_fact %}
-; RUN:   | FileCheck %s --check-prefixes=ASM,PREFIX --implicit-check-not=.link_fact
 ; NOKCFI: f1:
 ; PREFIX: __cfi_f1:
 
@@ -45,12 +48,67 @@
 ; OBJ:          0000: 00
 ; OBJ:        Symbol: f4 ({{.*}})
 ; OBJ:          0000: 01
-; OBJ-NOT:    Fact
+;; A function whose address is not significant, a hidden function and a weak
+;; function that is not ODR state nothing; a weak reference states a
+;; visibility that is not default.
+; VAGUE:      .link_fact g1, 1, 1
+; VAGUE-NEXT: .link_fact g1, 5
+; VAGUE-NEXT: .link_fact g4, 1, 2
+; VAGUE-NEXT: .link_fact g4, 5
+; VAGUE-NEXT: .link_fact w3, 1, 2
+;; Default and neither constant nor dynamically initialized; hidden and
+;; constant; protected, which unique does not change, and initialized where
+;; control passes it; unique and initialized with the image; a weak variable.
+; VAGUE-NEXT: .link_fact v1, 1, 1
+; VAGUE-NEXT: .link_fact v1, 2, 1
+; VAGUE-NEXT: .link_fact v2, 1, 3
+; VAGUE-NEXT: .link_fact v2, 2, 0
+; VAGUE-NEXT: .link_fact v3, 1, 2
+; VAGUE-NEXT: .link_fact v3, 2, 2
+; VAGUE-NEXT: .link_fact v4, 1, 0
+; VAGUE-NEXT: .link_fact v4, 2, 3
+;; A guard in its variable's COMDAT is a name of the variable's group.
+; VAGUE-NEXT: .link_fact _ZGV2v4, 1, 1
+; VAGUE-NEXT: .link_fact _ZGV2v4, 2, 1
+; VAGUE-NEXT: .link_fact v6, 1, 1
+; VAGUE-NEXT: .link_fact v6, 2, 1
+;; A type_info object. Its name, a guard in a COMDAT of its own, a
+;; thread-local variable and a common one state nothing.
+; VAGUE-NEXT: .link_fact _ZTI1A, 1, 1
+; VAGUE-NEXT: .link_fact _ZTI1A, 2, 0
+; VAGUE-NEXT: .link_fact _ZTI1A, 3
+; VAGUE-NEXT: .link_fact w1, 1, 3
+;; An alias is another name of its variable, at its address or inside it,
+;; with its own visibility.
+; VAGUE-NEXT: .link_fact a1, 1, 1
+; VAGUE-NEXT: .link_fact a1, 2, 1
+; VAGUE-NEXT: .link_fact a2, 1, 3
+; VAGUE-NEXT: .link_fact a2, 2, 3
+; VAGUE-NEXT: .link_fact a3, 1, 1
+; VAGUE-NEXT: .link_fact a3, 2, 1
+
+; OBJ:        Symbol: g1 ({{.*}})
+; OBJ-NEXT:   Tag: Visibility (0x1)
+; OBJ:          0000: 01
+; OBJ:        Symbol: g1 ({{.*}})
+; OBJ-NEXT:   Tag: AddressSignificant (0x5)
+; OBJ:        Symbol: w3 ({{.*}})
+; OBJ:        Symbol: v1 ({{.*}})
+; OBJ:        Symbol: v1 ({{.*}})
+; OBJ-NEXT:   Tag: Init (0x2)
+; OBJ:        Symbol: _ZTI1A ({{.*}})
+; OBJ:        Symbol: _ZTI1A ({{.*}})
+; OBJ:        Symbol: _ZTI1A ({{.*}})
+; OBJ-NEXT:   Tag: Descriptor (0x3)
+; OBJ:        Symbol: w1 ({{.*}})
+; OBJ-NEXT:   Tag: Visibility (0x1)
+; OBJ:          0000: 03
 
 ;; f1 is symbol 0, f3 symbol 2 and f4 symbol 3: each fact is the index, the
-;; tag, the size of its operands and the operands.
+;; tag, the size of its operands and the operands. g1 is symbol 5 and g4
+;; symbol 8, each with its visibility and then its significant address.
 ; SYMTAB:      version: 5
-; SYMTAB:      link facts: 000001000200010003000101
+; SYMTAB:      link facts: 000001000200010003000101{{0501010105050008010102080500}}
 ; SYMTAB-NEXT: D------X f1
 ; SYMTAB-NEXT: D------X f2
 ; SYMTAB-NEXT: D------X f4
@@ -76,6 +134,65 @@ define void @f4() !kcfi_type !2 !kcfi_vfn_type !3 {
 }
 
 declare !kcfi_type !2 void @f5()
+
+$v1 = comdat any
+$v2 = comdat any
+$v3 = comdat any
+$v4 = comdat any
+$v5 = comdat any
+$v6 = comdat any
+$_ZTI1A = comdat any
+$_ZTS1A = comdat any
+$g1 = comdat any
+$g2 = comdat any
+$g3 = comdat any
+$g4 = comdat any
+$g5 = comdat any
+$_ZGV2v6 = comdat any
+
+@v1 = linkonce_odr global [2 x i32] [i32 1, i32 2], comdat
+@v2 = linkonce_odr hidden constant i32 2, comdat
+@v3 = weak_odr protected global i32 0, comdat #0
+@v4 = linkonce_odr global i32 0, comdat #1
+@_ZGV2v4 = linkonce_odr global i64 0, comdat($v4)
+@v5 = linkonce_odr thread_local global i32 0, comdat
+@v6 = weak global i32 0, comdat
+@_ZGV2v6 = linkonce_odr global i64 0, comdat
+@v7 = common global i32 0
+@_ZTI1A = linkonce_odr constant ptr @_ZTS1A, comdat #2
+@_ZTS1A = linkonce_odr constant [3 x i8] c"1A\00", comdat
+@w1 = extern_weak hidden global i32
+@w2 = extern_weak global i32
+
+@a1 = alias i32, ptr @v1
+@a2 = hidden alias i32, ptr @v4
+@a3 = alias i32, getelementptr (i32, ptr @v1, i64 1)
+
+define linkonce_odr void @g1() comdat {
+  ret void
+}
+
+define linkonce_odr void @g2() local_unnamed_addr comdat {
+  ret void
+}
+
+define linkonce_odr hidden void @g3() comdat {
+  ret void
+}
+
+define weak_odr protected void @g4() comdat {
+  ret void
+}
+
+define weak void @g5() comdat {
+  ret void
+}
+
+declare extern_weak protected void @w3()
+
+attributes #0 = { "dynamic-init"="guarded" "gnu-unique" }
+attributes #1 = { "dynamic-init"="unordered" "gnu-unique" }
+attributes #2 = { "type-info" }
 
 !llvm.module.flags = !{!0, !1}
 !0 = !{i32 4, !"kcfi", i32 1}

@@ -30,6 +30,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <system_error>
+#include <vector>
 
 namespace llvm {
 
@@ -1560,6 +1561,33 @@ LLVM_ABI Error readCOFFLinkFacts(
     StringRef Facts,
     function_ref<Error(uint64_t Symbol, uint64_t Tag, StringRef Operands)>
         Fact);
+
+/// An image of an Images group of link records: a DLL, or an image that is
+/// loaded with it.
+struct COFFLinkImage {
+  struct Entity {
+    StringRef Name;
+    /// COFF::LinkImageEntityFlags.
+    uint8_t Flags;
+    uint8_t Log2Align;
+    uint32_t CheckSum;
+    uint64_t Size;
+  };
+  StringRef Name;
+  /// Twice the index in the group of each image that this one imports from,
+  /// plus one for an image that it loads late.
+  std::vector<uint32_t> Imports;
+  std::vector<Entity> Kept;
+};
+
+/// Reads the payload of an Images group. An image that is not well formed is
+/// the error.
+LLVM_ABI Error readCOFFLinkImages(StringRef Payload,
+                                  std::vector<COFFLinkImage> &Images);
+
+/// Writes the payload of an Images group.
+LLVM_ABI void writeCOFFLinkImages(raw_ostream &OS,
+                                  ArrayRef<COFFLinkImage> Images);
 
 } // end namespace object
 

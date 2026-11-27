@@ -14,6 +14,7 @@
 #include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseMapInfo.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SmallPtrSet.h"
@@ -203,6 +204,39 @@ public:
   std::vector<SectionRun> sectionRuns;
   std::vector<Symbol *> boundarySymbols;
 
+  // The vague entities that the link facts state, by the symbol that every
+  // copy resolves to, in the order the link met them. A DLL that keeps one
+  // offers it, and an image that imports from that DLL binds the DLL's.
+  struct VagueEntity {
+    VagueEntity() : init(0), descriptor(false), function(false) {}
+    // The greatest llvm::COFF::LinkFactInitKind that a copy of a variable
+    // states.
+    uint8_t init : 2;
+    // True if the entity is a type_info object.
+    uint8_t descriptor : 1;
+    // True if the entity is a function, whose address some object takes.
+    uint8_t function : 1;
+  };
+  llvm::MapVector<Symbol *, VagueEntity> vagueEntities;
+
+  // Whether the image takes the instance of a vague entity that the DLL of
+  // file offers for its own. Every binding of an offer asks here, at the
+  // import that carries it, so an offer the image does not take leaves no
+  // import of its name.
+  bool honoursOffer(const ImportFile *file);
+
+  // Gives each vague entity that the link defines and owner names an import
+  // for, with every name of its COMDAT group, the instance of the import's
+  // DLL, and leaves the group's sections out of the image. It runs once
+  // before LTO, which then compiles no copy, and again once every input is
+  // loaded, before liveness is decided.
+  void preemptVagueEntities(
+      llvm::function_ref<DefinedImportData *(StringRef)> owner);
+
+  // The sections that preemptVagueEntities left out, which no later
+  // reference brings back.
+  std::vector<SectionChunk *> preempted;
+
   // A list of DLL exports.
   std::vector<Export> exports;
   // Exports that repeat one of those names through EXPORTAS: the export table
@@ -234,6 +268,19 @@ public:
 
   // Used for /aligncomm.
   std::map<std::string, int> alignComm;
+
+  // Returns the import whose DLL's instance of the vague entity named name
+  // stands for the image's, or null where the image has its own.
+  DefinedImportData *getOfferOwner(StringRef name);
+
+  // Returns the definition of sym, a name of a vague entity, where the image
+  // keeps the entity: where it is live and no other image's stands for it.
+  DefinedRegular *getKeptEntity(Symbol *sym);
+
+  // Makes a DLL export each vague entity it keeps, and forward each that it
+  // imports to the DLL that keeps it. Liveness is decided before, so an offer
+  // keeps nothing.
+  void addOffers();
 
   void addNamedExports();
   void fixupExports();

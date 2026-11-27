@@ -35,6 +35,7 @@ class DefinedAbsolute;
 class StringChunk;
 class Symbol;
 class InputFile;
+class ImportFile;
 class SectionChunk;
 
 // Short aliases.
@@ -73,6 +74,9 @@ struct Export {
   // forwardTo is set to "dllname.bar" part. Usually empty.
   StringRef forwardTo;
   StringChunk *forwardChunk = nullptr;
+  // The import that an offer of a vague entity forwards to: an image that
+  // reads the import library imports from that import's DLL.
+  ImportFile *owner = nullptr;
 
   ExportSource source = ExportSource::Unset;
   StringRef symbolName;

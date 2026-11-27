@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/BinaryFormat/COFF.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
@@ -57,6 +58,15 @@ bool llvm::COFF::encodeSectionName(char *Out, uint64_t Offset) {
 
   // The offset is too large to be encoded.
   return false;
+}
+
+bool llvm::COFF::isVagueEntityName(StringRef Name) {
+  if (Name.starts_with("?") || Name.starts_with("."))
+    return false;
+  if (!Name.consume_front("_Z"))
+    return true;
+  return !is_contained({"TV", "TT", "TC", "TS", "GV", "TH", "TW"},
+                       Name.take_front(2));
 }
 
 void llvm::COFF::encodeLinkFact(raw_ostream &OS, uint64_t Symbol, uint64_t Tag,

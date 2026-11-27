@@ -109,6 +109,10 @@ struct COFFShortExport {
   /// "EXPORTS\nfoo EXPORTAS bar".
   std::string ExportAs;
 
+  /// The DLL that the entry imports from, where that is not the library's
+  /// own: the one that the library's DLL forwards the export to.
+  std::string DLLName;
+
   uint16_t Ordinal = 0;
   bool Noname = false;
   bool Data = false;
@@ -136,10 +140,14 @@ struct COFFShortExport {
 /// linking both ARM64EC and pure ARM64 objects, and the linker will pick only
 /// the exports relevant to the target platform. For non-hybrid targets,
 /// the NativeExports parameter should not be used.
+///
+/// Each of ExtraMembers becomes a member after the others, under the name of
+/// its buffer.
 LLVM_ABI Error writeImportLibrary(StringRef ImportName, StringRef Path,
                                   ArrayRef<COFFShortExport> Exports,
                                   COFF::MachineTypes Machine, bool MinGW,
-                                  ArrayRef<COFFShortExport> NativeExports = {});
+                                  ArrayRef<COFFShortExport> NativeExports = {},
+                                  ArrayRef<MemoryBufferRef> ExtraMembers = {});
 
 } // namespace object
 } // namespace llvm

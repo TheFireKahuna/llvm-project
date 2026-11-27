@@ -136,6 +136,9 @@ public:
   void addMember(const Archive::Symbol &sym);
   // Adds every member not enqueued or added yet, lazily if lazy.
   void addAllMembers(bool lazy);
+  // Returns the member that defines the symbol named name, which no link
+  // loads, or nothing.
+  std::optional<MemoryBufferRef> findMember(StringRef name);
 
 private:
   std::unique_ptr<Archive> file;

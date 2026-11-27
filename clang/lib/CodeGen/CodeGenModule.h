@@ -914,6 +914,11 @@ public:
   bool supportsCOMDAT() const;
   void maybeSetTrivialComdat(const Decl &D, llvm::GlobalObject &GO);
 
+  /// Under -fgnu-unique, marks \p GV as unique where it defines \p D with
+  /// vague linkage: a process keeps one instance of it even where an image
+  /// binds its own references to its own definitions.
+  void setGnuUnique(const VarDecl &D, llvm::GlobalVariable &GV);
+
   const ABIInfo &getABIInfo();
 
   /// Lazily build and return the LLVMABI library's TargetInfo for the current

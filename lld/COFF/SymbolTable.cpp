@@ -319,6 +319,22 @@ bool SymbolTable::loadMinGWSymbols() {
       loaded = true;
     }
   }
+
+  // A vague variable that the link defines asks for the import library's
+  // member that offers it, which no reference may name: bitcode refers to X
+  // where its code will load __imp_X.
+  for (auto &[sym, entity] : vagueEntities) {
+    if (!isa<DefinedRegular>(sym) || entity.function ||
+        sym->visibility >= LinkFactProtected)
+      continue;
+    Symbol *l = find(("__imp_" + sym->getName()).str());
+    if (!l || l->pendingArchiveLoad || !l->isLazy())
+      continue;
+    Log(ctx) << "Loading lazy " << l->getName() << " from "
+             << l->getFile()->getName() << " for its offer";
+    forceLazy(l);
+    loaded = true;
+  }
   return loaded;
 }
 
@@ -519,8 +535,15 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
 
     StringRef name = undef->getName();
 
-    // A weak alias may have been resolved, so check for that.
+    // A weak alias may have been resolved, so check for that. A vague
+    // variable's name that falls back to its default, as a type_info object
+    // of a class that every unit saw incomplete falls back to its
+    // placeholder, is no entity of the image's: the default is one under a
+    // name of its own. A function's plain entry is its argument entry's.
     if (undef->getWeakAlias()) {
+      if (auto it = vagueEntities.find(undef);
+          it != vagueEntities.end() && !it->second.function)
+        vagueEntities.erase(it);
       aliases.push_back(undef);
       continue;
     }
@@ -1589,6 +1612,199 @@ static int exportSourcePriority(ExportSource s) {
 
 // Performs error checking on all /export arguments.
 // It also sets ordinals.
+// An import library's pointer for a name of a vague entity is the offer of
+// the DLL that keeps the entity, which the image takes where it reads the
+// pointer.
+DefinedImportData *SymbolTable::getOfferOwner(StringRef name) {
+  auto *imp =
+      dyn_cast_or_null<DefinedImportData>(find(("__imp_" + name).str()));
+  return imp && imp->file->live ? imp : nullptr;
+}
+
+// A delay-loaded DLL's offer is not taken: its data has no delay-loaded form,
+// and binding it would load the DLL when the image starts.
+bool SymbolTable::honoursOffer(const ImportFile *file) {
+  return !ctx.config.delayLoads.contains(StringRef(file->dllName).lower());
+}
+
+// These images bind symbols through thunks and a second import address
+// table, which no offer's binding accounts for.
+static void reportHybridEntity(COFFLinkerContext &ctx, InputFile *file,
+                               Symbol *sym) {
+  Err(ctx) << file << ": " << toString(ctx, *sym)
+           << " is a vague entity, which an ARM64EC or ARM64X image cannot "
+              "share with another; give it hidden visibility";
+}
+
+// The DLL's instance becomes the image's as an automatically imported
+// variable does: each external symbol that the definition's COMDAT group
+// defines, the guard and the interior names with the variable, becomes the
+// import of its name, so that references are bound as any reference to an
+// import is. The group's sections are dropped, not left to liveness, which
+// -opt:noref would have keep the copy and run its initializer. A group moves
+// whole or not at all: the image would otherwise initialize or guard an
+// instance that is not the one its code reads.
+void SymbolTable::preemptVagueEntities(
+    function_ref<DefinedImportData *(StringRef)> owner) {
+  // The groups that some DLL provides, by the file that defines them, and
+  // the other names that one provides, which move only with their groups.
+  MapVector<InputFile *, SmallVector<DefinedRegular *, 1>> leaders;
+  SmallVector<DefinedRegular *, 0> members;
+  SmallPtrSet<Symbol *, 4> reported;
+  for (auto &[sym, entity] : vagueEntities)
+    if (auto *d = dyn_cast<DefinedRegular>(sym); d && owner(sym->getName())) {
+      if (isEC() || ctx.hybridSymtab)
+        return reportHybridEntity(ctx, d->file, sym);
+      if (d->isCOMDAT)
+        leaders[d->file].push_back(d);
+      else
+        members.push_back(d);
+    }
+
+  for (auto &[file, groupLeaders] : leaders) {
+    // Every external symbol of the file's that a group defines, with the
+    // group: for an object, by the group's sections, and for bitcode, by its
+    // COMDAT.
+    DenseMap<uintptr_t, size_t> groupOf;
+    std::vector<SmallVector<Symbol *, 4>> groups(groupLeaders.size());
+    auto *obj = dyn_cast<ObjFile>(file);
+    auto *bitcode = dyn_cast<BitcodeFile>(file);
+    if (!obj && !(bitcode && bitcode->obj))
+      continue;
+    for (size_t i = 0, e = groupLeaders.size(); obj && i != e; ++i) {
+      SectionChunk *c = groupLeaders[i]->getChunk();
+      groupOf[uintptr_t(c)] = i;
+      for (SectionChunk &child : c->children())
+        groupOf[uintptr_t(&child)] = i;
+    }
+    if (obj) {
+      for (Symbol *s : obj->getSymbols())
+        if (auto *d = dyn_cast_or_null<DefinedRegular>(s);
+            d && d->file == file && d->isExternal)
+          if (auto it = groupOf.find(uintptr_t(d->getChunk()));
+              it != groupOf.end())
+            groups[it->second].push_back(d);
+    } else {
+      for (bool collect : {false, true})
+        for (auto [objSym, s] :
+             zip(bitcode->obj->symbols(), bitcode->getSymbols())) {
+          auto *d = dyn_cast<DefinedRegular>(s);
+          if (!d || d->file != file || objSym.getComdatIndex() == -1)
+            continue;
+          if (collect) {
+            if (auto it = groupOf.find(objSym.getComdatIndex());
+                it != groupOf.end())
+              groups[it->second].push_back(d);
+          } else if (auto it = llvm::find(groupLeaders, d);
+                     it != groupLeaders.end()) {
+            groupOf[objSym.getComdatIndex()] = it - groupLeaders.begin();
+          }
+        }
+    }
+
+    for (size_t i = 0, e = groupLeaders.size(); i != e; ++i) {
+      DefinedRegular *leader = groupLeaders[i];
+      DefinedImportData *imp = owner(leader->getName());
+      bool whole = true;
+      for (Symbol *s : groups[i]) {
+        DefinedImportData *other = owner(s->getName());
+        if (other && other->getDLLName().equals_insensitive(imp->getDLLName()))
+          continue;
+        whole = false;
+        reported.insert_range(groups[i]);
+        Err(ctx) << file << ": " << toString(ctx, *leader) << " is provided by "
+                 << imp->getDLLName() << ", but " << toString(ctx, *s)
+                 << ", which its COMDAT group also defines, is "
+                 << (other ? "provided by " + other->getDLLName().str() : "not")
+                 << "; give both the visibility they have in "
+                 << imp->getDLLName();
+      }
+      if (!whole)
+        continue;
+      if (obj) {
+        SectionChunk *c = leader->getChunk();
+        preempted.push_back(c);
+        for (SectionChunk &child : c->children())
+          preempted.push_back(&child);
+      }
+      for (Symbol *s : groups[i])
+        handleMinGWAutomaticImport(s, s->getName());
+    }
+  }
+  for (SectionChunk *c : preempted)
+    c->live = false;
+
+  for (DefinedRegular *d : members)
+    if (isa<DefinedRegular>(static_cast<Symbol *>(d)) && !reported.count(d))
+      Err(ctx) << d->file << ": " << toString(ctx, *d) << " is provided by "
+               << owner(d->getName())->getDLLName()
+               << ", which does not provide the vague entity whose COMDAT "
+                  "group defines it; give both the visibility they have in "
+                  "that DLL";
+}
+
+DefinedRegular *SymbolTable::getKeptEntity(Symbol *sym) {
+  auto *d = dyn_cast<DefinedRegular>(sym);
+  SectionChunk *c = d ? d->getChunk() : nullptr;
+  if (!c || !c->isCOMDAT() || !c->live || getOfferOwner(sym->getName()))
+    return nullptr;
+  return d;
+}
+
+void SymbolTable::addOffers() {
+  DenseMap<StringRef, size_t> exported;
+  for (size_t i = 0, e = exports.size(); i != e; ++i)
+    exported.try_emplace(exports[i].name, i);
+
+  for (auto &entity : vagueEntities) {
+    Symbol *sym = entity.first;
+    if (sym->visibility == LinkFactHidden)
+      continue;
+    Export e;
+    e.name = sym->getName();
+    auto it = exported.find(e.name);
+    // Being offered an entity makes no executable export it.
+    if (!ctx.config.dll && it == exported.end())
+      continue;
+    InputFile *file;
+    if (DefinedImportData *owner = getOfferOwner(e.name)) {
+      // The loader takes what follows a forwarder's last dot as the name, or
+      // as the ordinal after a number sign.
+      StringRef name = owner->getExternalName();
+      file = e.owner = owner->file;
+      if (name.contains('.')) {
+        Err(ctx) << file << ": cannot forward the offer of "
+                 << toString(ctx, *sym) << ", which " << owner->getDLLName()
+                 << " exports as " << name << ", a name with a dot";
+        continue;
+      }
+      if (name.empty())
+        name = saver().save("#" + Twine(owner->getOrdinal()));
+      e.forwardTo = saver().save(owner->getDLLName() + "." + name);
+      e.data = owner->file->hdr->getType() != IMPORT_CODE;
+      // The image's own export of the name would be of a second instance.
+      if (it != exported.end()) {
+        exports[it->second].forwardTo = e.forwardTo;
+        exports[it->second].owner = e.owner;
+        exports[it->second].sym = nullptr;
+        continue;
+      }
+    } else {
+      DefinedRegular *d = getKeptEntity(sym);
+      if (!d || it != exported.end())
+        continue;
+      file = d->file;
+      e.sym = d;
+      e.data =
+          !(d->getChunk()->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE);
+    }
+    if (isEC() || ctx.hybridSymtab)
+      return reportHybridEntity(ctx, file, sym);
+    if (ctx.driver.admitExport(*this, e, file))
+      exports.push_back(e);
+  }
+}
+
 void SymbolTable::fixupExports() {
   llvm::TimeTraceScope timeScope("Fixup exports");
   // Symbol ordinals must be unique.

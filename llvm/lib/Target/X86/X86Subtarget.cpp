@@ -200,11 +200,12 @@ X86Subtarget::classifyGlobalFunctionReference(const GlobalValue *GV,
   if (isTargetCOFF()) {
     // On Windows Itanium and NT-POSIX a call binds through the linker's thunk,
     // as through a PLT entry on ELF, or through the import pointer where the
-    // PLT is to be avoided. An extern_weak function has no thunk to bind to.
+    // PLT is to be avoided. An extern_weak function has no thunk to bind to,
+    // and a library call takes the pointer under -fplt too.
     if (TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
       const auto *F = dyn_cast_or_null<Function>(GV);
-      if ((GV &&
-           (GV->hasDLLImportStorageClass() || GV->hasExternalWeakLinkage())) ||
+      if (!GV || GV->hasDLLImportStorageClass() ||
+          GV->hasExternalWeakLinkage() ||
           (F && F->hasFnAttribute(Attribute::NonLazyBind)) ||
           M.getRtLibUseGOT())
         return X86II::MO_DLLIMPORT;

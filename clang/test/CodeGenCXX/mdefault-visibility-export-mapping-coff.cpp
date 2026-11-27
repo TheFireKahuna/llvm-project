@@ -1,11 +1,11 @@
 // DEFINE: %{cc} = %clang_cc1 -std=c++17 -emit-llvm -o - %s
 // DEFINE: %{explicit} = -mdefault-visibility-export-mapping=explicit
 // DEFINE: %{all} = -mdefault-visibility-export-mapping=all
-// RUN: %{cc} -triple x86_64-unknown-windows-itanium %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " -DA= "-DI=dllimport "
-// RUN: %{cc} -triple aarch64-pc-windows-ntposix %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " -DA= "-DI=dllimport "
-// RUN: %{cc} -triple x86_64-w64-mingw32 %{explicit} | FileCheck %s "-DE=dllexport " -DA= "-DI=dllimport "
-// RUN: %{cc} -triple x86_64-unknown-windows-itanium %{all} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " "-DA=dllexport " "-DI=dllimport "
-// RUN: %{cc} -triple x86_64-unknown-windows-itanium | FileCheck %s --check-prefixes=CHECK,ITANIUM -DE= -DA= -DI=
+// RUN: %{cc} -triple x86_64-unknown-windows-itanium %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " -DA= "-DI=dllimport " -DL=
+// RUN: %{cc} -triple aarch64-pc-windows-ntposix %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " -DA= "-DI=dllimport " -DL=
+// RUN: %{cc} -triple x86_64-w64-mingw32 %{explicit} | FileCheck %s "-DE=dllexport " -DA= "-DI=dllimport " "-DL=dso_local "
+// RUN: %{cc} -triple x86_64-unknown-windows-itanium %{all} | FileCheck %s --check-prefixes=CHECK,ITANIUM "-DE=dllexport " "-DA=dllexport " "-DI=dllimport " -DL=
+// RUN: %{cc} -triple x86_64-unknown-windows-itanium | FileCheck %s --check-prefixes=CHECK,ITANIUM -DE= -DA= -DI= -DL=
 
 /// On COFF the mapping exports a definition whose default or protected
 /// visibility the source marks (under "all", implied too) unless every user
@@ -116,15 +116,15 @@ void use() {
 // CHECK-DAG: @var = dso_local [[E]]global
 // CHECK-DAG: @boundVar = protected [[E]]global
 // CHECK-DAG: @plainVar = dso_local [[A]]global
-// CHECK-DAG: @inlineVar = linkonce_odr dso_local [[E]]global
-// CHECK-DAG: @_ZGV9inlineVar = linkonce_odr dso_local [[E]]global
-// CHECK-DAG: @plainInlineVar = linkonce_odr dso_local [[A]]global
+// CHECK-DAG: @inlineVar = linkonce_odr [[L]][[E]]global
+// CHECK-DAG: @_ZGV9inlineVar = linkonce_odr [[L]][[E]]global
+// CHECK-DAG: @plainInlineVar = linkonce_odr [[L]][[A]]global
 // CHECK-DAG: @tls = dso_local thread_local global
 // CHECK-DAG: define linkonce_odr dso_local noundef nonnull align 4 dereferenceable(4) ptr @_Z5localv()
-// CHECK-DAG: @_ZZ5localvE1s = linkonce_odr dso_local [[E]]global
-// CHECK-DAG: @_ZGVZ5localvE1s = linkonce_odr dso_local [[E]]global
-// CHECK-DAG: @_ZN4TmplIiE6memberE = weak_odr dso_local [[E]]global
-// CHECK-DAG: @_ZN4TmplIcE6memberE = linkonce_odr dso_local [[E]]global
+// CHECK-DAG: @_ZZ5localvE1s = linkonce_odr [[L]][[E]]global
+// CHECK-DAG: @_ZGVZ5localvE1s = linkonce_odr [[L]][[E]]global
+// CHECK-DAG: @_ZN4TmplIiE6memberE = weak_odr [[L]][[E]]global
+// CHECK-DAG: @_ZN4TmplIcE6memberE = linkonce_odr [[L]][[E]]global
 
 // CHECK-DAG: @_ZTV3Key = dso_local [[E]]constant
 // CHECK-DAG: @_ZTV5Vague = linkonce_odr dso_local {{(unnamed_addr )?}}constant

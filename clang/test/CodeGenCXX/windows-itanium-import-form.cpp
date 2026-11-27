@@ -18,7 +18,8 @@
 // On Windows Itanium and NT-POSIX a function the unit only declares is not
 // dso_local, as on ELF, and under -fno-plt is nonlazybind with RtLibUseGOT.
 // Hidden, internal, dllexport, later-defined and per-image functions stay
-// dso_local. Other Windows targets are unchanged.
+// dso_local. A runtime function is a known import under -fplt too. Other
+// Windows targets are unchanged.
 
 void plain();
 __attribute__((visibility("hidden"))) void hidden();
@@ -68,8 +69,7 @@ int read() {
 // CHECK-DAG: define dso_local void @_Z5laterv()
 // CHECK-DAG: define internal void @_ZL8internalv()
 // CHECK-DAG: declare dso_local i32 @__gxx_personality_v0(...)
-// NOPLT-DAG: declare dllimport ptr @__cxa_allocate_exception(i64)
-// PLT-DAG:   declare ptr @__cxa_allocate_exception(i64)
+// CHECK-DAG: declare dllimport ptr @__cxa_allocate_exception(i64)
 // NOPLT-DAG: attributes [[NOPLT]] = {{{.*}}nonlazybind
 // NOPLT-DAG: !{i32 7, !"RtLibUseGOT", i32 1}
 // PLT-NOT:   nonlazybind

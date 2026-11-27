@@ -31,13 +31,6 @@ foreach(target IN LISTS LLVM_RUNTIME_TARGETS)
     set(RUNTIMES_${target}_COMPILER_RT_BUILD_${component} OFF CACHE BOOL "")
   endforeach()
 
-  # Until the driver passes it, the build maps explicit default visibility to
-  # an export itself.
-  set(RUNTIMES_${target}_CMAKE_C_FLAGS
-      "-Xclang -mdefault-visibility-export-mapping=explicit" CACHE STRING "")
-  set(RUNTIMES_${target}_CMAKE_CXX_FLAGS
-      "-Xclang -mdefault-visibility-export-mapping=explicit" CACHE STRING "")
-
   # libc++.dll and libc++.lib hold libc++abi.
   set(RUNTIMES_${target}_LIBCXXABI_ENABLE_SHARED OFF CACHE BOOL "")
   set(RUNTIMES_${target}_LIBCXX_ENABLE_STATIC_ABI_LIBRARY ON CACHE BOOL "")
