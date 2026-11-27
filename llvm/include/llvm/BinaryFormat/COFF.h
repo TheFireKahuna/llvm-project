@@ -657,6 +657,17 @@ enum SiteFact : uint64_t {
   SiteFactValueOnlyAccess = 12,
 };
 enum : uint64_t { SiteFactViaFirst = 16 };
+/// At a FUSED_INDEX of an owned-model record chain, SiteFactIndex's word may
+/// instead state what the chain derived into the register: the place, the
+/// thread pointer plus it, the wide word or a step decoding it, the key, and
+/// on ARM64 the form word in a register of its own.
+enum : uint64_t {
+  SiteFactIndexPlace = 1,
+  SiteFactIndexBase = 2,
+  SiteFactIndexWide = 3,
+  SiteFactIndexKey = 4,
+  SiteFactIndexForm = 5,
+};
 
 /// Returns true if the linker may change the size of the code at a relocation
 /// of \p Type against \p Symbol in an object that LLVM writes for Windows

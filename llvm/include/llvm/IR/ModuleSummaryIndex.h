@@ -938,6 +938,11 @@ public:
     // if this bit is off, the function might be reachable or unreachable.
     unsigned MustBeUnreachable : 1;
 
+    // Indicate if the function holds no thread pointer: it never reads the one
+    // it is passed and calls each callee at its plain entry. Can be cleared
+    // during thinlink function attribute propagation.
+    unsigned ThreadPointerUnused : 1;
+
     FFlags &operator&=(const FFlags &RHS) {
       this->ReadNone &= RHS.ReadNone;
       this->ReadOnly &= RHS.ReadOnly;
@@ -949,6 +954,7 @@ public:
       this->MayThrow &= RHS.MayThrow;
       this->HasUnknownCall &= RHS.HasUnknownCall;
       this->MustBeUnreachable &= RHS.MustBeUnreachable;
+      this->ThreadPointerUnused &= RHS.ThreadPointerUnused;
       return *this;
     }
 
@@ -956,7 +962,7 @@ public:
       return this->ReadNone | this->ReadOnly | this->NoRecurse |
              this->ReturnDoesNotAlias | this->NoInline | this->AlwaysInline |
              this->NoUnwind | this->MayThrow | this->HasUnknownCall |
-             this->MustBeUnreachable;
+             this->MustBeUnreachable | this->ThreadPointerUnused;
     }
 
     operator std::string() {
@@ -973,6 +979,8 @@ public:
       OS << ", mayThrow: " << this->MayThrow;
       OS << ", hasUnknownCall: " << this->HasUnknownCall;
       OS << ", mustBeUnreachable: " << this->MustBeUnreachable;
+      if (this->ThreadPointerUnused)
+        OS << ", threadPointerUnused: 1";
       OS << ")";
       return Output;
     }
@@ -1117,6 +1125,8 @@ public:
   void setNoRecurse() { FunFlags.NoRecurse = true; }
 
   void setNoUnwind() { FunFlags.NoUnwind = true; }
+
+  void setThreadPointerUnused(bool V) { FunFlags.ThreadPointerUnused = V; }
 
   /// Get the instruction count recorded for this function.
   unsigned instCount() const { return InstCount; }
@@ -1660,6 +1670,11 @@ private:
   // YAML I/O support.
   friend yaml::MappingTraits<ModuleSummaryIndex>;
 
+  /// The synthetic root of the call graph, whose edges name every function
+  /// no other calls, from which GraphTraits walks the index.
+  std::optional<GlobalValueSummaryMapTy::value_type> CallGraphRoot;
+  friend struct GraphTraits<ModuleSummaryIndex *>;
+
   GlobalValueSummaryMapTy::value_type *
   getOrInsertValuePtr(GlobalValue::GUID GUID) {
     return &*GlobalValueMap.try_emplace(GUID, GlobalValueSummaryInfo(HaveGVs))
@@ -2171,42 +2186,30 @@ template <> struct GraphTraits<ValueInfo> {
 
   static NodeRef getEntryNode(ValueInfo V) { return V; }
 
+  /// A node without a function summary has no callees: an external function,
+  /// or a variable that a profile's call edge names.
+  static SmallVector<FunctionSummary::EdgeTy, 0> &edges(NodeRef N) {
+    if (!N.getSummaryList().empty())
+      if (auto *F = dyn_cast<FunctionSummary>(
+              N.getSummaryList().front()->getBaseObject()))
+        return F->CallGraphEdgeList;
+    return FunctionSummary::ExternalNode.CallGraphEdgeList;
+  }
+
   static ChildIteratorType child_begin(NodeRef N) {
-    if (!N.getSummaryList().size()) // handle external function
-      return ChildIteratorType(
-          FunctionSummary::ExternalNode.CallGraphEdgeList.begin(),
-          &valueInfoFromEdge);
-    FunctionSummary *F =
-        cast<FunctionSummary>(N.getSummaryList().front()->getBaseObject());
-    return ChildIteratorType(F->CallGraphEdgeList.begin(), &valueInfoFromEdge);
+    return ChildIteratorType(edges(N).begin(), &valueInfoFromEdge);
   }
 
   static ChildIteratorType child_end(NodeRef N) {
-    if (!N.getSummaryList().size()) // handle external function
-      return ChildIteratorType(
-          FunctionSummary::ExternalNode.CallGraphEdgeList.end(),
-          &valueInfoFromEdge);
-    FunctionSummary *F =
-        cast<FunctionSummary>(N.getSummaryList().front()->getBaseObject());
-    return ChildIteratorType(F->CallGraphEdgeList.end(), &valueInfoFromEdge);
+    return ChildIteratorType(edges(N).end(), &valueInfoFromEdge);
   }
 
   static ChildEdgeIteratorType child_edge_begin(NodeRef N) {
-    if (!N.getSummaryList().size()) // handle external function
-      return FunctionSummary::ExternalNode.CallGraphEdgeList.begin();
-
-    FunctionSummary *F =
-        cast<FunctionSummary>(N.getSummaryList().front()->getBaseObject());
-    return F->CallGraphEdgeList.begin();
+    return edges(N).begin();
   }
 
   static ChildEdgeIteratorType child_edge_end(NodeRef N) {
-    if (!N.getSummaryList().size()) // handle external function
-      return FunctionSummary::ExternalNode.CallGraphEdgeList.end();
-
-    FunctionSummary *F =
-        cast<FunctionSummary>(N.getSummaryList().front()->getBaseObject());
-    return F->CallGraphEdgeList.end();
+    return edges(N).end();
   }
 
   static NodeRef edge_dest(EdgeRef E) { return E.first; }
@@ -2219,9 +2222,8 @@ struct GraphTraits<ModuleSummaryIndex *> : public GraphTraits<ValueInfo> {
         std::make_unique<FunctionSummary>(I->calculateCallGraphRoot());
     GlobalValueSummaryInfo G(I->haveGVs());
     G.addSummary(std::move(Root));
-    static auto P =
-        GlobalValueSummaryMapTy::value_type(GlobalValue::GUID(0), std::move(G));
-    return ValueInfo(I->haveGVs(), &P);
+    I->CallGraphRoot.emplace(GlobalValue::GUID(0), std::move(G));
+    return ValueInfo(I->haveGVs(), &*I->CallGraphRoot);
   }
 };
 } // end namespace llvm

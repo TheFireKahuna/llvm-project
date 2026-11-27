@@ -114,6 +114,7 @@ add_llvm_target(AArch64CodeGen
   AArch64Utils
   Analysis
   AsmPrinter
+  BinaryFormat
   CFGuard
   CodeGen
   CodeGenTypes

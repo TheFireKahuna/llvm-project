@@ -15,6 +15,13 @@
 ; RUN:   -r %t2.bc,globalvar,plx \
 ; RUN:   -r %t2.bc,get_link,plx
 ; RUN: llvm-nm %t.out.1 | FileCheck %s --implicit-check-not=globalvar
+;; Attribute propagation walks the call graph through the edge to the variable.
+; RUN: llvm-lto2 run %t.bc %t2.bc -o %t.prop -disable-thinlto-funcattrs=0 \
+; RUN:   -r %t.bc,_Z4LinkPKcS0_,plx \
+; RUN:   -r %t.bc,link,l \
+; RUN:   -r %t2.bc,globalvar,plx \
+; RUN:   -r %t2.bc,get_link,plx
+; RUN: llvm-nm %t.prop.1 | FileCheck %s --implicit-check-not=globalvar
 ; CHECK: U link
 
 ; REQUIRES: x86-registered-target

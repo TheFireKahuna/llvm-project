@@ -436,10 +436,11 @@ LLVM_ABI void processImportsFiles(
 /// 1. Resolve prevailing symbol linkages and constrain visibility (CanAutoHide
 ///    and consider visibility from other definitions for ELF) in \p TheModule
 /// 2. (optional) Apply propagated function attributes to \p TheModule if
-///    PropagateAttrs is true
-LLVM_ABI void thinLTOFinalizeInModule(Module &TheModule,
-                                      const GVSummaryMapTy &DefinedGlobals,
-                                      bool PropagateAttrs);
+///    PropagateAttrs is true, and to its declarations from \p Index if given
+LLVM_ABI void
+thinLTOFinalizeInModule(Module &TheModule, const GVSummaryMapTy &DefinedGlobals,
+                        bool PropagateAttrs,
+                        const ModuleSummaryIndex *Index = nullptr);
 
 /// Internalize \p TheModule based on the information recorded in the summaries
 /// during global summary-based analysis.

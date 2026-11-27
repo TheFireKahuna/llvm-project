@@ -112,6 +112,7 @@ add_llvm_target(X86CodeGen ${sources}
   LINK_COMPONENTS
   Analysis
   AsmPrinter
+  BinaryFormat
   CFGuard
   CodeGen
   CodeGenTypes

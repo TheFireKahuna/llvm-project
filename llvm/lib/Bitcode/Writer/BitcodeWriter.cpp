@@ -1403,6 +1403,7 @@ static uint64_t getEncodedFFlags(FunctionSummary::FFlags Flags) {
   RawFlags |= (Flags.MayThrow << 7);
   RawFlags |= (Flags.HasUnknownCall << 8);
   RawFlags |= (Flags.MustBeUnreachable << 9);
+  RawFlags |= (Flags.ThreadPointerUnused << 10);
   return RawFlags;
 }
 

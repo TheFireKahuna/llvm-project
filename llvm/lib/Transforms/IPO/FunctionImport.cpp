@@ -1854,7 +1854,8 @@ bool llvm::convertToDeclaration(GlobalValue &GV) {
 
 void llvm::thinLTOFinalizeInModule(Module &TheModule,
                                    const GVSummaryMapTy &DefinedGlobals,
-                                   bool PropagateAttrs) {
+                                   bool PropagateAttrs,
+                                   const ModuleSummaryIndex *Index) {
   llvm::TimeTraceScope timeScope("ThinLTO finalize in module");
   DenseSet<Comdat *> NonPrevailingComdats;
   auto FinalizeInModule = [&](GlobalValue &GV, bool Propagate = false) {
@@ -1878,6 +1879,9 @@ void llvm::thinLTOFinalizeInModule(Module &TheModule,
 
           if (FS->fflags().NoUnwind && !F->doesNotThrow())
             F->setDoesNotThrow();
+
+          if (!FS->fflags().ThreadPointerUnused)
+            F->removeFnAttr("thread-pointer-unused");
         }
       }
 
@@ -1958,6 +1962,28 @@ void llvm::thinLTOFinalizeInModule(Module &TheModule,
     FinalizeInModule(GV);
   for (auto &GV : TheModule.aliases())
     FinalizeInModule(GV);
+
+  // A declaration of a function passed its thread pointer says what the
+  // summaries of its definitions do: that it holds none, or that it reads it.
+  if (PropagateAttrs && Index)
+    for (Function &F : TheModule) {
+      if (!F.isDeclaration() || !F.hasFnAttribute("thread-pointer-argument"))
+        continue;
+      ValueInfo VI = Index->getValueInfo(F.getGUID());
+      if (!VI)
+        continue;
+      bool Defined = false, Unused = true;
+      for (const auto &S : VI.getSummaryList())
+        if (const auto *FS = dyn_cast<FunctionSummary>(S->getBaseObject());
+            FS && S->isLive()) {
+          Defined = true;
+          Unused &= FS->fflags().ThreadPointerUnused;
+        }
+      if (Defined && Unused)
+        F.addFnAttr("thread-pointer-unused");
+      else if (Defined)
+        F.addFnAttr("thread-pointer-argument", "read");
+    }
 
   // For a non-prevailing comdat, all its members must be available_externally.
   // FinalizeInModule has handled non-local-linkage GlobalValues. Here we handle

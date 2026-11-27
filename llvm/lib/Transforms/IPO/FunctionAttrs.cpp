@@ -89,6 +89,8 @@ STATISTIC(NumNoFreeArg, "Number of arguments marked as nofree");
 STATISTIC(NumWillReturn, "Number of functions marked as willreturn");
 STATISTIC(NumNoSync, "Number of functions marked as nosync");
 STATISTIC(NumCold, "Number of functions marked as cold");
+STATISTIC(NumThreadPointerUnused,
+          "Number of functions marked as thread-pointer-unused");
 
 STATISTIC(NumThinLinkNoRecurse,
           "Number of functions marked as norecurse during thinlink");
@@ -328,16 +330,16 @@ static FunctionSummary *calculatePrevailingSummary(
   ///   as the GUID includes the module path. We could have a guid alias if
   ///   there wasn't any distinguishing path when each file was compiled, but
   ///   that should be rare so we'll punt on those.
+  /// - An external linkage that does not prevail, such as an alias in the
+  ///   regular LTO module, whose resolution the index does not record.
 
-  /// These next 2 cases should not happen and will assert:
-  /// - Multiple instances with external linkage. This should be caught in
-  ///   symbol resolution
+  /// This next case should not happen and will assert:
   /// - Non-existent FunctionSummary for Aliasee. This presents a hole in our
   ///   knowledge meaning we have to go conservative.
 
   /// Otherwise, we calculate attributes for a function as:
-  ///   1. If we have a local linkage, take its attributes. If there's somehow
-  ///      multiple, bail and go conservative.
+  ///   1. If we have a local linkage, or were promoted from one, take its
+  ///      attributes. If there's somehow multiple, bail and go conservative.
   ///   2. If we have an external/WeakODR/LinkOnceODR linkage check that it is
   ///      prevailing, take its attributes.
   ///   3. If we have a Weak/LinkOnce linkage the copies can have semantic
@@ -374,7 +376,7 @@ static FunctionSummary *calculatePrevailingSummary(
       return nullptr;
 
     const auto &Linkage = GVS->linkage();
-    if (GlobalValue::isLocalLinkage(Linkage)) {
+    if (GlobalValue::isLocalLinkage(Linkage) || GVS->wasPromoted()) {
       if (Local) {
         LLVM_DEBUG(
             dbgs()
@@ -385,11 +387,8 @@ static FunctionSummary *calculatePrevailingSummary(
         return nullptr;
       }
       Local = FS;
-    } else if (GlobalValue::isExternalLinkage(Linkage)) {
-      assert(IsPrevailing(VI.getGUID(), GVS.get()) || GVS->wasPromoted());
-      Prevailing = FS;
-      break;
-    } else if (GlobalValue::isWeakODRLinkage(Linkage) ||
+    } else if (GlobalValue::isExternalLinkage(Linkage) ||
+               GlobalValue::isWeakODRLinkage(Linkage) ||
                GlobalValue::isLinkOnceODRLinkage(Linkage) ||
                GlobalValue::isWeakAnyLinkage(Linkage) ||
                GlobalValue::isLinkOnceAnyLinkage(Linkage)) {
@@ -415,17 +414,54 @@ static FunctionSummary *calculatePrevailingSummary(
   return CPS;
 }
 
+/// A function that holds no thread pointer holds one where it calls one that
+/// does at a hot call site, which only the thin link may see across modules,
+/// so that it passes it there rather than having the callee's plain entry
+/// derive one on each call.
+static bool thinLTOPropagateThreadPointer(
+    ModuleSummaryIndex &Index,
+    DenseMap<ValueInfo, FunctionSummary *> &CachedPrevailingSummary,
+    function_ref<bool(GlobalValue::GUID, const GlobalValueSummary *)>
+        IsPrevailing) {
+  bool Changed = false;
+  for (scc_iterator<ModuleSummaryIndex *> I = scc_begin(&Index); !I.isAtEnd();
+       ++I) {
+    bool Holds = any_of(*I, [&](ValueInfo V) {
+      FunctionSummary *FS =
+          calculatePrevailingSummary(V, CachedPrevailingSummary, IsPrevailing);
+      return FS && FS->fflags().ThreadPointerUnused &&
+             any_of(FS->calls(), [&](const FunctionSummary::EdgeTy &Call) {
+               FunctionSummary *Callee = calculatePrevailingSummary(
+                   Call.first, CachedPrevailingSummary, IsPrevailing);
+               return Call.second.getHotness() >=
+                          CalleeInfo::HotnessType::Hot &&
+                      Callee && !Callee->fflags().ThreadPointerUnused &&
+                      !is_contained(*I, Call.first);
+             });
+    });
+    if (!Holds)
+      continue;
+    Changed = true;
+    for (ValueInfo V : *I)
+      for (const auto &S : V.getSummaryList())
+        if (auto *FS = dyn_cast<FunctionSummary>(S.get()))
+          FS->setThreadPointerUnused(false);
+  }
+  return Changed;
+}
+
 bool llvm::thinLTOPropagateFunctionAttrs(
     ModuleSummaryIndex &Index,
     function_ref<bool(GlobalValue::GUID, const GlobalValueSummary *)>
         IsPrevailing) {
+  DenseMap<ValueInfo, FunctionSummary *> CachedPrevailingSummary;
+  bool Changed = thinLTOPropagateThreadPointer(Index, CachedPrevailingSummary,
+                                               IsPrevailing);
+
   // TODO: implement addNoAliasAttrs once
   // there's more information about the return type in the summary
   if (DisableThinLTOPropagation)
-    return false;
-
-  DenseMap<ValueInfo, FunctionSummary *> CachedPrevailingSummary;
-  bool Changed = false;
+    return Changed;
 
   auto PropagateAttributes = [&](std::vector<ValueInfo> &SCCNodes) {
     // Assume we can propagate unless we discover otherwise
@@ -1922,6 +1958,31 @@ static bool InstrBreaksNoSync(Instruction &I, const SCCNodeSet &SCCNodes) {
   return true;
 }
 
+/// Helper for thread-pointer-unused inference predicate InstrBreaksAttribute:
+/// whether I reads the thread pointer of its function, or passes it to a
+/// callee outside the SCC that may read it.
+static bool InstrBreaksThreadPointerUnused(Instruction &I,
+                                           const SCCNodeSet &SCCNodes) {
+  // Safe stack lowering reaches the unsafe stack through a thread-local.
+  const Function &F = *I.getFunction();
+  if (&I == &F.getEntryBlock().front() &&
+      F.hasFnAttribute(Attribute::SafeStack))
+    return true;
+  auto *CB = dyn_cast<CallBase>(&I);
+  if (!CB || CB->isInlineAsm())
+    return false;
+  Function *Callee = CB->getCalledFunction();
+  if (!Callee)
+    return CB->getCallingConv() == CallingConv::C &&
+           !CB->hasFnAttr("no-thread-pointer-argument");
+  if (Callee->isIntrinsic())
+    return Callee->getIntrinsicID() == Intrinsic::thread_pointer ||
+           Callee->getIntrinsicID() == Intrinsic::threadlocal_address;
+  return Callee->hasFnAttribute("thread-pointer-argument") &&
+         !Callee->hasFnAttribute("thread-pointer-unused") &&
+         !SCCNodes.contains(Callee);
+}
+
 /// Attempt to remove convergent function attribute when possible.
 ///
 /// Returns true if any changes to function attributes were made.
@@ -2018,6 +2079,24 @@ static void inferAttrsFromFunctionBodies(const SCCNodeSet &SCCNodes,
                    << "Adding nosync attr to fn " << F.getName() << "\n");
         F.setNoSync();
         ++NumNoSync;
+      },
+      /* RequiresExactDefinition= */ true});
+
+  // A function that never reads the thread pointer it may be passed, and
+  // passes it to nothing that does, need not be passed one. A copy of an
+  // inexact definition may call what the chosen one does not.
+  AI.registerAttrInference(AttributeInferer::InferenceDescriptor{
+      Attribute::None,
+      [](const Function &F) {
+        return !F.hasFnAttribute("thread-pointer-argument") ||
+               F.hasFnAttribute("thread-pointer-unused");
+      },
+      [&SCCNodes](Instruction &I) {
+        return InstrBreaksThreadPointerUnused(I, SCCNodes);
+      },
+      [](Function &F) {
+        F.addFnAttr("thread-pointer-unused");
+        ++NumThreadPointerUnused;
       },
       /* RequiresExactDefinition= */ true});
 

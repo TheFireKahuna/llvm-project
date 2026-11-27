@@ -729,7 +729,8 @@ Error lto::thinBackend(const Config &Conf, unsigned Task, AddStreamFn AddStream,
 
   dropDeadSymbols(Mod, DefinedGlobals, CombinedIndex);
 
-  thinLTOFinalizeInModule(Mod, DefinedGlobals, /*PropagateAttrs=*/true);
+  thinLTOFinalizeInModule(Mod, DefinedGlobals, /*PropagateAttrs=*/true,
+                          &CombinedIndex);
 
   if (Conf.PostPromoteModuleHook && !Conf.PostPromoteModuleHook(Task, Mod))
     return finalizeOptimizationRemarks(std::move(DiagnosticOutputFile));

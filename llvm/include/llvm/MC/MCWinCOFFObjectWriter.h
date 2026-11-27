@@ -88,6 +88,9 @@ public:
     uint64_t Fact, Value;
   };
   std::vector<SiteFact> SiteFacts;
+  /// The labels of the fused markers, in order: markers at one offset are the
+  /// fused relocations there in that order, each stating its own facts.
+  std::vector<const MCSymbol *> FusedMarkers;
 
   /// A dispatch through a jump table that the Sections group of the object's
   /// link records states: its branch, table, base and load, and the count and

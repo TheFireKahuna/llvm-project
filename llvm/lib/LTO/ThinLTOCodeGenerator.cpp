@@ -466,7 +466,8 @@ ProcessThinLTOModule(Module &TheModule, ModuleSummaryIndex &Index,
     promoteModule(TheModule, Index, ClearDSOLocalOnDeclarations);
 
     // Apply summary-based prevailing-symbol resolution decisions.
-    thinLTOFinalizeInModule(TheModule, DefinedGlobals, /*PropagateAttrs=*/true);
+    thinLTOFinalizeInModule(TheModule, DefinedGlobals, /*PropagateAttrs=*/true,
+                            &Index);
 
     // Save temps: after promotion.
     saveTempBitcode(TheModule, SaveTempsDir, count, ".1.promoted.bc");

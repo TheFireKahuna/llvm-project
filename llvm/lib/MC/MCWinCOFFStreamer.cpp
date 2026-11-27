@@ -301,6 +301,19 @@ void MCWinCOFFStreamer::emitCOFFSiteFact(uint64_t Fact, uint64_t Value) {
     At = Site.getAddSym();
     if (Fact == COFF::SiteFactIndex)
       FusedSite.Index = Value;
+    // A value a record chain derived leaves the marker to its reader.
+    uint64_t Code = Value & ~COFF::SiteFactViaFirst;
+    if (Fact == COFF::SiteFactIndex && FusedSite.Use == COFF::FusedUse::Index &&
+        Code >= COFF::SiteFactIndexPlace && Code <= COFF::SiteFactIndexForm) {
+      DerivedSites.push_back(
+          {FusedSite.Offset, FusedSite.Pointer, FusedSite.Loc, Value});
+      FusedSite = Behind;
+      Behind.Offset = nullptr;
+    } else if (Behind.Offset) {
+      reportMisplacedFusedSite();
+      FusedSite = Behind;
+      Behind.Offset = nullptr;
+    }
   }
   if (At)
     getWriter().SiteFacts.push_back({At, Fact, Value});
@@ -539,7 +552,13 @@ void MCWinCOFFStreamer::emitRelocDirective(const MCExpr &Offset, StringRef Name,
   }
   if (Use == COFF::FusedUse::None)
     return;
-  if (FusedSite.Offset)
+  MCValue At;
+  if (Offset.evaluateAsRelocatable(At, nullptr) && At.getAddSym() &&
+      !At.getSubSym() && !At.getConstant())
+    getWriter().FusedMarkers.push_back(At.getAddSym());
+  if (FusedSite.Offset && Use == COFF::FusedUse::Index && !Behind.Offset)
+    Behind = FusedSite;
+  else if (FusedSite.Offset)
     reportMisplacedFusedSite();
   auto *Pointer = dyn_cast_or_null<MCSymbolRefExpr>(Expr);
   FusedSite = {
@@ -594,6 +613,57 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
     RunWrites.clear();
   RunSection = getCurrentSection();
   const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
+  // Whether a marker is a label at the instruction about to be emitted.
+  auto IsHere = [&](const MCExpr &Offset) {
+    MCValue Site;
+    return Offset.evaluateAsRelocatable(Site, nullptr) && Site.getAddSym() &&
+           !Site.getSubSym() &&
+           Site.getAddSym()->getFragment() == getCurrentFragment() &&
+           Site.getAddSym()->getOffset() + Site.getConstant() ==
+               getCurFragSize();
+  };
+  // A reader of a value a record chain derived reads it in its first register
+  // source where the code says ViaFirst, and otherwise in its second or only
+  // one; it holds what the chain derived from the marker's pointer, or for
+  // the key what an access through that pointer loaded. What it writes the
+  // chain derived as well.
+  if (Behind.Offset) {
+    reportMisplacedFusedSite();
+    Behind.Offset = nullptr;
+  }
+  const MCSymbol *DerivedFrom = nullptr;
+  for (const DerivedSite &Site : DerivedSites) {
+    SmallVector<unsigned, 3> Sources;
+    for (unsigned I = Desc.getNumDefs(), E = Inst.getNumOperands(); I != E; ++I)
+      if (Inst.getOperand(I).isReg() && Inst.getOperand(I).getReg())
+        Sources.push_back(I);
+    uint64_t Code = Site.Code & ~COFF::SiteFactViaFirst;
+    bool First = Site.Code & COFF::SiteFactViaFirst;
+    if (!IsHere(*Site.Offset) || !Site.Pointer || Sources.empty()) {
+      getContext().reportError(Site.Loc, "fused index of a derived value is "
+                                         "not at an instruction that reads "
+                                         "it");
+      continue;
+    }
+    MCRegister Reg =
+        Inst.getOperand(Sources[First || Sources.size() == 1 ? 0 : 1]).getReg();
+    if (any_of(MRI.regunits(Reg), [&](MCRegUnit Unit) {
+          auto Write = RunWrites.find(static_cast<unsigned>(Unit));
+          return Write != RunWrites.end() && !MRI.isArtificialRegUnit(Unit) &&
+                 (Write->second.getPointer() != Site.Pointer ||
+                  (Write->second.getInt() != Derived &&
+                   (Code != COFF::SiteFactIndexKey ||
+                    Write->second.getInt() != Word)));
+        }))
+      getContext().reportError(Site.Loc,
+                               Twine("fused index reads ") + MRI.getName(Reg) +
+                                   ", which no record chain of '" +
+                                   Site.Pointer->getName() + "' derived");
+    if (!DerivedFrom || Code != COFF::SiteFactIndexKey)
+      DerivedFrom = Site.Pointer;
+    getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
+  }
+  DerivedSites.clear();
   // A fused site begins at its marker, reads its register as the marker's
   // type says, in one operand only, but a test against itself, and reads
   // there what a load of the marker's pointer last wrote, which only an
@@ -608,10 +678,8 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
     MCValue Site;
     bool Here =
         (FusedSite.Pointer || COFF::relocationNamesNoSymbol(FusedSite.Type)) &&
-        FusedSite.Offset->evaluateAsRelocatable(Site, nullptr) &&
-        Site.getAddSym() && !Site.getSubSym() &&
-        Site.getAddSym()->getFragment() == getCurrentFragment() &&
-        Site.getAddSym()->getOffset() + Site.getConstant() == getCurFragSize();
+        IsHere(*FusedSite.Offset) &&
+        FusedSite.Offset->evaluateAsRelocatable(Site, nullptr);
     if (Here && !Site.getConstant())
       Marker = const_cast<MCSymbol *>(Site.getAddSym());
     if (FusedSite.Use == COFF::FusedUse::Jump)
@@ -639,8 +707,10 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
                case Word:
                  return Use != COFF::FusedUse::Index ||
                         Pointer != FusedSite.Pointer;
+               case Derived:
+                 return true;
                }
-               llvm_unreachable("a register holds a pointer in three ways");
+               llvm_unreachable("a register holds a pointer in four ways");
              }))
       getContext().reportError(
           FusedSite.Loc, Twine("fused ") + Kind + " reads " + MRI.getName(Reg) +
@@ -648,6 +718,11 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
                              FusedSite.Pointer->getName() + "' last wrote");
     if (Here && IsSite && Use == COFF::FusedUse::Access)
       WordOf = FusedSite.Pointer;
+    // An index of the place word's address loads the place, and on ARM64
+    // the form beside it.
+    if (Here && IsSite && Use == COFF::FusedUse::Index &&
+        (FusedSite.Index & ~int(COFF::SiteFactViaFirst)) == 0)
+      DerivedFrom = FusedSite.Pointer;
     // The linker may resize a site of one instruction with it.
     if (Here && IsSite && Use != COFF::FusedUse::Call &&
         Use != COFF::FusedUse::Jump &&
@@ -665,7 +740,9 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
   Held Holds(Load, Loaded);
   if (WordOf)
     Holds = {WordOf, Word};
-  if (Use == COFF::FusedUse::Copy) {
+  if (DerivedFrom)
+    Holds = {DerivedFrom, Derived};
+  if (Use == COFF::FusedUse::Copy && !DerivedFrom) {
     Holds.setInt(Copied);
     bool First = true;
     for (MCRegUnit Unit : MRI.regunits(Inst.getOperand(RegOp).getReg())) {

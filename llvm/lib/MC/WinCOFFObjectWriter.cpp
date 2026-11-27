@@ -1650,6 +1650,14 @@ uint64_t WinCOFFWriter::writeObject() {
         uint64_t Fact, Value;
       };
       SmallVector<Entry, 0> Entries;
+      // Markers at one offset are that offset's fused relocations in their
+      // order, each with the facts of its own label.
+      DenseMap<std::pair<const MCSection *, uint64_t>, unsigned> AtOffset;
+      DenseMap<const MCSymbol *, unsigned> Nth;
+      for (const MCSymbol *Marker : OWriter.FusedMarkers)
+        Nth.try_emplace(
+            Marker,
+            AtOffset[{&Marker->getSection(), Asm->getSymbolOffset(*Marker)}]++);
       for (const WinCOFFObjectWriter::SiteFact &Fact : OWriter.SiteFacts) {
         COFFSection *Section = SectionMap.lookup(&Fact.At->getSection());
         uint64_t Offset = Asm->getSymbolOffset(*Fact.At);
@@ -1658,6 +1666,15 @@ uint64_t WinCOFFWriter::writeObject() {
         auto Site = partition_point(Relocations, [&](const COFFRelocation &R) {
           return R.Data.VirtualAddress < Offset;
         });
+        if (auto It = Nth.find(Fact.At); It != Nth.end())
+          for (auto [I, Skip] = std::pair(Site, It->second);
+               I != Relocations.end() && I->Data.VirtualAddress == Offset; ++I)
+            if (COFF::getFusedMarkerUse(Header.Machine, I->Data.Type) !=
+                    COFF::FusedUse::None &&
+                !Skip--) {
+              Site = I;
+              break;
+            }
         if (Site == Relocations.end())
           getContext().reportError(SMLoc(), "site fact " + Twine(Fact.Fact) +
                                                 " is of no relocation");
@@ -1780,6 +1797,7 @@ void WinCOFFObjectWriter::reset() {
   IncrementalLinkerCompatible = false;
   LinkFacts.clear();
   SiteFacts.clear();
+  FusedMarkers.clear();
   FixedSizeSections.clear();
   SwitchTables.clear();
   Spans.clear();

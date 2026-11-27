@@ -2673,6 +2673,12 @@ fn -> other_fn -> other_fn ; fn is norecurse
     thread pointer in its register for the whole function: no other value is
     allocated to the register, and a call passes it with no copy.
 
+`"thread-pointer-unused"`
+:   This attribute, which `function-attrs` infers on a function that carries
+    `"thread-pointer-argument"`, indicates that neither the function nor
+    anything it calls reads the thread pointer it is passed, so a call need
+    not pass one.
+
 `"probe-stack"`
 :   This attribute indicates that the function will trigger a guard region
     in the end of the stack. It ensures that accesses to the stack must be

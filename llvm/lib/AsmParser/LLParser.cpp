@@ -10610,6 +10610,7 @@ bool LLParser::parseFlag(unsigned &Val) {
 ///        [',' 'mayThrow' ':' Flag]? ')'
 ///        [',' 'hasUnknownCall' ':' Flag]? ')'
 ///        [',' 'mustBeUnreachable' ':' Flag]? ')'
+///        [',' 'threadPointerUnused' ':' Flag]? ')'
 
 bool LLParser::parseOptionalFFlags(FunctionSummary::FFlags &FFlags) {
   assert(Lex.getKind() == lltok::kw_funcFlags);
@@ -10681,6 +10682,12 @@ bool LLParser::parseOptionalFFlags(FunctionSummary::FFlags &FFlags) {
       if (parseToken(lltok::colon, "expected ':'") || parseFlag(Val))
         return true;
       FFlags.MustBeUnreachable = Val;
+      break;
+    case lltok::kw_threadPointerUnused:
+      Lex.Lex();
+      if (parseToken(lltok::colon, "expected ':'") || parseFlag(Val))
+        return true;
+      FFlags.ThreadPointerUnused = Val;
       break;
     default:
       return error(Lex.getLoc(), "expected function flag type");

@@ -116,10 +116,12 @@ protected:
   /// What each register unit that the current run wrote holds: the pointer a
   /// load of one read, or null, as the load wrote it, as a copy of the
   /// register that the load wrote, or as a word that a marked access through
-  /// that register loaded. A copy of what the run did not write holds any
+  /// that register loaded, or as a value that a record chain derived from
+  /// that pointer: what an index of the place word's address or a reader of
+  /// such a value wrote. A copy of what the run did not write holds any
   /// pointer. A run is the instructions of one section since the last that
   /// execution does not fall through.
-  enum HeldAs { Loaded, Copied, Word };
+  enum HeldAs { Loaded, Copied, Word, Derived };
   using Held = PointerIntPair<const MCSymbol *, 2, HeldAs>;
   DenseMap<unsigned, Held> RunWrites;
   MCSectionSubPair RunSection;
@@ -128,8 +130,10 @@ protected:
   /// recorded with its site, whose unwind frame decides its type, and Expr
   /// is the pointer it names.
   /// So is that of a type that names none, whose index its site gives.
-  /// Index is what COFF::SiteFactIndex states of the site, or -1.
-  struct {
+  /// Index is what COFF::SiteFactIndex states of the site, or -1. A marker of
+  /// a derived value that follows another at its instruction waits in Behind
+  /// for its fact, which hands it to DerivedSites.
+  struct PendingMarker {
     const MCExpr *Offset = nullptr;
     const MCSymbol *Pointer;
     SMLoc Loc;
@@ -137,7 +141,17 @@ protected:
     COFF::FusedUse Use;
     const MCExpr *Expr;
     int Index;
-  } FusedSite;
+  } FusedSite, Behind;
+  /// The markers of the values a record chain derived that the next
+  /// instruction reads, each with its pointer and SiteFactIndex's code. Such
+  /// an instruction is of any form, and may carry another marker.
+  struct DerivedSite {
+    const MCExpr *Offset;
+    const MCSymbol *Pointer;
+    SMLoc Loc;
+    uint64_t Code;
+  };
+  SmallVector<DerivedSite, 2> DerivedSites;
 
   /// The instructions still to come of the site at a marker of code that the
   /// linker may resize, and the instructions of a thread-local base's site.

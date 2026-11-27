@@ -840,6 +840,7 @@ lltok::Kind LLLexer::LexIdentifier() {
   KEYWORD(mayThrow);
   KEYWORD(hasUnknownCall);
   KEYWORD(mustBeUnreachable);
+  KEYWORD(threadPointerUnused);
   KEYWORD(calls);
   KEYWORD(callee);
   KEYWORD(params);
