@@ -548,6 +548,17 @@ void ObjFile::parse() {
   SmallVector<SectionChunk *, 0> resizable;
   std::vector<SwitchTable> tables;
   std::vector<RelocFact> siteFactsRead;
+  // The section that the symbol at index defines, or null where it is none.
+  auto sectionOf = [&](uint64_t index) -> const coff_section * {
+    if (index >= coffObj->getNumberOfSymbols())
+      return nullptr;
+    COFFSymbolRef sym = check(coffObj->getSymbol(index));
+    int32_t number = sym.getSectionNumber();
+    return sym.isSectionDefinition() && number > 0 &&
+                   uint32_t(number) <= coffObj->getNumberOfSections()
+               ? getSection(number)
+               : nullptr;
+  };
   Error e = readCOFFLinkRecords(
       toStringRef(contents), flags,
       [&](uint64_t kind, StringRef payload) -> Error {
@@ -576,11 +587,8 @@ void ObjFile::parse() {
             if (index >= coffObj->getNumberOfSymbols())
               return createStringError("resizable section " + Twine(index) +
                                        ", which the file does not have");
-            COFFSymbolRef sym = check(coffObj->getSymbol(index));
-            int32_t number = sym.getSectionNumber();
-            if (!sym.isSectionDefinition() || number <= 0 ||
-                uint32_t(number) > coffObj->getNumberOfSections() ||
-                !(getSection(number)->Characteristics & IMAGE_SCN_CNT_CODE))
+            const coff_section *sec = sectionOf(index);
+            if (!sec || !(sec->Characteristics & IMAGE_SCN_CNT_CODE))
               return createStringError("resizable section " + Twine(index) +
                                        " is not a code section");
             if (auto *d = dyn_cast_or_null<DefinedRegular>(symbols[index]))
@@ -670,7 +678,8 @@ void ObjFile::parse() {
           DataExtractor::Cursor c(0);
           while (c && !data.eof(c)) {
             SectionChunk *secs[2] = {};
-            uint32_t numbers[2], sizes[2];
+            const coff_section *headers[2];
+            uint32_t sizes[2];
             for (int i = 0; i != 2; ++i) {
               uint64_t index = data.getULEB128(c);
               if (!c)
@@ -678,18 +687,13 @@ void ObjFile::parse() {
               if (index >= coffObj->getNumberOfSymbols())
                 return createStringError("spans of section " + Twine(index) +
                                          ", which the file does not have");
-              COFFSymbolRef sym = check(coffObj->getSymbol(index));
-              int32_t number = sym.getSectionNumber();
-              if (!sym.isSectionDefinition() || number <= 0 ||
-                  uint32_t(number) > coffObj->getNumberOfSections() ||
-                  (i &&
-                   !(getSection(number)->Characteristics & IMAGE_SCN_CNT_CODE)))
+              const coff_section *sec = sectionOf(index);
+              if (!sec || (i && !(sec->Characteristics & IMAGE_SCN_CNT_CODE)))
                 return createStringError("spans of section " + Twine(index) +
                                          ", which is no " + (i ? "code " : "") +
                                          "section");
               // A section without bytes holds no field.
-              const coff_section *sec = getSection(number);
-              numbers[i] = number;
+              headers[i] = sec;
               sizes[i] = sec->Characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA
                              ? 0
                              : sec->SizeOfRawData;
@@ -716,7 +720,7 @@ void ObjFile::parse() {
               static const uint8_t widths[] = {1, 4, 4, 4, 4, 4, 1, 2,
                                                4, 8, 1, 1, 1, 2, 2, 4};
               if (offset > sizes[0] || widths[kind] > sizes[0] - offset ||
-                  (kind < SpanData && numbers[0] != numbers[1]) ||
+                  (kind < SpanData && headers[0] != headers[1]) ||
                   (kind >= SpanData && kind != SpanAddend32 &&
                    uint64_t(operand) > sizes[1]))
                 return createStringError("span at offset 0x" +
@@ -737,14 +741,8 @@ void ObjFile::parse() {
               payload,
               [&](uint64_t index, uint64_t reloc, uint64_t fact,
                   uint64_t value) -> Error {
-                COFFSymbolRef sym;
-                if (index < coffObj->getNumberOfSymbols())
-                  sym = check(coffObj->getSymbol(index));
-                int32_t number = sym.getRawPtr() ? sym.getSectionNumber() : 0;
-                if (number <= 0 ||
-                    uint32_t(number) > coffObj->getNumberOfSections() ||
-                    !sym.isSectionDefinition() ||
-                    reloc >= getSection(number)->NumberOfRelocations)
+                const coff_section *sec = sectionOf(index);
+                if (!sec || reloc >= sec->NumberOfRelocations)
                   return createStringError(
                       "site fact of relocation " + Twine(reloc) +
                       " of the section of symbol " + Twine(index) +
@@ -835,16 +833,19 @@ void ObjFile::parse() {
   switchTables = std::move(tables);
 }
 
+// The run of v, which is in the order of the chunks that chunk gives, of sc.
+template <class T, class F>
+static ArrayRef<T> getRunOf(ArrayRef<T> v, const SectionChunk *sc, F chunk) {
+  const T *first = llvm::partition_point(
+      v, [&](const T &t) { return std::less<>()(chunk(t), sc); });
+  return ArrayRef(first, std::partition_point(first, v.end(), [&](const T &t) {
+                    return chunk(t) == sc;
+                  }));
+}
+
 ArrayRef<SwitchTable> ObjFile::getSwitchTables(const SectionChunk *sc) const {
-  auto first = llvm::partition_point(switchTables, [&](const SwitchTable &t) {
-    return std::less<>()(t.branch->getChunk(), sc);
-  });
-  auto last =
-      std::find_if(first, switchTables.end(), [&](const SwitchTable &t) {
-        return t.branch->getChunk() != sc;
-      });
-  return ArrayRef(switchTables)
-      .slice(first - switchTables.begin(), last - first);
+  return getRunOf(ArrayRef(switchTables), sc,
+                  [](const SwitchTable &t) { return t.branch->getChunk(); });
 }
 
 ArrayRef<SpanList> ObjFile::getSpans(const SectionChunk *sc) const {
@@ -856,12 +857,8 @@ ArrayRef<SpanList> ObjFile::getSpans(const SectionChunk *sc) const {
 }
 
 ArrayRef<RelocFact> ObjFile::getSiteFacts(const SectionChunk *sc) const {
-  auto [first, last] = std::equal_range(
-      siteFacts.begin(), siteFacts.end(), RelocFact{sc, 0, 0, 0},
-      [](const RelocFact &a, const RelocFact &b) {
-        return std::less<>()(a.chunk, b.chunk);
-      });
-  return ArrayRef(siteFacts).slice(first - siteFacts.begin(), last - first);
+  return getRunOf(ArrayRef(siteFacts), sc,
+                  [](const RelocFact &f) { return f.chunk; });
 }
 
 std::optional<uint64_t> ObjFile::getSiteFact(const SectionChunk *sc,

@@ -410,10 +410,12 @@ main:
   ret
 fn a
 fn b
+  .addrsig
 
 #--- icf-c.s
   .include "fold.inc"
 fn c
+  .addrsig
 
 #--- bad.s
   .text

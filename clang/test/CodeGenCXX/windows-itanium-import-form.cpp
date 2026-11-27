@@ -7,9 +7,9 @@
 // RUN: %{cc} -triple x86_64-w64-windows-gnu -fno-plt \
 // RUN:   | FileCheck %s --check-prefix=MINGW
 // RUN: %{cc} -triple x86_64-pc-windows-ntposix -pic-level 2 \
-// RUN:   | FileCheck %s --check-prefixes=DATA,IMPORT
+// RUN:   | FileCheck %s --check-prefixes=DATA,IMPORT,OWNED
 // RUN: %{cc} -triple aarch64-unknown-windows-itanium -pic-level 2 \
-// RUN:   | FileCheck %s --check-prefixes=DATA,IMPORT
+// RUN:   | FileCheck %s --check-prefixes=DATA,IMPORT,RECORD
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium -pic-level 2 \
 // RUN:   -fdirect-access-external-data | FileCheck %s --check-prefixes=DATA,DIRECT
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium \
@@ -31,8 +31,10 @@ static void internal() {}
 
 // A variable the unit only declares may be another image's too, unless
 // -fdirect-access-external-data (cc1's default without a PIC level) says
-// otherwise, as on ELF. Hidden, dllexport and native thread-local variables,
-// and the vtable of a class the mapping does not export, are this image's.
+// otherwise, as on ELF. Hidden and dllexport variables, and the vtable of a
+// class the mapping does not export, are this image's. A thread-local
+// variable that may be another image's is reached through its record, and is
+// not declared.
 
 extern int data;
 extern const int constant;
@@ -51,7 +53,9 @@ struct Unmarked {
 // DATA-DAG:   @hidden_data = external hidden global i32
 // DATA-DAG:   @imported_data = external dllimport global i32
 // DATA-DAG:   @exported_data = external dso_local global i32
-// DATA-DAG:   @local_to_thread = external dso_local thread_local global i32
+// RECORD-DAG: @"local_to_thread$tls" = external dllimport constant { ptr, i32, i32 }
+// OWNED-DAG:  @local_to_thread = external thread_local global i32
+// DIRECT-DAG: @local_to_thread = external dso_local thread_local global i32
 // DATA-DAG:   @_ZTV8Unmarked = external dso_local constant
 
 int read() {

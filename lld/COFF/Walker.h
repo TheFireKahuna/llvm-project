@@ -139,20 +139,10 @@ public:
   // sets field to the offset in it of the displacement, which holds zero.
   // An index adds two registers, and reads the first of them, or with second
   // the second: its direct form has that register's place taken by a
-  // displacement of 32 bits, and the other register's by base where that is
-  // a register's number.
+  // displacement of 32 bits.
   bool decodeFused(ArrayRef<uint8_t> code, FusedInsn &insn,
                    llvm::SmallVectorImpl<char> *direct = nullptr,
-                   unsigned *field = nullptr, bool second = false,
-                   int base = -1);
-
-  // Decodes the instruction at the start of code as the load of a block
-  // from the thread's TLS array, mov r64, [r64 + r64 * 8], or its add to a
-  // register. Sets size to its length, index to the number of the register
-  // that holds the index, and adds to that of the register an add writes,
-  // or -1.
-  bool decodeTlsBlock(ArrayRef<uint8_t> code, unsigned &size, unsigned &index,
-                      int &adds);
+                   unsigned *field = nullptr, bool second = false);
 
   // Encodes the index at the start of code, which reads the first of its two
   // registers or with second the second, into out with the register that the

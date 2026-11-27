@@ -1,11 +1,8 @@
 ; REQUIRES: x86, aarch64
 
-;; The import library of a DLL with an object for Windows Itanium or NT-POSIX
-;; has a member that no link loads, an object whose link records hold an
-;; Images group: the DLL and every image that is loaded with it, each with the
-;; images it imports from and the vague entities it keeps. An export that
-;; forwards an offer has a member that imports from the DLL which keeps the
-;; entity, so an image that reads only this library binds that DLL.
+;; A fork DLL's import library has a member whose link records hold an Images
+;; group (the DLL and the images loaded with it, their imports and kept vague
+;; entities); a forwarded offer's member imports from the keeping DLL.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
 
@@ -41,27 +38,26 @@
 ; MEMBER: A __llvm_link_records$lib
 ; NONE: __imp_d
 
-;; b.dll imports from a.dll, whose instance of iv stands for its own, and
-;; keeps what a.dll does not offer. Its library repeats a.dll.
+;; b.dll imports from a.dll, whose instance of iv and whose fn stand for its
+;; own, and keeps what a.dll does not offer. Its library repeats a.dll.
 ; B:      Image {
 ; B-NEXT:   Name: b.dll
 ; B-NEXT:   Imports: a.dll
 ; B-NEXT:   Entity {
-; B-NEXT:     Name: fn
-; B:        Entity {
 ; B-NEXT:     Name: own
 ; B:        }
 ; B-NEXT: }
 
-;; c.dll reads b.dll's library alone. It imports iv from a.dll, which b.dll
-;; forwards to, and its own library imports iv from a.dll and own from b.dll.
-;; Its record states the three images: a.dll as b.dll's library repeats it,
-;; and b.dll as that library states it.
+;; c.dll, reading only b.dll's library, imports fn and iv from a.dll (b.dll
+;; forwards them) and own from b.dll; its record states all three images.
 ; IMPORTS:      Name: a.dll
+; IMPORTS:      Symbol: fn
 ; IMPORTS:      Symbol: iv
 ; IMPORTS:      Name: b.dll
 ; IMPORTS:      Symbol: own
 
+; FORWARDED:      File: a.dll
+; FORWARDED:      Symbol: __imp_fn
 ; FORWARDED:      File: a.dll
 ; FORWARDED:      Symbol: __imp_iv
 ; FORWARDED:      File: b.dll
@@ -71,13 +67,9 @@
 ; C-NEXT:   Name: c.dll
 ; C-NEXT:   Imports: a.dll
 ; C-NEXT:   Imports: b.dll
-; C-NEXT:   Entity {
-; C-NEXT:     Name: fn
-; C:        }
 ; C-NEXT: }
-;; What a.dll keeps, by name: the constant with its section's checksum, the
-;; function, the hidden, default, protected and unique variables. Neither the
-;; type_info object nor a guard or another name of an entity is listed.
+;; a.dll keeps, by name, the constant (with checksum), the function and the
+;; variables; not type_info, a guard or an alias.
 ; A:      Image {
 ; A-NEXT:   Name: a.dll
 ; A-NEXT:   Entity {
@@ -134,10 +126,8 @@
 ; DELAY:      Name: d.dll
 ; DELAY-NEXT: DelayLoads: a.dll
 
-;; A library's records are read with bounds: a count that the group does not
-;; hold, an import from an image it does not have, a critical field that is
-;; not known, an entity whose alignment is not one, two images of one name, a
-;; critical kind that is not known and a name that does not end.
+;; A library's records are read with bounds: count, import index, critical
+;; field, alignment, duplicate image, critical kind, unterminated name.
 ; RUN: llvm-lib -machine:x64 -def:a.def -out:base.lib
 ; DEFINE: %{data} =
 ; DEFINE: %{bad} = yaml2obj -DDATA=4C4C52430100%{data} member.yaml -o member.obj && \

@@ -12,7 +12,8 @@
 // RUN: %{cc} -triple aarch64-unknown-windows-ntposix -emit-llvm %s -o - \
 // RUN:   | %{check} --check-prefixes=CHECK,CXX
 // RUN: %clang_cc1 -x c -fdeclspec -mdefault-visibility-export-mapping=explicit \
-// RUN:   -triple x86_64-unknown-windows-itanium -emit-llvm %s -o - | %{check}
+// RUN:   -triple x86_64-unknown-windows-itanium -emit-llvm %s -o - \
+// RUN:   | %{check} --check-prefixes=CHECK,C
 
 // A wrapper calls its unit's initialization, which an image may offer, through
 // no alias.
@@ -50,7 +51,7 @@ MARK _Thread_local int constant = 5;
 #endif
 // CHECK-DAG: @constant = dso_local thread_local global i32 5, align 4, !tls_record [[SET:![0-9]+]]
 // CHECK-DAG: @__tls_set = linkonce_odr hidden thread_local constant i8 1, comdat, align 1
-// CHECK-DAG: @llvm.compiler.used = appending global [1 x ptr] [ptr @__tls_set]
+// C-DAG: @llvm.compiler.used = appending global [1 x ptr] [ptr @__tls_set]
 // CHECK-DAG: define dso_local dllexport void @_ZTH8constant()
 // CHECK-DAG: [[SET]] = !{ptr @__tls_set}
 // CHECK-DAG: !{!"-export:constant$tls,data"}
@@ -80,8 +81,9 @@ int *use(void) { return &internal; }
 struct S { S(); ~S(); int v; };
 int f();
 
-// The unit's ordered initialization runs under __tls_guard, and the
-// initialization function that the unit has is the one exported.
+// The unit's ordered initialization runs under __tls_guard, which the records
+// read and so the optimizer keeps as it is, and the initialization function
+// that the unit has is the one exported.
 MARK thread_local int ordered = f();
 MARK thread_local S destroyed;
 thread_local int unmarked_ordered = f();
@@ -89,6 +91,7 @@ thread_local int unmarked_ordered = f();
 // CXX-DAG: @destroyed = dso_local thread_local global %struct.S zeroinitializer, align 4, !tls_record [[GUARD]] [[DYNAMIC]]
 // CXX-DAG: @unmarked_ordered = dso_local thread_local global i32 0, align 4, !tls_record [[GUARD]] [[DYNAMIC]]
 // CXX-DAG: @__tls_guard = internal thread_local global i8 0
+// CXX-DAG: @llvm.compiler.used = appending global [2 x ptr] [ptr @__tls_set, ptr @__tls_guard]
 // CXX-DAG: @_ZTH7ordered = dso_local dllexport alias void (), ptr @__tls_init
 // CXX-DAG: @_ZTH9destroyed = dso_local dllexport alias void (), ptr @__tls_init
 // CXX-DAG: @_ZTH16unmarked_ordered = dso_local alias void (), ptr @__tls_init
@@ -98,19 +101,28 @@ thread_local int unmarked_ordered = f();
 // CXX-DAG: !{!"-export:destroyed$tls,data"}
 
 // A variable with vague linkage is initialized under its own guard, which
-// every copy of it names.
+// every copy of it names, in a unit that does not use the variable too. The
+// images of a program share such a variable, so code reaches it and its
+// guard through their records, the guard's naming the guard itself, and
+// neither is DSO local.
 template <class T> struct X { MARK static thread_local T member; };
 template <class T> thread_local T X<T>::member = f();
 template struct X<int>;
 MARK inline thread_local int vague = f();
+inline thread_local S unused;
 MARK inline thread_local S unused_marked;
 int use_vague() { return vague; }
-// CXX-DAG: @_ZN1XIiE6memberE = weak_odr dso_local thread_local global i32 0, comdat, align 4, !tls_record [[OWN:![0-9]+]] [[DYNAMIC]]
+// CXX-DAG: @_ZN1XIiE6memberE = weak_odr thread_local global i32 0, comdat, align 4, !tls_record [[OWN:![0-9]+]] [[DYNAMIC]]
+// CXX-DAG: @_ZGVN1XIiE6memberE = weak_odr thread_local global i64 0, comdat($_ZN1XIiE6memberE), align 8, !tls_record [[OWN]]
 // CXX-DAG: [[OWN]] = !{ptr @_ZGVN1XIiE6memberE}
-// CXX-DAG: @_ZTHN1XIiE6memberE = weak_odr dso_local dllexport alias void (), ptr @__cxx_global_var_init
-// CXX-DAG: @vague = linkonce_odr dso_local thread_local global i32 0, comdat, align 4, !tls_record [[VAGUE:![0-9]+]] [[DYNAMIC]]
+// CXX-DAG: @_ZTHN1XIiE6memberE = weak_odr dllexport alias void (), ptr @__cxx_global_var_init
+// CXX-DAG: @vague = linkonce_odr thread_local global i32 0, comdat, align 4, !tls_record [[VAGUE:![0-9]+]] [[DYNAMIC]]
+// CXX-DAG: @_ZGV5vague = linkonce_odr thread_local global i64 0, comdat($vague), align 8, !tls_record [[VAGUE]]
 // CXX-DAG: [[VAGUE]] = !{ptr @_ZGV5vague}
-// CXX-DAG: @_ZTH5vague = linkonce_odr dso_local dllexport alias void (), ptr @__tls_init
+// CXX-DAG: @_ZTH5vague = linkonce_odr dllexport alias void (), ptr @__tls_init
+// CXX-DAG: @unused = linkonce_odr thread_local global %struct.S zeroinitializer, comdat, align 4, !tls_record [[UNUSED:![0-9]+]] [[DYNAMIC]]
+// CXX-DAG: @_ZGV6unused = linkonce_odr thread_local global i64 0, comdat($unused), align 8, !tls_record [[UNUSED]]
+// CXX-DAG: [[UNUSED]] = !{ptr @_ZGV6unused}
 // CXX-DAG: @_ZTH6unused = linkonce_odr alias void (), ptr @__tls_init
 // CXX-DAG: !{!"-export:_ZN1XIiE6memberE$tls,data"}
 // CXX-DAG: !{!"-export:vague$tls,data"}
@@ -118,4 +130,17 @@ int use_vague() { return vague; }
 // the variable, so a unit that does not use the variable exports its own.
 // CXX-DAG: @_ZTH13unused_marked = linkonce_odr dllexport alias void (), ptr @__tls_init
 // CXX-DAG: !{!"-export:unused_marked$tls,data"}
+
+// So is a thread-local variable of an inline function, which no other unit
+// declares.
+inline int *local() {
+  static thread_local int constant = 3;
+  static thread_local int dynamic = f();
+  return constant ? &constant : &dynamic;
+}
+int *use_local() { return local(); }
+// CXX-DAG: @_ZZ5localvE8constant = linkonce_odr thread_local global i32 3, comdat, align 4, !tls_record [[SET]]
+// CXX-DAG: @_ZZ5localvE7dynamic = linkonce_odr thread_local global i32 0, comdat, align 4, !tls_record [[LOCAL:![0-9]+]] [[DYNAMIC]]
+// CXX-DAG: @_ZGVZ5localvE7dynamic = linkonce_odr thread_local global i64 0, comdat($_ZZ5localvE7dynamic), align 8, !tls_record [[LOCAL]]
+// CXX-DAG: [[LOCAL]] = !{ptr @_ZGVZ5localvE7dynamic}
 #endif

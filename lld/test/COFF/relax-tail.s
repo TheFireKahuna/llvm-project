@@ -45,7 +45,7 @@
 # RUN: %{fw} fw-taken.obj -out:fw-taken.dll
 # RUN: %{dis} fw-taken.dll | FileCheck --check-prefix=FW-TAKEN %s
 # RUN: %{fw} fw-listed.obj -out:fw-listed.dll
-# RUN: %{dis} fw-listed.dll | FileCheck --check-prefix=FW-TAKEN %s
+# RUN: %{dis} fw-listed.dll | FileCheck --check-prefix=FW %s
 # RUN: llvm-readobj --coff-load-config fw-listed.dll | FileCheck --check-prefix=FW-FIDS %s
 # RUN: %{fw} -opt:noicf fw.obj -out:fw-noicf.dll
 # RUN: %{dis} fw-noicf.dll | FileCheck --check-prefix=FW-TAKEN %s
@@ -119,7 +119,8 @@
 # FO:      180001000:   jmp 0x180001010
 # FO:      <X>:
 
-## f, whose address is not significant, is g's address.
+## f, whose address is not significant, is g's address, even where its guard
+## table lists it.
 # FW:      Disassembly of section .text:
 # FW-EMPTY:
 # FW-NEXT: <g>:
@@ -130,8 +131,8 @@
 # FW-FIDS-NEXT:   0x180001000{{$}}
 # FW-FIDS-NEXT: ]
 
-## f keeps its jump and address where its address-significance or guard table
-## names it, and where the link folds nothing.
+## f keeps its jump and address where its address-significance table names it,
+## and where the link folds nothing.
 # FW-TAKEN:      180001000: jmp 0x180001010
 # FW-TAKEN:      <g>:
 # FW-TAKEN-NEXT: 180001010: retq

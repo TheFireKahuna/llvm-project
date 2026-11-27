@@ -2400,13 +2400,12 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
 
   // On Windows Itanium and NT-POSIX a DLL may define a function or variable
   // that the module only declares, as a shared object may on ELF, where the
-  // same option says whether a variable is reached directly. A native
-  // thread-local variable cannot be imported.
+  // same option says whether a variable is reached directly. Code reaches a
+  // thread-local one through the record of it that its image has.
   if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
       GV->isDeclarationForLinker() &&
-      (isa<llvm::Function>(GV) ||
-       (isa<llvm::GlobalVariable>(GV) && !GV->isThreadLocal() &&
-        !CGOpts.DirectAccessExternalData)))
+      (isa<llvm::Function>(GV) || (isa<llvm::GlobalVariable>(GV) &&
+                                   !CGOpts.DirectAccessExternalData)))
     return false;
   // Under -fsemantic-interposition another image's definition may preempt a
   // function that the module defines too, as on ELF, unless every definition
@@ -2544,63 +2543,67 @@ static bool shouldMapVisibilityToDLLImport(const CodeGenModule &CGM,
   return D->getVisibility() == DefaultVisibility && D->isVisibilityMarked();
 }
 
-bool CodeGenModule::isThreadLocalRecordImport(const VarDecl *VD) const {
-  return hasThreadLocalRecords() && VD->getTLSKind() != VarDecl::TLS_None &&
-         VD->isExternallyVisible() && !VD->hasDefinition() && !VD->isWeak() &&
-         (VD->hasAttr<DLLImportAttr>() ||
-          shouldMapVisibilityToDLLImport(*this, VD, /*Record=*/true));
+bool CodeGenModule::isThreadLocalRecordImport(const VarDecl *VD,
+                                              bool Known) const {
+  if (!hasThreadLocalRecords() || VD->getTLSKind() == VarDecl::TLS_None ||
+      !VD->isExternallyVisible() || VD->hasDefinition() || VD->isWeak())
+    return false;
+  if (VD->hasAttr<DLLImportAttr>() ||
+      shouldMapVisibilityToDLLImport(*this, VD, /*Record=*/true))
+    return true;
+  // Another image may define what the unit only declares, as a shared object
+  // may on ELF, where the same option says that none does.
+  return !Known && !CodeGenOpts.DirectAccessExternalData &&
+         VD->getVisibility() == DefaultVisibility;
 }
 
-// The record holds the address of the defining image's TLS index and the
-// offsets of the variable and of its guard in that image's block. None
-// changes once the image is loaded, which is before this one runs. The
-// thread's array of blocks does: the loader replaces it when an image with
-// thread-local data loads.
+void CodeGenModule::setThreadLocalRecordGuard(llvm::GlobalVariable *Var,
+                                              llvm::GlobalVariable *Guard) {
+  llvm::Module &M = getModule();
+  if (!Guard)
+    Guard = M.getNamedGlobal("__tls_set");
+  if (!Guard) {
+    Guard = new llvm::GlobalVariable(M, Int8Ty, /*isConstant=*/true,
+                                     llvm::GlobalValue::LinkOnceODRLinkage,
+                                     llvm::ConstantInt::get(Int8Ty, 1),
+                                     "__tls_set");
+    Guard->setThreadLocalMode(GetDefaultLLVMTLSModel());
+    Guard->setAlignment(llvm::Align(1));
+    Guard->setVisibility(llvm::GlobalValue::HiddenVisibility);
+    Guard->setDSOLocal(true);
+    Guard->setComdat(M.getOrInsertComdat(Guard->getName()));
+    addCompilerUsedGlobal(Guard);
+  }
+  // The record reads the guard, which the optimizer must keep as it is
+  // although nothing outside the unit names a local one.
+  if (Guard->hasLocalLinkage() && !llvm::is_contained(LLVMCompilerUsed, Guard))
+    addCompilerUsedGlobal(Guard);
+  Var->setMetadata("tls_record",
+                   llvm::MDNode::get(getLLVMContext(),
+                                     llvm::ConstantAsMetadata::get(Guard)));
+}
+
+// The back end reaches the variable, and its guard, through the record of
+// their image's place word: the unit declares both, the guard naming the
+// variable.
 llvm::Value *CodeGenModule::EmitThreadLocalRecordAddress(CGBuilderTy &Builder,
                                                          const VarDecl *VD,
                                                          llvm::Value **Guard) {
-  llvm::LLVMContext &Ctx = getLLVMContext();
-  llvm::StructType *RecordTy =
-      llvm::StructType::get(DefaultPtrTy, Int32Ty, Int32Ty);
-  auto *Record = cast<llvm::GlobalVariable>(getModule().getOrInsertGlobal(
-      (getMangledName(VD) + "$tls").str(), RecordTy));
-  Record->setConstant(true);
-  Record->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
-
-  llvm::MDNode *Empty = llvm::MDNode::get(Ctx, {});
-  auto Load = [&](llvm::Type *Ty, llvm::Value *Addr, unsigned Align) {
-    llvm::LoadInst *L =
-        Builder.CreateAlignedLoad(Ty, Addr, CharUnits::fromQuantity(Align));
-    L->setMetadata(llvm::LLVMContext::MD_invariant_load, Empty);
-    return L;
-  };
-  // The index is four bytes that can be loaded again wherever its address
-  // can, so nothing need spill it.
-  llvm::LoadInst *IndexAddr = Load(DefaultPtrTy, Record, 8);
-  llvm::MDNode *Four = llvm::MDNode::get(
-      Ctx, llvm::ConstantAsMetadata::get(Builder.getInt64(4)));
-  IndexAddr->setMetadata(llvm::LLVMContext::MD_dereferenceable, Four);
-  IndexAddr->setMetadata(llvm::LLVMContext::MD_align, Four);
-  IndexAddr->setMetadata(llvm::LLVMContext::MD_noundef, Empty);
-  llvm::Value *Index = Load(Int32Ty, IndexAddr, 4);
-  llvm::Value *Array = Builder.CreateIntrinsic(llvm::Intrinsic::thread_pointer,
-                                               {DefaultPtrTy}, {});
-  // An image's block is the thread's for as long as the array is.
-  llvm::Value *Block =
-      Load(DefaultPtrTy,
-           Builder.CreateInBoundsGEP(DefaultPtrTy, Array,
-                                     Builder.CreateZExt(Index, Int64Ty)),
-           8);
-  auto At = [&](unsigned Field) {
-    llvm::Value *Offset =
-        Load(Int32Ty,
-             Builder.CreateConstInBoundsGEP2_32(RecordTy, Record, 0, Field), 4);
-    return Builder.CreateInBoundsGEP(Int8Ty, Block,
-                                     Builder.CreateZExt(Offset, Int64Ty));
-  };
-  if (Guard)
-    *Guard = At(2);
-  return At(1);
+  // Declared directly, since the thread wrappers being emitted call this.
+  auto *Var = cast<llvm::GlobalVariable>(getModule().getOrInsertGlobal(
+      getMangledName(VD), getTypes().ConvertTypeForMem(VD->getType())));
+  setTLSMode(Var, *VD);
+  Var->setDSOLocal(false);
+  if (Guard) {
+    auto *G = cast<llvm::GlobalVariable>(getModule().getOrInsertGlobal(
+        (Var->getName() + "$guard").str(), Int8Ty));
+    G->setThreadLocalMode(Var->getThreadLocalMode());
+    G->setMetadata("tls_record",
+                   llvm::MDNode::get(getLLVMContext(),
+                                     llvm::ConstantAsMetadata::get(Var)));
+    *Guard = Builder.CreateThreadLocalAddress(G);
+  }
+  return Builder.CreateThreadLocalAddress(Var);
 }
 
 void CodeGenModule::setDLLImportDLLExport(llvm::GlobalValue *GV,
@@ -2742,8 +2745,7 @@ void CodeGenModule::setGVPropertiesAux(llvm::GlobalValue *GV,
   // a process on ELF: the link binds each name of it to the instance of a DLL
   // that the image imports from, or to the image's own. Its guard follows it.
   if (const auto *VD = dyn_cast_or_null<VarDecl>(D);
-      VD && !VD->getTLSKind() && GV->isWeakForLinker() &&
-      GV->hasDefaultVisibility() &&
+      VD && GV->isWeakForLinker() && GV->hasDefaultVisibility() &&
       getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     GV->setDSOLocal(false);
   // On Windows Itanium and NT-POSIX a function or variable that is declared

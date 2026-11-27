@@ -672,7 +672,7 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
   // A fused site begins at its marker, reads its register as the marker's
   // type says, in one operand only, but a test against itself, and reads
   // there what a load of the marker's pointer last wrote, which only an
-  // access may read through a copy.
+  // access may read through a copy, and an index a word through one.
   if (FusedSite.Offset) {
     MCRegister Reg = Use != COFF::FusedUse::None
                          ? Inst.getOperand(RegOp).getReg()
@@ -771,19 +771,17 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
   if (DerivedFrom)
     Holds = {DerivedFrom, Derived};
   if (Use == COFF::FusedUse::Copy && !DerivedFrom) {
-    Holds.setInt(Copied);
     bool First = true;
     for (MCRegUnit Unit : MRI.regunits(Inst.getOperand(RegOp).getReg())) {
+      if (MRI.isArtificialRegUnit(Unit))
+        continue;
       auto Write = RunWrites.find(static_cast<unsigned>(Unit));
-      const MCSymbol *Pointer =
-          Write == RunWrites.end() || Write->second.getInt() == Word
-              ? nullptr
-              : Write->second.getPointer();
-      if ((Write != RunWrites.end() && !Pointer) ||
-          (!First && Pointer != Holds.getPointer()))
-        Holds = {nullptr, Loaded};
-      else if (First)
-        Holds.setPointer(Pointer);
+      Held From = Write == RunWrites.end()      ? Held(nullptr, Copied)
+                  : !Write->second.getPointer() ? Held(nullptr, Loaded)
+                  : Write->second.getInt() == Word
+                      ? Write->second
+                      : Held(Write->second.getPointer(), Copied);
+      Holds = First || From == Holds ? From : Held(nullptr, Loaded);
       First = false;
     }
   }

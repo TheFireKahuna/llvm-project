@@ -1039,9 +1039,15 @@ public:
     return getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
            getTriple().isArch64Bit() && !getTriple().isWindowsArm64EC();
   }
-  /// Whether \p VD is a thread-local variable that another image defines,
-  /// which this one reaches through the record that image exports.
-  bool isThreadLocalRecordImport(const VarDecl *VD) const;
+  /// States for the record of the thread-local variable \p Var its guard, the
+  /// thread-local byte that is not zero once a thread has initialized it:
+  /// \p Guard, or with none a byte that is never zero.
+  void setThreadLocalRecordGuard(llvm::GlobalVariable *Var,
+                                 llvm::GlobalVariable *Guard);
+  /// Whether \p VD is a thread-local variable that the unit does not define
+  /// and whose wrapper reads the record of the image that does: this image,
+  /// where the link finds it there, or with \p Known only another.
+  bool isThreadLocalRecordImport(const VarDecl *VD, bool Known = false) const;
   /// Emits the address of \p VD in the current thread from its record, and
   /// with \p Guard the address of its guard, the byte that is not zero once
   /// the thread has initialized \p VD.

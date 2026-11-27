@@ -380,13 +380,10 @@ public:
   void bindValueOnlySites();
 
   // The record of each thread-local variable that a link fact states one
-  // for, by the variable, and the image's TLS index, which the records hold
-  // the address of.
+  // for, by the variable.
   llvm::MapVector<Symbol *, TlsRecordChunk *> tlsRecords;
-  Symbol *tlsIndex = nullptr;
-  // In the ntposix model, the image's place word, which the records name in
-  // place of the index, once code names it or the scan finds that the image
-  // needs it.
+  // In the owned model, the image's place word, which the records name, once
+  // code names it or the scan finds that the image needs it.
   TlsPlaceChunk *placeWord = nullptr;
   // The place word and its key word, which a relaxed record chain reads.
   Defined *placeSym = nullptr, *keySym = nullptr;
@@ -458,6 +455,19 @@ public:
   // Whether a DLL offers sym, a vague entity that it keeps, since its
   // baseline, which exports no such name.
   bool isAddition(Symbol *sym) const;
+
+  // Points an export at the DLL that exports what it names, as a PE
+  // forwarder: to owner's own export, or, where not own, to the export of
+  // e's name there. Fails, with an error, where the loader could not read the
+  // forwarder.
+  bool forwardExport(Export &e, Symbol &sym, DefinedImportData *owner,
+                     StringRef what, bool own = true);
+
+  // Makes an export that a fork object's weak external binds to another DLL's
+  // function, a destructor forwarder over an imported base, a forwarder to
+  // that DLL's export, before liveness, so that the image holds no thunk for
+  // it. A foreign object's export keeps link.exe's thunk.
+  void forwardImportedExports();
 
   void addNamedExports();
   void fixupExports();

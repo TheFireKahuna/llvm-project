@@ -16,6 +16,7 @@
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GlobalVariable.h"
 #include "llvm/IR/Mangler.h"
+#include "llvm/IR/Metadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
@@ -246,6 +247,28 @@ static TLSModel::Model getSelectedTLSModel(const GlobalValue *GV) {
     return TLSModel::LocalExec;
   }
   llvm_unreachable("invalid TLS model");
+}
+
+std::pair<const GlobalValue *, unsigned>
+TargetMachine::getThreadLocalRecord(const GlobalValue *GV) {
+  // The declaration of an imported variable's guard names the variable.
+  const auto *GVar = dyn_cast<GlobalVariable>(GV);
+  if (const MDNode *Of = GVar && GVar->isDeclaration()
+                             ? GVar->getMetadata("tls_record")
+                             : nullptr)
+    if (auto *Var =
+            mdconst::dyn_extract_or_null<GlobalVariable>(Of->getOperand(0));
+        Var && Var != GV && Var->isThreadLocal())
+      return {Var, 12};
+  const Comdat *C = GV->getComdat();
+  const GlobalVariable *Var =
+      C ? GV->getParent()->getNamedGlobal(C->getName()) : nullptr;
+  const MDNode *Record =
+      Var && Var != GV ? Var->getMetadata("tls_record") : nullptr;
+  if (Record && Var->isThreadLocal() &&
+      mdconst::dyn_extract_or_null<GlobalValue>(Record->getOperand(0)) == GV)
+    return {Var, 12};
+  return {GV, 8};
 }
 
 bool TargetMachine::shouldAssumeDSOLocal(const GlobalValue *GV) const {

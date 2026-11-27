@@ -2184,47 +2184,73 @@ static bool forEachAddrsigSymbol(COFFLinkerContext &ctx, ObjFile *obj,
   return true;
 }
 
-// Marks each function of a delay-loaded DLL whose address an object lists as
-// observed, and defines the names of a DLL's ensure stub and gate for an
-// object that refers to them.
+// Calls fn with each symbol that chunks, of Control Flow Guard's tables of
+// obj, list.
+static void forEachGuardIndex(ObjFile *obj, ArrayRef<SectionChunk *> chunks,
+                              function_ref<void(Symbol *)> fn) {
+  ArrayRef<Symbol *> syms = obj->getSymbols();
+  for (SectionChunk *c : chunks) {
+    ArrayRef<uint8_t> data = c->getContents();
+    for (size_t i = 0, e = data.size() / 4; i != e; ++i)
+      if (uint32_t index = support::endian::read32le(data.data() + i * 4);
+          index < syms.size())
+        fn(syms[index]);
+  }
+}
+
+// Marks each function of a delay-loaded DLL whose address an object may take
+// as observed: one a fork object's addrsig lists; one a foreign object's
+// tables list, or whose import's entry its .giats lists, or with neither
+// addrsig nor .gfids one its code may take the address of. Defines the
+// names of a DLL's ensure stub and gate for an object that refers to them.
 static void findObservedDelayImports(COFFLinkerContext &ctx) {
   Configuration &config = ctx.config;
   if (!ctx.symtab.delayResolve)
     return;
-  for (ObjFile *obj : ctx.objFileInstances)
-    forEachAddrsigSymbol(ctx, obj, [&](Symbol *s) {
-      auto *imp = dyn_cast_or_null<DefinedImportData>(s);
-      if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s))
-        imp = thunk->wrappedSym;
-      if (imp && imp->file->thunkSym &&
-          config.delayLoads.contains(imp->getDLLName().lower()))
-        imp->file->observed = true;
-    });
+  auto delayed = [&](Symbol *s) -> ImportFile * {
+    auto *imp = dyn_cast_or_null<DefinedImportData>(s);
+    if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s))
+      imp = thunk->wrappedSym;
+    return imp && imp->file->thunkSym &&
+                   config.delayLoads.contains(imp->getDLLName().lower())
+               ? imp->file
+               : nullptr;
+  };
+  auto mark = [&](Symbol *s) {
+    if (ImportFile *f = delayed(s))
+      f->observed = true;
+  };
+  for (ObjFile *obj : ctx.objFileInstances) {
+    // A fork object's .gfids lists unnamed_addr functions too.
+    if (obj->forkObject)
+      forEachAddrsigSymbol(ctx, obj, mark);
+    else if (std::optional<SmallPtrSet<Symbol *, 8>> taken =
+                 getTakenFunctions(ctx, obj))
+      llvm::for_each(*taken, mark);
+    else
+      for (Chunk *c : obj->getChunks())
+        if (auto *sc = dyn_cast<SectionChunk>(c))
+          for (const coff_relocation &rel : sc->getRelocs())
+            if (ImportFile *f = delayed(sc->getRelocTarget(rel));
+                f && !f->observed && observesFunction(*sc, rel))
+              f->observed = true;
+    if (!obj->forkObject)
+      forEachGuardIndex(obj, obj->getGuardIATChunks(), mark);
+  }
   for (const auto &dll : config.delayLoads)
     namesDelayGate(ctx, dll.getKey(), true);
 }
 
-void forEachAddressSignificant(COFFLinkerContext &ctx, ArrayRef<ObjFile *> objs,
-                               function_ref<void(Symbol *)> markAddrsig) {
-  // Visit the address-significance table in each object file and mark each
-  // referenced symbol as address-significant.
-  for (ObjFile *obj : objs) {
-    ArrayRef<Symbol *> syms = obj->getSymbols();
-    // A function the object lists as address-taken for Control Flow Guard has
-    // a significant address, whatever its address-significance table says.
-    for (SectionChunk *c : obj->getGuardFidChunks()) {
-      ArrayRef<uint8_t> data = c->getContents();
-      for (size_t i = 0, e = data.size() / 4; i != e; ++i)
-        if (uint32_t index = support::endian::read32le(data.data() + i * 4);
-            index < syms.size())
-          markAddrsig(syms[index]);
-    }
-    // If an object file does not have an address-significance table,
-    // conservatively mark all of its symbols as address-significant.
-    if (!forEachAddrsigSymbol(ctx, obj, markAddrsig))
-      for (Symbol *s : syms)
-        markAddrsig(s);
-  }
+std::optional<SmallPtrSet<Symbol *, 8>>
+getTakenFunctions(COFFLinkerContext &ctx, ObjFile *obj) {
+  if (!obj->addrsigSec &&
+      !(obj->hasGuardCF() && !obj->getGuardFidChunks().empty()))
+    return std::nullopt;
+  SmallPtrSet<Symbol *, 8> taken;
+  auto insert = [&](Symbol *s) { taken.insert(s); };
+  forEachGuardIndex(obj, obj->getGuardFidChunks(), insert);
+  forEachAddrsigSymbol(ctx, obj, insert);
+  return taken;
 }
 
 static void findKeepUniqueSections(COFFLinkerContext &ctx) {
@@ -2237,7 +2263,19 @@ static void findKeepUniqueSections(COFFLinkerContext &ctx) {
       markAddrsig(r.sym);
   });
 
-  forEachAddressSignificant(ctx, ctx.objFileInstances, markAddrsig);
+  // Visit the address-significance table in each object file and mark each
+  // referenced symbol as address-significant.
+  for (ObjFile *obj : ctx.objFileInstances) {
+    // A fork object's address-significance table alone says which addresses
+    // are significant: its guard table lists unnamed_addr functions too.
+    if (!obj->forkObject)
+      forEachGuardIndex(obj, obj->getGuardFidChunks(), markAddrsig);
+    // If an object file does not have an address-significance table,
+    // conservatively mark all of its symbols as address-significant.
+    if (!forEachAddrsigSymbol(ctx, obj, markAddrsig))
+      for (Symbol *s : obj->getSymbols())
+        markAddrsig(s);
+  }
 }
 
 // link.exe replaces each %foo% in altPath with the contents of environment
@@ -4147,6 +4185,9 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     symtab.initializeLoadConfig();
     symtab.initializeFunctionOverrides();
   });
+
+  ctx.forEachActiveSymtab(
+      [](SymbolTable &symtab) { symtab.forwardImportedExports(); });
 
   // Identify unreferenced COMDAT sections.
   if (config->doGC) {

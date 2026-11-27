@@ -247,7 +247,6 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_AMD64_EHANDLER:
   case IMAGE_REL_LLVM_FUSED_ACCESS:
   case IMAGE_REL_LLVM_FUSED_INDEX:
-  case IMAGE_REL_LLVM_FUSED_BLOCK:
   case IMAGE_REL_LLVM_FUSED_TEST_REG:
     break;
   default:
@@ -673,7 +672,6 @@ bool SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL:
   case IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL:
   case IMAGE_REL_LLVM_FUSED_INDEX:
-  case IMAGE_REL_LLVM_FUSED_BLOCK:
   case IMAGE_REL_LLVM_FUSED_CALL:
   case IMAGE_REL_LLVM_FUSED_JUMP:
   case IMAGE_REL_LLVM_FUSED_JUMP_TAIL:
@@ -1986,14 +1984,11 @@ void TlsRecordChunk::writeTo(uint8_t *buf) const {
   if (!named)
     return;
   COFFLinkerContext &ctx = symtab.ctx;
-  // The offsets count from the start of the image's template, or in an image
-  // where no object states the model, whose records name _tls_index, of the
-  // loader's.
-  bool loader = ctx.tlsRuntime().empty();
+  // The offsets count from the start of the image's template.
   auto offset = [&](Symbol *s) -> uint32_t {
     auto *d = dyn_cast_or_null<DefinedRegular>(s ? s->getDefined() : nullptr);
     if (std::optional<uint64_t> o =
-            d ? ctx.tlsOffset(d->getRVA(), loader) : std::nullopt)
+            d ? ctx.tlsOffset(d->getRVA()) : std::nullopt)
       return *o;
     if (d && ctx.tlsOffset(d->getRVA(), /*loader=*/true))
       reportTlsModelMismatch(ctx, s, true, file,
@@ -2007,11 +2002,9 @@ void TlsRecordChunk::writeTo(uint8_t *buf) const {
                << " not in the thread-local data of the image";
     return 0;
   };
-  // The ntposix model's record names the image's place in place of the index.
+  // The record names the image's place word.
   if (TlsPlaceChunk *place = symtab.placeWord)
     write64le(buf, place->getRVA() + ctx.config.imageBase);
-  else if (auto *index = dyn_cast_or_null<Defined>(symtab.tlsIndex))
-    write64le(buf, index->getRVA() + ctx.config.imageBase);
   write32le(buf + 8, offset(var));
   write32le(buf + 12, offset(guard));
 }

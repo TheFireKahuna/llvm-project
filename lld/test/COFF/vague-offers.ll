@@ -39,6 +39,12 @@
 ; RUN: %{run}
 ; REDEFINE: %{t} = aarch64
 ; RUN: %{run}
+;; An offer is code or data as an export is, by whether its section executes.
+; RUN: obj2yaml a.obj | sed 's/IMAGE_SCN_CNT_CODE, IMAGE_SCN_LNK_COMDAT/IMAGE_SCN_LNK_COMDAT/' \
+; RUN:   | yaml2obj -o x.obj
+; RUN: %{dll} x.obj -out:x.dll -implib:x.lib
+; RUN: llvm-nm x.lib | FileCheck --check-prefix=EXEC %s
+; EXEC: T fn
 
 ;; Offered: iv with guard, interior name and visible aliases, prot, _ZTI1A, the
 ;; address-taken fn; not dead, hid, call, _ZTS1A or the vtable; LTO alike.

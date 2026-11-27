@@ -220,13 +220,16 @@ void X86AsmPrinter::fuseImportCalls() {
   };
 
   // The linker gives an index the offset in the place of the register that
-  // held it, for which the add of two registers has no form that leaves the
-  // flags as they were. Where they are dead, the add of an offset that was
-  // loaded from a record is an lea, which has one.
+  // held it, and rewrites the step that adds the place to the thread pointer,
+  // for which the add of two registers has no form that leaves the flags as
+  // they were. Where they are dead, the add of an offset that was loaded from
+  // a record, or of the place that the address of the place word gave, is an
+  // lea, which has one.
   if (Edits)
     for (MachineBasicBlock &MBB : *MF)
       for (MachineInstr &Word : MBB) {
-        if (Word.getOpcode() != X86::MOV32rm)
+        if (Word.getOpcode() != X86::MOV32rm &&
+            Word.getOpcode() != X86::MOV64rm)
           continue;
         Register Base = Word.getOperand(1 + X86::AddrBaseReg).getReg();
         const MachineInstr *Pointer = nullptr;
@@ -236,17 +239,36 @@ void X86AsmPrinter::fuseImportCalls() {
                               Pointer = &I;
                               return IsPointerLoad(I);
                             }) ||
-            !Pointer || GetWord(*Pointer, Word) <= 0)
+            !Pointer || GetWord(*Pointer, Word) < 0)
           continue;
-        SmallVector<MachineInstr *, 2> DebugValues, Adds;
-        forEachReader(Word, DebugValues, [&](MachineInstr &I) {
-          if (I.getOpcode() == X86::ADD64rr &&
-              I.getOperand(2).getReg() != X86::RSP)
-            Adds.push_back(&I);
-        });
-        for (MachineInstr *Add : Adds)
+        SmallVector<MachineInstr *, 2> Values{&Word}, DebugValues, Adds;
+        if (!GetWord(*Pointer, Word)) {
+          Values.clear();
+          forEachReader(Word, DebugValues, [&](MachineInstr &I) {
+            if (I.getOpcode() == X86::MOV64rm &&
+                I.getOperand(1 + X86::AddrBaseReg).getReg() ==
+                    Word.getOperand(0).getReg() &&
+                !I.getOperand(1 + X86::AddrIndexReg).getReg() &&
+                I.getOperand(1 + X86::AddrDisp).isImm() &&
+                !I.getOperand(1 + X86::AddrDisp).getImm())
+              Values.push_back(&I);
+          });
+        }
+        for (MachineInstr *Value : Values)
+          forEachReader(*Value, DebugValues, [&](MachineInstr &I) {
+            if (I.getOpcode() == X86::ADD64rr &&
+                I.getOperand(2).getReg() != X86::RSP &&
+                I.getParent()->computeRegisterLiveness(
+                    TRI, X86::EFLAGS,
+                    std::next(MachineBasicBlock::iterator(I))) ==
+                    MachineBasicBlock::LQR_Dead)
+              Adds.push_back(&I);
+          });
+        for (MachineInstr *Add : Adds) {
+          Add->addRegisterDead(X86::EFLAGS, TRI);
           if (TII->convertToThreeAddress(*Add, nullptr))
             Add->eraseFromParent();
+        }
       }
 
   findFusedSites(

@@ -116,10 +116,10 @@ protected:
   /// What each register unit that the current run wrote holds: the pointer a
   /// load of one read, or null, as the load wrote it, as a copy of the
   /// register that the load wrote, or as a word that a marked access through
-  /// that register loaded, or as a value that a record chain derived from
-  /// that pointer: what an index of the place word's address or a reader of
-  /// such a value wrote. A copy of what the run did not write holds any
-  /// pointer. A run is the instructions of one section since the last that
+  /// that register loaded or a copy of one, or as a value that a record chain
+  /// derived from that pointer: what an index of the place word's address or
+  /// a reader of such a value wrote. A copy of what the run did not write holds
+  /// any pointer. A run is the instructions of one section since the last that
   /// execution does not fall through.
   enum HeldAs { Loaded, Copied, Word, Derived };
   using Held = PointerIntPair<const MCSymbol *, 2, HeldAs>;

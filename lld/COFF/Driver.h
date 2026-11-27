@@ -37,10 +37,11 @@ using llvm::COFF::MachineTypes;
 using llvm::COFF::WindowsSubsystem;
 using std::optional;
 
-// Calls markAddrsig with each symbol whose address an object of objs says
-// matters.
-void forEachAddressSignificant(COFFLinkerContext &ctx, ArrayRef<ObjFile *> objs,
-                               llvm::function_ref<void(Symbol *)> markAddrsig);
+// The functions whose address obj lists as taken, where it lists them all: in
+// its address-significance table, or in its table for Control Flow Guard where
+// it states that it is guarded. None where it does not.
+std::optional<llvm::SmallPtrSet<Symbol *, 8>>
+getTakenFunctions(COFFLinkerContext &ctx, ObjFile *obj);
 
 class COFFOptTable : public llvm::opt::OptTable {
 public:

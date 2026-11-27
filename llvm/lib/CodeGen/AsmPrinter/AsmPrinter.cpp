@@ -5589,7 +5589,7 @@ void AsmPrinter::forEachReader(MachineInstr &Def,
   MachineBasicBlock *Block = Def.getParent();
   for (MachineBasicBlock::iterator I = std::next(Def.getIterator());;
        I = Block->begin()) {
-    bool Written = false, Called = false;
+    bool Written = false, Unwinds = false;
     for (; I != Block->end() && !Written; ++I) {
       if (I->isDebugInstr()) {
         if (I->isDebugValue() &&
@@ -5609,11 +5609,11 @@ void AsmPrinter::forEachReader(MachineInstr &Def,
                    TRI->regsOverlap(MO.getReg(), Reg);
           }))
         Reader(*I);
-      Called |= I->isCall();
       Written = I->modifiesRegister(Reg, TRI);
+      Unwinds |= (I->isCall() && !Written) || I->isInlineAsm();
     }
     for (MachineBasicBlock *Succ : Block->successors())
-      if ((!Written || (Called && Succ->isEHPad())) && Seen.insert(Succ).second)
+      if ((!Written || (Unwinds && Succ->isEHPad())) && Seen.insert(Succ).second)
         Work.push_back(Succ);
     if (Work.empty())
       break;
@@ -5659,10 +5659,11 @@ void AsmPrinter::findFusedSites(
     // where the target binds a site by its pointer alone, as the linker binds
     // a function's sites as one, and otherwise an access that reads its
     // register no more once bound, where the target says so or where it
-    // loads a record's word. A 32-bit load writes all of the register that
-    // an index reads. Only a word of a record has an index, which reads it in
-    // the operand that IndexOp is set to: the first of the two that the
-    // instruction adds, or the second.
+    // loads a record's word. An access may read the load, and an index a
+    // word, through copies, which read it as no site does. A 32-bit load writes
+    // all of the register that an index reads. Only a word of a record has an
+    // index, which reads it in the operand that IndexOp is set to: the first of
+    // the two that the instruction adds, or the second.
     auto GetSiteUse = [&](const MachineInstr &Def, const MachineInstr &I,
                           function_ref<bool(const MachineInstr &)> IsLike,
                           unsigned *IndexOp = nullptr) {
@@ -5676,6 +5677,22 @@ void AsmPrinter::findFusedSites(
         if (!*IndexOp)
           Op = COFF::getFusedIndexOperand(I, Op);
       }
+      SmallPtrSet<const MachineInstr *, 4> Copies;
+      auto HasSetters = [&](auto &Self, Register Reg,
+                            const MachineInstr &At) -> bool {
+        return hasOnlySetters(Reg, At, [&](const MachineInstr &Setter) {
+          unsigned From;
+          if (&Setter == &Def || (IsLike && IsLike(Setter)) ||
+              (!IsLike && Setter.isIdenticalTo(Def) &&
+               (SharesSites || (Use == COFF::FusedUse::Access && &Def == Load &&
+                                (!AccessNeedsRead || GetWord(*Load, I) >= 0)))))
+            return true;
+          return (IsLike || (Use == COFF::FusedUse::Access && &Def == Load)) &&
+                 GetUse(*Load, Setter, From) == COFF::FusedUse::Copy &&
+                 (!Copies.insert(&Setter).second ||
+                  Self(Self, Setter.getOperand(From).getReg(), Setter));
+        });
+      };
       return Use != COFF::FusedUse::None &&
                      TRI->isSuperRegisterEq(Reg, I.getOperand(Op).getReg()) &&
                      none_of(I.operands(),
@@ -5687,18 +5704,7 @@ void AsmPrinter::findFusedSites(
                                       MO.getReg() &&
                                       TRI->regsOverlap(MO.getReg(), Reg);
                              }) &&
-                     hasOnlySetters(
-                         Reg, I,
-                         [&](const MachineInstr &Setter) {
-                           if (&Setter == &Def || IsLike)
-                             return &Setter == &Def || IsLike(Setter);
-                           return Setter.isIdenticalTo(Def) &&
-                                  (SharesSites ||
-                                   (Use == COFF::FusedUse::Access &&
-                                    &Def == Load &&
-                                    (!AccessNeedsRead ||
-                                     GetWord(*Load, I) >= 0)));
-                         })
+                     HasSetters(HasSetters, Reg, I)
                  ? Use
                  : COFF::FusedUse::None;
     };
@@ -5752,13 +5758,13 @@ void AsmPrinter::findFusedSites(
     // A marked access that loads a word of a thread-local variable's record
     // is to its readers what the load of the pointer is to it: the linker
     // that knows the record gives each index the word's value in its place,
-    // and drops a load that indexes of its function alone read. The index of
-    // the TLS index's address may then read the page of that address in the
-    // register: the one load reaches it, and where an access is a site only
-    // of a load that its sites alone read, so is such an index. The index
-    // of an offset reads its register no more or the same offset in it, so
-    // every load of the same word of the same record may reach it, wherever
-    // it is.
+    // and drops a load that indexes of its function alone read. Each load of
+    // the same word of the same record, wherever it is, and a copy of one,
+    // may reach an index: the linker gives each the same value, or keeps
+    // every chain of the record where a load of the place word's address
+    // has another reader. An index of that address may then read the page of
+    // the address in the register, and where an access is a site only of a
+    // load that its sites alone read, so is such an index.
     for (const std::pair<MachineInstr *, COFF::FusedUse> &Entry : Sites) {
       MachineInstr *Site = Entry.first;
       int Word =
@@ -5767,7 +5773,7 @@ void AsmPrinter::findFusedSites(
         continue;
       auto IsLike = [&](const MachineInstr &Setter) {
         unsigned Op;
-        return Word && GetWord(*Load, Setter) == Word &&
+        return GetWord(*Load, Setter) == Word &&
                Setter.getOperand(0).getReg() == Site->getOperand(0).getReg() &&
                GetUse(*Load, Setter, Op) == COFF::FusedUse::Access &&
                hasOnlySetters(Setter.getOperand(Op).getReg(), Setter,
@@ -5778,17 +5784,22 @@ void AsmPrinter::findFusedSites(
                               });
       };
       SmallVector<std::pair<MachineInstr *, unsigned>, 4> Indexes;
-      SmallVector<MachineInstr *, 4> WordValues;
+      SmallVector<MachineInstr *, 4> WordValues, Holders{Site};
+      SmallPtrSet<const MachineInstr *, 4> Held;
       bool IndexedRead = true;
-      forEachReader(*Site, WordValues, [&](MachineInstr &I) {
-        unsigned ViaFirst = 0;
-        COFF::FusedUse Reads = GetSiteUse(*Site, I, IsLike, &ViaFirst);
-        if (Reads == (Word ? COFF::FusedUse::Index : COFF::FusedUse::Access))
-          Indexes.push_back(
-              {&I, Word | (ViaFirst ? COFF::SiteFactViaFirst : 0)});
-        else
-          IndexedRead = false;
-      });
+      COFF::FusedUse Expect =
+          Word ? COFF::FusedUse::Index : COFF::FusedUse::Access;
+      for (size_t N = 0; N != Holders.size(); ++N)
+        forEachReader(*Holders[N], WordValues, [&](MachineInstr &I) {
+          unsigned ViaFirst = 0;
+          COFF::FusedUse Reads = GetSiteUse(*Holders[N], I, IsLike, &ViaFirst);
+          if (Reads == Expect)
+            Indexes.push_back(
+                {&I, Word | (ViaFirst ? COFF::SiteFactViaFirst : 0)});
+          else if (Reads == COFF::FusedUse::Copy && Held.insert(&I).second)
+            Holders.push_back(&I);
+          IndexedRead &= Reads == Expect || Reads == COFF::FusedUse::Copy;
+        });
       IndexedRead &= !Indexes.empty();
       if (!IndexedRead && !Word && AccessNeedsRead)
         continue;
@@ -5996,11 +6007,12 @@ void AsmPrinter::findValueOnlySites(
     for (MachineInstr &MI : MBB) {
       if (MI.isDebugInstr())
         continue;
-      if (const GlobalVariable *GV = GetConstant(MI))
+      if (const GlobalVariable *GV = GetConstant(MI)) {
         if (IsPointerLoad(MI) || (IsPage && IsPage(MI)))
           Steps.push_back(&MI);
         else
           Named.insert(GV);
+      }
       for (const MachineOperand &MO : MI.operands())
         if (auto *F = MO.isGlobal() ? dyn_cast<Function>(MO.getGlobal())
                                     : nullptr)

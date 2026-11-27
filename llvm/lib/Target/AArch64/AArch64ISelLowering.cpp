@@ -11937,43 +11937,23 @@ AArch64TargetLowering::LowerWindowsGlobalTLSAddress(SDValue Op,
 
   SDValue TLSArray = getWindowsTLSArray(DAG, DL);
   SDValue Chain = TLSArray.getValue(1);
-  const GlobalAddressSDNode *GA = cast<GlobalAddressSDNode>(Op);
-  const GlobalValue *GV = GA->getGlobal();
-  auto Invariant =
-      MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable;
 
-  // On Windows Itanium and NT-POSIX another image may define a variable that
-  // is not DSO local, as under ELF's dynamic models. The import pointer of
-  // <name>$tls holds the address of the variable's record: the address of the
-  // defining image's TLS index, then the variable's offset in that image's
-  // block, neither of which changes. The linker makes the access direct
-  // where the image itself defines the variable.
-  SDValue Record, TLSIndex;
-  if (Subtarget->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !getTargetMachine().shouldAssumeDSOLocal(GV)) {
-    const char *Name = DAG.getMachineFunction().createExternalSymbolName(
-        (getTargetMachine().getSymbol(GV)->getName() + "$tls").str());
-    Record = DAG.getNode(
-        AArch64ISD::LOADgot, DL, PtrVT,
-        DAG.getTargetExternalSymbol(Name, PtrVT, AArch64II::MO_GOT));
-    TLSIndex = DAG.getLoad(PtrVT, DL, Chain, Record, MachinePointerInfo(),
-                           Align(8), Invariant);
-  } else {
-    // Load the TLS index from the C runtime;
-    // This does the same as getAddr(), but without having a
-    // GlobalAddressSDNode. This also does the same as LOADgot, but using a
-    // generic i32 load, while LOADgot only loads i64.
-    SDValue TLSIndexHi =
-        DAG.getTargetExternalSymbol("_tls_index", PtrVT, AArch64II::MO_PAGE);
-    SDValue TLSIndexLo = DAG.getTargetExternalSymbol(
-        "_tls_index", PtrVT, AArch64II::MO_PAGEOFF | AArch64II::MO_NC);
-    SDValue ADRP = DAG.getNode(AArch64ISD::ADRP, DL, PtrVT, TLSIndexHi);
-    TLSIndex = DAG.getNode(AArch64ISD::ADDlow, DL, PtrVT, ADRP, TLSIndexLo);
-  }
+  // Load the TLS index from the C runtime;
+  // This does the same as getAddr(), but without having a GlobalAddressSDNode.
+  // This also does the same as LOADgot, but using a generic i32 load,
+  // while LOADgot only loads i64.
+  SDValue TLSIndexHi =
+      DAG.getTargetExternalSymbol("_tls_index", PtrVT, AArch64II::MO_PAGE);
+  SDValue TLSIndexLo = DAG.getTargetExternalSymbol(
+      "_tls_index", PtrVT, AArch64II::MO_PAGEOFF | AArch64II::MO_NC);
+  SDValue ADRP = DAG.getNode(AArch64ISD::ADRP, DL, PtrVT, TLSIndexHi);
+  SDValue TLSIndex =
+      DAG.getNode(AArch64ISD::ADDlow, DL, PtrVT, ADRP, TLSIndexLo);
   // The loader sets the TLS index before any of the image's code runs, and it
   // never changes.
-  TLSIndex = DAG.getLoad(MVT::i32, DL, Chain, TLSIndex, MachinePointerInfo(),
-                         Align(4), Invariant);
+  TLSIndex = DAG.getLoad(
+      MVT::i32, DL, Chain, TLSIndex, MachinePointerInfo(), Align(4),
+      MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable);
   Chain = TLSIndex.getValue(1);
 
   // The pointer to the thread's TLS data area is at the TLS Index scaled by 8
@@ -11986,14 +11966,8 @@ AArch64TargetLowering::LowerWindowsGlobalTLSAddress(SDValue Op,
                             MachinePointerInfo());
   Chain = TLS.getValue(1);
 
-  if (Record) {
-    SDValue Offset = DAG.getExtLoad(
-        ISD::ZEXTLOAD, DL, PtrVT, Chain,
-        DAG.getMemBasePlusOffset(Record, TypeSize::getFixed(8), DL),
-        MachinePointerInfo(), MVT::i32, Align(8), Invariant);
-    return DAG.getNode(ISD::ADD, DL, PtrVT, TLS, Offset);
-  }
-
+  const GlobalAddressSDNode *GA = cast<GlobalAddressSDNode>(Op);
+  const GlobalValue *GV = GA->getGlobal();
   SDValue TGAHi = DAG.getTargetGlobalAddress(
       GV, DL, PtrVT, 0, AArch64II::MO_TLS | AArch64II::MO_HI12);
   SDValue TGALo = DAG.getTargetGlobalAddress(

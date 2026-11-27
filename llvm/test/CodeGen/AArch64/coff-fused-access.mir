@@ -1,5 +1,6 @@
 # RUN: llc -mtriple=aarch64-unknown-windows-itanium \
-# RUN:   -start-after=unpack-mi-bundles %s -o - | FileCheck %s
+# RUN:   -start-after=unpack-mi-bundles %s -o - | \
+# RUN:   FileCheck %s --implicit-check-not=site_fact
 
 # On Windows Itanium and NT-POSIX a load or store through the register of a
 # fused read takes the page offset of what the pointer names where the linker
@@ -15,6 +16,11 @@
   define void @other_base() { ret void }
   define void @kept() { ret void }
   define void @unoptimized() noinline optnone { ret void }
+  @c = linkonce_odr constant [4 x i32] zeroinitializer
+  define void @shared() { ret void }
+  define ptr @shared_taken() { ret ptr @c }
+  define ptr @joined() { ret ptr @c }
+  define ptr @joined_loads() { ret ptr @c }
   define void @pad() { ret void }
   define void @pad_clobbered() { ret void }
 ...
@@ -152,6 +158,122 @@ body:             |
     renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @v
     renamable $x8 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @v
     renamable $w0 = LDRWui killed renamable $x8, 1
+    RET undef $lr, implicit $w0
+...
+
+# Adrps, loads of a constant's pointer and what reads them join by register
+# into webs. A web is stated where its loads only read the constant's value
+# and its adrps only give such loads their page, whatever other webs do.
+# CHECK-LABEL: shared:
+# CHECK:         .site_fact 7, 0
+# CHECK-NEXT:    adrp x8, __imp_c
+# CHECK-NEXT:    .site_fact 7, 0
+# CHECK-NEXT:    ldr x9, [x8, :lo12:__imp_c]
+# CHECK-NEXT:    .site_fact 7, 0
+# CHECK-NEXT:    ldr x10, [x8, :lo12:__imp_c]
+---
+name:            shared
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $x0
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @c
+    renamable $x9 = LDRXui renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @c
+    renamable $x10 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @c
+    renamable $w9 = LDRWroX killed renamable $x9, killed renamable $x0, 0, 1
+    renamable $w10 = LDRWui killed renamable $x10, 1
+    RET undef $lr, implicit $w9, implicit $w10
+...
+
+# CHECK-LABEL: shared_taken:
+# CHECK:         adrp x8, __imp_c
+# CHECK-NEXT:    ldr x9, [x8, :lo12:__imp_c]
+# CHECK-NEXT:    ldr x0, [x8, :lo12:__imp_c]
+---
+name:            shared_taken
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $x1
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @c
+    renamable $x9 = LDRXui renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @c
+    renamable $x0 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @c
+    renamable $w9 = LDRWroX killed renamable $x9, killed renamable $x1, 0, 1
+    RET undef $lr, implicit $x0, implicit $w9
+...
+
+# Two adrps may reach one load, and one adrp two loads.
+# CHECK-LABEL: joined:
+# CHECK:         .site_fact 7, 0
+# CHECK-NEXT:    adrp x8, __imp_c
+# CHECK:         .site_fact 7, 0
+# CHECK-NEXT:    adrp x8, __imp_c
+# CHECK:         .site_fact 7, 0
+# CHECK-NEXT:    ldr x9, [x8, :lo12:__imp_c]
+# CHECK:         .site_fact 7, 0
+# CHECK-NEXT:    ldr x10, [x8, :lo12:__imp_c]
+---
+name:            joined
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $x0, $x1, $w2
+    CBZW killed renamable $w2, %bb.2
+  bb.1:
+    successors: %bb.3, %bb.4
+    liveins: $x0, $x1
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @c
+    CBZX renamable $x1, %bb.4
+    B %bb.3
+  bb.2:
+    successors: %bb.3
+    liveins: $x0, $x1
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @c
+  bb.3:
+    liveins: $x0, $x8
+    renamable $x9 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @c
+    renamable $w0 = LDRWroX killed renamable $x9, killed renamable $x0, 0, 1 :: (load (s32))
+    RET undef $lr, implicit $w0
+  bb.4:
+    liveins: $x8
+    renamable $x10 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @c
+    renamable $w0 = LDRWui killed renamable $x10, 1 :: (load (s32))
+    RET undef $lr, implicit $w0
+...
+
+# Two loads may reach one read.
+# CHECK-LABEL: joined_loads:
+# CHECK:         .site_fact 7, 0
+# CHECK-NEXT:    adrp x9, __imp_c
+# CHECK-NEXT:    .site_fact 7, 0
+# CHECK-NEXT:    ldr x9, [x9, :lo12:__imp_c]
+# CHECK:         .site_fact 7, 0
+# CHECK-NEXT:    adrp x9, __imp_c
+# CHECK-NEXT:    .site_fact 7, 0
+# CHECK-NEXT:    ldr x9, [x9, :lo12:__imp_c]
+---
+name:            joined_loads
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $x0, $w1
+    CBZW killed renamable $w1, %bb.2
+  bb.1:
+    successors: %bb.3
+    liveins: $x0
+    renamable $x9 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @c
+    renamable $x9 = LDRXui killed renamable $x9, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @c
+    B %bb.3
+  bb.2:
+    successors: %bb.3
+    liveins: $x0
+    renamable $x9 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @c
+    renamable $x9 = LDRXui killed renamable $x9, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @c
+  bb.3:
+    liveins: $x0, $x9
+    renamable $w0 = LDRWroX killed renamable $x9, killed renamable $x0, 0, 1 :: (load (s32))
     RET undef $lr, implicit $w0
 ...
 

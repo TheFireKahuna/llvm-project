@@ -99,10 +99,6 @@ void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots,
       // A thread-local variable's record holds where it and its guard are.
       if (TlsRecordChunk *r = TlsRecordChunk::get(b); r && !r->live) {
         r->live = true;
-        // Code that reaches the variable through the record reads the TLS
-        // index where the link makes it direct.
-        if (r->symtab.tlsIndex)
-          addSym(r->symtab.tlsIndex);
         addSym(r->var);
         if (r->guard)
           addSym(r->guard);

@@ -368,7 +368,7 @@ bool X86Decoder::decodeRead(ArrayRef<uint8_t> code, ReadInsn &insn) {
 
 bool X86Decoder::decodeFused(ArrayRef<uint8_t> code, FusedInsn &insn,
                              SmallVectorImpl<char> *direct, unsigned *field,
-                             bool second, int base) {
+                             bool second) {
 #if LLVM_HAS_X86_TARGET
   Impl &m = *impl;
   Insn decoded;
@@ -421,11 +421,6 @@ bool X86Decoder::decodeFused(ArrayRef<uint8_t> code, FusedInsn &insn,
     if (!second)
       inst.getOperand(mem).setReg(index.getReg());
     index.setReg(MCRegister());
-    if (base >= 0)
-      for (MCRegister reg : m.mri->getRegClass(X86::GR64RegClassID))
-        if (m.mri->getEncodingValue(reg) == base &&
-            reg != m.mri->getProgramCounter())
-          inst.getOperand(mem).setReg(reg);
   } else {
     inst.getOperand(regOp).setReg(m.mri->getProgramCounter());
   }
@@ -487,32 +482,6 @@ bool X86Decoder::encodeOnThreadPointer(ArrayRef<uint8_t> code, bool second,
   SmallVector<MCFixup, 1> fixups;
   m.emitter->encodeInstruction(inst, out, fixups, *m.sti);
   return fixups.empty();
-#else
-  return false;
-#endif
-}
-
-bool X86Decoder::decodeTlsBlock(ArrayRef<uint8_t> code, unsigned &size,
-                                unsigned &index, int &adds) {
-#if LLVM_HAS_X86_TARGET
-  Insn decoded;
-  if (!decode(code, 0, decoded))
-    return false;
-  const MCInst &inst = impl->inst;
-  bool add = inst.getOpcode() == X86::ADD64rm;
-  unsigned mem = 1 + add;
-  const MCOperand &disp = inst.getOperand(mem + X86::AddrDisp);
-  if ((!add && inst.getOpcode() != X86::MOV64rm) ||
-      !inst.getOperand(mem + X86::AddrBaseReg).getReg() ||
-      inst.getOperand(mem + X86::AddrScaleAmt).getImm() != 8 ||
-      !inst.getOperand(mem + X86::AddrIndexReg).getReg() || !disp.isImm() ||
-      disp.getImm() || inst.getOperand(mem + X86::AddrSegmentReg).getReg())
-    return false;
-  size = decoded.size;
-  index = impl->mri->getEncodingValue(
-      inst.getOperand(mem + X86::AddrIndexReg).getReg());
-  adds = add ? impl->mri->getEncodingValue(inst.getOperand(0).getReg()) : -1;
-  return true;
 #else
   return false;
 #endif
@@ -966,13 +935,7 @@ Walker::Object::Object(ObjFile &file)
   for (SectionChunk *c : file.getDebugChunks())
     if (c->getSectionName() == ".debug$S")
       readDebug(c->getSectionNumber(), c->getContents());
-  if (file.addrsigSec ||
-      (file.hasGuardCF() && !file.getGuardFidChunks().empty())) {
-    taken.emplace();
-    ObjFile *f = &file;
-    forEachAddressSignificant(
-        file.symtab.ctx, f, [&](Symbol *s) { taken->insert(s); }, true);
-  }
+  taken = getTakenFunctions(file.symtab.ctx, &file);
 
   for (auto &[n, cs] : code) {
     llvm::sort(cs.funcs);

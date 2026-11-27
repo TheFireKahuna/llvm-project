@@ -3,7 +3,7 @@
 ; DEFINE: %{arch} = x86_64
 ; DEFINE: %{machine} = x64
 ; DEFINE: %{link} = llc -mtriple=%{arch}-unknown-windows-itanium \
-; DEFINE:     -filetype=obj %t/a.ll -o %t/a.obj && \
+; DEFINE:     -addrsig -filetype=obj %t/a.ll -o %t/a.obj && \
 ; DEFINE:   llvm-mc -triple=%{arch}-unknown-windows-itanium -filetype=obj \
 ; DEFINE:     %t/b.s -o %t/b.obj && \
 ; DEFINE:   lld-link -dll -noentry -export:f -export:f2 -machine:%{machine} \

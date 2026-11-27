@@ -1,19 +1,12 @@
 # REQUIRES: x86, aarch64
 
-## An x86-64 object of another producer has one relocation type, REL32, for a
-## branch, an address and any other operand. In an image that holds an object
-## for Windows Itanium or NT-POSIX, the link classifies each REL32 against an
-## imported function by decoding the function that holds it, and reports the
-## answer with -verbose: forward from the function's start where the object's
-## producer is known to be a compiler, and otherwise by descent from the
-## instruction starts that the object's symbols, unwind information, exception
-## tables, CodeView and data prove. A function is accepted only if every byte
-## of it is an instruction, padding or marked data, and every relocation is on
-## a field of an instruction. An ARM64 relocation's type classifies it.
+## A foreign x86-64 REL32 against an imported function is classified by
+## decoding its function, from the start for a known compiler and otherwise
+## from proven starts; unclassified is an error, no room for a load a warning.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 # DEFINE: %{mc} = llvm-mc -filetype=obj
-# DEFINE: %{link} = lld-link -dll -noentry -opt:noref -verbose
+# DEFINE: %{link} = lld-link -dll -noentry -opt:noref -verbose -errorlimit:0
 # DEFINE: %{check} = FileCheck %s --implicit-check-not="reference to" \
 # DEFINE:   -DPROOF="decoded from proven starts" \
 # DEFINE:   -DSTART="decoded from the function's start" \
@@ -26,13 +19,15 @@
 # RUN: %{mc} -triple=x86_64-windows-msvc compiler.s -o compiler.obj
 # RUN: %{mc} -triple=x86_64-windows-msvc cv.s -o cv.obj
 # RUN: %{mc} -triple=x86_64-windows-msvc other.s -o other.obj
-# RUN: %{link} imp.lib fork.obj proof.obj other.obj -out:proof.dll 2>&1 \
+# RUN: not %{link} imp.lib fork.obj proof.obj -out:proof.dll 2>&1 \
 # RUN:   | %{check} --check-prefix=PROVEN
-# RUN: %{link} imp.lib fork.obj marked.obj -out:marked.dll 2>&1 \
+# RUN: %{link} imp.lib fork.obj other.obj -out:other.dll 2>&1 \
+# RUN:   | %{check} --check-prefix=OTHER
+# RUN: not %{link} imp.lib fork.obj marked.obj -out:marked.dll 2>&1 \
 # RUN:   | %{check} --check-prefix=MARKED
 # RUN: %{link} imp.lib fork.obj compiler.obj -out:compiler.dll 2>&1 \
 # RUN:   | %{check} --check-prefix=COMPILER
-# RUN: %{link} imp.lib fork.obj cv.obj -out:cv.dll 2>&1 \
+# RUN: not %{link} imp.lib fork.obj cv.obj -out:cv.dll 2>&1 \
 # RUN:   | %{check} --check-prefix=CV
 
 ## Nothing is decoded in an image without such an object.
@@ -45,18 +40,18 @@
 # RUN: %{link} imp.lib fork.obj proof.obj -out:delay.dll -delayload:imp.dll \
 # RUN:   2>&1 | %{check} --check-prefix=FOREIGN
 
-# PROVEN:      proof.obj: the reference to case0 at offset 0x11 of .text in tabled is a branch, [[PROOF]]
+# PROVEN:      proof.obj: the reference to case0 at .text+0x11 in tabled is a branch, [[PROOF]]
 # PROVEN-NEXT: to case1 at {{.*}} in tabled takes its address, [[PROOF]]
 # PROVEN-NEXT: to call at {{.*}} in forms is a branch, [[PROOF]]
 # PROVEN-NEXT: to call at {{.*}} in forms is a branch, [[PROOF]]
 # PROVEN-NEXT: to lea64 at {{.*}} in forms takes its address, [[PROOF]]
-# PROVEN-NEXT: to lea32 at {{.*}} in forms is another operand, [[PROOF]]
+# PROVEN-NEXT: warning: proof.obj: the reference to lea32 at .text+0x48 in forms is another operand, [[PROOF]]
 # PROVEN-NEXT: to load at {{.*}} in forms is another operand, [[PROOF]]
 # PROVEN-NEXT: to vpermb at {{.*}} in forms is another operand, [[PROOF]]
 # PROVEN-NEXT: to load at {{.*}} in forms is another operand, [[PROOF]]
 # PROVEN-NEXT: to jcc at {{.*}} in forms is a branch, [[PROOF]]
 # PROVEN-NEXT: to jump at {{.*}} in forms is a branch, [[PROOF]]
-# PROVEN-NEXT: to rep at {{.*}} in odd [[NO]] a form of the instruction that is not canonical, [[PROOF]]
+# PROVEN-NEXT: error: proof.obj: the reference to rep at .text+0x82 in odd [[NO]] a form of the instruction that is not canonical, [[PROOF]]; it may take the address of rep, which is imp.dll's; -ignore-function-address-equality:proof.obj keeps this image's own
 # PROVEN-NEXT: to addr32 at {{.*}} in odd [[NO]] a form of the instruction that is not canonical, [[PROOF]]
 # PROVEN-NEXT: to segment at {{.*}} in odd [[NO]] a form of the instruction that is not canonical, [[PROOF]]
 # PROVEN-NEXT: to jump at {{.*}} in odd [[NO]] a form of the instruction that is not canonical, [[PROOF]]
@@ -99,6 +94,9 @@
 # PROVEN-NEXT: to call at {{.*}} in loose [[NO]] no proven path reaches it, [[PROOF]]
 # PROVEN-NEXT: to call at {{.*}} in inner [[NO]] two instructions, or one and data, overlap, [[PROOF]]
 
+# OTHER:      warning: other.obj: the reference to call at .text+0x1 is another operand, by its type
+# OTHER-NEXT: warning: other.obj: the reference to call at .data+0x0 is data, by its type
+
 # MARKED:      marked.obj: the reference to data at {{.*}} in masm is data, [[PROOF]]
 # MARKED-NEXT: to marked at {{.*}} in masm is a branch, [[PROOF]]
 # MARKED-NEXT: to into at {{.*}} in enters [[NO]] two instructions, or one and data, overlap
@@ -108,7 +106,7 @@
 # COMPILER-NEXT: to call at {{.*}} in compiled is a branch, [[START]]
 # COMPILER-NEXT: to data at {{.*}} in compiled is data, [[START]]
 
-# CV:      cv.obj: the reference to described at offset 0x5 of .text in clean takes its address, [[START]]
+# CV:      cv.obj: the reference to described at .text+0x5 in clean takes its address, [[START]]
 # CV-NEXT: to inlined at {{.*}} in dirty [[NO]] no proven path reaches it, [[PROOF]]
 # CV-NEXT: to call at {{.*}} in holds is a branch, [[START]]
 # CV-NEXT: to held at {{.*}} in holds is data, [[START]]
@@ -121,51 +119,19 @@
 # RUN: %{link} imp-a64.lib fork-a64.obj arm64.obj -out:arm64.dll 2>&1 \
 # RUN:   | %{check} --check-prefix=ARM64
 
-# ARM64:      arm64.obj: the reference to call at offset 0x0 of .text is a branch, by its type
-# ARM64-NEXT: to lea64 at offset 0x4 of .text takes its address, by its type
-# ARM64-NEXT: to lea64 at offset 0x8 of .text takes its address, by its type
-# ARM64-NEXT: to load at offset 0xc of .text is another operand, by its type
-# ARM64-NEXT: to jcc at offset 0x10 of .text is a branch, by its type
+# ARM64:      arm64.obj: the reference to call at .text+0x0 is a branch, by its type
+# ARM64-NEXT: to lea64 at .text+0x4 takes its address, by its type
+# ARM64-NEXT: to lea64 at .text+0x8 takes its address, by its type
+# ARM64-NEXT: to load at .text+0xc is another operand, by its type
+# ARM64-NEXT: to jcc at .text+0x10 is a branch, by its type
 
 #--- imp.def
 LIBRARY imp.dll
 EXPORTS
-  __C_specific_handler
-  __gxx_personality_seh0
-  call
-  jump
-  jcc
-  lea64
-  lea32
-  load
-  vpermb
-  memjump
-  rep
-  addr32
-  segment
-  fsjump
-  data16
-  case0
-  case1
-  resume
-  planted
-  after
-  noreturn
-  die
-  data
-  overlap
-  index
-  pointed
-  chained
-  prologue
-  symbol
-  marked
-  into
-  static
-  described
-  inlined
-  held
-  lined
+  __C_specific_handler __gxx_personality_seh0 call jump jcc lea64 lea32 load
+  vpermb memjump rep addr32 segment fsjump data16 case0 case1 resume planted
+  after noreturn die data overlap index pointed chained prologue symbol
+  marked into static described inlined held lined
 
 #--- fork.s
 ## Its own references are typed: none is classified.
@@ -176,7 +142,8 @@ __delayLoadHelper2:
   .long 0
 
 #--- other.s
-## Only a REL32 in code is a site.
+## Only a REL32 in code is decoded, and no other field but a word of data
+## has room for the address.
 .text
 .globl other
 other:
@@ -198,10 +165,8 @@ other:
 ## and what else the object's tables prove.
 .include "func.inc"
 .text
-## Places that only tables of distances in data name. The second table, which
-## follows the first, is addressed by code that the first reaches, and one of
-## its entries names a place in another section, at an offset that is inside
-## an instruction of this one.
+## Places only distance tables name; the second, reached through the first,
+## names a place in another section at an offset inside an instruction here.
 func tabled
   leaq .Ltable(%rip), %rdx
   movslq (%rdx,%rcx,4), %rax
@@ -299,10 +264,8 @@ func guarded
   .text
   .seh_endproc
 
-## A place where an exception lands, which only the call sites of an Itanium
-## personality name. One inside an instruction that a path reached, and a
-## call site that ends inside one, are refused. A table in an encoding that is not read, and one
-## that ends inside an entry, name nothing.
+## Landing pads only Itanium call sites name; one inside a reached instruction
+## or a site ending inside one is refused; unread or cut tables name nothing.
 .macro landing name, pad, end, encoding=0x01, cut=0, entry=.uleb128
 func \name
   .seh_proc \name
@@ -332,10 +295,8 @@ landing fixed, 0, 0, 0x03, 0, .long
 landing sdata, 0, 0, 0x0b, 0, .long
 landing cut, 0, 0, 0x01, 1
 
-## Parts of functions in another section. A branch of a function that is
-## accepted proves its target there. An address that one takes, and a
-## relocation in bytes that no path reaches, prove nothing, and a second branch into an instruction that the
-## first one's target decodes is refused.
+## An accepted branch proves its target in another section; a taken address or
+## unreached relocation proves nothing; a branch into a decoded one is refused.
 func hot
   jne .Lreached
   retq
@@ -470,9 +431,8 @@ func label
   retq
 inside = label+1
 
-## An unwind code after an instruction that ends elsewhere, an unwind range
-## and a scope that end inside an instruction, and the data of another
-## handler, which is not read as scopes.
+## Unwind codes, ranges and scopes ending inside an instruction; another
+## handler's data is not read as scopes.
 func coded
   subq $40, %rsp
   callq prologue
@@ -663,6 +623,6 @@ _start:
   bl call
   adrp x0, lea64
   add x0, x0, :lo12:lea64
-  ldr x1, [x0, :lo12:load]
+  ldr w1, [x0, :lo12:load]
   b.eq jcc
   ret

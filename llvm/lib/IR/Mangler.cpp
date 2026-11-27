@@ -20,6 +20,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/InstrTypes.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TargetParser/Triple.h"
@@ -297,17 +298,23 @@ const ConstantInt *llvm::getFunctionTypePrefixMarker(const GlobalObject &F) {
 }
 
 // Whether GV is a name of a vague entity: a definition that each unit that
-// needs it emits and of which a process has one. So is every alias of one
-// and whatever shares its COMDAT, a guard variable among them, which move
-// with it. A function with any other linkage may differ from the definition
-// that replaces it, so its calls could not stay with its image.
+// needs it emits, in a COMDAT that the link chooses among, and of which a
+// process has one. So is every alias of one and whatever shares its COMDAT, a
+// guard variable among them, which move with it. A weak definition without a
+// COMDAT is a weak external, which the first copy in each image serves, as a
+// C99 inline definition's body does. A function with any other linkage may
+// differ from the definition that replaces it, so its calls could not stay
+// with its image.
 static bool isVagueEntity(const GlobalValue *GV) {
   const GlobalObject *GO = GV->getAliaseeObject();
   if (!GO || GV->hasLocalLinkage() || isa<GlobalIFunc>(GV))
     return false;
   if (GO != GV)
     return isVagueEntity(GO);
-  if (const Comdat *C = GO->getComdat(); C && C->getName() != GO->getName()) {
+  const Comdat *C = GO->getComdat();
+  if (!C)
+    return false;
+  if (C->getName() != GO->getName()) {
     const GlobalValue *Key = GO->getParent()->getNamedValue(C->getName());
     return Key && Key->getComdat() == C && isa<GlobalObject>(Key) &&
            isVagueEntity(Key);
@@ -317,6 +324,17 @@ static bool isVagueEntity(const GlobalValue *GV) {
   if (isa<Function>(GO))
     return GO->hasLinkOnceODRLinkage() || GO->hasWeakODRLinkage();
   return GO->hasLinkOnceLinkage() || GO->hasWeakLinkage();
+}
+
+// Whether the unit takes the address of GV, a function or an alias of one: a
+// use that is not the callee of a call. A module that is not materialized
+// shows none of its uses, so each address counts as taken.
+static bool isAddressTaken(const GlobalValue *GV) {
+  return !GV->getParent()->isMaterialized() ||
+         any_of(GV->uses(), [](const Use &U) {
+           auto *Call = dyn_cast<CallBase>(U.getUser());
+           return !Call || !Call->isCallee(&U);
+         });
 }
 
 void llvm::emitLinkFactsForGlobalCOFF(
@@ -374,10 +392,16 @@ void llvm::emitLinkFactsForGlobalCOFF(
   }
 
   // Only an observable entity is stated: data, and a function whose address
-  // is significant. A hidden function states nothing, each image keeping
-  // its own.
-  if (!isVagueEntity(GV) || (!Var && (State == COFF::LinkFactHidden ||
-                                      GV->hasAtLeastLocalUnnamedAddr())))
+  // is significant and taken; a call does not observe it. Every unit that
+  // takes a linkonce_odr function's address has a copy that states it, but a
+  // weak_odr one, an explicit instantiation definition, may be taken where
+  // only its declaration is seen, exported or not, so only unnamed_addr,
+  // which holds in every unit, leaves it out. A hidden function states
+  // nothing, each image keeping its own.
+  if (!isVagueEntity(GV) ||
+      (!Var && (State == COFF::LinkFactHidden || GV->hasGlobalUnnamedAddr() ||
+                (!GV->hasWeakODRLinkage() &&
+                 (GV->hasAtLeastLocalUnnamedAddr() || !isAddressTaken(GV))))))
     return;
   Fact(COFF::LinkFactVisibility, {State});
   if (!Var) {

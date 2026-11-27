@@ -20188,29 +20188,6 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
 
     // Get the Thread Pointer, the thread's TLS array.
     SDValue ThreadPointer = getWindowsTLSArray(DAG, dl, Subtarget);
-    auto Invariant =
-        MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable;
-
-    // On Windows Itanium and NT-POSIX another image may define a variable
-    // that is not DSO local, as under ELF's dynamic models. The import
-    // pointer of <name>$tls holds the address of the variable's record: the
-    // address of the defining image's TLS index, then the variable's offset
-    // in that image's block, neither of which changes. The linker makes the
-    // access direct where the image itself defines the variable.
-    SDValue Record;
-    if (Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-        GV->getThreadLocalMode() != GlobalVariable::LocalExecTLSModel &&
-        !getTargetMachine().shouldAssumeDSOLocal(GV)) {
-      MachineFunction &MF = DAG.getMachineFunction();
-      const char *Name = MF.createExternalSymbolName(
-          (getTargetMachine().getSymbol(GV)->getName() + "$tls").str());
-      Record = DAG.getLoad(
-          PtrVT, dl, Chain,
-          DAG.getNode(X86ISD::WrapperRIP, dl, PtrVT,
-                      DAG.getTargetExternalSymbol(Name, PtrVT,
-                                                  X86II::MO_DLLIMPORT)),
-          MachinePointerInfo::getGOT(MF));
-    }
 
     SDValue res;
     if (GV->getThreadLocalMode() == GlobalVariable::LocalExecTLSModel) {
@@ -20218,10 +20195,9 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
     } else {
       // Load the _tls_index variable, which the loader sets before any of
       // the image's code runs and which never changes.
-      SDValue IDX = Record ? DAG.getLoad(PtrVT, dl, Chain, Record,
-                                         MachinePointerInfo(), Align(8),
-                                         Invariant)
-                           : DAG.getExternalSymbol("_tls_index", PtrVT);
+      SDValue IDX = DAG.getExternalSymbol("_tls_index", PtrVT);
+      auto Invariant =
+          MachineMemOperand::MOInvariant | MachineMemOperand::MODereferenceable;
       if (Subtarget.is64Bit())
         IDX =
             DAG.getExtLoad(ISD::ZEXTLOAD, dl, PtrVT, Chain, IDX,
@@ -20239,16 +20215,6 @@ X86TargetLowering::LowerGlobalTLSAddress(SDValue Op, SelectionDAG &DAG) const {
     }
 
     res = DAG.getLoad(PtrVT, dl, Chain, res, MachinePointerInfo());
-
-    if (Record) {
-      SDValue Offset = DAG.getExtLoad(
-          ISD::ZEXTLOAD, dl, PtrVT, Chain,
-          DAG.getMemBasePlusOffset(Record, TypeSize::getFixed(8), dl),
-          MachinePointerInfo(), MVT::i32, Align(8), Invariant);
-      return DAG.getMemBasePlusOffset(
-          DAG.getNode(ISD::ADD, dl, PtrVT, res, Offset),
-          TypeSize::getFixed(GA->getOffset()), dl);
-    }
 
     // Get the offset of start of .tls section
     SDValue TGA = DAG.getTargetGlobalAddress(GA->getGlobal(), dl,

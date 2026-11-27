@@ -13,15 +13,10 @@
 // RUN: %if aarch64-registered-target %{ not %{a64} -filetype=obj -defsym=ERR=1 %s -o /dev/null 2>&1 | \
 // RUN:   FileCheck %s --check-prefix=A64-ERR --implicit-check-not=error: %}
 
-// Code reaches a thread-local variable that may be another image's through
-// its record, whose pointer it loads. A marked access loads a word of the
-// record, and a FUSED_INDEX marks an instruction that reads such a word: the
-// address of the TLS index as an access through it, and an offset as one of
-// two registers that it adds. .site_fact states a fact of the marker before
-// it, which the SiteFacts group of the link records keys by the index of the
-// marker's relocation: 8, the word and whether its register is the first of
-// the two, and 9, that indexes alone read the word that an access loads.
-// A fact that no marker precedes is of the relocation that follows it.
+// .site_fact states a fact of the marker before it, or else of the next
+// relocation, which the SiteFacts link records key by the marker's relocation
+// index: 8, the record word a FUSED_INDEX reads and whether its register is
+// the first addend, and 9, that indexes alone read the word an access loads.
 
 .ifdef NONE
 // NONE: error: site fact 7 is of no relocation
@@ -129,6 +124,11 @@
   .reloc ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
   .site_fact 8, 24
   movl (%rcx,%rax), %edx
+// A copy of the word holds it.
+  movq %rax, %rsi
+  .reloc ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
+  .site_fact 8, 8
+  movl (%rcx,%rsi), %edx
 .else
   adrp x8, __imp_x$tls
   ldr x8, [x8, :fused_lo12:__imp_x$tls]
@@ -146,6 +146,10 @@
   .reloc ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
   .site_fact 8, 24
   ldr w0, [x9, x8]
+  mov x10, x8
+  .reloc ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
+  .site_fact 8, 8
+  ldr w0, [x9, x10]
 .endif
 .endif
 .endif

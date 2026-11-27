@@ -1165,12 +1165,8 @@ private:
 
 // The record of a thread-local variable X that a link fact states, the symbol
 // X$tls: the address of the image's TLS index and the offsets of X and of
-// its guard from the first TLS group. Another image reaches X through it, as
-// does code of this image that cannot tell where X is; both load its address
-// from __imp_X$tls, here a local import pointer. It is left out, and takes no
-// room, unless something still names it once the relocations are scanned:
-// code that the link made read the TLS index and the offsets for itself does
-// not.
+// its guard from the first TLS group. It is left out, and takes no room,
+// unless something still names it once the relocations are scanned.
 class TlsRecordChunk : public NonSectionChunk {
 public:
   TlsRecordChunk(SymbolTable &symtab, Symbol *sym, Symbol *var,

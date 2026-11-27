@@ -2806,9 +2806,10 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
   // initialized: where control first passes its declaration, or with the
   // image that defines it.
   if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      var->isWeakForLinker() && !D.getTLSKind())
-    var->addAttribute("dynamic-init",
-                      D.isLocalVarDecl() ? "guarded" : "unordered");
+      var->isWeakForLinker())
+    var->addAttribute("dynamic-init", D.getTLSKind()        ? "thread-local"
+                                      : D.isLocalVarDecl() ? "guarded"
+                                                           : "unordered");
 
   // Create the guard variable if we don't already have it (as we
   // might if we're double-emitting this function body).
@@ -2854,6 +2855,17 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
     }
 
     CGM.setStaticLocalDeclGuardAddress(&D, guard);
+
+    // Another image reaches the guard of a thread-local variable that it
+    // shares as it reaches the variable, through a record, in which the
+    // guard is its own. No other unit declares a variable local to a
+    // function, which states its guard here.
+    if (guard->isThreadLocal() && guard->isWeakForLinker() &&
+        !guard->hasHiddenVisibility() && CGM.hasThreadLocalRecords()) {
+      CGM.setThreadLocalRecordGuard(guard, guard);
+      if (D.isLocalVarDecl())
+        CGM.setThreadLocalRecordGuard(var, guard);
+    }
   }
 
   Address guardAddr = Address(guard, guard->getValueType(), guardAlignment);
@@ -3377,10 +3389,12 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
   // Emit all referenced thread wrappers.
   for (auto VDAndWrapper : ThreadWrappers) {
     const VarDecl *VD = VDAndWrapper.first;
-    // The wrapper of another image's variable reaches the variable and its
-    // guard through the variable's record, and the image exports the
-    // initialization function with the record.
+    // The wrapper of a variable that another image may define reaches the
+    // variable and its guard through the variable's record. An image exports
+    // the initialization function with the record, and a definition that the
+    // link finds in this image may have none.
     bool Import = CGM.isThreadLocalRecordImport(VD);
+    bool Known = CGM.isThreadLocalRecordImport(VD, /*Known=*/true);
     llvm::GlobalVariable *Var =
         Import ? nullptr
                : cast<llvm::GlobalVariable>(
@@ -3431,17 +3445,17 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       // its thread_local variables.
       Init = llvm::Function::Create(
           InitFnTy,
-          Import ? llvm::GlobalVariable::ExternalLinkage
-                 : llvm::GlobalVariable::ExternalWeakLinkage,
+          Known ? llvm::GlobalVariable::ExternalLinkage
+                : llvm::GlobalVariable::ExternalWeakLinkage,
           InitFnName.str(), &CGM.getModule());
       const CGFunctionInfo &FI = CGM.getTypes().arrangeNullaryFunction();
       CGM.SetLLVMFunctionAttributes(
           GlobalDecl(), FI, cast<llvm::Function>(Init), /*IsThunk=*/false);
     }
 
-    if (Import) {
+    if (Known) {
       Init->setDLLStorageClass(llvm::GlobalValue::DLLImportStorageClass);
-    } else if (Init) {
+    } else if (Init && !Import) {
       Init->setVisibility(Var->getVisibility());
       // Don't mark an extern_weak function DSO local on windows.
       if (!CGM.getTriple().isOSWindows() || !Init->hasExternalWeakLinkage())
@@ -3502,7 +3516,9 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       Builder.CreateCall(InitFnTy, Init);
     } else {
       // Don't know whether we have an init function. Call it if it exists.
-      // An imported one exists, and runs until the guard is set.
+      // A record's guard is unset only where one exists, and until it has
+      // run, so the guard is the test, and the reference is weak only for
+      // the definition that has none.
       llvm::Value *Have = Import
                               ? Builder.CreateIsNull(Builder.CreateAlignedLoad(
                                     CGM.Int8Ty, Guard, CharUnits::One()))
@@ -3568,45 +3584,27 @@ void ItaniumCXXABI::EmitThreadLocalInitFuncs(
       Init->setVisibility(Var->getVisibility());
       Init->setDSOLocal(Var->isDSOLocal());
     }
-    llvm::GlobalVariable *Guard;
+    // The variable's own guard, which every unit that defines the variable
+    // has, or the guard of the unit's ordered initialization.
+    llvm::GlobalVariable *Guard =
+        CGM.getStaticLocalDeclGuardAddress(VD->getDefinition());
     if (Init) {
-      // The variable's own guard, or the guard of the unit's ordered
-      // initialization.
-      Guard = CGM.getStaticLocalDeclGuardAddress(VD->getDefinition());
       if (!Guard)
         Guard = InitGuard;
+      if (!Guard)
+        continue;
       Var->addAttribute("dynamic-init", "thread-local");
-    } else {
-      // Nothing initializes the variable in a thread, so its guard is a byte
-      // that is never zero, and an importer that does not know it calls a
-      // function that does nothing.
-      Guard = M.getNamedGlobal("__tls_set");
-      if (!Guard) {
-        Guard = new llvm::GlobalVariable(M, CGM.Int8Ty, /*isConstant=*/true,
-                                         llvm::GlobalValue::LinkOnceODRLinkage,
-                                         llvm::ConstantInt::get(CGM.Int8Ty, 1),
-                                         "__tls_set");
-        Guard->setThreadLocalMode(CGM.GetDefaultLLVMTLSModel());
-        Guard->setAlignment(llvm::Align(1));
-        Guard->setVisibility(llvm::GlobalValue::HiddenVisibility);
-        Guard->setDSOLocal(true);
-        Guard->setComdat(M.getOrInsertComdat(Guard->getName()));
-        CGM.addCompilerUsedGlobal(Guard);
-      }
-      if (Exported) {
-        Init = createEmptyThreadLocalInit(CGM, InitFnName, Var);
-        CGM.SetLLVMFunctionAttributesForDefinition(nullptr,
-                                                   cast<llvm::Function>(Init));
-        Init->setVisibility(Var->getVisibility());
-        Init->setDSOLocal(true);
-        cast<llvm::Function>(Init)->setComdat(Var->getComdat());
-      }
+    } else if (Exported) {
+      // Nothing initializes the variable in a thread, so an importer that
+      // does not know it calls a function that does nothing.
+      Init = createEmptyThreadLocalInit(CGM, InitFnName, Var);
+      CGM.SetLLVMFunctionAttributesForDefinition(nullptr,
+                                                 cast<llvm::Function>(Init));
+      Init->setVisibility(Var->getVisibility());
+      Init->setDSOLocal(true);
+      cast<llvm::Function>(Init)->setComdat(Var->getComdat());
     }
-    if (!Guard)
-      continue;
-    Var->setMetadata("tls_record",
-                     llvm::MDNode::get(M.getContext(),
-                                       llvm::ConstantAsMetadata::get(Guard)));
+    CGM.setThreadLocalRecordGuard(Var, Guard);
     if (Exported) {
       Init->setDLLStorageClass(llvm::GlobalValue::DLLExportStorageClass);
       CGM.AppendLinkFact(("-export:" + Var->getName() + "$tls,data").str());

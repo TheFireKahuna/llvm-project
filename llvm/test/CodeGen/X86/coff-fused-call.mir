@@ -22,6 +22,13 @@
   define void @accesses() { ret void }
   define void @tests() { ret void }
   define void @pads() { ret void }
+  define void @pad_clobbered() { ret void }
+  @"x$tls" = external dllimport constant { ptr, i32, i32 }
+  define void @words() { ret void }
+  declare void @g()
+  define void @held() { ret void }
+  define void @round_trip() { ret void }
+  define void @places() { ret void }
 
   !llvm.dbg.cu = !{!0}
   !llvm.module.flags = !{!2, !3}
@@ -396,4 +403,184 @@ body:             |
   bb.3 (landing-pad):
     liveins: $rsi, $rdi
     RET64 implicit $rsi, implicit $rdi
+...
+
+# A register that a call clobbers holds no value of the block in its landing
+# pad, where it holds the exception, so the load of the call is the call's.
+# CHECK-LABEL: pad_clobbered:
+# FUSED:         movq __imp_imported@LOAD_CALL(%rip), %rax
+# PLAIN:         movq __imp_imported(%rip), %rax
+# CHECK-NEXT:    callq *%rax
+---
+name:            pad_clobbered
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    EH_LABEL <mcsymbol .Ltmp0>
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+    CALL64r killed renamable $rax, csr_win64, implicit $rsp, implicit $ssp
+    EH_LABEL <mcsymbol .Ltmp1>
+  bb.1:
+    RET64
+  bb.2 (landing-pad):
+    liveins: $rax
+    RET64 implicit $rax
+...
+
+# The load of a word of a thread-local variable's record is a site of a load
+# that something else reads too, in another block as well, so that every load
+# of the word that reaches an index is stated. Whatever else writes the
+# register of a word is no such load.
+# CHECK-LABEL: words:
+# CHECK:         movq __imp_x$tls(%rip), %rax
+# FUSED:       [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ACCESS, __imp_x$tls
+# CHECK:         movl 8(%rax), %ecx
+# CHECK-NEXT:    movq %rax, (%rdx)
+# CHECK:         movq __imp_x$tls{{(@FUSED)?}}(%rip), %rax
+# FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ACCESS, __imp_x$tls
+# CHECK-NEXT:    movl 8(%rax), %ecx
+# FUSED:       [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
+# FUSED-NEXT:    .site_fact 8, 8
+# CHECK:         movl (%rdx,%rcx), %eax
+# CHECK:         movl $1, %ecx
+# CHECK:         movq %rcx, %rsi
+---
+name:            words
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $rdx
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @"x$tls", $noreg
+    TEST64rr renamable $rdx, renamable $rdx, implicit-def $eflags
+    JCC_1 %bb.2, 4, implicit $eflags
+  bb.1:
+    successors: %bb.4
+    liveins: $rax, $rdx
+    renamable $ecx = MOV32rm renamable $rax, 1, $noreg, 8, $noreg, implicit-def $rcx
+    MOV64mr renamable $rdx, 1, $noreg, 0, $noreg, killed renamable $rax
+    JMP_1 %bb.4
+  bb.2:
+    successors: %bb.3, %bb.5
+    liveins: $rdx
+    CMP64ri32 renamable $rdx, 1, implicit-def $eflags
+    JCC_1 %bb.5, 4, implicit $eflags
+  bb.3:
+    liveins: $rdx
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @"x$tls", $noreg
+    renamable $ecx = MOV32rm killed renamable $rax, 1, $noreg, 8, $noreg, implicit-def $rcx
+  bb.4:
+    successors: %bb.6
+    liveins: $rcx, $rdx
+    renamable $eax = MOV32rm killed renamable $rdx, 1, renamable $rcx, 0, $noreg
+    JMP_1 %bb.6
+  bb.5:
+    renamable $ecx = MOV32ri 1, implicit-def $rcx
+    renamable $eax = MOV32ri 2
+  bb.6:
+    liveins: $eax, $rcx
+    renamable $rsi = MOV64rr killed renamable $rcx
+    RET64 implicit $eax, implicit $rsi
+...
+
+# A word's index reads it after a kill, which changes no bit, or through a
+# copy; the load of a word reaches its access through copies of the record's
+# pointer, which keep the pointer's load; and the loads of the place word's
+# address in two blocks both reach its index. The add of the place to the
+# thread pointer is an lea where the flags are dead.
+# CHECK-LABEL: held:
+# FUSED:         .site_fact 9, 0
+# CHECK:         movl 8(%rax), %ecx
+# FUSED:         .site_fact 9, 0
+# CHECK:         movl 12(%rax), %esi
+# CHECK-NEXT:    movq %rsi, %rdi
+# FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
+# FUSED-NEXT:    .site_fact 8, 8
+# CHECK-NEXT:    movl (%rdx,%rcx), %eax
+# FUSED:         .site_fact 8, 12
+# CHECK-NEXT:    movb $1, (%rdx,%rdi)
+# CHECK-LABEL: round_trip:
+# CHECK:         movq __imp_x$tls(%rip), %rax
+# CHECK:         movq %rbx, %rax
+# FUSED:         .reloc {{.*}}, IMAGE_REL_LLVM_FUSED_ACCESS, __imp_x$tls
+# FUSED-NEXT:    .site_fact 9, 0
+# CHECK:         movl 8(%rax), %ecx
+# FUSED:         .site_fact 8, 8
+# CHECK-NEXT:    movl (%rdx,%rcx), %eax
+# CHECK-LABEL: places:
+# FUSED:         .site_fact 9, 0
+# CHECK:         jmp
+# FUSED:         .site_fact 9, 0
+# FUSED:         .site_fact 8, 0
+# CHECK:         movq (%rcx), %rsi
+# FUSED-NEXT:    leaq (%r14,%rsi), %r14
+# PLAIN-NEXT:    addq %rsi, %r14
+---
+name:            held
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $rdx
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @"x$tls", $noreg
+    renamable $ecx = MOV32rm renamable $rax, 1, $noreg, 8, $noreg
+    renamable $rcx = KILL killed renamable $ecx
+    renamable $esi = MOV32rm killed renamable $rax, 1, $noreg, 12, $noreg, implicit-def $rsi
+    renamable $rdi = MOV64rr killed renamable $rsi
+    renamable $eax = MOV32rm renamable $rdx, 1, killed renamable $rcx, 0, $noreg
+    MOV8mi killed renamable $rdx, 1, killed renamable $rdi, 0, $noreg, 1
+    RET64 implicit $eax
+...
+---
+name:            round_trip
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $rdx, $rbx
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @"x$tls", $noreg
+    TEST64rr renamable $rdx, renamable $rdx, implicit-def $eflags
+    JCC_1 %bb.2, 4, implicit $eflags
+  bb.1:
+    successors: %bb.2
+    liveins: $rax, $rdx, $rbx
+    $rbx = MOV64rr killed $rax
+    CALL64pcrel32 @g, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    $rax = MOV64rr $rbx
+  bb.2:
+    liveins: $rax, $rdx
+    renamable $ecx = MOV32rm killed renamable $rax, 1, $noreg, 8, $noreg, implicit-def $rcx
+    renamable $eax = MOV32rm killed renamable $rdx, 1, killed renamable $rcx, 0, $noreg
+    RET64 implicit $eax
+...
+---
+name:            places
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $rdx, $r14
+    TEST64rr renamable $rdx, renamable $rdx, implicit-def $eflags
+    JCC_1 %bb.2, 4, implicit $eflags
+  bb.1:
+    successors: %bb.3
+    liveins: $rdx, $r14
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @"x$tls", $noreg
+    renamable $rcx = MOV64rm killed renamable $rax, 1, $noreg, 0, $noreg
+    JMP_1 %bb.3
+  bb.2:
+    successors: %bb.3
+    liveins: $rdx, $r14
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @"x$tls", $noreg
+    renamable $rcx = MOV64rm killed renamable $rax, 1, $noreg, 0, $noreg
+  bb.3:
+    liveins: $rcx, $r14
+    renamable $rsi = MOV64rm killed renamable $rcx, 1, $noreg, 0, $noreg
+    $r14 = ADD64rr $r14, killed renamable $rsi, implicit-def $eflags
+    CMP64mi32 $r14, 1, $noreg, 0, $noreg, 0, implicit-def $eflags
+    RET64 implicit $eflags
 ...

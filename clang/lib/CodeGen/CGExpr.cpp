@@ -3494,8 +3494,10 @@ static LValue EmitGlobalVarDeclLValue(CodeGenFunction &CGF,
   }
 
   // Another image's thread-local variable is reached through its record,
-  // and the module declares no variable.
-  bool Record = CGF.CGM.isThreadLocalRecordImport(VD);
+  // and the module declares no variable. One that the link may find in any
+  // image, and that no thread initializes, stays a variable, which the back
+  // end reaches through the record where the link has not found it.
+  bool Record = CGF.CGM.isThreadLocalRecordImport(VD, /*Known=*/true);
   llvm::Value *V = Record
                        ? CGF.CGM.EmitThreadLocalRecordAddress(CGF.Builder, VD)
                        : CGF.CGM.GetAddrOfGlobalVar(VD);

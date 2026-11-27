@@ -323,7 +323,7 @@ bool SymbolTable::loadMinGWSymbols() {
     // A thread-local variable's record X$tls is of the member defining X.
     if (name.starts_with("__imp_")) {
       Symbol *l = sym->forkReferenced ? find(name.substr(6)) : nullptr;
-      if (!l && sym->forkReferenced && name.ends_with("$tls"))
+      if (!l && sym->forkReferenced && isTlsRecordPointerName(name))
         l = find(name.slice(6, name.size() - 4));
       if (!l || l->pendingArchiveLoad || !l->isLazy())
         continue;
@@ -1717,17 +1717,6 @@ void SymbolTable::addTlsRecord(Symbol *var, Symbol *guard, InputFile *file) {
     }
     r = make<TlsRecordChunk>(*this, s, var, file);
     replaceSymbol<DefinedSynthetic>(s, name, r);
-    // The image needs the index that its records point at. The reference
-    // loads a member that defines it and fails no link that lacks it.
-    // No machine that has records decorates the name.
-    if (!tlsIndex) {
-      bool inserted;
-      std::tie(tlsIndex, inserted) = insert("_tls_index");
-      if (inserted)
-        replaceSymbol<Undefined>(tlsIndex, "_tls_index");
-      else if (tlsIndex->isLazy())
-        forceLazy(tlsIndex);
-    }
   }
   // Every copy of the variable names one guard: a second, of a copy that
   // the link discarded, would be of an initialization that never runs.
@@ -2285,12 +2274,10 @@ bool SymbolTable::takesOffer(Symbol *sym, bool function) {
 // code reaches a variable in a way that cannot follow the variable to
 // another image, so the image keeps the entity as a protected one.
 void SymbolTable::addForeignEntities(ObjFile *file) {
-  SmallPtrSet<Symbol *, 16> significant;
+  std::optional<SmallPtrSet<Symbol *, 8>> taken = getTakenFunctions(ctx, file);
   // The variables of which the object has a copy, by their names and their
   // guards'.
   DenseMap<Symbol *, Symbol *> copies;
-  forEachAddressSignificant(ctx, file,
-                            [&](Symbol *s) { significant.insert(s); });
   ArrayRef<Symbol *> symbols = file->getSymbols();
   for (size_t i = 0, e = symbols.size(); i != e; ++i) {
     auto *d = dyn_cast_or_null<DefinedRegular>(symbols[i]);
@@ -2301,9 +2288,24 @@ void SymbolTable::addForeignEntities(ObjFile *file) {
     if (!c || ref.isUndefined() || !ref.isExternal() ||
         c->selection == IMAGE_COMDAT_SELECT_NODUPLICATES)
       continue;
+    bool hidden =
+        d->file == file && (ctx.driver.isLocalByVersionScript(d->getName()) ||
+                            ctx.driver.isExcludedLib(file));
+    // A thread-local variable has no address that another image could take,
+    // and the object reaches its image's instance, which the image therefore
+    // keeps. Another image shares it by the record that an object for Windows
+    // Itanium or NT-POSIX states for it, in either order.
+    if (c->getSectionName().starts_with(".tls")) {
+      d->visibility = std::max<unsigned>(
+          d->visibility, hidden ? LinkFactHidden : LinkFactProtected);
+      if (TlsRecordChunk *r =
+              tlsRecords.empty() ? nullptr : tlsRecords.lookup(d))
+        r->sym->visibility = d->visibility;
+      continue;
+    }
     uint32_t chars = c->header->Characteristics;
     if (chars & IMAGE_SCN_CNT_CODE) {
-      if (!significant.count(d))
+      if (taken && !taken->count(d))
         continue;
       vagueEntities[d].function = true;
     } else {
@@ -2319,9 +2321,6 @@ void SymbolTable::addForeignEntities(ObjFile *file) {
       if (guard)
         copies[guard] = d;
     }
-    bool hidden =
-        d->file == file && (ctx.driver.isLocalByVersionScript(d->getName()) ||
-                            ctx.driver.isExcludedLib(file));
     d->visibility = std::max<unsigned>(d->visibility, hidden ? LinkFactHidden
                                                              : LinkFactDefault);
   }
@@ -2397,6 +2396,10 @@ void SymbolTable::preemptVagueEntities() {
       // calls reach what the program chose, through the default's import.
       if (entity.overridable && ctx.config.dll && !imp->file->thunkSym)
         imp->file->makeUnnamedThunk();
+    } else if (isa<Undefined>(sym)) {
+      // A weak external binds to the offer in place of its default, which is
+      // an entity of its own.
+      handleMinGWAutomaticImport(sym, sym->getName());
     } else if (d->isCOMDAT) {
       leaders[d->file].push_back(d);
     } else {
@@ -2610,7 +2613,7 @@ void SymbolTable::bindValueOnlySites() {
       auto *sc = const_cast<SectionChunk *>(f.chunk);
       ArrayRef<coff_relocation> rels = sc->getRelocs();
       DefinedLocalImport *li =
-          f.fact == SiteFactValueOnly || f.fact == SiteFactValueOnlySite
+          f.fact == SiteFactValueOnly || f.fact == SiteFactValueOnlyAccess
               ? valueCopies.lookup(sc->getRelocTarget(rels[f.reloc]))
               : nullptr;
       if (!li)
@@ -2635,7 +2638,7 @@ void SymbolTable::bindValueOnlySites() {
       // names: it must not take a register to hold what a load of the other
       // pointer left there.
       DefinedLocalImport *to = li;
-      if (f.fact == SiteFactValueOnlySite && f.value) {
+      if (f.fact == SiteFactValueOnlyAccess) {
         DefinedLocalImport *&apart = alone[li];
         if (!apart) {
           apart = make<DefinedLocalImport>(ctx, li->getName(), li->getTarget());
@@ -2733,6 +2736,49 @@ SymbolTable::getImageEntity(Symbol *sym, DefinedRegular *d,
   return e;
 }
 
+bool SymbolTable::forwardExport(Export &e, Symbol &sym,
+                                DefinedImportData *owner, StringRef what,
+                                bool own) {
+  // The loader takes what follows a forwarder's last dot as the name, or as
+  // the ordinal after a number sign.
+  StringRef name = own ? owner->getExternalName() : e.name;
+  if (name.contains('.')) {
+    Err(ctx) << owner->file << ": cannot forward the " << what << " of "
+             << toString(ctx, sym) << ", which " << owner->getDLLName()
+             << " exports as " << name << ", a name with a dot";
+    return false;
+  }
+  if (name.empty())
+    name = saver().save("#" + Twine(owner->getOrdinal()));
+  e.forwardTo = saver().save(owner->getDLLName() + "." + name);
+  if (own) {
+    e.owner = owner->file;
+    e.data = owner->file->hdr->getType() != IMPORT_CODE;
+  }
+  return true;
+}
+
+void SymbolTable::forwardImportedExports() {
+  DenseSet<Symbol *> forwarded;
+  for (Export &e : exports) {
+    auto *u = dyn_cast_or_null<Undefined>(e.sym);
+    auto *thunk = u && u->forkReferenced
+                      ? dyn_cast_or_null<DefinedImportThunk>(u->getWeakAlias())
+                      : nullptr;
+    if (thunk && e.forwardTo.empty() &&
+        forwardExport(e, *u, thunk->wrappedSym, "export")) {
+      // An importer names the export, not the alternate that /export found.
+      forwarded.insert(u);
+      e.sym = nullptr;
+      e.symbolName = "";
+    }
+  }
+  // The export roots nothing: an import that only it named is not imported.
+  if (!forwarded.empty())
+    llvm::erase_if(ctx.config.gcroot,
+                   [&](Symbol *s) { return forwarded.contains(s); });
+}
+
 void SymbolTable::addOffers() {
   DenseMap<StringRef, size_t> exported;
   for (size_t i = 0, e = exports.size(); i != e; ++i)
@@ -2750,24 +2796,11 @@ void SymbolTable::addOffers() {
       return;
     InputFile *file;
     if (DefinedImportData *owner = getOfferOwner(key->getName())) {
-      // The loader takes what follows a forwarder's last dot as the name, or
-      // as the ordinal after a number sign.
       // An importer imports the entity's own names from the owner, and the
       // initialization function from this DLL, which forwards it.
-      StringRef name = sym == key ? owner->getExternalName() : e.name;
       file = owner->file;
-      if (sym == key)
-        e.owner = owner->file;
-      if (name.contains('.')) {
-        Err(ctx) << file << ": cannot forward the offer of "
-                 << toString(ctx, *sym) << ", which " << owner->getDLLName()
-                 << " exports as " << name << ", a name with a dot";
+      if (!forwardExport(e, *sym, owner, "offer", sym == key))
         return;
-      }
-      if (name.empty())
-        name = saver().save("#" + Twine(owner->getOrdinal()));
-      e.forwardTo = saver().save(owner->getDLLName() + "." + name);
-      e.data = sym == key && owner->file->hdr->getType() != IMPORT_CODE;
       // The image's own export of the name would be of a second instance.
       if (it != exported.end()) {
         exports[it->second].forwardTo = e.forwardTo;
@@ -2784,7 +2817,7 @@ void SymbolTable::addOffers() {
       file = d->file;
       e.sym = cast<Defined>(sym);
       e.data =
-          !(d->getChunk()->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE);
+          !(d->getChunk()->getOutputCharacteristics() & IMAGE_SCN_MEM_EXECUTE);
     }
     if (isEC() || ctx.hybridSymtab)
       return reportHybridEntity(ctx, file, sym);

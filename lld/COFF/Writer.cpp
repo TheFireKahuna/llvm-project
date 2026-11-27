@@ -2233,12 +2233,11 @@ void Writer::createMiscChunks() {
         sealedSec->insertChunkAtStart(make<EmptyChunk>(TP_PLACE_IN_SEALED));
     }
     llvm::erase_if(records, [](TlsRecordChunk *r) { return !r->named; });
-    // A record of the pe model holds the address of the index that the loader
-    // gives the image, and one of the ntposix model the image's place word.
-    if (!records.empty() && !symtab.placeWord &&
-        !isa_and_nonnull<Defined>(symtab.tlsIndex))
+    // A record holds the address of the image's place word, which only an
+    // image of the owned model has.
+    if (!records.empty() && !symtab.placeWord)
       Err(ctx) << "thread-local record " << toString(ctx, *records[0]->sym)
-               << " needs _tls_index, which the image does not define";
+               << " is of an image whose objects state no thread-local model";
   });
 
   // The loader reads an image's TLS directory only on the path that binds

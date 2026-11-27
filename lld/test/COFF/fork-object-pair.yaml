@@ -112,6 +112,10 @@ sections:
     Characteristics: [ IMAGE_SCN_LNK_INFO ]
     Alignment:       1
     SectionData:     4C4C524301000100
+  - Name:            .llvm_addrsig
+    Characteristics: [ IMAGE_SCN_LNK_REMOVE ]
+    Alignment:       1
+    SectionData:     ''
 symbols:
   - { Name: '@comp.id', Value: '[[COMPID=1280049152]]', SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }
   - { Name: abs, Value: 1, SectionNumber: -1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC }

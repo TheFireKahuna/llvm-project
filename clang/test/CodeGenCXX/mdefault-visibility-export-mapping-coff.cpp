@@ -2,7 +2,7 @@
 // DEFINE: %{explicit} = -mdefault-visibility-export-mapping=explicit
 // DEFINE: %{all} = -mdefault-visibility-export-mapping=all
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM,RECORD "-DE=dllexport " -DA= "-DI=dllimport " -DL=
-// RUN: %{cc} -triple aarch64-pc-windows-ntposix %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM,RECORD "-DE=dllexport " -DA= "-DI=dllimport " -DL=
+// RUN: %{cc} -triple aarch64-pc-windows-ntposix %{explicit} | FileCheck %s --check-prefixes=CHECK,ITANIUM,TLS "-DE=dllexport " -DA= "-DI=dllimport " -DL=
 // RUN: %{cc} -triple x86_64-w64-mingw32 %{explicit} | FileCheck %s --check-prefixes=CHECK,TLS "-DE=dllexport " -DA= "-DI=dllimport " "-DL=dso_local "
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium %{all} | FileCheck %s --check-prefixes=CHECK,ITANIUM,RECORD "-DE=dllexport " "-DA=dllexport " "-DI=dllimport " -DL=
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium | FileCheck %s --check-prefixes=CHECK,ITANIUM,TLS -DE= -DA= -DI= -DL=

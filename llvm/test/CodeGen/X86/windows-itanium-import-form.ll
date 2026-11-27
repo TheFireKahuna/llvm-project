@@ -202,12 +202,13 @@ define void @addresses() {
   ret void
 }
 
-; A thread-local variable is never imported.
+; A thread-local variable is never imported: code reaches it through the
+; record of it that its image has.
 define i32 @tls_read() {
 ; X64-LABEL: tls_read:
-; X64:            movl tls@SECREL32(%rax), %eax
+; X64:            movq __imp_tls$tls@FUSED(%rip), %rax
 ; A64-LABEL: tls_read:
-; A64:            ldr w0, [x8, :secrel_lo12:tls]
+; A64:            ldr x8, [x8, :fused_lo12:__imp_tls$tls]
   %v = load i32, ptr @tls
   ret i32 %v
 }

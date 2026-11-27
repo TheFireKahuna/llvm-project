@@ -323,6 +323,13 @@ public:
 
   bool shouldAssumeDSOLocal(const GlobalValue *GV) const;
 
+  /// Returns the thread-local variable whose record reaches \p GV, and the
+  /// offset of the record's word that holds GV's offset: a guard that the
+  /// variable of its comdat states is reached through that variable's record,
+  /// whose last word it is, and any other variable through its own.
+  static std::pair<const GlobalValue *, unsigned>
+  getThreadLocalRecord(const GlobalValue *GV);
+
   /// Returns true if this target uses emulated TLS.
   bool useEmulatedTLS() const;
 

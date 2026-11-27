@@ -1,7 +1,7 @@
 // On Windows Itanium and NT-POSIX clang states of a variable with vague
 // linkage GCC's unique binding under -fgnu-unique, how it is initialized where
 // that runs code, and that it is a type_info object. It, each of its names and
-// its guard are not DSO local unless thread-local, hidden or dllexport.
+// its guard are not DSO local unless hidden or dllexport.
 
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -std=c++17 \
 // RUN:   -fgnu-unique -emit-llvm -o - %s | FileCheck %s --check-prefixes=CHECK,UNIQUE

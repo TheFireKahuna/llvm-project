@@ -132,3 +132,58 @@ TEST(CaptureTracking, MultipleUsesInSameInstruction) {
   EXPECT_EQ(ICmp, CT.Captures[6]->getUser());
   EXPECT_EQ(1u, CT.Captures[6]->getOperandNo());
 }
+
+TEST(CaptureTracking, GlobalAddressMayBeCapturedIn) {
+  StringRef Assembly = R"(
+    @g = constant [4 x i32] zeroinitializer
+    @alias = alias [4 x i32], ptr @g
+    @holder = constant ptr @g
+
+    declare void @lent(ptr captures(none))
+    declare void @kept(ptr)
+
+    define i32 @reads(i64 %i) {
+      call void @lent(ptr @g)
+      %p = getelementptr i32, ptr @g, i64 %i
+      %inside = icmp ult ptr %p, getelementptr (i32, ptr @g, i64 4)
+      %held = load ptr, ptr @holder
+      %v = load atomic i32, ptr %p seq_cst, align 4
+      ret i32 %v
+    }
+
+    define void @keeps() {
+      call void @kept(ptr getelementptr (i32, ptr @g, i64 1))
+      ret void
+    }
+
+    define i1 @compares(ptr %p) {
+      %c = icmp eq ptr %p, @g
+      ret i1 %c
+    }
+
+    define i1 @aliases() {
+      %c = icmp eq ptr @alias, @g
+      ret i1 %c
+    }
+
+    define i64 @converts() {
+      ret i64 ptrtoint (ptr @g to i64)
+    }
+
+    define i32 @observes() {
+      %v = load volatile i32, ptr @g
+      ret i32 %v
+    }
+  )";
+
+  LLVMContext Context;
+  SMDiagnostic Error;
+  auto M = parseAssemblyString(Assembly, Error, Context);
+  ASSERT_TRUE(M) << "Bad assembly?";
+
+  const GlobalValue *G = M->getNamedValue("g");
+  EXPECT_FALSE(globalAddressMayBeCapturedIn(G, *M->getFunction("reads")));
+  for (const char *Name :
+       {"keeps", "compares", "aliases", "converts", "observes"})
+    EXPECT_TRUE(globalAddressMayBeCapturedIn(G, *M->getFunction(Name))) << Name;
+}

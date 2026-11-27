@@ -100,8 +100,10 @@ bool ICF::isEligible(SectionChunk *c) {
   if (!c->isCOMDAT() || !c->live || writable || c->keepDistinct)
     return false;
 
-  // Under regular (not safe) ICF, all code sections are eligible.
-  if ((ctx.config.doICF == ICFLevel::All) &&
+  // Under regular (not safe) ICF, all code sections are eligible, but in a
+  // link for Windows Itanium or NT-POSIX, where a function whose address is
+  // significant keeps its own.
+  if (ctx.config.doICF == ICFLevel::All && !ctx.hasForkObject &&
       c->getOutputCharacteristics() & llvm::COFF::IMAGE_SCN_MEM_EXECUTE)
     return true;
 

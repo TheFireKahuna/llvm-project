@@ -75,7 +75,7 @@
 ; MEMBER: error: a.obj: guard variable for iv is provided by g.dll, which does not provide the vague entity whose COMDAT group defines it; give both the visibility they have in that DLL
 
 ;; Code compiled to reach the variable locally cannot follow it to the DLL.
-; DIRECT: error: direct.obj: iv is provided by a.dll, but is referenced as if it were local; recompile direct.obj, or give iv hidden visibility
+; DIRECT: error: direct.obj: iv is provided by a.dll, but is referenced as if it were local
 
 ;; An offer an ARM64EC image would take is an error.
 ; RUN: llc -mtriple=x86_64-windows-itanium -filetype=obj a.ll -o a.obj

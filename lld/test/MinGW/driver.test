@@ -380,6 +380,15 @@ VERSION_SCRIPT: -version-script:a.map -version-script:b.map
 RUN: ld.lld -### -m i386pep foo.o --exclude-libs ALL -exclude-libs=liba.a,libb.a 2>&1 | FileCheck -check-prefix EXCLUDE_LIBS %s
 EXCLUDE_LIBS: -exclude-libs:ALL -exclude-libs:liba.a,libb.a
 
+RUN: ld.lld -### -m i386pep foo.o --ignore-offers a.dll -ignore-offers=b.dll 2>&1 | FileCheck -check-prefix IGNORE_OFFERS %s
+IGNORE_OFFERS: -ignore-offers:a.dll -ignore-offers:b.dll
+
+RUN: ld.lld -### -m i386pep foo.o --ignore-function-address-equality -ignore-function-address-equality=a.o 2>&1 | FileCheck -check-prefix IGNORE_EQUALITY %s
+IGNORE_EQUALITY: -ignore-function-address-equality -ignore-function-address-equality:a.o
+
+RUN: ld.lld -### -m i386pep foo.o -Bsymbolic --Bsymbolic-functions 2>&1 | FileCheck -check-prefix BSYMBOLIC %s
+BSYMBOLIC: -Bsymbolic-functions
+
 RUN: ld.lld -### -m i386pep foo.o 2>&1 | FileCheck -check-prefix DEMANGLE %s
 RUN: ld.lld -### -m i386pep foo.o -demangle 2>&1 | FileCheck -check-prefix DEMANGLE %s
 RUN: ld.lld -### -m i386pep foo.o --demangle 2>&1 | FileCheck -check-prefix DEMANGLE %s

@@ -1,0 +1,295 @@
+# REQUIRES: x86, aarch64
+
+## Where x's record is in the image, the link gives each site the word it reads
+## and drops dead loads and the record, so the code is a local variable's; an
+## importer's stays as compiled.
+
+# RUN: rm -rf %t && split-file %s %t && cd %t
+
+# DEFINE: %{t} = aarch64
+# DEFINE: %{as} = llvm-mc -triple=%{t}-windows-itanium -filetype=obj
+# DEFINE: %{exe} = lld-link -entry:read -subsystem:console -opt:noref
+# DEFINE: %{dump} = llvm-objdump -d --no-show-raw-insn --no-leading-addr
+# DEFINE: %{run} = llc -mtriple=%{t}-windows-itanium -function-sections \
+# DEFINE:     -filetype=obj use.ll -o use.obj && \
+# DEFINE:   %{as} def.s -o def.obj && %{as} %S/Inputs/tls-support.s -o sup.obj && \
+# DEFINE:   lld-link -dll -noentry def.obj sup.obj -export:x$tls,data \
+# DEFINE:     -export:_ZTH1x -out:def.dll -implib:def.lib && \
+# DEFINE:   %{exe} use.obj def.lib -out:import.exe && \
+# DEFINE:   %{dump} import.exe | FileCheck %s --check-prefix=IMPORT-%{t} && \
+# DEFINE:   %{exe} use.obj def.obj sup.obj -out:local.exe && \
+# DEFINE:   %{dump} local.exe | FileCheck %s --check-prefix=LOCAL-%{t} && \
+# DEFINE:   lld-link -entry:read -subsystem:console use.obj def.obj sup.obj \
+# DEFINE:     -out:read.exe && \
+# DEFINE:   llvm-readobj -x .rdata read.exe | FileCheck %s --check-prefix=NONE
+
+# RUN: %{run}
+# REDEFINE: %{t} = x86_64
+# RUN: %{run}
+
+## The importer still reads the record's words.
+# IMPORT-x86_64:      <.text>:
+# IMPORT-x86_64-NEXT: movq {{.*}}(%rip), %rax
+# IMPORT-x86_64-NEXT: movq (%rax), %rcx
+# IMPORT-x86_64:      movl 0x8(%rax), %eax
+# IMPORT-aarch64:      <.text>:
+# IMPORT-aarch64-NEXT: ldr x10, [x18, #0x58]
+# IMPORT-aarch64-NEXT: ldr x8, 0x
+# IMPORT-aarch64:      ldr x9, [x8]
+# IMPORT-aarch64-NEXT: ldr w8, [x8, #0x8]
+
+## _tls_index is at 0x140003000, x 0x14 into the groups, its guard 0x1c: a
+## read, a guarded read, an address (mov where an add takes the block), a store.
+# LOCAL-x86_64:      <.text>:
+# LOCAL-x86_64-NEXT: movl {{.*}}(%rip), %ecx # 0x140003000
+# LOCAL-x86_64-NEXT: movq %gs:0x58, %rdx
+# LOCAL-x86_64-NEXT: movq (%rdx,%rcx,8), %rcx
+# LOCAL-x86_64-NEXT: movl 0x14(%rcx), %eax
+# LOCAL-x86_64-NEXT: retq
+# LOCAL-x86_64:      movl {{.*}}(%rip), %eax # 0x140003000
+# LOCAL-x86_64-NEXT: movq %gs:0x58, %rdx
+# LOCAL-x86_64-NEXT: movq (%rdx,%rax,8), %rax
+# LOCAL-x86_64-NEXT: cmpb $0x0, 0x1c(%rax)
+# LOCAL-x86_64-NEXT: je
+# LOCAL-x86_64-NEXT: movl 0x14(%rax), %eax
+# LOCAL-x86_64:      movl {{.*}}(%rip), %ecx # 0x140003000
+# LOCAL-x86_64-NEXT: movq %gs:0x58, %rdx
+# LOCAL-x86_64-NEXT: movl $0x14, %eax
+# LOCAL-x86_64-NEXT: addq (%rdx,%rcx,8), %rax
+# LOCAL-x86_64-NEXT: retq
+# LOCAL-x86_64:      movq (%r8,%rdx,8), %rdx
+# LOCAL-x86_64-NEXT: leaq 0x14(%rdx), %r8
+# LOCAL-x86_64-NEXT: movq %r8, (%rcx)
+# LOCAL-x86_64-NEXT: movl $0x7, 0x18(%rdx)
+## Where the access after the guard's test loads the offset, the code is the
+## same: the cold part's load of the record's address, which the access after
+## the join reads, goes with the function's.
+# LOCAL-x86_64:      movq (%rdx,%rcx,8), %rcx
+# LOCAL-x86_64-NEXT: cmpb $0x0, 0x1c(%rcx)
+# LOCAL-x86_64-NEXT: je
+# LOCAL-x86_64-NEXT: movl 0x14(%rcx), %eax
+## The block calling the initializer keeps the thread's block across the call;
+## the access after it reads at the offset directly.
+# LOCAL-x86_64:      callq
+# LOCAL-x86_64-NEXT: movq 0x20(%rsp), %rax
+# LOCAL-x86_64-NEXT: movl 0x14(%rax), %eax
+# LOCAL-x86_64:      callq
+# LOCAL-x86_64-NEXT: movq 0x20(%rsp), %rcx
+# LOCAL-x86_64-NEXT: addq $0x28, %rsp
+# LOCAL-x86_64-NEXT: jmp
+
+## On ARM64 the index's address is an adrp and each offset an immediate; where
+## the guard's test keeps offsets in registers across the call, the record stays.
+# LOCAL-aarch64:      <.text>:
+# LOCAL-aarch64-NEXT: ldr x10, [x18, #0x58]
+# LOCAL-aarch64-NEXT: adrp x9, 0x140003000
+# LOCAL-aarch64-NEXT: ldr w9, [x9]
+# LOCAL-aarch64-NEXT: ldr x9, [x10, x9, lsl #3]
+# LOCAL-aarch64-NEXT: ldr w0, [x9, #0x14]
+# LOCAL-aarch64-NEXT: ret
+# LOCAL-aarch64:      ldr x10, [x18, #0x58]
+# LOCAL-aarch64-NEXT: adrp x9, 0x140002000
+# LOCAL-aarch64-NEXT: adrp x8, 0x140003000
+# LOCAL-aarch64-NEXT: ldr w8, [x8]
+# LOCAL-aarch64-NEXT: ldr x8, [x10, x8, lsl #3]
+# LOCAL-aarch64-NEXT: ldp w9, w10, [x9, #0x30]
+# LOCAL-aarch64:      ldr x9, [x10, x9, lsl #3]
+# LOCAL-aarch64-NEXT: add x0, x9, #0x14
+# LOCAL-aarch64-NEXT: ret
+# LOCAL-aarch64:      ldr x9, [x10, x9, lsl #3]
+# LOCAL-aarch64-NEXT: mov w10, #0x7
+# LOCAL-aarch64-NEXT: add x8, x9, #0x14
+## Where each offset has its own load, the test and the access take immediates.
+# LOCAL-aarch64:      ldr x10, [x18, #0x58]
+# LOCAL-aarch64-NEXT: adrp x9, 0x140003000
+# LOCAL-aarch64-NEXT: ldr w9, [x9]
+# LOCAL-aarch64-NEXT: ldr x9, [x10, x9, lsl #3]
+# LOCAL-aarch64-NEXT: ldrb w10, [x9, #0x1c]
+# LOCAL-aarch64-NEXT: cbz w10,
+# LOCAL-aarch64-NEXT: ldr w0, [x9, #0x14]
+
+## An image whose code no longer names the record holds none.
+# NONE-NOT: 14000000 1c000000
+
+## A section that cannot resize (an 8-bit distance across growing code) goes
+## through the record, which the image holds: an lea, then its words as compiled.
+# RUN: %{as} keep.s -o keep.obj
+# RUN: lld-link -entry:keep -subsystem:console keep.obj def.obj sup.obj \
+# RUN:   -out:keep.exe
+# RUN: %{dump} keep.exe | FileCheck %s --check-prefix=KEEP
+# RUN: llvm-readobj -x .rdata keep.exe | FileCheck %s --check-prefix=RECORD
+# KEEP:      leaq {{.*}}(%rip), %rax # 0x140002030
+# KEEP-NEXT: movq (%rax), %rcx
+# KEEP-NEXT: movl (%rcx), %ecx
+# KEEP:      movl 0x8(%rax), %eax
+# KEEP-NEXT: movl (%rcx,%rax), %eax
+# RECORD:    0x140002030 00300040 01000000 14000000 1c000000
+
+## An index with no displacement form (written {disp32}) stays: its word's load
+## gives the register the offset, and the record's address load stays.
+# RUN: %{as} stay.s -o stay.obj
+# RUN: lld-link -entry:stay -subsystem:console stay.obj def.obj sup.obj \
+# RUN:   -out:stay.exe
+# RUN: %{dump} stay.exe | FileCheck %s --check-prefix=STAY
+# STAY:      leaq {{.*}}(%rip), %rax
+# STAY-NEXT: movl $0x14, %eax
+# STAY-NEXT: movl (%rcx,%rax), %eax
+
+#--- use.ll
+@"x$tls" = external dllimport local_unnamed_addr constant { ptr, i32, i32 }
+
+define i32 @read() nounwind {
+  %p = load ptr, ptr @"x$tls", align 8, !invariant.load !0, !dereferenceable !1, !align !1, !noundef !0
+  %i = load i32, ptr %p, align 4, !invariant.load !0
+  %a = tail call ptr @llvm.thread.pointer.p0()
+  %ix = zext i32 %i to i64
+  %s = getelementptr inbounds ptr, ptr %a, i64 %ix
+  %b = load ptr, ptr %s, align 8
+  %o = load i32, ptr getelementptr inbounds nuw (i8, ptr @"x$tls", i64 8), align 8, !invariant.load !0
+  %ox = zext i32 %o to i64
+  %v = getelementptr inbounds i8, ptr %b, i64 %ox
+  %r = load i32, ptr %v, align 4
+  ret i32 %r
+}
+
+define i32 @dynamic() nounwind {
+  %p = load ptr, ptr @"x$tls", align 8, !invariant.load !0, !dereferenceable !1, !align !1, !noundef !0
+  %i = load i32, ptr %p, align 4, !invariant.load !0
+  %a = tail call ptr @llvm.thread.pointer.p0()
+  %ix = zext i32 %i to i64
+  %s = getelementptr inbounds ptr, ptr %a, i64 %ix
+  %b = load ptr, ptr %s, align 8
+  %o = load i32, ptr getelementptr inbounds nuw (i8, ptr @"x$tls", i64 8), align 8, !invariant.load !0
+  %go = load i32, ptr getelementptr inbounds nuw (i8, ptr @"x$tls", i64 12), align 4, !invariant.load !0
+  %gx = zext i32 %go to i64
+  %g = getelementptr inbounds i8, ptr %b, i64 %gx
+  %byte = load i8, ptr %g, align 1
+  %unset = icmp eq i8 %byte, 0
+  br i1 %unset, label %init, label %done, !prof !2
+
+init:
+  tail call void @_ZTH1x()
+  br label %done
+
+done:
+  %ox = zext i32 %o to i64
+  %v = getelementptr inbounds i8, ptr %b, i64 %ox
+  %r = load i32, ptr %v, align 4
+  ret i32 %r
+}
+
+define ptr @address() nounwind {
+  %p = load ptr, ptr @"x$tls", align 8, !invariant.load !0, !dereferenceable !1, !align !1, !noundef !0
+  %i = load i32, ptr %p, align 4, !invariant.load !0
+  %a = tail call ptr @llvm.thread.pointer.p0()
+  %ix = zext i32 %i to i64
+  %s = getelementptr inbounds ptr, ptr %a, i64 %ix
+  %b = load ptr, ptr %s, align 8
+  %o = load i32, ptr getelementptr inbounds nuw (i8, ptr @"x$tls", i64 8), align 8, !invariant.load !0
+  %ox = zext i32 %o to i64
+  %v = getelementptr inbounds i8, ptr %b, i64 %ox
+  ret ptr %v
+}
+
+define void @both(ptr %out) nounwind {
+  %p = load ptr, ptr @"x$tls", align 8, !invariant.load !0, !dereferenceable !1, !align !1, !noundef !0
+  %i = load i32, ptr %p, align 4, !invariant.load !0
+  %a = tail call ptr @llvm.thread.pointer.p0()
+  %ix = zext i32 %i to i64
+  %s = getelementptr inbounds ptr, ptr %a, i64 %ix
+  %b = load ptr, ptr %s, align 8
+  %o = load i32, ptr getelementptr inbounds nuw (i8, ptr @"x$tls", i64 8), align 8, !invariant.load !0
+  %ox = zext i32 %o to i64
+  %v = getelementptr inbounds i8, ptr %b, i64 %ox
+  store ptr %v, ptr %out
+  %w = getelementptr inbounds i8, ptr %v, i64 4
+  store i32 7, ptr %w, align 4
+  store ptr %b, ptr %out
+  ret void
+}
+
+define i32 @sunk() nounwind {
+  %p = load ptr, ptr @"x$tls", align 8, !invariant.load !0, !dereferenceable !1, !align !1, !noundef !0
+  %i = load i32, ptr %p, align 4, !invariant.load !0
+  %a = tail call ptr @llvm.thread.pointer.p0()
+  %ix = zext i32 %i to i64
+  %s = getelementptr inbounds ptr, ptr %a, i64 %ix
+  %b = load ptr, ptr %s, align 8
+  %go = load i32, ptr getelementptr inbounds nuw (i8, ptr @"x$tls", i64 12), align 4, !invariant.load !0
+  %gx = zext i32 %go to i64
+  %g = getelementptr inbounds i8, ptr %b, i64 %gx
+  %byte = load i8, ptr %g, align 1
+  %unset = icmp eq i8 %byte, 0
+  br i1 %unset, label %init, label %done, !prof !2
+
+init:
+  tail call void @_ZTH1x()
+  br label %done
+
+done:
+  %o = load i32, ptr getelementptr inbounds nuw (i8, ptr @"x$tls", i64 8), align 8, !invariant.load !0
+  %ox = zext i32 %o to i64
+  %v = getelementptr inbounds i8, ptr %b, i64 %ox
+  %r = load i32, ptr %v, align 4
+  ret i32 %r
+}
+
+declare ptr @llvm.thread.pointer.p0()
+declare dllimport void @_ZTH1x()
+
+!0 = !{}
+!1 = !{i64 4}
+!2 = !{!"branch_weights", i32 1, i32 1048575}
+
+#--- def.s
+        .section .tls$,"dw"
+        .globl  x
+        .long   0
+        .long   0
+        .long   0
+x:      .long   5
+        .long   6
+guard:  .byte   0
+        .link_fact x, 7, guard
+        .text
+        .globl  _ZTH1x
+_ZTH1x: ret
+
+#--- keep.s
+        .text
+        .globl  keep
+keep:
+        movq    __imp_x$tls@FUSED(%rip), %rax
+        .reloc  ., IMAGE_REL_LLVM_FUSED_ACCESS, __imp_x$tls
+        .site_fact 9, 0
+        movq    (%rax), %rcx
+a:
+        .reloc  ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
+        .site_fact 8, 0
+        movl    (%rcx), %ecx
+        .fill   124, 1, 0x90
+b:
+        movq    %gs:88, %rdx
+        movq    (%rdx,%rcx,8), %rcx
+        .reloc  ., IMAGE_REL_LLVM_FUSED_ACCESS, __imp_x$tls
+        .site_fact 9, 0
+        movl    8(%rax), %eax
+        .reloc  ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
+        .site_fact 8, 8
+        movl    (%rcx,%rax), %eax
+        retq
+        .section .rdata,"dr"
+        .byte   b - a
+
+#--- stay.s
+        .text
+        .globl  stay
+stay:
+        movq    __imp_x$tls@FUSED(%rip), %rax
+        .reloc  ., IMAGE_REL_LLVM_FUSED_ACCESS, __imp_x$tls
+        .site_fact 9, 0
+        movl    8(%rax), %eax
+        .reloc  ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
+        .site_fact 8, 8
+        {disp32} movl (%rcx,%rax), %eax
+        retq

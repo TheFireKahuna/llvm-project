@@ -664,10 +664,6 @@ enum SiteFact : uint64_t {
   /// what the add wrote, so the linker may delete the add of a part that is
   /// zero and give its base to that instruction.
   SiteFactOnlyNextReads = 15,
-  /// At a FUSED_BLOCK: the number of the register that holds, at each fused
-  /// index of the function's code that reads the block the marked
-  /// instruction loads, the block of the chain that the marker names.
-  SiteFactBlock = 14,
 };
 enum : uint64_t { SiteFactViaFirst = 16 };
 /// At a FUSED_INDEX of an owned-model record chain, SiteFactIndex's word may
@@ -1264,8 +1260,10 @@ enum LinkFactTag : uint64_t {
   LinkFactInit = 2,
   /// The variable is a type_info object. Critical.
   LinkFactDescriptor = 3,
-  /// The symbol is a function that is a name of a vague entity and whose
-  /// address is significant in this unit. A unit states no other function.
+  /// The symbol is a function that is a name of a vague entity, whose
+  /// address is significant and which this unit takes other than as a
+  /// call's callee, or which is weak_odr and not exported, whose address a
+  /// unit that has no copy may take. A unit states no other function.
   /// Critical.
   LinkFactAddressSignificant = 5,
   /// The symbol is a thread-local variable that another image may reach,

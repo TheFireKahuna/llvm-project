@@ -2,7 +2,7 @@
 ; RUN: split-file %s %t
 ; DEFINE: %{arch} = x86_64
 ; DEFINE: %{link} = llc -mtriple=%{arch}-unknown-windows-itanium \
-; DEFINE:     -function-splitting=all -mfs-split-ehcode \
+; DEFINE:     -function-splitting=all -mfs-split-ehcode -addrsig \
 ; DEFINE:     -function-sections -filetype=obj %t/a.ll -o %t/a.obj && \
 ; DEFINE:   llvm-mc -triple=%{arch}-unknown-windows-itanium -filetype=obj \
 ; DEFINE:     %t/b.s -o %t/b.obj && \

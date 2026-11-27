@@ -1,15 +1,18 @@
 ; RUN: llc < %s -mtriple=x86_64-unknown-windows-itanium | \
-; RUN:   FileCheck %s --check-prefixes=CHECK,FUSED
+; RUN:   FileCheck %s --check-prefixes=CHECK,FUSED --implicit-check-not=site_fact
 ; RUN: llc < %s -mtriple=x86_64-pc-windows-ntposix | \
-; RUN:   FileCheck %s --check-prefixes=CHECK,FUSED
+; RUN:   FileCheck %s --check-prefixes=CHECK,FUSED --implicit-check-not=site_fact
 ; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | \
-; RUN:   FileCheck %s --check-prefixes=CHECK,PLAIN --implicit-check-not=FUSED
+; RUN:   FileCheck %s --check-prefixes=CHECK,PLAIN --implicit-check-not=FUSED \
+; RUN:     --implicit-check-not=site_fact
 ; RUN: llc < %s -mtriple=x86_64-unknown-windows-itanium -O0 | \
-; RUN:   FileCheck %s --check-prefix=O0 --implicit-check-not=FUSED
+; RUN:   FileCheck %s --check-prefix=O0 --implicit-check-not=FUSED \
+; RUN:     --implicit-check-not=site_fact
 ; RUN: %if aarch64-registered-target %{ llc < %s -mtriple=aarch64-unknown-windows-itanium | \
-; RUN:   FileCheck %s --check-prefixes=A64,A64F %}
+; RUN:   FileCheck %s --check-prefixes=A64,A64F --implicit-check-not=site_fact %}
 ; RUN: %if aarch64-registered-target %{ llc < %s -mtriple=aarch64-pc-windows-msvc | \
-; RUN:   FileCheck %s --check-prefixes=A64,A64P --implicit-check-not=IF_LOCAL %}
+; RUN:   FileCheck %s --check-prefixes=A64,A64P --implicit-check-not=IF_LOCAL \
+; RUN:     --implicit-check-not=site_fact %}
 
 ; On Windows Itanium and NT-POSIX an optimized function marks each load or
 ; store whose base, with no index, only the load of an import pointer reaches,
@@ -201,6 +204,187 @@ done:
   ret i32 %acc2
 }
 declare i32 @get(ptr)
+
+; A read in a block that the pointer's load does not precede counts as one
+; behind a call, though no call reaches it: only a thread-local value's reads
+; count where a call reaches them. Read in three such blocks on one path, across
+; asm that takes each register a call may change, the pointer is held in a
+; callee-saved register and loaded once.
+define i32 @held(i64 %i, i64 %j, i64 %k, i1 %c, i1 %d) {
+; CHECK-LABEL: held:
+; FUSED:         movq __imp_chosen(%rip), %r[[HELD:bx|si|di|bp|1[2-5]]]
+; FUSED-NOT:     __imp_chosen
+; FUSED-COUNT-4: (%r[[HELD]],%r{{[a-z0-9]+}},4)
+; FUSED-NOT:     __imp_chosen
+; FUSED:         retq
+entry:
+  %p = getelementptr [8 x i32], ptr @chosen, i64 0, i64 %i
+  %a = load i32, ptr %p
+  call void asm sideeffect "", "~{rax},~{rcx},~{rdx},~{r8},~{r9},~{r10},~{r11}"()
+  br i1 %c, label %one, label %done
+one:
+  %q = getelementptr [8 x i32], ptr @chosen, i64 0, i64 %j
+  %b = load i32, ptr %q
+  %ab = add i32 %a, %b
+  call void asm sideeffect "", "~{rax},~{rcx},~{rdx},~{r8},~{r9},~{r10},~{r11}"()
+  br i1 %d, label %two, label %done
+two:
+  %r = getelementptr [8 x i32], ptr @chosen, i64 0, i64 %k
+  %e = load i32, ptr %r
+  %abe = add i32 %ab, %e
+  call void asm sideeffect "", "~{rax},~{rcx},~{rdx},~{r8},~{r9},~{r10},~{r11}"()
+  br i1 %c, label %three, label %done
+three:
+  %t = getelementptr [8 x i32], ptr @chosen, i64 0, i64 %j
+  %f = load i32, ptr %t
+  %abef = add i32 %abe, %f
+  br label %done
+done:
+  %s = phi i32 [ %a, %entry ], [ %ab, %one ], [ %abe, %two ], [ %abef, %three ]
+  ret i32 %s
+}
+
+; A constant that every image defines alike reads the same in each, so the
+; object states where the image's own definition serves: 7 at a load of the
+; import pointer whose register only reads of memory read, as the base of
+; their address, at the adrp that gives it the pointer's page and at each
+; fused site of such a load. The address of
+; another image's definition is still the one that anything else gets: a
+; constant that may change, one that another definition may replace, and a
+; volatile read state nothing.
+$k = comdat any
+$tbl = comdat any
+$mut = comdat any
+@k = linkonce_odr constant i32 7, comdat
+@tbl = weak_odr constant [8 x i32] zeroinitializer, comdat
+@mut = linkonce_odr global i32 7, comdat
+@any = weak constant i32 7
+@inl = available_externally constant i32 7
+declare void @lent(ptr captures(none))
+
+define i32 @value() {
+; FUSED-LABEL: value:
+; FUSED:         .site_fact 7, 0
+; FUSED-NEXT:    movq __imp_k@FUSED(%rip), %rax
+; FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+; FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ACCESS, __imp_k
+; FUSED-NEXT:    .site_fact 7, 0
+; FUSED-NEXT:    movl (%rax), %eax
+; A64F-LABEL: value:
+; A64F:          .site_fact 7, 0
+; A64F-NEXT:     adrp x8, __imp_k
+; A64F-NEXT:     .site_fact 7, 0
+; A64F-NEXT:     ldr x8, [x8, :fused_lo12:__imp_k]
+; A64F-NEXT:   [[SITE:.Ltmp[0-9]+]]:
+; A64F-NEXT:     .reloc [[SITE]], IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL, __imp_k
+; A64F-NEXT:     .site_fact 7, 0
+; A64F-NEXT:     ldr w0, [x8]
+  %x = load i32, ptr @k
+  ret i32 %x
+}
+
+define i32 @element(i64 %i) {
+; FUSED-LABEL: element:
+; FUSED:         .site_fact 7, 0
+; FUSED-NEXT:    movq __imp_tbl(%rip), %rax
+; FUSED-NEXT:    movl (%rax,%r{{[a-z]+}},4), %eax
+; A64F-LABEL: element:
+; A64F:          .site_fact 7, 0
+; A64F-NEXT:     adrp x8, __imp_tbl
+; A64F-NEXT:     .site_fact 7, 0
+; A64F-NEXT:     ldr x8, [x8, :lo12:__imp_tbl]
+; A64F-NEXT:     ldr w0, [x8, x0, lsl #2]
+  %p = getelementptr [8 x i32], ptr @tbl, i64 0, i64 %i
+  %x = load i32, ptr %p
+  ret i32 %x
+}
+
+; An atomic read tells nothing of the address, so the function's loads of
+; the pointer are stated together.
+define i32 @unlike() {
+; FUSED-LABEL: unlike:
+; FUSED:         .site_fact 7, 0
+; FUSED-NEXT:    movq __imp_inl@FUSED(%rip), %r{{[a-z0-9]+}}
+; FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+; FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ACCESS, __imp_inl
+; FUSED-NEXT:    .site_fact 7, 0
+; A64F-LABEL: unlike:
+; A64F:          .site_fact 7, 0
+; A64F-NEXT:     adrp x11, __imp_inl
+; A64F-NEXT:     .site_fact 7, 0
+; A64F-NEXT:     ldr x11, [x11, :lo12:__imp_inl]
+  %a = load i32, ptr @mut
+  %b = load i32, ptr @any
+  %c = load volatile i32, ptr @k
+  %d = load atomic i32, ptr @inl seq_cst, align 4
+  %ab = add i32 %a, %b
+  %cd = add i32 %c, %d
+  %s = add i32 %ab, %cd
+  ret i32 %s
+}
+
+; Where a load stays for an address that the function gives away, an access
+; that only reads is bound alone, with 12.
+define i32 @taken() {
+; FUSED-LABEL: taken:
+; FUSED:         movq __imp_k(%rip), %r[[REG:cx|di]]
+; FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+; FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ACCESS, __imp_k
+; FUSED-NEXT:    .site_fact 12, 0
+; FUSED-NEXT:    movl (%r[[REG]]), %e{{[a-z]+}}
+; A64F-LABEL: taken:
+; A64F:          ldr x0, [x0, :lo12:__imp_k]
+; A64F-NEXT:   [[SITE:.Ltmp[0-9]+]]:
+; A64F-NEXT:     .reloc [[SITE]], IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL, __imp_k
+; A64F-NEXT:     .site_fact 12, 0
+; A64F-NEXT:     ldr w19, [x0]
+  %x = load i32, ptr @k
+  call void @taking(ptr @k)
+  ret i32 %x
+}
+
+; A function that only reads through the address, lends it to a callee that
+; keeps nothing of it, and compares addresses in the constant with one
+; another has every load of the pointer stated, whatever reads its register:
+; the addresses that the loads lead to still compare as they did.
+define i32 @walked() {
+; FUSED-LABEL: walked:
+; FUSED:         .site_fact 7, 0
+; FUSED-NEXT:    movq __imp_tbl(%rip), %r{{cx|di}}
+; FUSED-NEXT:    callq lent
+; FUSED-NEXT:    .site_fact 7, 0
+; FUSED-NEXT:    movq __imp_tbl(%rip), %r{{[a-z]+}}
+; A64F-LABEL: walked:
+; A64F:          .site_fact 7, 0
+; A64F-NEXT:     adrp x19, __imp_tbl
+; A64F-NEXT:     .site_fact 7, 0
+; A64F-NEXT:     ldr x19, [x19, :lo12:__imp_tbl]
+; A64F-NEXT:     mov x0, x19
+; A64F-NEXT:     bl lent
+entry:
+  call void @lent(ptr @tbl)
+  br label %loop
+loop:
+  %p = phi ptr [ @tbl, %entry ], [ %n, %loop ]
+  %s = phi i32 [ 0, %entry ], [ %s2, %loop ]
+  %v = load i32, ptr %p
+  %s2 = add i32 %s, %v
+  %n = getelementptr i32, ptr %p, i64 1
+  %e = icmp eq ptr %n, getelementptr ([8 x i32], ptr @tbl, i64 0, i64 8)
+  br i1 %e, label %done, label %loop
+done:
+  ret i32 %s2
+}
+
+; A comparison with any other address is of the one address.
+define i1 @compared(ptr %p) {
+; FUSED-LABEL: compared:
+; FUSED:         movq __imp_inl(%rip), %rax
+; A64F-LABEL: compared:
+; A64F:          ldr x8, [x8, :lo12:__imp_inl]
+  %e = icmp eq ptr %p, @inl
+  ret i1 %e
+}
 
 ; The allocator reads the uses of a chosen pointer before the frame is laid
 ; out, where the base of a store's address may be a stack slot: such a store

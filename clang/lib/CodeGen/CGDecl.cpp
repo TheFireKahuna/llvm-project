@@ -450,6 +450,14 @@ void CodeGenFunction::EmitStaticVarDecl(const VarDecl &D,
   var->setAlignment(alignment.getAsAlign());
   CGM.emitSubobjectNames(D, var);
 
+  // Another image reaches a thread-local variable that it shares through a
+  // record, for which the variable states its guard: with nothing to
+  // initialize in a thread, none.
+  if (var->isThreadLocal() && var->isWeakForLinker() &&
+      !var->hasHiddenVisibility() && !var->hasMetadata("tls_record") &&
+      CGM.hasThreadLocalRecords())
+    CGM.setThreadLocalRecordGuard(var, nullptr);
+
   if (D.hasAttr<AnnotateAttr>())
     CGM.AddGlobalAnnotations(&D, var);
 
