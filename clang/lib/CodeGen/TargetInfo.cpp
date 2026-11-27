@@ -102,14 +102,42 @@ bool TargetCodeGenInfo::isNoProtoCallVariadic(const CallArgList &args,
   return false;
 }
 
+// Windows and COFF objects name their libraries and mismatch records as
+// link.exe does.
+static bool usesLinkExeDirectives(const TargetInfo &Target) {
+  const llvm::Triple &T = Target.getTriple();
+  return T.isOSWindows() || T.isOSBinFormatCOFF();
+}
+
 void
 TargetCodeGenInfo::getDependentLibraryOption(llvm::StringRef Lib,
                                              llvm::SmallString<24> &Opt) const {
+  if (usesLinkExeDirectives(getABIInfo().getTarget())) {
+    // Add the .lib suffix unless the name ends in .lib or .a, and quote a name
+    // with a space, as MSVC does.
+    bool Quote = Lib.contains(' ');
+    Opt = "/DEFAULTLIB:";
+    if (Quote)
+      Opt += '"';
+    Opt += Lib;
+    if (!Lib.ends_with_insensitive(".lib") && !Lib.ends_with_insensitive(".a"))
+      Opt += ".lib";
+    if (Quote)
+      Opt += '"';
+    return;
+  }
   // This assumes the user is passing a library name like "rt" instead of a
   // filename like "librt.a/so", and that they don't care whether it's static or
   // dynamic.
   Opt = "-l";
   Opt += Lib;
+}
+
+void TargetCodeGenInfo::getDetectMismatchOption(
+    llvm::StringRef Name, llvm::StringRef Value,
+    llvm::SmallString<32> &Opt) const {
+  if (usesLinkExeDirectives(getABIInfo().getTarget()))
+    Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
 }
 
 unsigned TargetCodeGenInfo::getDeviceKernelCallingConv() const {

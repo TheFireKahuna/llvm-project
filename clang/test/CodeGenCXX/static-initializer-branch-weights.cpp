@@ -26,8 +26,7 @@ thread_local S thread_local_global;
 // CHECK-LABEL: define {{.*}}global_var_init
 // CHECK: load i8, ptr @_ZGV26thread_local_inline_global
 // CHECK: icmp eq i8 {{.*}}, 0
-// CHECK: br i1
-// CHECK-NOT: !prof
+// CHECK: br i1 {{.*}}, !prof ![[WEIGHTS_THREAD_LOCAL:[0-9]*]]
 // CHECK: call void @_ZN1SC1Ev(ptr {{[^,]*}} @thread_local_inline_global)
 thread_local inline S thread_local_inline_global;
 
@@ -46,8 +45,7 @@ struct A {
   // CHECK-LABEL: define {{.*}}global_var_init
   // CHECK: load i8, ptr @_ZGVN1A26thread_local_inline_memberE
   // CHECK: icmp eq i8 {{.*}}, 0
-  // CHECK: br i1
-  // CHECK-NOT: !prof
+  // CHECK: br i1 {{.*}}, !prof ![[WEIGHTS_THREAD_LOCAL]]
   // CHECK: call void @_ZN1SC1Ev(ptr {{[^,]*}} @_ZN1A26thread_local_inline_memberE)
   static thread_local inline S thread_local_inline_member;
 };
@@ -61,7 +59,7 @@ void f() {
 
   // CHECK: load i8, ptr @_ZGVZ1fvE19static_thread_local,
   // CHECK: icmp eq i8 {{.*}}, 0
-  // CHECK: br i1 {{.*}}, !prof ![[WEIGHTS_THREAD_LOCAL:[0-9]*]]
+  // CHECK: br i1 {{.*}}, !prof ![[WEIGHTS_THREAD_LOCAL]]
   static thread_local S static_thread_local;
 }
 
@@ -95,16 +93,14 @@ template <typename T> struct B {
   // CHECK-LABEL: define {{.*}}global_var_init
   // CHECK: load i8, ptr @_ZGVN1BIiE19thread_local_memberE
   // CHECK: icmp eq i8 {{.*}}, 0
-  // CHECK: br i1
-  // CHECK-NOT: !prof
+  // CHECK: br i1 {{.*}}, !prof ![[WEIGHTS_THREAD_LOCAL]]
   // CHECK: call void @_ZN1SC1Ev(ptr {{[^,]*}} @_ZN1BIiE19thread_local_memberE)
   static thread_local S thread_local_member;
 
   // CHECK-LABEL: define {{.*}}global_var_init
   // CHECK: load i8, ptr @_ZGVN1BIiE26thread_local_inline_memberE
   // CHECK: icmp eq i8 {{.*}}, 0
-  // CHECK: br i1
-  // CHECK-NOT: !prof
+  // CHECK: br i1 {{.*}}, !prof ![[WEIGHTS_THREAD_LOCAL]]
   // CHECK: call void @_ZN1SC1Ev(ptr {{[^,]*}} @_ZN1BIiE26thread_local_inline_memberE)
   static thread_local inline S thread_local_inline_member;
 };

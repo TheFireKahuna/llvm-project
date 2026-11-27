@@ -3933,10 +3933,7 @@ static void RenderTrivialAutoVarInitOptions(const Driver &D,
 
   if (Arg *A =
           Args.getLastArg(options::OPT_ftrivial_auto_var_init_stop_after)) {
-    if (!Args.hasArg(options::OPT_ftrivial_auto_var_init) ||
-        StringRef(
-            Args.getLastArg(options::OPT_ftrivial_auto_var_init)->getValue()) ==
-            "uninitialized")
+    if (TrivialAutoVarInit.empty() || TrivialAutoVarInit == "uninitialized")
       D.Diag(diag::err_drv_trivial_auto_var_init_stop_after_missing_dependency);
     A->claim();
     StringRef Val = A->getValue();
@@ -3947,10 +3944,7 @@ static void RenderTrivialAutoVarInitOptions(const Driver &D,
   }
 
   if (Arg *A = Args.getLastArg(options::OPT_ftrivial_auto_var_init_max_size)) {
-    if (!Args.hasArg(options::OPT_ftrivial_auto_var_init) ||
-        StringRef(
-            Args.getLastArg(options::OPT_ftrivial_auto_var_init)->getValue()) ==
-            "uninitialized")
+    if (TrivialAutoVarInit.empty() || TrivialAutoVarInit == "uninitialized")
       D.Diag(diag::err_drv_trivial_auto_var_init_max_size_missing_dependency);
     A->claim();
     StringRef Val = A->getValue();
@@ -6387,8 +6381,10 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   // Enable -mconstructor-aliases except on darwin, where we have to work around
   // a linker bug (see https://openradar.appspot.com/7198997), and CUDA device
-  // code, where aliases aren't supported.
-  if (!RawTriple.isOSDarwin() && !RawTriple.isNVPTX())
+  // code, where aliases aren't supported. -mno-constructor-aliases disables it.
+  if (!RawTriple.isOSDarwin() && !RawTriple.isNVPTX() &&
+      Args.hasFlag(options::OPT_mconstructor_aliases,
+                   options::OPT_mno_constructor_aliases, true))
     CmdArgs.push_back("-mconstructor-aliases");
 
   // Darwin's kernel doesn't support guard variables; just die if we
@@ -6863,8 +6859,7 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
                                   /*Joined=*/true);
       } else
         ImplyVCPPCVer = true;
-    }
-    else if (IsWindowsMSVC)
+    } else if (IsWindowsMSVC || Args.hasArg(options::OPT__SLASH_std))
       ImplyVCPPCXXVer = true;
 
     if (IsSYCL && types::isCXX(InputType) &&

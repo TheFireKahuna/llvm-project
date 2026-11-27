@@ -157,6 +157,14 @@ features cannot lower the translation-unit ABI level;
   accesses to these fields. `__attribute__((packed))` on the field or the
   enclosing record still reduces the alignment. (#GH208256)
 
+- On x86-64 Windows with a non-Microsoft C++ ABI, such as
+  `x86_64-windows-itanium`, a class is now passed and returned in registers
+  under the Itanium C++ ABI's rules, as on other Itanium targets, instead of
+  MSVC's. A small class with a trivial copy constructor and a non-trivial
+  destructor or move constructor is now passed and returned indirectly, and
+  one with a deleted copy constructor and a trivial move constructor in a
+  register. `-fclang-abi-compat=23` restores the previous behavior.
+
 ### AST Dumping Potentially Breaking Changes
 
 ### Clang Frontend Potentially Breaking Changes
@@ -891,6 +899,17 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
 #### Bug Fixes to C++ Support
 - Instantiate constexpr functions as needed before they are evaluated. (#GH73232) (#GH35052) (#GH100897)
 
+- The visibility attribute of a member template of a class template now
+  applies to the specializations of that member template in every
+  instantiation of the class template, as in GCC. It was ignored for member
+  variable templates and member class templates, and for member function
+  templates in an explicit instantiation with a visibility attribute of its
+  own. (#GH31462)
+
+- Fixed an implicitly declared builtin first named in a module unit's purview
+  being attached to the named module instead of the global module, which
+  rejected a redeclaration in a linkage-specification such as `extern "C"`.
+
 - Fixed lambdas with specifiers or attributes after the capture list being
   misparsed as function declarations in direct-initialization contexts under
   `-fms-extensions` or in HLSL mode.
@@ -1247,6 +1266,9 @@ documentation](CIR/index.md) for more information regarding ClangIR's status and
 - Enabled PAC and BTI by default for AArch64 Android targets.
 
 #### Windows Support
+
+- `clang-cl` now honors `/std:` for C++ on every target, such as MinGW and
+  Windows Itanium, not only on MSVC targets, as it already did for C.
 
 - Clang now accepts ``_except`` as an alias for ``__except`` in SEH handler
   position when ``-fms-compatibility`` is enabled, matching the existing

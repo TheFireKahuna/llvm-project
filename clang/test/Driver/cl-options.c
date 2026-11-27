@@ -629,6 +629,8 @@
 // STDCXX17: -std=c++17
 
 // RUN: %clang_cl -fmsc-version=1900 -TP -std:c++20 -### -- %s 2>&1 | FileCheck -check-prefix=STDCXX20 %s
+// RUN: %clang_cl --target=x86_64-w64-windows-gnu -TP -std:c++20 -### -- %s 2>&1 | FileCheck -check-prefix=STDCXX20 %s
+// RUN: %clang_cl --target=x86_64-unknown-windows-itanium -TP -std:c++20 -### -- %s 2>&1 | FileCheck -check-prefix=STDCXX20 %s
 // STDCXX20: -std=c++20
 
 // RUN: %clang_cl -fmsc-version=1900 -TP -std:c++23        -### -- %s 2>&1 | FileCheck -check-prefix=STDCXX23 %s

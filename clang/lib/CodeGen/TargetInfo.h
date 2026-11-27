@@ -329,7 +329,7 @@ public:
   /// this platform.
   virtual void getDetectMismatchOption(llvm::StringRef Name,
                                        llvm::StringRef Value,
-                                       llvm::SmallString<32> &Opt) const {}
+                                       llvm::SmallString<32> &Opt) const;
 
   /// Get LLVM calling convention for device kernels.
   virtual unsigned getDeviceKernelCallingConv() const;
@@ -493,8 +493,6 @@ public:
                                           llvm::AttrBuilder &FuncAttrs);
 
 protected:
-  static std::string qualifyWindowsLibrary(StringRef Lib);
-
   void addStackProbeTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                                      CodeGen::CodeGenModule &CGM) const;
 };
@@ -576,9 +574,6 @@ createM68kTargetCodeGenInfo(CodeGenModule &CGM);
 
 std::unique_ptr<TargetCodeGenInfo>
 createMIPSTargetCodeGenInfo(CodeGenModule &CGM, bool IsOS32);
-
-std::unique_ptr<TargetCodeGenInfo>
-createWindowsMIPSTargetCodeGenInfo(CodeGenModule &CGM, bool IsOS32);
 
 std::unique_ptr<TargetCodeGenInfo>
 createMSP430TargetCodeGenInfo(CodeGenModule &CGM);

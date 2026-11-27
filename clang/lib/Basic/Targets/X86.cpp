@@ -1908,4 +1908,8 @@ void MicrosoftX86_64TargetInfo::adjust(DiagnosticsEngine &Diags,
     LargeArrayMinWidth = 128;
     LargeArrayAlign = 128;
   }
+  // Under -fclang-abi-compat<=23, pass classes in registers by MSVC's rules
+  // whatever the C++ ABI, as before.
+  if (Opts.isCompatibleWith(LangOptions::ClangABI::Ver23))
+    UseMSVCCallingConvKind = true;
 }

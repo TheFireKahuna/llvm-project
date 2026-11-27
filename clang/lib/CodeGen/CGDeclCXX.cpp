@@ -412,11 +412,13 @@ void CodeGenFunction::EmitCXXGuardedInitBranch(llvm::Value *NeedsInit,
   static const uint64_t InitsPerLocalVar = 1024 * 1024;
 
   llvm::MDNode *Weights;
-  if (Kind == GuardKind::VariableGuard && !D->isLocalVarDecl()) {
+  if (Kind == GuardKind::VariableGuard && !D->isLocalVarDecl() &&
+      !D->getTLSKind()) {
     // For non-local variables, don't apply any weighting for now. Due to our
     // use of COMDATs, we expect there to be at most one initialization of the
     // variable per DSO, but we have no way to know how many DSOs will try to
-    // initialize the variable.
+    // initialize the variable. A thread-local one is initialized once per
+    // thread wherever it is defined.
     Weights = nullptr;
   } else {
     uint64_t NumInits;

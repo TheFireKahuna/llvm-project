@@ -3761,7 +3761,7 @@ int foobar() {
 // CHECK-TLS1-NEXT:  entry:
 // CHECK-TLS1-NEXT:    [[TMP0:%.*]] = load i8, ptr @_ZGVN2STI2S4E2stE, align 8
 // CHECK-TLS1-NEXT:    [[GUARD_UNINITIALIZED:%.*]] = icmp eq i8 [[TMP0]], 0
-// CHECK-TLS1-NEXT:    br i1 [[GUARD_UNINITIALIZED]], label [[INIT_CHECK:%.*]], label [[INIT_END:%.*]]
+// CHECK-TLS1-NEXT:    br i1 [[GUARD_UNINITIALIZED]], label [[INIT_CHECK:%.*]], label [[INIT_END:%.*]], !prof [[PROF2]]
 // CHECK-TLS1:       init.check:
 // CHECK-TLS1-NEXT:    store i8 1, ptr @_ZGVN2STI2S4E2stE, align 8
 // CHECK-TLS1-NEXT:    call void @_ZN2S4C1Ei(ptr noundef nonnull align 4 dereferenceable(8) @_ZN2STI2S4E2stE, i32 noundef 23)
@@ -4286,7 +4286,7 @@ int foobar() {
 // CHECK-TLS2-NEXT:  entry:
 // CHECK-TLS2-NEXT:    [[TMP0:%.*]] = load i8, ptr @_ZGVN2STI2S4E2stE, align 8
 // CHECK-TLS2-NEXT:    [[GUARD_UNINITIALIZED:%.*]] = icmp eq i8 [[TMP0]], 0
-// CHECK-TLS2-NEXT:    br i1 [[GUARD_UNINITIALIZED]], label [[INIT_CHECK:%.*]], label [[INIT_END:%.*]]
+// CHECK-TLS2-NEXT:    br i1 [[GUARD_UNINITIALIZED]], label [[INIT_CHECK:%.*]], label [[INIT_END:%.*]], !prof [[PROF2]]
 // CHECK-TLS2:       init.check:
 // CHECK-TLS2-NEXT:    store i8 1, ptr @_ZGVN2STI2S4E2stE, align 8
 // CHECK-TLS2-NEXT:    call void @_ZN2S4C1Ei(ptr noundef nonnull align 4 dereferenceable(8) @_ZN2STI2S4E2stE, i32 noundef 23)
@@ -4832,7 +4832,7 @@ int foobar() {
 // CHECK-TLS3-NEXT:  entry:
 // CHECK-TLS3-NEXT:    [[TMP0:%.*]] = load i8, ptr @_ZGVN2STI2S4E2stE, align 8, !dbg [[DBG292:![0-9]+]]
 // CHECK-TLS3-NEXT:    [[GUARD_UNINITIALIZED:%.*]] = icmp eq i8 [[TMP0]], 0, !dbg [[DBG292]]
-// CHECK-TLS3-NEXT:    br i1 [[GUARD_UNINITIALIZED]], label [[INIT_CHECK:%.*]], label [[INIT_END:%.*]], !dbg [[DBG292]]
+// CHECK-TLS3-NEXT:    br i1 [[GUARD_UNINITIALIZED]], label [[INIT_CHECK:%.*]], label [[INIT_END:%.*]], !dbg [[DBG292]], !prof [[PROF206]]
 // CHECK-TLS3:       init.check:
 // CHECK-TLS3-NEXT:    store i8 1, ptr @_ZGVN2STI2S4E2stE, align 8, !dbg [[DBG292]]
 // CHECK-TLS3-NEXT:    call void @_ZN2S4C1Ei(ptr noundef nonnull align 4 dereferenceable(8) @_ZN2STI2S4E2stE, i32 noundef 23), !dbg [[DBG293:![0-9]+]]
@@ -5384,7 +5384,7 @@ int foobar() {
 // CHECK-TLS4-NEXT:  entry:
 // CHECK-TLS4-NEXT:    [[TMP0:%.*]] = load i8, ptr @_ZGVN2STI2S4E2stE, align 8, !dbg [[DBG292:![0-9]+]]
 // CHECK-TLS4-NEXT:    [[GUARD_UNINITIALIZED:%.*]] = icmp eq i8 [[TMP0]], 0, !dbg [[DBG292]]
-// CHECK-TLS4-NEXT:    br i1 [[GUARD_UNINITIALIZED]], label [[INIT_CHECK:%.*]], label [[INIT_END:%.*]], !dbg [[DBG292]]
+// CHECK-TLS4-NEXT:    br i1 [[GUARD_UNINITIALIZED]], label [[INIT_CHECK:%.*]], label [[INIT_END:%.*]], !dbg [[DBG292]], !prof [[PROF206]]
 // CHECK-TLS4:       init.check:
 // CHECK-TLS4-NEXT:    store i8 1, ptr @_ZGVN2STI2S4E2stE, align 8, !dbg [[DBG292]]
 // CHECK-TLS4-NEXT:    call void @_ZN2S4C1Ei(ptr noundef nonnull align 4 dereferenceable(8) @_ZN2STI2S4E2stE, i32 noundef 23), !dbg [[DBG293:![0-9]+]]

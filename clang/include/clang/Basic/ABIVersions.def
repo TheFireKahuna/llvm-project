@@ -169,6 +169,9 @@ ABI_VER_MAJOR(22)
 ///     leaves part of a wider access unit unclassified.)
 ///   - On 32-bit x86, use the legacy `regparm` classification for floating-point
 ///     types other than `float` and `double`, complex types, and unions.
+///   - On x86_64 Windows with a non-Microsoft C++ ABI, such as Windows
+///     Itanium, use MSVC's rules for passing and returning classes in
+///     registers.
 ABI_VER_MAJOR(23)
 
 /// Conform to the underlying platform's C and C++ ABIs as closely as we can.

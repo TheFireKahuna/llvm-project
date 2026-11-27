@@ -1078,7 +1078,7 @@ void Sema::PopGlobalModuleFragment() {
   ModuleScopes.pop_back();
 }
 
-Module *Sema::PushImplicitGlobalModuleFragment(SourceLocation BeginLoc) {
+Module *Sema::getOrCreateImplicitGlobalModuleFragment(SourceLocation BeginLoc) {
   if (!TheImplicitGlobalModuleFragment) {
     ModuleMap &Map = PP.getHeaderSearchInfo().getModuleMap();
     TheImplicitGlobalModuleFragment =
@@ -1086,12 +1086,16 @@ Module *Sema::PushImplicitGlobalModuleFragment(SourceLocation BeginLoc) {
                                                             getCurrentModule());
   }
   assert(TheImplicitGlobalModuleFragment && "module creation should not fail");
+  return TheImplicitGlobalModuleFragment;
+}
+
+Module *Sema::PushImplicitGlobalModuleFragment(SourceLocation BeginLoc) {
+  Module *GlobalModule = getOrCreateImplicitGlobalModuleFragment(BeginLoc);
 
   // Enter the scope of the global module.
-  ModuleScopes.push_back({BeginLoc, TheImplicitGlobalModuleFragment,
-                          /*OuterVisibleModules=*/{}});
-  VisibleModules.setVisible(TheImplicitGlobalModuleFragment, BeginLoc);
-  return TheImplicitGlobalModuleFragment;
+  ModuleScopes.push_back({BeginLoc, GlobalModule, /*OuterVisibleModules=*/{}});
+  VisibleModules.setVisible(GlobalModule, BeginLoc);
+  return GlobalModule;
 }
 
 void Sema::PopImplicitGlobalModuleFragment() {

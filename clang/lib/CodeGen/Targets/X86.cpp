@@ -1790,19 +1790,6 @@ void X86_64TargetCodeGenInfo::checkFunctionCallABI(CodeGenModule &CGM,
   }
 }
 
-std::string TargetCodeGenInfo::qualifyWindowsLibrary(StringRef Lib) {
-  // If the argument does not end in .lib, automatically add the suffix.
-  // If the argument contains a space, enclose it in quotes.
-  // This matches the behavior of MSVC.
-  bool Quote = Lib.contains(' ');
-  std::string ArgStr = Quote ? "\"" : "";
-  ArgStr += Lib;
-  if (!Lib.ends_with_insensitive(".lib") && !Lib.ends_with_insensitive(".a"))
-    ArgStr += ".lib";
-  ArgStr += Quote ? "\"" : "";
-  return ArgStr;
-}
-
 namespace {
 class WinX86_32TargetCodeGenInfo : public X86_32TargetCodeGenInfo {
 public:
@@ -1814,18 +1801,6 @@ public:
 
   void setTargetAttributes(const Decl *D, llvm::GlobalValue *GV,
                            CodeGen::CodeGenModule &CGM) const override;
-
-  void getDependentLibraryOption(llvm::StringRef Lib,
-                                 llvm::SmallString<24> &Opt) const override {
-    Opt = "/DEFAULTLIB:";
-    Opt += qualifyWindowsLibrary(Lib);
-  }
-
-  void getDetectMismatchOption(llvm::StringRef Name,
-                               llvm::StringRef Value,
-                               llvm::SmallString<32> &Opt) const override {
-    Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
-  }
 };
 } // namespace
 
@@ -1862,18 +1837,6 @@ public:
     // 16 is %rip.
     AssignToArrayRange(CGF.Builder, Address, Eight8, 0, 16);
     return false;
-  }
-
-  void getDependentLibraryOption(llvm::StringRef Lib,
-                                 llvm::SmallString<24> &Opt) const override {
-    Opt = "/DEFAULTLIB:";
-    Opt += qualifyWindowsLibrary(Lib);
-  }
-
-  void getDetectMismatchOption(llvm::StringRef Name,
-                               llvm::StringRef Value,
-                               llvm::SmallString<32> &Opt) const override {
-    Opt = "/FAILIFMISMATCH:\"" + Name.str() + "=" + Value.str() + "\"";
   }
 };
 } // namespace
