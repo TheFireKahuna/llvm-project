@@ -758,7 +758,7 @@ bool InlineSpiller::reMaterializeFor(LiveInterval &VirtReg, MachineInstr &MI) {
   RM.OrigMI = DefMI;
   // Where a register DefMI reads is not available at MI, the instructions
   // that define it may be rematerialized first.
-  SmallVector<const MachineInstr *, 2> Chain;
+  SmallVector<std::pair<const MachineInstr *, Register>, 2> Chain;
   if (!Edit->canRematerializeAt(RM, UseIdx) &&
       !(TII.isReMaterializable(*DefMI) &&
         VirtRegAuxInfo::allUsesAvailableAt(
@@ -807,8 +807,8 @@ bool InlineSpiller::reMaterializeFor(LiveInterval &VirtReg, MachineInstr &MI) {
         MO.setIsKill();
       }
   };
-  for (const MachineInstr *Dep : Chain) {
-    Register DepReg = Edit->createFrom(Dep->getOperand(0).getReg());
+  for (const auto &[Dep, Reg] : Chain) {
+    Register DepReg = Edit->createFrom(Reg);
     MachineBasicBlock::iterator At = MI;
     TII.reMaterialize(*MI.getParent(), At, DepReg, 0, *Dep);
     MachineInstr &Clone = *std::prev(At);
@@ -816,7 +816,7 @@ bool InlineSpiller::reMaterializeFor(LiveInterval &VirtReg, MachineInstr &MI) {
     Clone.setDebugLoc(MI.getDebugLoc());
     ReadChainRegs(Clone);
     LIS.InsertMachineInstrInMaps(Clone);
-    ChainRegs[Dep->getOperand(0).getReg()] = DepReg;
+    ChainRegs[Reg] = DepReg;
     ++NumRemats;
     LLVM_DEBUG(dbgs() << "\tremat chain: " << Clone);
   }

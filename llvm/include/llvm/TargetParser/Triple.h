@@ -416,7 +416,8 @@ public:
 
     PAuthTest,
     MTIA,
-    LastEnvironmentType = MTIA
+    NTPOSIX,
+    LastEnvironmentType = NTPOSIX
   };
   enum ObjectFormatType {
     UnknownObjectFormat,
@@ -812,6 +813,20 @@ public:
     return isOSWindows() && getEnvironment() == Triple::Cygnus;
   }
 
+  /// Checks if the environment is NT-POSIX: a POSIX C library on the NT
+  /// system calls, with the Itanium C++ ABI and PE/COFF.
+  bool isWindowsNTPOSIXEnvironment() const {
+    return isOSWindows() && getEnvironment() == Triple::NTPOSIX;
+  }
+
+  /// Tests for the Itanium C++ ABI environments on Windows that link with
+  /// lld-link: Windows Itanium and NT-POSIX. The SCEI vendor's Windows Itanium
+  /// tests PlayStation's DLL handling and keeps that target's rules.
+  bool isWindowsItaniumOrNTPOSIXEnvironment() const {
+    return (isWindowsItaniumEnvironment() && getVendor() != Triple::SCEI) ||
+           isWindowsNTPOSIXEnvironment();
+  }
+
   bool isWindowsGNUEnvironment() const {
     return isOSWindows() && getEnvironment() == Triple::GNU;
   }
@@ -819,6 +834,13 @@ public:
   /// Tests for either Cygwin or MinGW OS
   bool isOSCygMing() const {
     return isWindowsCygwinEnvironment() || isWindowsGNUEnvironment();
+  }
+
+  /// Tests for the environments that pair the Itanium C++ ABI with MSVC's
+  /// COFF conventions, its COMDAT section names and its .CRT$ initializer
+  /// sections: Windows Itanium, any vendor's, and NT-POSIX.
+  bool isWindowsItaniumABIEnvironment() const {
+    return isWindowsItaniumEnvironment() || isWindowsNTPOSIXEnvironment();
   }
 
   /// Is this a "Windows" OS targeting a "MSVCRT.dll" environment.
@@ -1314,9 +1336,12 @@ public:
     return isAArch64() || (isAndroid() && isRISCV64()) || isOSFuchsia();
   }
 
-  /// Tests whether the target uses -data-sections as default.
+  /// Tests whether the target uses -data-sections as default. On Windows
+  /// Itanium and NT-POSIX the linker takes a data object's extent from its
+  /// section.
   bool hasDefaultDataSections() const {
-    return isOSBinFormatXCOFF() || isWasm();
+    return isOSBinFormatXCOFF() || isWasm() ||
+           isWindowsItaniumOrNTPOSIXEnvironment();
   }
 
   /// Returns the default wchar_t size (in bytes) for this target triple.
@@ -1326,8 +1351,12 @@ public:
   bool hasDLLImportExport() const { return isOSWindows() || isPS(); }
 
   /// Tests whether Microsoft's x64 or ARM64 convention, which the ms_abi
-  /// attribute names, is the default calling convention.
-  bool hasDefaultMSABI() const { return isOSWindowsOrUEFI(); }
+  /// attribute names, is the default calling convention: on Windows and UEFI,
+  /// except x86-64 NT-POSIX, whose default is System V.
+  bool hasDefaultMSABI() const {
+    return isOSWindowsOrUEFI() &&
+           !(isX86_64() && isWindowsNTPOSIXEnvironment());
+  }
 
   /// @}
   /// @name Mutators

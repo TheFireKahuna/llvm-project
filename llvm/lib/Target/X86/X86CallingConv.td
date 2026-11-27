@@ -284,7 +284,7 @@ def RetCC_X86Common : CallingConv<[
 
   // Long double types are always returned in FP0 (even with SSE),
   // except on Win64 and UEFI64.
-  CCIfNotSubtarget<"isTargetWin64()",
+  CCIfNotSubtarget<"isTargetWin64DefaultCC()",
                     CCIfNotSubtarget<"isTargetUEFI64()",
                     CCIfType<[f80], CCAssignToReg<[FP0, FP1]>>>>
 ]>;
@@ -488,15 +488,15 @@ def RetCC_X86_64 : CallingConv<[
   CCIfCC<"CallingConv::X86_VectorCall", CCDelegateTo<RetCC_X86_64_Vectorcall>>,
 
   CCIfCC<"CallingConv::X86_RegCall",
-    CCIfSubtarget<"isTargetWin64()", CCIfRegCallv4<CCDelegateTo<RetCC_X86_Win64_RegCallv4>>>>,
+    CCIfSubtarget<"isTargetWin64DefaultCC()", CCIfRegCallv4<CCDelegateTo<RetCC_X86_Win64_RegCallv4>>>>,
 
   CCIfCC<"CallingConv::X86_RegCall",
-          CCIfSubtarget<"isTargetWin64()",
+          CCIfSubtarget<"isTargetWin64DefaultCC()",
                         CCDelegateTo<RetCC_X86_Win64_RegCall>>>,
   CCIfCC<"CallingConv::X86_RegCall", CCDelegateTo<RetCC_X86_SysV64_RegCall>>,
           
   // Mingw64 and native Win64 use Win64 CC
-  CCIfSubtarget<"isTargetWin64()", CCDelegateTo<RetCC_X86_Win64_C>>,
+  CCIfSubtarget<"isTargetWin64DefaultCC()", CCDelegateTo<RetCC_X86_Win64_C>>,
 
   // UEFI64 uses Win64 CC
   CCIfSubtarget<"isTargetUEFI64()", CCDelegateTo<RetCC_X86_Win64_C>>,
@@ -1013,8 +1013,8 @@ def CC_X86_32_HiPE : CallingConv<[
 // X86-64 Intel OpenCL built-ins calling convention.
 def CC_Intel_OCL_BI : CallingConv<[
 
-  CCIfType<[i32], CCIfSubtarget<"isTargetWin64()", CCAssignToReg<[ECX, EDX, R8D, R9D]>>>,
-  CCIfType<[i64], CCIfSubtarget<"isTargetWin64()", CCAssignToReg<[RCX, RDX, R8,  R9 ]>>>,
+  CCIfType<[i32], CCIfSubtarget<"isTargetWin64DefaultCC()", CCAssignToReg<[ECX, EDX, R8D, R9D]>>>,
+  CCIfType<[i64], CCIfSubtarget<"isTargetWin64DefaultCC()", CCAssignToReg<[RCX, RDX, R8,  R9 ]>>>,
 
   CCIfType<[i32], CCIfSubtarget<"is64Bit()", CCAssignToReg<[EDI, ESI, EDX, ECX]>>>,
   CCIfType<[i64], CCIfSubtarget<"is64Bit()", CCAssignToReg<[RDI, RSI, RDX, RCX]>>>,
@@ -1036,7 +1036,7 @@ def CC_Intel_OCL_BI : CallingConv<[
   // Pass masks in mask registers
   CCIfType<[v16i1, v8i1], CCAssignToReg<[K1]>>,
 
-  CCIfSubtarget<"isTargetWin64()", CCDelegateTo<CC_X86_Win64_C>>,
+  CCIfSubtarget<"isTargetWin64DefaultCC()", CCDelegateTo<CC_X86_Win64_C>>,
   CCIfSubtarget<"is64Bit()",       CCDelegateTo<CC_X86_64_C>>,
   CCDelegateTo<CC_X86_32_C>
 ]>;
@@ -1100,16 +1100,16 @@ def CC_X86_64 : CallingConv<[
   CCIfCC<"CallingConv::X86_64_SysV", CCDelegateTo<CC_X86_64_C>>,
   CCIfCC<"CallingConv::X86_VectorCall", CCDelegateTo<CC_X86_Win64_VectorCall>>,
   CCIfCC<"CallingConv::X86_RegCall",
-    CCIfSubtarget<"isTargetWin64()", CCIfRegCallv4<CCDelegateTo<CC_X86_Win64_RegCallv4>>>>,
+    CCIfSubtarget<"isTargetWin64DefaultCC()", CCIfRegCallv4<CCDelegateTo<CC_X86_Win64_RegCallv4>>>>,
   CCIfCC<"CallingConv::X86_RegCall",
-    CCIfSubtarget<"isTargetWin64()", CCDelegateTo<CC_X86_Win64_RegCall>>>,
+    CCIfSubtarget<"isTargetWin64DefaultCC()", CCDelegateTo<CC_X86_Win64_RegCall>>>,
   CCIfCC<"CallingConv::X86_RegCall", CCDelegateTo<CC_X86_SysV64_RegCall>>,
   CCIfCC<"CallingConv::PreserveNone", CCDelegateTo<CC_X86_64_Preserve_None>>,
   CCIfCC<"CallingConv::X86_INTR", CCCustom<"CC_X86_Intr">>,
   CCIfCC<"CallingConv::CFGuard_Check", CCDelegateTo<CC_X86_Win64_CFGuard_Check>>,
 
   // Mingw64 and native Win64 use Win64 CC
-  CCIfSubtarget<"isTargetWin64()", CCDelegateTo<CC_X86_Win64_C>>,
+  CCIfSubtarget<"isTargetWin64DefaultCC()", CCDelegateTo<CC_X86_Win64_C>>,
 
   // UEFI uses Win64 CC
   CCIfSubtarget<"isTargetUEFI64()", CCDelegateTo<CC_X86_Win64_C>>,

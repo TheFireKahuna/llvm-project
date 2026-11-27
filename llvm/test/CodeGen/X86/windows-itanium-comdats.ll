@@ -1,9 +1,12 @@
 ; RUN: llc -mtriple=x86_64-windows-itanium -filetype=obj < %s | llvm-readobj --symbols - | FileCheck %s
 ; RUN: llc -mtriple=x86_64-scei-windows-itanium -filetype=obj < %s | llvm-readobj --symbols - | FileCheck %s
+; RUN: llc -mtriple=x86_64-pc-windows-ntposix -filetype=obj < %s | llvm-readobj --symbols - | FileCheck %s
 ; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-windows-itanium -filetype=obj < %s | llvm-readobj --symbols - | FileCheck %s %}
+; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-pc-windows-ntposix -filetype=obj < %s | llvm-readobj --symbols - | FileCheck %s %}
 
-; Windows Itanium names a COMDAT function's section .text, as MSVC does, so
-; each function's unwind data goes in COMDATs associative to its own code.
+; Windows Itanium and NT-POSIX name a COMDAT function's section .text, as MSVC
+; does, so each function's unwind data goes in COMDATs associative to its own
+; code.
 
 $f = comdat any
 $g = comdat any

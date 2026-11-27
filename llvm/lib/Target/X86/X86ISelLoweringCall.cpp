@@ -697,7 +697,7 @@ bool X86TargetLowering::CanLowerReturn(
     case CallingConv::Win64:
       return true;
     case CallingConv::C:
-      return Subtarget.isOSWindowsOrUEFI();
+      return Subtarget.getTargetTriple().hasDefaultMSABI();
     default:
       return false;
     }

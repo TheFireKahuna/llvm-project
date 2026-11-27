@@ -3530,6 +3530,30 @@ TEST(TripleTest, NormalizeWindows) {
 
   EXPECT_TRUE(Triple("x86_64-pc-win32").isWindowsMSVCEnvironment());
 
+  for (StringRef Str :
+       {"x86_64-pc-windows-ntposix", "aarch64-pc-windows-ntposix"}) {
+    Triple T(Triple::normalize(Str));
+    EXPECT_EQ(Str, T.str());
+    EXPECT_TRUE(T.isOSBinFormatCOFF());
+    EXPECT_TRUE(T.isWindowsNTPOSIXEnvironment());
+    EXPECT_TRUE(T.isWindowsItaniumOrNTPOSIXEnvironment());
+    EXPECT_TRUE(T.isWindowsItaniumABIEnvironment());
+    EXPECT_TRUE(T.hasDefaultDataSections());
+    EXPECT_FALSE(T.isOSMSVCRT());
+  }
+  EXPECT_TRUE(Triple("aarch64-unknown-windows-itanium")
+                  .isWindowsItaniumOrNTPOSIXEnvironment());
+  EXPECT_FALSE(Triple("x86_64-scei-windows-itanium")
+                   .isWindowsItaniumOrNTPOSIXEnvironment());
+  EXPECT_FALSE(Triple("x86_64-scei-windows-itanium").hasDefaultDataSections());
+  EXPECT_TRUE(
+      Triple("x86_64-scei-windows-itanium").isWindowsItaniumABIEnvironment());
+  EXPECT_FALSE(
+      Triple("x86_64-pc-windows-gnu").isWindowsItaniumABIEnvironment());
+  EXPECT_FALSE(
+      Triple("x86_64-pc-windows-msvc").isWindowsItaniumABIEnvironment());
+  EXPECT_FALSE(Triple("x86_64-pc-linux-ntposix").isWindowsNTPOSIXEnvironment());
+
   EXPECT_TRUE(Triple(Triple::normalize("mipsel-windows-msvccoff")).isOSBinFormatCOFF());
   EXPECT_TRUE(Triple(Triple::normalize("mipsel-windows-msvc")).isOSBinFormatCOFF());
   EXPECT_TRUE(Triple(Triple::normalize("mipsel-windows-gnu")).isOSBinFormatCOFF());
@@ -3541,6 +3565,8 @@ TEST(TripleTest, DefaultMSABI) {
   EXPECT_TRUE(Triple("aarch64-pc-windows-msvc").hasDefaultMSABI());
   EXPECT_FALSE(Triple("x86_64-pc-linux-gnu").hasDefaultMSABI());
   EXPECT_FALSE(Triple("aarch64-unknown-linux-gnu").hasDefaultMSABI());
+  EXPECT_FALSE(Triple("x86_64-pc-windows-ntposix").hasDefaultMSABI());
+  EXPECT_TRUE(Triple("aarch64-pc-windows-ntposix").hasDefaultMSABI());
 }
 
 TEST(TripleTest, NormalizeAndroid) {
@@ -4030,6 +4056,8 @@ TEST(TripleTest, DefaultWCharSize) {
   EXPECT_EQ(2u, Triple("x86_64-pc-windows-msvc").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("aarch64-pc-windows-msvc").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("x86_64-w64-windows-gnu").getDefaultWCharSize());
+  EXPECT_EQ(4u, Triple("x86_64-pc-windows-ntposix").getDefaultWCharSize());
+  EXPECT_EQ(4u, Triple("aarch64-pc-windows-ntposix").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("x86_64-unknown-uefi").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("x86_64-scei-ps4").getDefaultWCharSize());
   EXPECT_EQ(2u, Triple("x86_64-scei-ps5").getDefaultWCharSize());

@@ -186,6 +186,8 @@ public:
   bool enableMachinePipeliner() const override;
   bool useDFAforSMS() const override { return false; }
 
+  unsigned getRematerializationChainDepth() const override;
+
   /// Returns ARM processor family.
   /// Avoid this function! CPU specifics should be kept local to this class
   /// and preferably modeled with SubtargetFeatures or properties in

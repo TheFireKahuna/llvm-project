@@ -9,8 +9,10 @@
 #ifndef LLVM_CODEGEN_CALCSPILLWEIGHTS_H
 #define LLVM_CODEGEN_CALCSPILLWEIGHTS_H
 
+#include "llvm/CodeGen/Register.h"
 #include "llvm/CodeGen/SlotIndexes.h"
 #include <optional>
+#include <utility>
 
 namespace llvm {
 
@@ -96,12 +98,14 @@ class VirtRegMap;
     /// may instead be defined by a rematerializable instruction for which the
     /// same holds at \p UseIdx with \p ChainDepth less one, so that it can be
     /// rematerialized there first; \p Chain receives those instructions,
-    /// each before the one that reads what it defines.
-    LLVM_ABI static bool
-    allUsesAvailableAt(const MachineInstr *MI, SlotIndex UseIdx,
-                       const LiveIntervals &LIS, const MachineRegisterInfo &MRI,
-                       const TargetInstrInfo &TII, unsigned ChainDepth = 0,
-                       SmallVectorImpl<const MachineInstr *> *Chain = nullptr);
+    /// each before the one that reads what it defines, with the register
+    /// that one reads.
+    LLVM_ABI static bool allUsesAvailableAt(
+        const MachineInstr *MI, SlotIndex UseIdx, const LiveIntervals &LIS,
+        const MachineRegisterInfo &MRI, const TargetInstrInfo &TII,
+        unsigned ChainDepth = 0,
+        SmallVectorImpl<std::pair<const MachineInstr *, Register>> *Chain =
+            nullptr);
 
     /// \returns how many instructions the register allocator may rematerialize
     /// ahead of a value in \p MF whose registers are not available.

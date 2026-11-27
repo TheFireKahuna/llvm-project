@@ -1,41 +1,48 @@
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium -run-pass=greedy,virt-reg-rewriter -verify-machineinstrs %s -o - | FileCheck --check-prefixes=CHECK,SPLIT %s
+# RUN: llc -mtriple=x86_64-pc-windows-ntposix -run-pass=greedy,virt-reg-rewriter -verify-machineinstrs %s -o - | FileCheck %s
 # RUN: llc -mtriple=x86_64-pc-windows-msvc -remat-chain-depth=2 -run-pass=greedy,virt-reg-rewriter -verify-machineinstrs %s -o - | FileCheck %s
 # RUN: llc -mtriple=x86_64-pc-windows-msvc -remat-chain-depth=1 -run-pass=greedy,virt-reg-rewriter -verify-machineinstrs %s -o - | FileCheck --check-prefix=DEPTH1 %s
 # RUN: llc -mtriple=x86_64-pc-windows-msvc -run-pass=greedy,virt-reg-rewriter -verify-machineinstrs %s -o - | FileCheck --check-prefix=NONE %s
-## The PBQP allocator, which erases dead rematerializations itself, leaves
-## valid live ranges too.
 # RUN: llc -mtriple=x86_64-pc-windows-msvc -remat-chain-depth=2 -regalloc=pbqp -start-before=register-coalescer -stop-after=virt-reg-rewriter -verify-machineinstrs %s -o /dev/null
 
 # Where a value the register allocator would spill is the load of a word
 # through a register whose value is no longer live where the value is used,
 # the instructions that define that register, themselves rematerializable,
-# are rematerialized first, up to the chain depth: here one word is read
-# through two loads from a GOT entry (depth 2) and the other through one
-# (depth 1). The original loads, read by nothing else, go. With no chain
-# depth, the default, the values are spilled.
+# are rematerialized first, up to the subtarget's chain depth, 2 on Windows
+# Itanium and NT-POSIX: here one word is read through two loads from a GOT
+# entry (depth 2), another through one (depth 1) and a third through three
+# (depth 3), which is spilled. The original loads, read by nothing else, go.
+# Elsewhere the values are spilled unless -remat-chain-depth says otherwise.
+# The PBQP allocator, which erases dead rematerializations itself, leaves
+# valid live ranges too.
 
 # CHECK-LABEL: name: f
 # CHECK:       bb.0:
+# CHECK:         MOV32mr %stack.0
 # CHECK-NEXT:    INLINEASM
 # CHECK-NEXT:    renamable $rax = MOV64rm $rip, 1, $noreg, @rec, $noreg
 # CHECK-NEXT:    renamable $rax = MOV64rm killed renamable $rax, 1, $noreg, 0, $noreg
 # CHECK-NEXT:    renamable $eax = MOV32rm killed renamable $rax, 1, $noreg, 0, $noreg
 # CHECK-NEXT:    renamable $rcx = MOV64rm $rip, 1, $noreg, @rec, $noreg
 # CHECK-NEXT:    renamable $ecx = MOV32rm killed renamable $rcx, 1, $noreg, 8, $noreg
-# CHECK-NEXT:    RET 0, $eax, $ecx
+# CHECK-NEXT:    $edx = MOV32rm %stack.0
+# CHECK-NEXT:    RET 0, $eax, $ecx, $edx
 
 # DEPTH1-LABEL: name: f
 # DEPTH1:         MOV32mr %stack.0
+# DEPTH1:         MOV32mr %stack.1
 # DEPTH1-NEXT:    INLINEASM
 # DEPTH1-NEXT:    $eax = MOV32rm %stack.0
 # DEPTH1-NEXT:    renamable $rcx = MOV64rm $rip, 1, $noreg, @rec, $noreg
-# DEPTH1-NEXT:    renamable $ecx = MOV32rm killed renamable $rcx, 1, $noreg, 8, $noreg
 
 # NONE-LABEL: name: f
 # NONE:         MOV32mr %stack.0
 # NONE:         MOV32mr %stack.1
+# NONE:         MOV32mr %stack.2
 # NONE-NEXT:    INLINEASM
 # NONE-NEXT:    $eax = MOV32rm %stack.0
 # NONE-NEXT:    $ecx = MOV32rm %stack.1
+# NONE-NEXT:    $edx = MOV32rm %stack.2
 
 # A load whose address the chain computes folds into the one instruction
 # that reads it, as a load whose address is available does.
@@ -46,10 +53,23 @@
 # CHECK-NEXT:    renamable $eax = MOVZX32rm8 killed renamable $rax, 1, $noreg, 16, $noreg
 # CHECK-NEXT:    RET 0, $eax
 
+# A register whose value splitting copied around a call, and joined again, is
+# defined again where it is not available: the record's pointer of h, split
+# around the first call, is loaded again with the word around the second,
+# where the allocator keeps them out of the callee-saved registers.
+
+# SPLIT-LABEL: name: h
+# SPLIT:       bb.3:
+# SPLIT:         CALL64pcrel32 @init
+# SPLIT-NEXT:    renamable $[[P:[a-z0-9]+]] = MOV64rm $rip, 1, $noreg, @rec, $noreg
+# SPLIT-NEXT:    renamable $[[O:[a-z0-9]+]]d = MOV32rm killed renamable $[[P]], 1, $noreg, 8, $noreg
+
 --- |
   @rec = external constant { ptr, i32, i32 }
+  declare void @init()
   define void @f() { ret void }
   define void @g() { ret void }
+  define void @h() { ret void }
 ...
 ---
 name: f
@@ -60,10 +80,13 @@ body: |
     %1:gr64 = MOV64rm %0, 1, $noreg, 0, $noreg :: (dereferenceable invariant load (s64))
     %2:gr32 = MOV32rm %1, 1, $noreg, 0, $noreg :: (dereferenceable invariant load (s32))
     %3:gr32 = MOV32rm %0, 1, $noreg, 8, $noreg :: (dereferenceable invariant load (s32))
+    %4:gr64 = MOV64rm %1, 1, $noreg, 8, $noreg :: (dereferenceable invariant load (s64))
+    %5:gr32 = MOV32rm %4, 1, $noreg, 0, $noreg :: (dereferenceable invariant load (s32))
     INLINEASM &"", 1 /* sideeffect attdialect */, 12 /* clobber */, implicit-def dead early-clobber $rax, 12 /* clobber */, implicit-def dead early-clobber $rbx, 12 /* clobber */, implicit-def dead early-clobber $rcx, 12 /* clobber */, implicit-def dead early-clobber $rdx, 12 /* clobber */, implicit-def dead early-clobber $rsi, 12 /* clobber */, implicit-def dead early-clobber $rdi, 12 /* clobber */, implicit-def dead early-clobber $rbp, 12 /* clobber */, implicit-def dead early-clobber $r8, 12 /* clobber */, implicit-def dead early-clobber $r9, 12 /* clobber */, implicit-def dead early-clobber $r10, 12 /* clobber */, implicit-def dead early-clobber $r11, 12 /* clobber */, implicit-def dead early-clobber $r12, 12 /* clobber */, implicit-def dead early-clobber $r13, 12 /* clobber */, implicit-def dead early-clobber $r14, 12 /* clobber */, implicit-def dead early-clobber $r15
     $eax = COPY %2
     $ecx = COPY %3
-    RET 0, $eax, $ecx
+    $edx = COPY %5
+    RET 0, $eax, $ecx, $edx
 ...
 ---
 name: g
@@ -75,5 +98,47 @@ body: |
     INLINEASM &"", 1 /* sideeffect attdialect */, 12 /* clobber */, implicit-def dead early-clobber $rax, 12 /* clobber */, implicit-def dead early-clobber $rbx, 12 /* clobber */, implicit-def dead early-clobber $rcx, 12 /* clobber */, implicit-def dead early-clobber $rdx, 12 /* clobber */, implicit-def dead early-clobber $rsi, 12 /* clobber */, implicit-def dead early-clobber $rdi, 12 /* clobber */, implicit-def dead early-clobber $rbp, 12 /* clobber */, implicit-def dead early-clobber $r8, 12 /* clobber */, implicit-def dead early-clobber $r9, 12 /* clobber */, implicit-def dead early-clobber $r10, 12 /* clobber */, implicit-def dead early-clobber $r11, 12 /* clobber */, implicit-def dead early-clobber $r12, 12 /* clobber */, implicit-def dead early-clobber $r13, 12 /* clobber */, implicit-def dead early-clobber $r14, 12 /* clobber */, implicit-def dead early-clobber $r15
     %2:gr32 = MOVZX32rr8 %1
     $eax = COPY %2
+    RET 0, $eax
+...
+---
+name: h
+tracksRegLiveness: true
+frameInfo:
+  adjustsStack: true
+body: |
+  bb.0:
+    successors: %bb.1(0x00000800), %bb.2(0x7ffff800)
+    liveins: $rcx
+    %4:gr64 = COPY $rcx
+    %5:gr64 = MOV64rm $rip, 1, $noreg, @rec, $noreg :: (load (s64) from got)
+    %6:gr64 = MOV64rm %5, 1, $noreg, 0, $noreg :: (dereferenceable invariant load (s64))
+    undef %8.sub_32bit:gr64_nosp = MOV32rm %6, 1, $noreg, 0, $noreg :: (dereferenceable invariant load (s32))
+    %9:gr64 = MOV64rm $noreg, 1, $noreg, 88, $gs :: (dereferenceable invariant load (s64), addrspace 256)
+    %0:gr64 = MOV64rm %9, 8, %8, 0, $noreg :: (dereferenceable invariant load (s64))
+    undef %1.sub_32bit:gr64_nosp = MOV32rm %5, 1, $noreg, 12, $noreg :: (dereferenceable invariant load (s32))
+    CMP8mi %0, 1, %1, 0, $noreg, 0, implicit-def $eflags :: (load (s8))
+    JCC_1 %bb.2, 5, implicit $eflags
+    JMP_1 %bb.1
+  bb.1:
+    successors: %bb.2(0x80000000)
+    ADJCALLSTACKDOWN64 32, 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+    CALL64pcrel32 @init, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    ADJCALLSTACKUP64 32, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+  bb.2:
+    successors: %bb.3(0x00000800), %bb.4(0x7ffff800)
+    undef %2.sub_32bit:gr64_nosp = MOV32rm %5, 1, $noreg, 8, $noreg :: (dereferenceable invariant load (s32))
+    %13:gr32 = MOV32rm %0, 1, %2, 0, $noreg :: (load (s32))
+    MOV32mi %4, 1, $noreg, 0, $noreg, 1 :: (store (s32))
+    CMP8mi %0, 1, %1, 0, $noreg, 0, implicit-def $eflags :: (load (s8))
+    JCC_1 %bb.4, 5, implicit $eflags
+    JMP_1 %bb.3
+  bb.3:
+    successors: %bb.4(0x80000000)
+    ADJCALLSTACKDOWN64 32, 0, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+    CALL64pcrel32 @init, csr_win64, implicit $rsp, implicit $ssp, implicit-def $rsp, implicit-def $ssp
+    ADJCALLSTACKUP64 32, 0, implicit-def dead $rsp, implicit-def dead $eflags, implicit-def dead $ssp, implicit $rsp, implicit $ssp
+  bb.4:
+    %13:gr32 = nsw ADD32rm %13, %0, 1, %2, 0, $noreg, implicit-def dead $eflags :: (load (s32))
+    $eax = COPY %13
     RET 0, $eax
 ...

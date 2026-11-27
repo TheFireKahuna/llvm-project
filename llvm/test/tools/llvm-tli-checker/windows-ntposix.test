@@ -1,0 +1,24 @@
+## An NT-POSIX target's C library is POSIX's: the functions TargetLibraryInfo
+## withholds from the Microsoft C runtime and MinGW are available there, as on
+## Linux.
+# RUN: llvm-tli-checker --triple=x86_64-pc-windows-ntposix --dump-tli | \
+# RUN:   FileCheck %s -DNOT=
+# RUN: llvm-tli-checker --triple=aarch64-pc-windows-ntposix --dump-tli | \
+# RUN:   FileCheck %s -DNOT=
+# RUN: llvm-tli-checker --triple=x86_64-unknown-linux-musl --dump-tli | \
+# RUN:   FileCheck %s -DNOT=
+# RUN: llvm-tli-checker --triple=x86_64-pc-windows-msvc --dump-tli | \
+# RUN:   FileCheck %s -DNOT=not
+
+# CHECK-DAG: {{^}}[[NOT]] available: 'access'
+# CHECK-DAG: {{^}}[[NOT]] available: 'acosl'
+# CHECK-DAG: {{^}}[[NOT]] available: 'bzero'
+# CHECK-DAG: {{^}}[[NOT]] available: 'cbrtl'
+# CHECK-DAG: {{^}}[[NOT]] available: 'chown'
+# CHECK-DAG: {{^}}[[NOT]] available: 'ffs'
+# CHECK-DAG: {{^}}[[NOT]] available: 'fileno'
+# CHECK-DAG: {{^}}[[NOT]] available: 'frexpf'
+# CHECK-DAG: {{^}}[[NOT]] available: 'ldexpf'
+# CHECK-DAG: {{^}}[[NOT]] available: 'lstat'
+# CHECK-DAG: {{^}}[[NOT]] available: 'stpcpy'
+# CHECK-DAG: {{^}}[[NOT]] available: 'strcasecmp'

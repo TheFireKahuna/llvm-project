@@ -1,0 +1,47 @@
+# RUN: llc -mtriple=aarch64-unknown-windows-itanium -run-pass=greedy,virt-reg-rewriter -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=aarch64-pc-windows-ntposix -run-pass=greedy,virt-reg-rewriter -verify-machineinstrs %s -o - | FileCheck %s
+# RUN: llc -mtriple=aarch64-pc-windows-msvc -run-pass=greedy,virt-reg-rewriter -verify-machineinstrs %s -o - | FileCheck --check-prefix=NONE %s
+
+# Where a value the register allocator would spill is computed from a register
+# whose value is no longer live where the value is used, the instructions that
+# define that register, themselves rematerializable, are rematerialized first,
+# up to the subtarget's chain depth, 2 on Windows Itanium and NT-POSIX: here
+# one address is two additions from a page address (depth 2) and another one
+# (depth 1). The original instructions, read by nothing else, go. Elsewhere
+# the values are spilled.
+
+# CHECK-LABEL: name: f
+# CHECK:       bb.0:
+# CHECK-NEXT:    INLINEASM
+# CHECK-NEXT:    renamable $x8 = ADRP target-flags(aarch64-page) @g
+# CHECK-NEXT:    renamable $x8 = ADDXri killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g, 0
+# CHECK-NEXT:    renamable $x0 = ADDXri killed renamable $x8, 16, 0
+# CHECK-NEXT:    renamable $x8 = ADRP target-flags(aarch64-page) @g
+# CHECK-NEXT:    renamable $x1 = ADDXri killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g + 8, 0
+# CHECK-NEXT:    RET_ReallyLR implicit $x0, implicit $x1
+
+# NONE-LABEL: name: f
+# NONE:         STRXui {{.*}} %stack.0
+# NONE:         STRXui {{.*}} %stack.1
+# NONE-NEXT:    INLINEASM
+# NONE-NEXT:    $x0 = LDRXui %stack.0
+# NONE-NEXT:    $x1 = LDRXui %stack.1
+
+--- |
+  @g = external global [4 x i64]
+  define void @f() { ret void }
+...
+---
+name: f
+tracksRegLiveness: true
+body: |
+  bb.0:
+    %0:gpr64common = ADRP target-flags(aarch64-page) @g
+    %1:gpr64sp = ADDXri %0, target-flags(aarch64-pageoff, aarch64-nc) @g, 0
+    %2:gpr64sp = ADDXri %1, 16, 0
+    %3:gpr64sp = ADDXri %0, target-flags(aarch64-pageoff, aarch64-nc) @g + 8, 0
+    INLINEASM &"", 1 /* sideeffect attdialect */, 12 /* clobber */, implicit-def dead early-clobber $x0, 12 /* clobber */, implicit-def dead early-clobber $x1, 12 /* clobber */, implicit-def dead early-clobber $x2, 12 /* clobber */, implicit-def dead early-clobber $x3, 12 /* clobber */, implicit-def dead early-clobber $x4, 12 /* clobber */, implicit-def dead early-clobber $x5, 12 /* clobber */, implicit-def dead early-clobber $x6, 12 /* clobber */, implicit-def dead early-clobber $x7, 12 /* clobber */, implicit-def dead early-clobber $x8, 12 /* clobber */, implicit-def dead early-clobber $x9, 12 /* clobber */, implicit-def dead early-clobber $x10, 12 /* clobber */, implicit-def dead early-clobber $x11, 12 /* clobber */, implicit-def dead early-clobber $x12, 12 /* clobber */, implicit-def dead early-clobber $x13, 12 /* clobber */, implicit-def dead early-clobber $x14, 12 /* clobber */, implicit-def dead early-clobber $x15, 12 /* clobber */, implicit-def dead early-clobber $x16, 12 /* clobber */, implicit-def dead early-clobber $x17, 12 /* clobber */, implicit-def dead early-clobber $x18, 12 /* clobber */, implicit-def dead early-clobber $x19, 12 /* clobber */, implicit-def dead early-clobber $x20, 12 /* clobber */, implicit-def dead early-clobber $x21, 12 /* clobber */, implicit-def dead early-clobber $x22, 12 /* clobber */, implicit-def dead early-clobber $x23, 12 /* clobber */, implicit-def dead early-clobber $x24, 12 /* clobber */, implicit-def dead early-clobber $x25, 12 /* clobber */, implicit-def dead early-clobber $x26, 12 /* clobber */, implicit-def dead early-clobber $x27, 12 /* clobber */, implicit-def dead early-clobber $x28, 12 /* clobber */, implicit-def dead early-clobber $fp, 12 /* clobber */, implicit-def dead early-clobber $lr
+    $x0 = COPY %2
+    $x1 = COPY %3
+    RET_ReallyLR implicit $x0, implicit $x1
+...

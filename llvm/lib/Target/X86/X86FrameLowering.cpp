@@ -3587,6 +3587,9 @@ void X86FrameLowering::adjustForSegmentedStacks(
 
   if (MF.getFunction().isVarArg())
     report_fatal_error("Segmented stacks do not support vararg functions.");
+  // An NT thread's stack commits on demand, and nothing provides __morestack.
+  if (STI.getTargetTriple().isWindowsNTPOSIXEnvironment())
+    reportFatalUsageError("Segmented stacks are not supported on NT-POSIX.");
   if (!STI.isTargetLinux() && !STI.isTargetDarwin() && !STI.isTargetWin32() &&
       !STI.isTargetWin64() && !STI.isTargetFreeBSD() &&
       !STI.isTargetDragonFly())

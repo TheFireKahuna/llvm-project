@@ -2,6 +2,7 @@
 ; RUN: llc < %s -mtriple=x86_64-windows-msvc -mattr=+egpr -regalloc=basic | FileCheck %s --check-prefixes=CHECK,ALLOC
 ; RUN: llc < %s -mtriple=x86_64-windows-msvc -mattr=+egpr -regalloc=pbqp | FileCheck %s --check-prefixes=CHECK,ALLOC
 ; RUN: llc < %s -mtriple=x86_64-windows-msvc -mattr=+egpr -x86-setjmp-csr-warning-threshold=1 2>&1 | FileCheck %s --check-prefix=WARN
+; RUN: llc < %s -mtriple=x86_64-pc-windows-ntposix -mattr=+egpr -x86-setjmp-csr-warning-threshold=1 -o /dev/null 2>&1 | count 0
 ;
 ; Test that warnings are emitted exactly once per setjmp function.
 ; WARN: warning: {{.*}}callee-saved register(s) reserved due to setjmp in 'test_setjmp_i64'

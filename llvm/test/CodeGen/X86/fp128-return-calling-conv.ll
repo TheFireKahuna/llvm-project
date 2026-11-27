@@ -2,6 +2,7 @@
 ; RUN: llc < %s -mtriple=x86_64-pc-windows-gnu  | FileCheck %s --check-prefixes=WIN
 ; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | FileCheck %s --check-prefixes=WIN
 ; RUN: llc < %s -mtriple=x86_64-unknown-linux-gnu | FileCheck %s --check-prefix=LINUX
+; RUN: llc < %s -mtriple=x86_64-pc-windows-ntposix | FileCheck %s --check-prefix=LINUX
 
 ; On Windows, for calling conventions that have GCC compatibility requirements,
 ; follow the GCC convention of returning f128 via the stack (an sret).

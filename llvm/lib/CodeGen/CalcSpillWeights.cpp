@@ -167,10 +167,61 @@ unsigned VirtRegAuxInfo::getRematChainDepth(const MachineFunction &MF) {
   return MF.getSubtarget().getRematerializationChainDepth();
 }
 
+// Returns the instruction that defined VNI of LI, or, where splitting left
+// copies of the value and joins of the copies in its place, the instruction
+// that each of them copies, provided that the instructions that are left are
+// the same and read no virtual register, whose value could differ between
+// them.
+static const MachineInstr *findSplitDef(const LiveInterval &LI,
+                                        const VNInfo *VNI,
+                                        const LiveIntervals &LIS) {
+  if (const MachineInstr *MI = LIS.getInstructionFromIndex(VNI->def);
+      MI && !MI->isFullCopy())
+    return MI;
+  const MachineInstr *Def = nullptr;
+  SmallVector<std::pair<const LiveInterval *, const VNInfo *>, 4> Work = {
+      {&LI, VNI}};
+  SmallPtrSet<const VNInfo *, 8> Seen;
+  while (!Work.empty()) {
+    auto [L, V] = Work.pop_back_val();
+    if (!Seen.insert(V).second)
+      continue;
+    if (V->isPHIDef()) {
+      for (const MachineBasicBlock *Pred :
+           LIS.getMBBFromIndex(V->def)->predecessors()) {
+        const VNInfo *Out = L->getVNInfoBefore(LIS.getMBBEndIdx(Pred));
+        if (!Out)
+          return nullptr;
+        Work.push_back({L, Out});
+      }
+      continue;
+    }
+    const MachineInstr *MI = LIS.getInstructionFromIndex(V->def);
+    if (!MI)
+      return nullptr;
+    if (MI->isFullCopy() && MI->getOperand(1).getReg().isVirtual()) {
+      const LiveInterval &Src = LIS.getInterval(MI->getOperand(1).getReg());
+      const VNInfo *In = Src.Query(V->def).valueIn();
+      if (!In)
+        return nullptr;
+      Work.push_back({&Src, In});
+      continue;
+    }
+    if (any_of(
+            MI->all_uses(),
+            [](const MachineOperand &MO) { return MO.getReg().isVirtual(); }) ||
+        (Def && !Def->isIdenticalTo(*MI, MachineInstr::IgnoreDefs)))
+      return nullptr;
+    Def = MI;
+  }
+  return Def;
+}
+
 bool VirtRegAuxInfo::allUsesAvailableAt(
     const MachineInstr *MI, SlotIndex UseIdx, const LiveIntervals &LIS,
     const MachineRegisterInfo &MRI, const TargetInstrInfo &TII,
-    unsigned ChainDepth, SmallVectorImpl<const MachineInstr *> *Chain) {
+    unsigned ChainDepth,
+    SmallVectorImpl<std::pair<const MachineInstr *, Register>> *Chain) {
   SlotIndex OrigIdx = LIS.getInstructionIndex(*MI).getRegSlot(true);
   UseIdx = std::max(UseIdx, UseIdx.getRegSlot(true));
   bool Rematted = false;
@@ -201,17 +252,16 @@ bool VirtRegAuxInfo::allUsesAvailableAt(
     if (OVNI != li.getVNInfoAt(UseIdx)) {
       // One register's value may be rematerialized at UseIdx first, by the
       // instruction that defined it, in full.
-      const MachineInstr *Def = LIS.getInstructionFromIndex(OVNI->def);
-      if (!ChainDepth || Rematted || MO.getSubReg() || li.hasSubRanges() ||
-          !Def || !TII.isReMaterializable(*Def) ||
-          Def->getOperand(0).getReg() != MO.getReg() ||
-          Def->getOperand(0).getSubReg() ||
+      const MachineInstr *Def =
+          ChainDepth ? findSplitDef(li, OVNI, LIS) : nullptr;
+      if (!Def || Rematted || MO.getSubReg() || li.hasSubRanges() ||
+          !TII.isReMaterializable(*Def) || Def->getOperand(0).getSubReg() ||
           !allUsesAvailableAt(Def, UseIdx, LIS, MRI, TII, ChainDepth - 1,
                               Chain))
         return false;
       Rematted = true;
       if (Chain)
-        Chain->push_back(Def);
+        Chain->push_back({Def, MO.getReg()});
       continue;
     }
 

@@ -608,6 +608,14 @@ bool AArch64Subtarget::isX16X17Safer() const {
   return isTargetDarwin();
 }
 
+unsigned AArch64Subtarget::getRematerializationChainDepth() const {
+  // On Windows Itanium and NT-POSIX a variable's address is often loaded
+  // through a pointer, such as its import pointer, that lld-link removes where
+  // the variable is in the image. Rematerialized rather than spilled, the
+  // loads built on it go too.
+  return TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment() ? 2 : 0;
+}
+
 bool AArch64Subtarget::enableMachinePipeliner() const {
   return getSchedModel().hasInstrSchedModel();
 }

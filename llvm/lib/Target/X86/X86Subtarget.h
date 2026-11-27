@@ -352,6 +352,12 @@ public:
 
   bool isTargetWin64() const { return Is64Bit && isOSWindows(); }
 
+  /// Is Microsoft's x64 convention the default? It is on Windows x64 except
+  /// NT-POSIX, whose default is System V.
+  bool isTargetWin64DefaultCC() const {
+    return isTargetWin64() && TargetTriple.hasDefaultMSABI();
+  }
+
   bool isTargetWin32() const { return !Is64Bit && isOSWindows(); }
 
   bool isPICStyleGOT() const { return PICStyle == PICStyles::Style::GOT; }
@@ -369,7 +375,7 @@ public:
     case CallingConv::C:
     case CallingConv::Fast:
     case CallingConv::Tail:
-      return isTargetWin64() || isTargetUEFI64();
+      return isTargetWin64DefaultCC() || isTargetUEFI64();
     case CallingConv::Swift:
     case CallingConv::SwiftTail:
     case CallingConv::X86_FastCall:
@@ -377,7 +383,7 @@ public:
     case CallingConv::X86_ThisCall:
     case CallingConv::X86_VectorCall:
     case CallingConv::Intel_OCL_BI:
-      return isTargetWin64();
+      return isTargetWin64DefaultCC();
     // This convention allows using the Win64 convention on other targets.
     case CallingConv::Win64:
       return true;
@@ -448,6 +454,8 @@ public:
   bool enableMachineScheduler() const override { return true; }
 
   bool enableEarlyIfConversion() const override;
+
+  unsigned getRematerializationChainDepth() const override;
 
   void getPostRAMutations(std::vector<std::unique_ptr<ScheduleDAGMutation>>
                               &Mutations) const override;

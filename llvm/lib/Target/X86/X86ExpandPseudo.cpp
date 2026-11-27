@@ -234,9 +234,9 @@ void X86ExpandPseudoImpl::expandCALL_RVMARKER(
   // Emit marker "movq %rax, %rdi".  %rdi is not callee-saved, so it cannot be
   // live across the earlier call. The call to the ObjC runtime function returns
   // the first argument, so the value of %rax is unchanged after the ObjC
-  // runtime call. On Windows targets, the runtime call follows the regular
-  // x64 calling convention and expects the first argument in %rcx.
-  auto TargetReg = STI->getTargetTriple().isOSWindows() ? X86::RCX : X86::RDI;
+  // runtime call. Where Microsoft's x64 convention is the default, the runtime
+  // call follows it and expects the first argument in %rcx.
+  auto TargetReg = STI->isTargetWin64DefaultCC() ? X86::RCX : X86::RDI;
   auto *Marker = BuildMI(MBB, MBBI, MI.getDebugLoc(), TII->get(X86::MOV64rr))
                      .addReg(TargetReg, RegState::Define)
                      .addReg(X86::RAX)
