@@ -35,6 +35,9 @@ protected:
   /// Collected machine module information.
   MachineModuleInfo *MMI;
 
+  /// Where the function's unwind range begins, if not at its entry.
+  MCSymbol *RegionBegin = nullptr;
+
   /// How many leading type ids two landing pads have in common.
   static unsigned sharedTypeIDs(const LandingPadInfo *L,
                                 const LandingPadInfo *R);

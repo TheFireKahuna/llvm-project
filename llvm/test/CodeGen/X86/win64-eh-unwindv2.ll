@@ -263,7 +263,9 @@ entry:
 ; CHECK-NEXT:   .seh_handlerdata
 ; CHECK:        .text
 ; CHECK-NEXT:   .seh_endproc
+; A funclet's unwind info is its own and takes the version too.
 ; CHECK-LABEL:  "?dtor$5@?0?has_funclet@4HA":
+; CHECK:        .seh_unwindversion 2
 ; CHECK:        .seh_pushreg %rbp
 ; CHECK:        .seh_pushreg %rsi
 ; CHECK:        .seh_pushreg %rdi

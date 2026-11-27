@@ -47,13 +47,14 @@ define void @test2(i32 %x) nounwind {
 ;
 ; WIN-LABEL: test2:
 ; WIN:       # %bb.0:
-; WIN-NEXT:    subq $40, %rsp
 ; WIN-NEXT:    testb $16, %cl
 ; WIN-NEXT:    jne .LBB1_2
 ; WIN-NEXT:  # %bb.1: # %true
+; WIN-NEXT:    subq $40, %rsp
 ; WIN-NEXT:    callq foo
-; WIN-NEXT:  .LBB1_2: # %false
 ; WIN-NEXT:    addq $40, %rsp
+; WIN-NEXT:    retq
+; WIN-NEXT:  .LBB1_2: # %false
 ; WIN-NEXT:    retq
   %y = and i32 %x, 16
   %t = icmp eq i32 %y, 0
@@ -81,13 +82,14 @@ define void @test3(i32 %x) nounwind {
 ;
 ; WIN-LABEL: test3:
 ; WIN:       # %bb.0:
-; WIN-NEXT:    subq $40, %rsp
 ; WIN-NEXT:    andl $16, %ecx
 ; WIN-NEXT:    jne .LBB2_2
 ; WIN-NEXT:  # %bb.1: # %true
+; WIN-NEXT:    subq $40, %rsp
 ; WIN-NEXT:    callq foo
-; WIN-NEXT:  .LBB2_2: # %false
 ; WIN-NEXT:    addq $40, %rsp
+; WIN-NEXT:    retq
+; WIN-NEXT:  .LBB2_2: # %false
 ; WIN-NEXT:    retq
   %y = and i32 %x, 16
   %t = icmp eq i32 %y, 0

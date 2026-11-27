@@ -8,8 +8,8 @@ target triple = "x86_64-pc-win32"
 ; Verify that callee-saved registers are not being used.
 
 ; CHECK: f___vyf
-; CHECK: pushq %rbp
 ; CHECK: vtestps
+; CHECK: pushq %rbp
 ; CHECK: vmovaps %ymm{{.*}}(%r
 ; CHECK: vmovaps %ymm{{.*}}(%r
 ; CHECK: call

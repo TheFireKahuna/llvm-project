@@ -5,20 +5,20 @@
 target datalayout = "e-m:o-i64:64-i128:128-n32:64-S128"
 target triple = "x86_64--windows-gnu"
 
-; The output of this function with or without shrink-wrapping
-; shouldn't change.
-; Indeed, the epilogue block would have been if.else, meaning
-; after the pops, we will have additional instruction (jump, mov,
-; etc.) prior to the return and this is forbidden for Win64.
+; The function's unwind range begins at the shrink-wrapped prologue and ends
+; after the epilogue, which a return follows; if.else, outside it, touches no
+; frame and is leaf code.
 define i32 @loopInfoSaveOutsideLoop(i32 %cond, i32 %N) #0 {
 ; ENABLE-LABEL: loopInfoSaveOutsideLoop:
 ; ENABLE:       # %bb.0: # %entry
+; ENABLE-NEXT:    testl %ecx, %ecx
+; ENABLE-NEXT:    je .LBB0_4
+; ENABLE-NEXT:  .Lunwind_begin0:
+; ENABLE-NEXT:  .seh_proc loopInfoSaveOutsideLoop
+; ENABLE-NEXT:  # %bb.1: # %for.preheader
 ; ENABLE-NEXT:    pushq %rbx
 ; ENABLE-NEXT:    .seh_pushreg %rbx
 ; ENABLE-NEXT:    .seh_endprologue
-; ENABLE-NEXT:    testl %ecx, %ecx
-; ENABLE-NEXT:    je .LBB0_5
-; ENABLE-NEXT:  # %bb.1: # %for.preheader
 ; ENABLE-NEXT:    #APP
 ; ENABLE-NEXT:    nop
 ; ENABLE-NEXT:    #NO_APP
@@ -42,14 +42,11 @@ define i32 @loopInfoSaveOutsideLoop(i32 %cond, i32 %N) #0 {
 ; ENABLE-NEXT:    popq %rbx
 ; ENABLE-NEXT:    .seh_endepilogue
 ; ENABLE-NEXT:    retq
-; ENABLE-NEXT:  .LBB0_5: # %if.else
+; ENABLE-NEXT:    .seh_endproc
+; ENABLE-NEXT:  .LBB0_4: # %if.else
 ; ENABLE-NEXT:    movl %edx, %eax
 ; ENABLE-NEXT:    addl %edx, %eax
-; ENABLE-NEXT:    .seh_startepilogue
-; ENABLE-NEXT:    popq %rbx
-; ENABLE-NEXT:    .seh_endepilogue
 ; ENABLE-NEXT:    retq
-; ENABLE-NEXT:    .seh_endproc
 ;
 ; DISABLE-LABEL: loopInfoSaveOutsideLoop:
 ; DISABLE:       # %bb.0: # %entry
@@ -128,6 +125,8 @@ define i32 @loopInfoSaveOutsideLoop2(i32 %cond, i32 %N) #0 {
 ; ENABLE:       # %bb.0: # %entry
 ; ENABLE-NEXT:    testl %ecx, %ecx
 ; ENABLE-NEXT:    je .LBB1_4
+; ENABLE-NEXT:  .Lunwind_begin1:
+; ENABLE-NEXT:  .seh_proc loopInfoSaveOutsideLoop2
 ; ENABLE-NEXT:  # %bb.1: # %for.preheader
 ; ENABLE-NEXT:    pushq %rbx
 ; ENABLE-NEXT:    .seh_pushreg %rbx
@@ -155,11 +154,11 @@ define i32 @loopInfoSaveOutsideLoop2(i32 %cond, i32 %N) #0 {
 ; ENABLE-NEXT:    popq %rbx
 ; ENABLE-NEXT:    .seh_endepilogue
 ; ENABLE-NEXT:    retq
+; ENABLE-NEXT:    .seh_endproc
 ; ENABLE-NEXT:  .LBB1_4: # %if.else
 ; ENABLE-NEXT:    addl %edx, %edx
 ; ENABLE-NEXT:    movl %edx, %eax
 ; ENABLE-NEXT:    retq
-; ENABLE-NEXT:    .seh_endproc
 ;
 ; DISABLE-LABEL: loopInfoSaveOutsideLoop2:
 ; DISABLE:       # %bb.0: # %entry

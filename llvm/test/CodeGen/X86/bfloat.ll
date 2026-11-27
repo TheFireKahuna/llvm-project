@@ -1237,14 +1237,14 @@ define <32 x bfloat> @pr63017_2() nounwind {
 ; SSE2:       # %bb.0:
 ; SSE2-NEXT:    testb %al, %al
 ; SSE2-NEXT:    jne .LBB16_1
-; SSE2-NEXT:  # %bb.3: # %cond.load
+; SSE2-NEXT:  # %bb.2: # %cond.load
 ; SSE2-NEXT:    movzwl (%rax), %eax
 ; SSE2-NEXT:    movd %eax, %xmm4
 ; SSE2-NEXT:    pslld $16, %xmm4
-; SSE2-NEXT:    jmp .LBB16_2
+; SSE2-NEXT:    jmp .LBB16_3
 ; SSE2-NEXT:  .LBB16_1:
 ; SSE2-NEXT:    movd {{.*#+}} xmm4 = [-1.0E+0,0.0E+0,0.0E+0,0.0E+0]
-; SSE2-NEXT:  .LBB16_2:
+; SSE2-NEXT:  .LBB16_3:
 ; SSE2-NEXT:    movd %xmm4, %ecx
 ; SSE2-NEXT:    btl $16, %ecx
 ; SSE2-NEXT:    movl %ecx, %eax
@@ -1551,12 +1551,12 @@ define <32 x bfloat> @pr63017_2() nounwind {
 ; AVX2:       # %bb.0:
 ; AVX2-NEXT:    testb %al, %al
 ; AVX2-NEXT:    jne .LBB16_1
-; AVX2-NEXT:  # %bb.3: # %cond.load
+; AVX2-NEXT:  # %bb.2: # %cond.load
 ; AVX2-NEXT:    vmovdqu (%rax), %xmm1
-; AVX2-NEXT:    jmp .LBB16_2
+; AVX2-NEXT:    jmp .LBB16_3
 ; AVX2-NEXT:  .LBB16_1:
 ; AVX2-NEXT:    vpbroadcastw {{.*#+}} xmm1 = [49024,49024,49024,49024,49024,49024,49024,49024]
-; AVX2-NEXT:  .LBB16_2:
+; AVX2-NEXT:  .LBB16_3:
 ; AVX2-NEXT:    vpextrq $1, %xmm1, %rax
 ; AVX2-NEXT:    movq %rax, %rcx
 ; AVX2-NEXT:    shrq $48, %rcx

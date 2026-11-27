@@ -50,6 +50,8 @@
 #include "llvm/CodeGen/ShrinkWrap.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/Sequence.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
@@ -74,6 +76,7 @@
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Attributes.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -168,6 +171,15 @@ class ShrinkWrapImpl {
   /// therefore this approach is fair.
   BitVector StackAddressUsedBlockInfo;
 
+  /// Is `false` where no address in the function's own frame can be held in a
+  /// register or in memory, so that a load or store through an address of
+  /// unknown origin does not access the frame.
+  bool FrameAddressMayEscape = true;
+
+  /// The blocks that need the frame, and whether all of them are known.
+  SmallPtrSet<const MachineBasicBlock *, 16> FrameBlocks;
+  bool KnowsFrameBlocks = false;
+
   /// Check if \p MI uses or defines a callee-saved register or
   /// a frame index. If this is the case, this means \p MI must happen
   /// after Save and before Restore.
@@ -196,6 +208,14 @@ class ShrinkWrapImpl {
   /// this call.
   void updateSaveRestorePoints(MachineBasicBlock &MBB, RegScavenger *RS);
 
+  /// Moves Save and Restore until Save dominates Restore, Restore
+  /// post-dominates Save, and they lie in no loop or alternate in it.
+  void placeSaveRestorePoints();
+
+  /// Whether on every path the prologue at Save and the epilogue at Restore
+  /// alternate, each block that needs the frame between them.
+  bool pointsAlternate() const;
+
   // Try to find safe point based on dominance and block frequency without
   // any change in IR.
   bool performShrinkWrapping(
@@ -215,12 +235,30 @@ class ShrinkWrapImpl {
   /// 2. Any preds of current restore that are not DirtyPreds - indicated by
   /// CleanPreds
   /// Both sets should be non-empty for considering restore point split.
+  /// The restore point's own join copy, which goes with the new restore point,
+  /// is left out.
   bool checkIfRestoreSplittable(
       const MachineBasicBlock *CurRestore,
       const DenseSet<const MachineBasicBlock *> &ReachableByDirty,
       SmallVectorImpl<MachineBasicBlock *> &DirtyPreds,
       SmallVectorImpl<MachineBasicBlock *> &CleanPreds,
-      const TargetInstrInfo *TII, RegScavenger *RS);
+      const TargetInstrInfo *TII, RegScavenger *RS,
+      const MachineInstr *JoinCopy);
+
+  /// Returns the copy that begins \p MBB, %dst = COPY %src, out of a
+  /// callee-saved register that dies there into one that is not live into
+  /// \p MBB, or null.
+  MachineInstr *findJoinCopy(MachineBasicBlock &MBB) const;
+
+  /// Returns the last definition of the join copy's %src in \p Pred, a
+  /// predecessor of the copy's block, where defining %dst instead leaves
+  /// \p Pred free of callee-saved registers and stack slots, or null.
+  MachineInstr *findFoldableDef(MachineBasicBlock &Pred,
+                                const MachineInstr &JoinCopy,
+                                RegScavenger *RS) const;
+
+  /// Makes \p Def, from findFoldableDef, define the join copy's %dst.
+  static void foldJoinCopy(MachineInstr &Def, const MachineInstr &JoinCopy);
 
   /// Initialize the pass for \p MF.
   void init(MachineFunction &MF) {
@@ -234,7 +272,24 @@ class ShrinkWrapImpl {
     SP = Subtarget.getTargetLowering()->getStackPointerRegisterToSaveRestore();
     Entry = &MF.front();
     CurrentCSRs.clear();
+    FrameBlocks.clear();
+    KnowsFrameBlocks = false;
     MachineFunc = &MF;
+    // Only spill code addresses a spill slot, and a fixed object at or above
+    // the incoming stack pointer is the caller's. Any other object, a dynamic
+    // allocation or the frame address may be pointed to.
+    const MachineFrameInfo &MFI = MF.getFrameInfo();
+    bool GrowsDown = Subtarget.getFrameLowering()->getStackGrowthDirection() ==
+                     TargetFrameLowering::StackGrowsDown;
+    FrameAddressMayEscape =
+        MFI.hasVarSizedObjects() || MFI.isFrameAddressTaken() ||
+        any_of(seq(MFI.getObjectIndexBegin(), MFI.getObjectIndexEnd()),
+               [&](int FI) {
+                 return !MFI.isDeadObjectIndex(FI) &&
+                        !MFI.isSpillSlotObjectIndex(FI) &&
+                        !(GrowsDown && MFI.isFixedObjectIndex(FI) &&
+                          MFI.getObjectOffset(FI) >= 0);
+               });
 
     ++NumFunc;
   }
@@ -320,13 +375,13 @@ bool ShrinkWrapImpl::useOrDefCSROrFI(const MachineInstr &MI, RegScavenger *RS,
       });
     }
     if (const PseudoSourceValue *PSV = Op->getPseudoValue())
-      return PSV->isJumpTable() || PSV->isConstantPool();
+      return PSV->isJumpTable() || PSV->isConstantPool() || PSV->isGOT();
     return false;
   };
   // Load/store operations may access the stack indirectly when we previously
   // computed an address to a stack location.
-  if (StackAddressUsed && MI.mayLoadOrStore() &&
-      (MI.isCall() || MI.hasUnmodeledSideEffects() || MI.memoperands_empty() ||
+  if (StackAddressUsed && FrameAddressMayEscape && MI.mayLoadOrStore() &&
+      (MI.hasUnmodeledSideEffects() || MI.memoperands_empty() ||
        !all_of(MI.memoperands(), IsKnownNonStackPtr)))
     return true;
 
@@ -556,6 +611,160 @@ static void rollbackRestoreSplit(MachineFunction &MF, MachineBasicBlock *NMBB,
     updateTerminator(BBToUpdate, MBB, TII);
 }
 
+// The registers that \p Def defines that overlap the join copy's %src, each
+// with its counterpart in %dst: %src itself, a sub-register or a register that
+// contains it. Empty where \p Def reads one, one has no counterpart, or none
+// is all of %src.
+static SmallVector<std::pair<MachineOperand *, MCRegister>, 2>
+getFoldedOperands(MachineInstr &Def, const MachineInstr &JoinCopy,
+                  const TargetRegisterInfo &TRI) {
+  Register Dst = JoinCopy.getOperand(0).getReg();
+  Register Src = JoinCopy.getOperand(1).getReg();
+  SmallVector<std::pair<MachineOperand *, MCRegister>, 2> Folded;
+  bool Whole = false;
+  for (MachineOperand &MO : Def.operands()) {
+    if (!MO.isReg() || !TRI.regsOverlap(MO.getReg(), Src))
+      continue;
+    Register Reg = MO.getReg();
+    MCRegister To;
+    if (!MO.isDef() || MO.getSubReg())
+      return {};
+    if (Reg == Src)
+      To = Dst;
+    else if (TRI.isSubRegister(Src, Reg))
+      To = TRI.getSubReg(Dst, TRI.getSubRegIndex(Src, Reg));
+    else if (TRI.isSuperRegister(Src, Reg))
+      To = TRI.getMatchingSuperReg(Dst, TRI.getSubRegIndex(Reg, Src),
+                                   TRI.getMinimalPhysRegClass(Reg));
+    if (!To)
+      return {};
+    Whole |= Reg == Src || TRI.isSuperRegister(Src, Reg);
+    Folded.emplace_back(&MO, To);
+  }
+  if (!Whole)
+    return {};
+  return Folded;
+}
+
+static bool isLiveInto(const MachineBasicBlock &MBB, Register Reg,
+                       const TargetRegisterInfo &TRI) {
+  return any_of(MBB.liveins(), [&](const auto &LI) {
+    return TRI.regsOverlap(LI.PhysReg, Reg);
+  });
+}
+
+MachineInstr *ShrinkWrapImpl::findJoinCopy(MachineBasicBlock &MBB) const {
+  const TargetRegisterInfo &TRI = *MBB.getParent()->getSubtarget().getRegisterInfo();
+  auto First = MBB.SkipPHIsLabelsAndDebug(MBB.begin());
+  if (First == MBB.end() || !First->isCopy() ||
+      First->getOperand(0).getSubReg() || First->getOperand(1).getSubReg() ||
+      !First->getOperand(1).isRenamable())
+    return nullptr;
+  Register Dst = First->getOperand(0).getReg();
+  Register Src = First->getOperand(1).getReg();
+  // The copy may also name registers that contain its operands.
+  if (TRI.regsOverlap(Dst, Src) || !RCI->getLastCalleeSavedAlias(Src) ||
+      RCI->getLastCalleeSavedAlias(Dst) ||
+      TRI.getRegSizeInBits(*TRI.getMinimalPhysRegClass(Dst)) !=
+          TRI.getRegSizeInBits(*TRI.getMinimalPhysRegClass(Src)) ||
+      isLiveInto(MBB, Dst, TRI) ||
+      any_of(drop_begin(First->operands(), 2),
+             [&](const MachineOperand &MO) {
+               return !MO.isReg() || !MO.isImplicit() ||
+                      !TRI.isSuperRegister(MO.isDef() ? Dst : Src,
+                                           MO.getReg());
+             }))
+    return nullptr;
+  // %src dies at the copy.
+  for (const MachineInstr &MI : make_range(std::next(First), MBB.end()))
+    if (MI.readsRegister(Src, &TRI))
+      return nullptr;
+  for (const MachineBasicBlock *Succ : MBB.successors())
+    if (isLiveInto(*Succ, Src, TRI))
+      return nullptr;
+  return &*First;
+}
+
+MachineInstr *ShrinkWrapImpl::findFoldableDef(MachineBasicBlock &Pred,
+                                              const MachineInstr &JoinCopy,
+                                              RegScavenger *RS) const {
+  const MachineFunction &MF = *Pred.getParent();
+  const TargetRegisterInfo &TRI = *MF.getSubtarget().getRegisterInfo();
+  const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
+  const MachineBasicBlock *Join = JoinCopy.getParent();
+  Register Dst = JoinCopy.getOperand(0).getReg();
+  Register Src = JoinCopy.getOperand(1).getReg();
+  if (&Pred == Join || Pred.isEHPad() ||
+      any_of(Pred.successors(), [&](const MachineBasicBlock *Succ) {
+        return Succ != Join &&
+               (isLiveInto(*Succ, Src, TRI) || isLiveInto(*Succ, Dst, TRI));
+      }))
+    return nullptr;
+
+  MachineInstr *Def = nullptr;
+  for (MachineInstr &MI : reverse(Pred)) {
+    if (MI.isDebugInstr())
+      continue;
+    if (!Def && MI.modifiesRegister(Src, &TRI)) {
+      Def = &MI;
+      continue;
+    }
+    // From the definition to the join, %src is not read and %dst is not
+    // touched.
+    if (!Def && (MI.readsRegister(Src, &TRI) || MI.readsRegister(Dst, &TRI) ||
+                 MI.modifiesRegister(Dst, &TRI)))
+      return nullptr;
+    if (useOrDefCSROrFI(MI, RS, /*StackAddressUsed=*/true))
+      return nullptr;
+  }
+  if (!Def || Def->isCall() || Def->modifiesRegister(Dst, &TRI))
+    return nullptr;
+  SmallVector<std::pair<MachineOperand *, MCRegister>, 2> Folded =
+      getFoldedOperands(*Def, JoinCopy, TRI);
+  if (Folded.empty())
+    return nullptr;
+  // The register allocator chose each explicit one, and may choose again.
+  for (auto [MO, To] : Folded) {
+    if (MO->isImplicit())
+      continue;
+    const TargetRegisterClass *RC =
+        TII.getRegClass(Def->getDesc(), MO->getOperandNo());
+    if (!MO->isRenamable() || MO->isTied() || MO->isEarlyClobber() ||
+        (RC && !RC->contains(To)))
+      return nullptr;
+  }
+  // Folded, the definition itself touches no callee-saved register.
+  SmallVector<std::pair<Register, bool>, 2> Saved;
+  for (auto [MO, To] : Folded) {
+    Saved.emplace_back(MO->getReg(), MO->isRenamable());
+    MO->setReg(To);
+  }
+  bool Clean = !useOrDefCSROrFI(*Def, RS, /*StackAddressUsed=*/true);
+  for (auto [Fold, Old] : zip(Folded, Saved)) {
+    Fold.first->setReg(Old.first);
+    Fold.first->setIsRenamable(Old.second);
+  }
+  return Clean ? Def : nullptr;
+}
+
+void ShrinkWrapImpl::foldJoinCopy(MachineInstr &Def,
+                                  const MachineInstr &JoinCopy) {
+  MachineBasicBlock &Pred = *Def.getParent();
+  const TargetRegisterInfo &TRI =
+      *Pred.getParent()->getSubtarget().getRegisterInfo();
+  Register Dst = JoinCopy.getOperand(0).getReg();
+  Register Src = JoinCopy.getOperand(1).getReg();
+  for (auto [MO, To] : getFoldedOperands(Def, JoinCopy, TRI))
+    MO->setReg(To);
+  // The value is in %dst from here to the join.
+  for (MachineInstr &MI :
+       make_range(std::next(MachineBasicBlock::iterator(Def)), Pred.end()))
+    if (MI.isDebugValue())
+      for (MachineOperand &MO : MI.debug_operands())
+        if (MO.isReg() && MO.getReg() == Src)
+          MO.setReg(Dst);
+}
+
 // A block is deemed fit for restore point split iff there exist
 // 1. DirtyPreds - preds of CurRestore reachable from use or def of CSR/FI
 // 2. CleanPreds - preds of CurRestore that arent DirtyPreds
@@ -564,9 +773,10 @@ bool ShrinkWrapImpl::checkIfRestoreSplittable(
     const DenseSet<const MachineBasicBlock *> &ReachableByDirty,
     SmallVectorImpl<MachineBasicBlock *> &DirtyPreds,
     SmallVectorImpl<MachineBasicBlock *> &CleanPreds,
-    const TargetInstrInfo *TII, RegScavenger *RS) {
+    const TargetInstrInfo *TII, RegScavenger *RS,
+    const MachineInstr *JoinCopy) {
   for (const MachineInstr &MI : *CurRestore)
-    if (useOrDefCSROrFI(MI, RS, /*StackAddressUsed=*/true))
+    if (&MI != JoinCopy && useOrDefCSROrFI(MI, RS, /*StackAddressUsed=*/true))
       return false;
 
   for (MachineBasicBlock *PredBB : CurRestore->predecessors()) {
@@ -597,6 +807,8 @@ bool ShrinkWrapImpl::postShrinkWrapping(bool HasCandidate, MachineFunction &MF,
     InitRestore = nullptr;
     InitSave = &MF.front();
     for (MachineBasicBlock &MBB : MF) {
+      if (!MDT->isReachableFromEntry(&MBB))
+        continue;
       if (MBB.isEHFuncletEntry())
         return false;
       if (MBB.isReturnBlock()) {
@@ -608,7 +820,9 @@ bool ShrinkWrapImpl::postShrinkWrapping(bool HasCandidate, MachineFunction &MF,
     }
   }
 
+  // A restore point split in a loop would leave the prologue outside it.
   if (!InitSave || !InitRestore || InitRestore == InitSave ||
+      MLI->getLoopFor(InitSave) || MLI->getLoopFor(InitRestore) ||
       !MDT->dominates(InitSave, InitRestore) ||
       !MPDT->dominates(InitRestore, InitSave))
     return false;
@@ -619,9 +833,20 @@ bool ShrinkWrapImpl::postShrinkWrapping(bool HasCandidate, MachineFunction &MF,
     if (MBB.isInlineAsmBrIndirectTarget())
       return false;
 
+  // A restore point that begins by copying a callee-saved register out, which
+  // a predecessor sets only for the copy, can be split all the same: the copy
+  // goes with the new restore point, and in the predecessors that bypass it
+  // the register's definition defines the copy's destination instead.
+  MachineInstr *JoinCopy = findJoinCopy(*InitRestore);
+  SmallDenseMap<MachineBasicBlock *, MachineInstr *, 4> Folds;
+  if (JoinCopy)
+    for (MachineBasicBlock *Pred : InitRestore->predecessors())
+      if (MachineInstr *Def = findFoldableDef(*Pred, *JoinCopy, RS))
+        Folds[Pred] = Def;
+
   DenseSet<const MachineBasicBlock *> DirtyBBs;
   for (MachineBasicBlock &MBB : MF) {
-    if (!MDT->isReachableFromEntry(&MBB))
+    if (!MDT->isReachableFromEntry(&MBB) || Folds.count(&MBB))
       continue;
     if (MBB.isEHPad()) {
       DirtyBBs.insert(&MBB);
@@ -642,7 +867,10 @@ bool ShrinkWrapImpl::postShrinkWrapping(bool HasCandidate, MachineFunction &MF,
   SmallVector<MachineBasicBlock *, 2> DirtyPreds;
   SmallVector<MachineBasicBlock *, 2> CleanPreds;
   if (!checkIfRestoreSplittable(InitRestore, ReachableByDirty, DirtyPreds,
-                                CleanPreds, TII, RS))
+                                CleanPreds, TII, RS, JoinCopy) ||
+      (JoinCopy && any_of(CleanPreds, [&](MachineBasicBlock *Pred) {
+         return !Folds.count(Pred);
+       })))
     return false;
 
   // Trying to reach out to the new save point which dominates all dirty blocks.
@@ -681,6 +909,21 @@ bool ShrinkWrapImpl::postShrinkWrapping(bool HasCandidate, MachineFunction &MF,
   if (!TFI->canUseAsEpilogue(*NewRestore)) {
     rollbackRestoreSplit(MF, NewRestore, InitRestore, DirtyPreds, TII);
     return false;
+  }
+
+  if (JoinCopy) {
+    Register Dst = JoinCopy->getOperand(0).getReg();
+    Register Src = JoinCopy->getOperand(1).getReg();
+    for (MachineBasicBlock *Pred : CleanPreds)
+      foldJoinCopy(*Folds[Pred], *JoinCopy);
+    NewRestore->splice(NewRestore->begin(), InitRestore, JoinCopy);
+    // %src holds the value on no path into the old restore point.
+    for (MachineInstr &MI : *InitRestore)
+      if (MI.isDebugValue() && MI.hasDebugOperandForReg(Src))
+        MI.setDebugValueUndef();
+    InitRestore->removeLiveInOverlappedWith(Src);
+    InitRestore->addLiveIn(Dst);
+    InitRestore->sortUniqueLiveIns();
   }
 
   Save = NewSave;
@@ -742,37 +985,65 @@ void ShrinkWrapImpl::updateSaveRestorePoints(MachineBasicBlock &MBB,
         dbgs() << "Restore point needs to be spanned on several blocks\n");
     return;
   }
+  placeSaveRestorePoints();
+}
 
+bool ShrinkWrapImpl::pointsAlternate() const {
+  DenseSet<const MachineBasicBlock *> AfterRestore{Save}, AfterSave{Restore};
+  markAllReachable(AfterRestore, *Restore);
+  auto Reenters = [](const MachineBasicBlock *MBB,
+                     const DenseSet<const MachineBasicBlock *> &After,
+                     const MachineBasicBlock *Other) {
+    return any_of(MBB->predecessors(), [&](const MachineBasicBlock *Pred) {
+      return Pred != Other && After.contains(Pred);
+    });
+  };
+  if (Save != Restore) {
+    markAllReachable(AfterSave, *Save);
+    if (Reenters(Save, AfterSave, Restore) ||
+        Reenters(Restore, AfterRestore, Save))
+      return false;
+  }
+  return none_of(FrameBlocks, [&](const MachineBasicBlock *MBB) {
+    return MBB != Save && MBB != Restore && AfterRestore.contains(MBB);
+  });
+}
+
+void ShrinkWrapImpl::placeSaveRestorePoints() {
   // Make sure Save and Restore are suitable for shrink-wrapping:
   // 1. all path from Save needs to lead to Restore before exiting.
   // 2. all path to Restore needs to go through Save from Entry.
   // We achieve that by making sure that:
   // A. Save dominates Restore.
   // B. Restore post-dominates Save.
-  // C. Save and Restore are in the same loop.
+  // C. Save and Restore lie in no loop, or alternate in it where the frame is
+  //    cold: post-dominance is not enough in loops, where a path may reach
+  //    Save again before Restore, or Restore or a block that needs the frame
+  //    before Save. E.g.,
+  //    while(1) {
+  //     Save
+  //     Restore
+  //      if (...)
+  //        break;
+  //     use/def CSRs
+  //    }
+  //    Save then runs on fewer of the loop's iterations than a heuristic
+  //    gives a path of normal operation, a loop's exit at 1/32. Until every
+  //    block that needs the frame is known, they may lie in one.
+  auto InLoop = [&] {
+    const MachineLoop *L = MLI->getLoopFor(Save);
+    return (L || MLI->getLoopFor(Restore)) && KnowsFrameBlocks &&
+           (!L ||
+            MBFI->getBlockFreq(Save) >=
+                MBFI->getBlockFreq(L->getHeader()) * BranchProbability(1, 32) ||
+            !pointsAlternate());
+  };
   bool SaveDominatesRestore = false;
   bool RestorePostDominatesSave = false;
   while (Restore &&
          (!(SaveDominatesRestore = MDT->dominates(Save, Restore)) ||
           !(RestorePostDominatesSave = MPDT->dominates(Restore, Save)) ||
-          // Post-dominance is not enough in loops to ensure that all uses/defs
-          // are after the prologue and before the epilogue at runtime.
-          // E.g.,
-          // while(1) {
-          //  Save
-          //  Restore
-          //   if (...)
-          //     break;
-          //  use/def CSRs
-          // }
-          // All the uses/defs of CSRs are dominated by Save and post-dominated
-          // by Restore. However, the CSRs uses are still reachable after
-          // Restore and before Save are executed.
-          //
-          // For now, just push the restore/save points outside of loops.
-          // FIXME: Refine the criteria to still find interesting cases
-          // for loops.
-          MLI->getLoopFor(Save) || MLI->getLoopFor(Restore))) {
+          InLoop())) {
     // Fix (A).
     if (!SaveDominatesRestore) {
       Save = MDT->findNearestCommonDominator(Save, Restore);
@@ -783,7 +1054,7 @@ void ShrinkWrapImpl::updateSaveRestorePoints(MachineBasicBlock &MBB,
       Restore = MPDT->findNearestCommonDominator(Restore, Save);
 
     // Fix (C).
-    if (Restore && (MLI->getLoopFor(Save) || MLI->getLoopFor(Restore))) {
+    if (Restore && InLoop()) {
       if (MLI->getLoopDepth(Save) > MLI->getLoopDepth(Restore)) {
         // Push Save outside of this loop if immediate dominator is different
         // from save block. If immediate dominator is not different, bail out.
@@ -851,6 +1122,7 @@ bool ShrinkWrapImpl::performShrinkWrapping(
       // are at least at the boundary of the save and restore points.  The
       // problem is that a basic block can jump out from the middle in these
       // cases, which we do not handle.
+      FrameBlocks.insert(MBB);
       updateSaveRestorePoints(*MBB, RS);
       if (!ArePointsInteresting()) {
         LLVM_DEBUG(dbgs() << "EHPad/inlineasm_br prevents shrink-wrapping\n");
@@ -876,6 +1148,7 @@ bool ShrinkWrapImpl::performShrinkWrapping(
       if (useOrDefCSROrFI(MI, RS, StackAddressUsed)) {
         // Save (resp. restore) point must dominate (resp. post dominate)
         // MI. Look for the proper basic block for those.
+        FrameBlocks.insert(MBB);
         updateSaveRestorePoints(*MBB, RS);
         // If we are at a point where we cannot improve the placement of
         // save/restore instructions, just give up.
@@ -899,6 +1172,10 @@ bool ShrinkWrapImpl::performShrinkWrapping(
     LLVM_DEBUG(dbgs() << "Nothing to shrink-wrap\n");
     return false;
   }
+  KnowsFrameBlocks = true;
+  placeSaveRestorePoints();
+  if (!ArePointsInteresting())
+    return false;
 
   LLVM_DEBUG(dbgs() << "\n ** Results **\nFrequency of the Entry: "
                     << EntryFreq.getFrequency() << '\n');
@@ -948,6 +1225,44 @@ bool ShrinkWrapImpl::run(MachineFunction &MF) {
 
   init(MF);
 
+  // A cleanup that the unwinder calls is a frame of its own, which the
+  // function enters only by unwinding, after which the unwinder restores the
+  // function's registers, not its epilogue: the region is found in the
+  // function's own code, from which the edges into them are detached while
+  // the pass runs.
+  SmallVector<std::tuple<MachineBasicBlock *, MachineBasicBlock *,
+                         std::optional<BranchProbability>>,
+              4>
+      Cleanups;
+  if (usesCalledCleanups(MF.getFunction())) {
+    for (MachineBasicBlock &MBB : MF)
+      for (auto It = MBB.succ_begin(); It != MBB.succ_end();)
+        if ((*It)->isEHFuncletEntry()) {
+          Cleanups.emplace_back(&MBB, *It,
+                                MBB.hasSuccessorProbabilities()
+                                    ? std::optional(MBB.getSuccProbability(It))
+                                    : std::nullopt);
+          It = MBB.removeSuccessor(It);
+        } else {
+          ++It;
+        }
+  }
+  scope_exit Reattach([&] {
+    if (Cleanups.empty())
+      return;
+    for (auto [MBB, Cleanup, Prob] : Cleanups)
+      if (Prob)
+        MBB->addSuccessor(Cleanup, *Prob);
+      else
+        MBB->addSuccessorWithoutProb(Cleanup);
+    MDT->recalculate(MF);
+    MPDT->recalculate(MF);
+  });
+  if (!Cleanups.empty()) {
+    MDT->recalculate(MF);
+    MPDT->recalculate(MF);
+  }
+
   ReversePostOrderTraversal<MachineBasicBlock *> RPOT(&*MF.begin());
   if (containsIrreducibleCFG<MachineBasicBlock *>(RPOT, *MLI)) {
     // If MF is irreducible, a block may be in a loop without
@@ -977,6 +1292,13 @@ bool ShrinkWrapImpl::run(MachineFunction &MF) {
   if (!HasCandidate && !Changed)
     return false;
   if (!ArePointsInteresting())
+    return Changed;
+
+  // A Windows unwind range begins at its prologue, which begins a block. A
+  // save point that every path from the entry reaches spares no path the
+  // prologue, and its block can merge into the entry block, behind that
+  // block's code.
+  if (MF.usesWindowsUnwindInfo() && MPDT->dominates(Save, &MF.front()))
     return Changed;
 
   LLVM_DEBUG(dbgs() << "Final shrink wrap candidates:\nSave: "
@@ -1043,9 +1365,10 @@ bool ShrinkWrapImpl::isShrinkWrapEnabled(const MachineFunction &MF) {
   switch (EnableShrinkWrapOpt) {
   case cl::boolOrDefault::BOU_UNSET:
     return TFI->enableShrinkWrapping(MF) &&
-           // Windows with CFI has some limitations that make it impossible
-           // to use shrink-wrapping.
-           !MF.usesWindowsUnwindInfo() &&
+           // Windows unwind info describes a prologue at the start of a
+           // function's unwind range, which only some targets move there.
+           (!MF.usesWindowsUnwindInfo() ||
+            TFI->canShrinkWrapWindowsUnwindInfo(MF)) &&
            // Sanitizers look at the value of the stack at the location
            // of the crash. Since a crash can happen anywhere, the
            // frame must be lowered before anything else happen for the

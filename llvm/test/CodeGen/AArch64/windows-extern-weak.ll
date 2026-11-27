@@ -9,28 +9,30 @@
 define void @func() nounwind {
 ; CHECK-LABEL: func:
 ; CHECK:       // %bb.0:
-; CHECK-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; CHECK-NEXT:    adrp x8, .refptr.weakfunc
 ; CHECK-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc]
 ; CHECK-NEXT:    cbz x8, .LBB0_2
 ; CHECK-NEXT:  // %bb.1:
+; CHECK-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; CHECK-NEXT:    blr x8
-; CHECK-NEXT:  .LBB0_2:
 ; CHECK-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
+; CHECK-NEXT:    ret
+; CHECK-NEXT:  .LBB0_2:
 ; CHECK-NEXT:    ret
 ;
 ; FISEL-LABEL: func:
 ; FISEL:       // %bb.0:
-; FISEL-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; FISEL-NEXT:    adrp x8, .refptr.weakfunc
 ; FISEL-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc]
 ; FISEL-NEXT:    cbz x8, .LBB0_2
 ; FISEL-NEXT:  // %bb.1:
+; FISEL-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; FISEL-NEXT:    adrp x8, .refptr.weakfunc
 ; FISEL-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc]
 ; FISEL-NEXT:    blr x8
-; FISEL-NEXT:  .LBB0_2:
 ; FISEL-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
+; FISEL-NEXT:    ret
+; FISEL-NEXT:  .LBB0_2:
 ; FISEL-NEXT:    ret
   %cmp = icmp ne ptr @weakfunc, null
   br i1 %cmp, label %1, label %2
@@ -50,28 +52,30 @@ declare extern_weak void @weakfunc()
 define void @func_dso_local() nounwind {
 ; CHECK-LABEL: func_dso_local:
 ; CHECK:       // %bb.0:
-; CHECK-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; CHECK-NEXT:    adrp x8, .refptr.weakfunc_dso_local
 ; CHECK-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc_dso_local]
 ; CHECK-NEXT:    cbz x8, .LBB1_2
 ; CHECK-NEXT:  // %bb.1:
+; CHECK-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; CHECK-NEXT:    blr x8
-; CHECK-NEXT:  .LBB1_2:
 ; CHECK-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
+; CHECK-NEXT:    ret
+; CHECK-NEXT:  .LBB1_2:
 ; CHECK-NEXT:    ret
 ;
 ; FISEL-LABEL: func_dso_local:
 ; FISEL:       // %bb.0:
-; FISEL-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; FISEL-NEXT:    adrp x8, .refptr.weakfunc_dso_local
 ; FISEL-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc_dso_local]
 ; FISEL-NEXT:    cbz x8, .LBB1_2
 ; FISEL-NEXT:  // %bb.1:
+; FISEL-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; FISEL-NEXT:    adrp x8, .refptr.weakfunc_dso_local
 ; FISEL-NEXT:    ldr x8, [x8, :lo12:.refptr.weakfunc_dso_local]
 ; FISEL-NEXT:    blr x8
-; FISEL-NEXT:  .LBB1_2:
 ; FISEL-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
+; FISEL-NEXT:    ret
+; FISEL-NEXT:  .LBB1_2:
 ; FISEL-NEXT:    ret
   %cmp = icmp ne ptr @weakfunc_dso_local, null
   br i1 %cmp, label %1, label %2

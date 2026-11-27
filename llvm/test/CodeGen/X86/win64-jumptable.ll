@@ -40,8 +40,12 @@ sw.epilog:                                        ; preds = %entry, %sw.bb3, %sw
 
 declare void @g(i32)
 
+; The prologue is shrink-wrapped below the range check, so the unwind range
+; begins there; an epilogue that would fall out of it into code that is not a
+; return jumps there instead.
 ; CHECK: .text
 ; CHECK: f:
+; CHECK: ja .LBB0_7
 ; CHECK: .seh_proc f
 ; CHECK: jmpq    *.LJTI0_0
 ; CHECK: .LBB0_{{.*}}: # %sw.bb
@@ -49,6 +53,10 @@ declare void @g(i32)
 ; CHECK: .LBB0_{{.*}}: # %sw.bb3
 ; CHECK: .LBB0_{{.*}}: # %sw.bb1
 ; CHECK: callq g
+; CHECK: .seh_endepilogue
+; CHECK-NEXT: jmp .LBB0_7
+; CHECK-NEXT: .seh_endproc
+; CHECK-NEXT: .LBB0_7:
 ; CHECK: jmp g # TAILCALL
 ; CHECK: .section        .rdata,"dr"
 ; CHECK: .quad .LBB0_
@@ -56,12 +64,9 @@ declare void @g(i32)
 ; CHECK: .quad .LBB0_
 ; CHECK: .quad .LBB0_
 
-; It's important that we switch back to .text here, not .rdata.
-; CHECK: .text
-; CHECK: .seh_endproc
 
 ; Windows PIC code should use 32-bit entries
-; PIC: .long .LBB0_2-.LJTI0_0
-; PIC: .long .LBB0_3-.LJTI0_0
-; PIC: .long .LBB0_4-.LJTI0_0
-; PIC: .long .LBB0_5-.LJTI0_0
+; PIC: .long .LBB0_{{[0-9]+}}-.LJTI0_0
+; PIC: .long .LBB0_{{[0-9]+}}-.LJTI0_0
+; PIC: .long .LBB0_{{[0-9]+}}-.LJTI0_0
+; PIC: .long .LBB0_{{[0-9]+}}-.LJTI0_0

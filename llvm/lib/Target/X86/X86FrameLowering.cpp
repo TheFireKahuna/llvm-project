@@ -4319,8 +4319,11 @@ bool X86FrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
   // Win64 has strict requirements in terms of epilogue and we are
   // not taking a chance at messing with them.
   // I.e., unless this block is already an exit block, we can't use
-  // it as an epilogue.
-  if (STI.isTargetWin64() && !MBB.succ_empty() && !MBB.isReturnBlock())
+  // it as an epilogue. Where the unwind range begins at the prologue, an
+  // epilogue may end in a jump to its one successor, which is outside it.
+  if (STI.isTargetWin64() && !MBB.succ_empty() && !MBB.isReturnBlock() &&
+      !(MBB.succ_size() == 1 &&
+        canShrinkWrapWindowsUnwindInfo(*MBB.getParent())))
     return false;
 
   // Swift async context epilogue has a BTR instruction that clobbers parts of
@@ -4337,6 +4340,16 @@ bool X86FrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
   // otherwise, conservatively assume this is not
   // safe to insert the epilogue here.
   return !flagsNeedToBePreservedBeforeTheTerminators(MBB);
+}
+
+// Code ahead of the prologue is leaf code, which an asynchronous exception can
+// reach: an EH scope over it would go unseen.
+bool X86FrameLowering::canShrinkWrapWindowsUnwindInfo(
+    const MachineFunction &MF) const {
+  const Function &F = MF.getFunction();
+  return STI.isTargetWin64() && !usesAsyncEHTables(F) &&
+         !(F.hasPersonalityFn() &&
+           isAsynchronousEHPersonality(classifyEHPersonality(F.getPersonalityFn())));
 }
 
 bool X86FrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {

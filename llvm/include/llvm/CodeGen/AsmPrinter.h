@@ -18,6 +18,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/ProfileSummaryInfo.h"
 #include "llvm/Analysis/StaticDataProfileInfo.h"
@@ -142,6 +143,11 @@ public:
   /// purpose of calculating its size (e.g. using the .size directive). By
   /// default, this is equal to CurrentFnSym.
   MCSymbol *CurrentFnSymForSize = nullptr;
+
+  /// The blocks of a shrink-wrapped frame that is the function's unwind range
+  /// under Windows unwind info, and whether the printer is within it.
+  SmallPtrSet<const MachineBasicBlock *, 16> ShrinkWrappedFrame;
+  bool InShrinkWrappedFrame = false;
 
   /// Vector of symbols marking the end of the callsites in the current
   /// function, keyed by their containing basic block.

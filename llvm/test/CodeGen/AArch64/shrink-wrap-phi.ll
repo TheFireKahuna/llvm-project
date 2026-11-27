@@ -38,14 +38,11 @@ exit:
 }
 
 ; This example is similar to the previous but one of the underlying objects of
-; the phi is a loaded pointer and therefore not guaranteed to avoid the stack.
-define ptr @dontshrinkwrapme(ptr %p) {
-; CHECK-LABEL: dontshrinkwrapme:
+; the phi is a loaded pointer, which reaches the stack only where the function
+; forms an address in its frame. This one forms none.
+define ptr @shrinkwrapme_loaded(ptr %p) {
+; CHECK-LABEL: shrinkwrapme_loaded:
 ; CHECK:       ; %bb.0: ; %entry
-; CHECK-NEXT:    stp x28, x27, [sp, #-16]! ; 16-byte Folded Spill
-; CHECK-NEXT:    .cfi_def_cfa_offset 16
-; CHECK-NEXT:    .cfi_offset w27, -8
-; CHECK-NEXT:    .cfi_offset w28, -16
 ; CHECK-NEXT:    ldr x8, [x0]
 ; CHECK-NEXT:    sub x0, x8, #4
 ; CHECK-NEXT:  LBB1_1: ; %loop
@@ -53,6 +50,10 @@ define ptr @dontshrinkwrapme(ptr %p) {
 ; CHECK-NEXT:    ldr w8, [x0, #4]!
 ; CHECK-NEXT:    cbnz w8, LBB1_1
 ; CHECK-NEXT:  ; %bb.2: ; %exit
+; CHECK-NEXT:    stp x28, x27, [sp, #-16]! ; 16-byte Folded Spill
+; CHECK-NEXT:    .cfi_def_cfa_offset 16
+; CHECK-NEXT:    .cfi_offset w27, -8
+; CHECK-NEXT:    .cfi_offset w28, -16
 ; CHECK-NEXT:    ; InlineAsm Start
 ; CHECK-NEXT:    ; InlineAsm End
 ; CHECK-NEXT:    ldp x28, x27, [sp], #16 ; 16-byte Folded Reload

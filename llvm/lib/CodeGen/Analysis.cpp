@@ -13,6 +13,7 @@
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
@@ -654,6 +655,52 @@ bool llvm::canDescribeGlobalAddressInLocationList(const MachineFunction &MF) {
 /// a return and there's nothing that needs to be scheduled
 /// between it and the return.
 ///
+SmallPtrSet<const MachineBasicBlock *, 16>
+llvm::getShrinkWrappedFrame(const MachineFunction &MF) {
+  // Under Windows unwind info the prologue begins the entry block unless
+  // shrink-wrapping moved it, which split stacks do not allow. A funclet has a
+  // frame and unwind info of its own.
+  SmallPtrSet<const MachineBasicBlock *, 16> Frame;
+  if (!MF.usesWindowsUnwindInfo() || MF.shouldSplitStack())
+    return Frame;
+  SmallVector<int, 0> Funclets = getEHFunclets(MF);
+  auto Own = [&](const MachineBasicBlock &MBB) {
+    return Funclets[MBB.getNumber()] < 0;
+  };
+  auto Start = find_if(MF, [&](const MachineBasicBlock &MBB) {
+    return Own(MBB) && any_of(MBB, [](const MachineInstr &MI) {
+             return MI.getFlag(MachineInstr::FrameSetup);
+           });
+  });
+  if (Start == MF.end() || &*Start == &MF.front())
+    return Frame;
+
+  SmallVector<const MachineBasicBlock *, 4> Work;
+  for (const MachineBasicBlock &MBB : MF)
+    if (any_of(MBB, [](const MachineInstr &MI) {
+          return MI.getFlag(MachineInstr::FrameDestroy);
+        }))
+      append_range(Work, MBB.successors());
+  SmallPtrSet<const MachineBasicBlock *, 16> AfterEpilogue;
+  while (!Work.empty())
+    if (const MachineBasicBlock *MBB = Work.pop_back_val();
+        MBB != &*Start && AfterEpilogue.insert(MBB).second)
+      append_range(Work, MBB->successors());
+
+  MachineDominatorTree MDT(const_cast<MachineFunction &>(MF));
+  for (const MachineBasicBlock &MBB : MF)
+    if (Own(MBB) && MDT.dominates(&*Start, &MBB) && !AfterEpilogue.count(&MBB))
+      Frame.insert(&MBB);
+  return Frame;
+}
+
+MachineBasicBlock &llvm::getUnwindRangeStart(MachineFunction &MF) {
+  SmallPtrSet<const MachineBasicBlock *, 16> Frame = getShrinkWrappedFrame(MF);
+  return *find_if(MF, [&](const MachineBasicBlock &MBB) {
+    return Frame.empty() || Frame.contains(&MBB);
+  });
+}
+
 bool llvm::isInCalledCleanup(const CallBase &Call) {
   std::optional<OperandBundleUse> Funclet =
       Call.getOperandBundle(LLVMContext::OB_funclet);

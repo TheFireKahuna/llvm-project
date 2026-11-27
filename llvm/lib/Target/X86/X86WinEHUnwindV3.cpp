@@ -25,6 +25,7 @@
 #include "X86.h"
 #include "X86Subtarget.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -241,6 +242,10 @@ bool X86WinEHUnwindV3::runOnMachineFunction(MachineFunction &MF) {
   bool Changed = false;
   unsigned ApproxBytePos = 0;
   MachineFunction::iterator Iter = MF.begin();
+  // The entry frame's range begins at a shrink-wrapped prologue; found before
+  // a stamp, which would itself mark a frame-setup block.
+  MachineBasicBlock *RangeStart =
+      PerFunctionV3 ? &getUnwindRangeStart(MF) : nullptr;
 
   LLVM_DEBUG(dbgs() << "X86WinEHUnwindV3: processing " << MF.getName() << "\n");
 
@@ -253,7 +258,8 @@ bool X86WinEHUnwindV3::runOnMachineFunction(MachineFunction &MF) {
     // advances past it.
     if (PerFunctionV3) {
       const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
-      MachineBasicBlock &FuncletEntry = *Iter;
+      MachineBasicBlock &FuncletEntry =
+          Iter == MF.begin() ? *RangeStart : *Iter;
       BuildMI(FuncletEntry, FuncletEntry.begin(),
               FuncletEntry.findDebugLoc(FuncletEntry.begin()),
               TII->get(X86::SEH_UnwindVersion))

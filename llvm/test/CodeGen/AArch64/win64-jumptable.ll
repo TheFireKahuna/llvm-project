@@ -34,11 +34,20 @@ sw.epilog:
 
 declare void @g(i32, i32)
 
+; The prologue is shrink-wrapped below the range check, so the unwind range
+; begins there, and ends after the epilogue, which branches to the code
+; outside it.
 ; CHECK:    .text
 ; CHECK:    f:
+; CHECK:    b.hi .LBB0_7
 ; CHECK:    .seh_proc f
+; CHECK:    bl g
+; CHECK:    .seh_endepilogue
+; CHECK-NEXT: b .LBB0_7
+; CHECK-NEXT: .seh_endfunclet
+; CHECK-NEXT: .seh_endproc
+; CHECK-NEXT: .LBB0_7:
 ; CHECK:    b g
-; CHECK-NEXT:  .seh_endfunclet
 ; CHECK-NEXT:  .section .rdata,"dr"
 ; CHECK-NEXT: .p2align  2
 ; CHECK-NEXT: .LJTI0_0:
@@ -46,8 +55,6 @@ declare void @g(i32, i32)
 ; CHECK:    .word .LBB0_5-.Ltmp0
 ; CHECK:    .word .LBB0_3-.Ltmp0
 ; CHECK:    .word .LBB0_4-.Ltmp0
-; CHECK:    .text
-; CHECK:    .seh_endproc
 
 ; Check that we can emit an object file with correct unwind info.
 ; UNWIND: FunctionLength: {{[1-9][0-9]*}}

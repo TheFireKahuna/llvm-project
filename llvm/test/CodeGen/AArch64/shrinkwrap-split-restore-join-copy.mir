@@ -1,0 +1,143 @@
+# RUN: llc -mtriple=aarch64 -run-pass=shrink-wrap -o - %s | FileCheck %s
+# RUN: llc -mtriple=aarch64 -passes='shrink-wrap' -o - %s | FileCheck %s
+
+# A restore point that begins by copying a callee-saved register out, which a
+# predecessor sets only for the copy, is split all the same: the copy goes
+# with the new restore point, and in the predecessor that bypasses it the
+# register's definition defines the copy's destination instead.
+
+---
+# The early exit sets w0 itself and leaves w19 alone.
+# CHECK-LABEL: name: fold
+# CHECK:       savePoint:
+# CHECK-NEXT:    - point: '%bb.2'
+# CHECK:       restorePoint:
+# CHECK-NEXT:    - point: '%bb.4'
+# CHECK-LABEL: bb.1:
+# CHECK:         $w0 = MOVi32imm -1
+# CHECK-NEXT:    B %bb.3
+# CHECK-LABEL: bb.3:
+# CHECK-NEXT:    liveins: $w0
+# CHECK:         RET_ReallyLR implicit $w0
+# CHECK-LABEL: bb.4:
+# CHECK-NEXT:    successors: %bb.3
+# CHECK-NEXT:    liveins: $w19
+# CHECK:         $w0 = COPY killed renamable $w19
+# CHECK-NEXT:    B %bb.3
+name: fold
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x0
+    CBNZX $x0, %bb.2
+  bb.1:
+    renamable $w19 = MOVi32imm -1
+    B %bb.3
+  bb.2:
+    BL &fun, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp, implicit-def $w0
+    renamable $w19 = COPY $w0
+    B %bb.3
+  bb.3:
+    liveins: $w19
+    $w0 = COPY killed renamable $w19
+    RET_ReallyLR implicit $w0
+...
+---
+# A definition of part of the register that also defines all of it, as
+# implicit operands, is folded part for part.
+# CHECK-LABEL: name: fold_parts
+# CHECK:       savePoint:
+# CHECK-NEXT:    - point: '%bb.2'
+# CHECK-LABEL: bb.1:
+# CHECK:         $w0 = MOVi32imm -1, implicit-def $x0
+name: fold_parts
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x0
+    CBNZX $x0, %bb.2
+  bb.1:
+    renamable $w19 = MOVi32imm -1, implicit-def $x19
+    B %bb.3
+  bb.2:
+    BL &fun, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp, implicit-def $x0
+    renamable $x19 = COPY $x0
+    B %bb.3
+  bb.3:
+    liveins: $x19
+    $x0 = COPY killed renamable $x19
+    RET_ReallyLR implicit $x0
+...
+---
+# A definition of part of the register alone is not all of it.
+# CHECK-LABEL: name: part_only
+# CHECK-NOT:   savePoint:
+# CHECK-LABEL: bb.1:
+# CHECK:         renamable $w19 = MOVi32imm -1
+name: part_only
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x0, $x19
+    CBNZX $x0, %bb.2
+  bb.1:
+    liveins: $x19
+    renamable $w19 = MOVi32imm -1
+    B %bb.3
+  bb.2:
+    BL &fun, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp, implicit-def $x0
+    renamable $x19 = COPY $x0
+    B %bb.3
+  bb.3:
+    liveins: $x19
+    $x0 = COPY killed renamable $x19
+    RET_ReallyLR implicit $x0
+...
+---
+# The destination is written after the definition.
+# CHECK-LABEL: name: dst_written
+# CHECK-NOT:   savePoint:
+# CHECK-LABEL: bb.1:
+# CHECK:         renamable $w19 = MOVi32imm -1
+name: dst_written
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x0
+    CBNZX $x0, %bb.2
+  bb.1:
+    renamable $w19 = MOVi32imm -1
+    $w0 = MOVi32imm 3
+    B %bb.3
+  bb.2:
+    BL &fun, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp, implicit-def $w0
+    renamable $w19 = COPY $w0
+    B %bb.3
+  bb.3:
+    liveins: $w19
+    $w0 = COPY killed renamable $w19
+    RET_ReallyLR implicit $w0
+...
+---
+# The register is still read after the copy.
+# CHECK-LABEL: name: src_live
+# CHECK-NOT:   savePoint:
+name: src_live
+tracksRegLiveness: true
+body: |
+  bb.0:
+    liveins: $x0
+    CBNZX $x0, %bb.2
+  bb.1:
+    renamable $w19 = MOVi32imm -1
+    B %bb.3
+  bb.2:
+    BL &fun, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit-def $sp, implicit-def $w0
+    renamable $w19 = COPY $w0
+    B %bb.3
+  bb.3:
+    liveins: $w19
+    $w0 = COPY renamable $w19
+    $w1 = COPY killed renamable $w19
+    RET_ReallyLR implicit $w0, implicit $w1
+...

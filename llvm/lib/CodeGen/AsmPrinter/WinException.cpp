@@ -14,6 +14,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/Dwarf.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -63,6 +64,7 @@ void WinException::endModule() {
 
 void WinException::beginFunction(const MachineFunction *MF) {
   shouldEmitMoves = shouldEmitPersonality = shouldEmitLSDA = false;
+  RegionBegin = nullptr;
 
   // If any landing pads survive, we need an EH table.
   bool hasLandingPads = !MF->getLandingPads().empty();
@@ -115,7 +117,8 @@ void WinException::beginFunction(const MachineFunction *MF) {
     return;
   }
 
-  beginFunclet(MF->front(), Asm->CurrentFnSym);
+  if (Asm->ShrinkWrappedFrame.empty())
+    beginFunclet(MF->front(), Asm->CurrentFnSym);
 }
 
 void WinException::markFunctionEnd() {
@@ -235,8 +238,14 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
     return;
   }
 
-  // Mark 'Sym' as starting our funclet.
+  // Mark 'Sym' as starting our funclet. A shrink-wrapped prologue begins the
+  // function's unwind range, and its tables count from there, the region
+  // start its personality is given.
   if (shouldEmitMoves || shouldEmitPersonality) {
+    if (&MBB != &Asm->MF->front() && !MBB.isEHFuncletEntry()) {
+      RegionBegin = Asm->createTempSymbol("unwind_begin");
+      Asm->OutStreamer->emitLabel(RegionBegin);
+    }
     CurrentFuncletTextSection = Asm->OutStreamer->getCurrentSectionOnly();
     Asm->OutStreamer->emitWinCFIStartProc(Sym);
   }

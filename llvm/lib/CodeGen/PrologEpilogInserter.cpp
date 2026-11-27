@@ -24,6 +24,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -431,6 +432,15 @@ void PEIImpl::calculateSaveRestoreBlocks(MachineFunction &MF) {
     // epilogue.
     if (!RestoreBlock->succ_empty() || RestoreBlock->isReturnBlock())
       RestoreBlocks.push_back(RestoreBlock);
+    // A funclet has a prologue and epilogues of its own wherever the
+    // function's are.
+    SmallVector<int, 0> Funclets = getEHFunclets(MF);
+    for (MachineBasicBlock &MBB : MF) {
+      if (MBB.isEHFuncletEntry())
+        SaveBlocks.push_back(&MBB);
+      if (MBB.isReturnBlock() && Funclets[MBB.getNumber()] >= 0)
+        RestoreBlocks.push_back(&MBB);
+    }
     return;
   }
 

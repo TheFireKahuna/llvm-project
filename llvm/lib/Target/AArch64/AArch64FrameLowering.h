@@ -111,6 +111,8 @@ public:
     return true;
   }
 
+  bool canShrinkWrapWindowsUnwindInfo(const MachineFunction &MF) const override;
+
   bool enableStackSlotScavenging(const MachineFunction &MF) const override;
   TargetStackID::Value getStackIDForScalableVectors() const override;
 

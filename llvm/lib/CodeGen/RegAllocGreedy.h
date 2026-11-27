@@ -272,6 +272,9 @@ private:
   /// Callee-save register cost, calculated once per machine function.
   BlockFrequency CSRCost;
 
+  /// The block that dominates every call that is not a tail call, if any.
+  const MachineBasicBlock *CallDominator = nullptr;
+
   /// Set of broken hints that may be reconciled later because of eviction.
   SmallSetVector<const LiveInterval *, 8> SetOfBrokenHints;
 
@@ -367,6 +370,15 @@ private:
                                AllocationOrder &Order) const;
   BlockFrequency calcSpillCost(const LiveInterval &LI);
   void initializeCSRCost();
+  /// The block that dominates \p MBB, if any, and every instruction that
+  /// reads or writes \p Reg or, for a physical register, a live range
+  /// assigned to it; \p MBB where there is no such instruction.
+  const MachineBasicBlock *getUseDominator(Register Reg,
+                                           const MachineBasicBlock *MBB) const;
+  /// What assigning \p VirtReg to \p PhysReg costs in saving and restoring
+  /// the callee-saved registers in hotter code than they are saved in so far.
+  BlockFrequency getCSRCost(const LiveInterval &VirtReg,
+                            MCRegister PhysReg) const;
   MCRegister tryBlockSplit(const LiveInterval &, AllocationOrder &,
                            SmallVectorImpl<Register> &);
   MCRegister tryInstructionSplit(const LiveInterval &, AllocationOrder &,

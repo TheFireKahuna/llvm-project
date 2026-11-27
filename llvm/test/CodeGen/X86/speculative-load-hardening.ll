@@ -101,14 +101,12 @@ define void @test_basic_conditions(i32 %a, i32 %b, i32 %c, ptr %ptr1, ptr %ptr2,
 ;
 ; X64-LFENCE-LABEL: test_basic_conditions:
 ; X64-LFENCE:       # %bb.0: # %entry
-; X64-LFENCE-NEXT:    pushq %rbx
-; X64-LFENCE-NEXT:    .cfi_def_cfa_offset 16
-; X64-LFENCE-NEXT:    subq $16, %rsp
-; X64-LFENCE-NEXT:    .cfi_def_cfa_offset 32
-; X64-LFENCE-NEXT:    .cfi_offset %rbx, -16
 ; X64-LFENCE-NEXT:    testl %edi, %edi
-; X64-LFENCE-NEXT:    jne .LBB1_6
-; X64-LFENCE-NEXT:  # %bb.1: # %then1
+; X64-LFENCE-NEXT:    je .LBB1_1
+; X64-LFENCE-NEXT:  .LBB1_6: # %exit
+; X64-LFENCE-NEXT:    lfence
+; X64-LFENCE-NEXT:    retq
+; X64-LFENCE-NEXT:  .LBB1_1: # %then1
 ; X64-LFENCE-NEXT:    lfence
 ; X64-LFENCE-NEXT:    testl %esi, %esi
 ; X64-LFENCE-NEXT:    jne .LBB1_6
@@ -123,6 +121,11 @@ define void @test_basic_conditions(i32 %a, i32 %b, i32 %c, ptr %ptr1, ptr %ptr2,
 ; X64-LFENCE-NEXT:    movl %ecx, (%r8,%rcx,4)
 ; X64-LFENCE-NEXT:    jmp .LBB1_5
 ; X64-LFENCE-NEXT:  .LBB1_3: # %then3
+; X64-LFENCE-NEXT:    pushq %rbx
+; X64-LFENCE-NEXT:    .cfi_def_cfa_offset 16
+; X64-LFENCE-NEXT:    subq $16, %rsp
+; X64-LFENCE-NEXT:    .cfi_def_cfa_offset 32
+; X64-LFENCE-NEXT:    .cfi_offset %rbx, -16
 ; X64-LFENCE-NEXT:    lfence
 ; X64-LFENCE-NEXT:    movl (%rcx), %eax
 ; X64-LFENCE-NEXT:    addl (%r8), %eax
@@ -135,15 +138,15 @@ define void @test_basic_conditions(i32 %a, i32 %b, i32 %c, ptr %ptr1, ptr %ptr2,
 ; X64-LFENCE-NEXT:    callq leak@PLT
 ; X64-LFENCE-NEXT:    movq %rbx, %rax
 ; X64-LFENCE-NEXT:    movq {{[-0-9]+}}(%r{{[sb]}}p), %r8 # 8-byte Reload
-; X64-LFENCE-NEXT:  .LBB1_5: # %merge
-; X64-LFENCE-NEXT:    movslq (%rax), %rax
-; X64-LFENCE-NEXT:    movl $0, (%r8,%rax,4)
-; X64-LFENCE-NEXT:  .LBB1_6: # %exit
-; X64-LFENCE-NEXT:    lfence
 ; X64-LFENCE-NEXT:    addq $16, %rsp
 ; X64-LFENCE-NEXT:    .cfi_def_cfa_offset 16
 ; X64-LFENCE-NEXT:    popq %rbx
 ; X64-LFENCE-NEXT:    .cfi_def_cfa_offset 8
+; X64-LFENCE-NEXT:    .cfi_restore %rbx
+; X64-LFENCE-NEXT:  .LBB1_5: # %merge
+; X64-LFENCE-NEXT:    movslq (%rax), %rax
+; X64-LFENCE-NEXT:    movl $0, (%r8,%rax,4)
+; X64-LFENCE-NEXT:    lfence
 ; X64-LFENCE-NEXT:    retq
 entry:
   %a.cmp = icmp eq i32 %a, 0
@@ -246,14 +249,17 @@ define void @test_basic_loop(i32 %a, i32 %b, ptr %ptr1, ptr %ptr2) nounwind spec
 ;
 ; X64-LFENCE-LABEL: test_basic_loop:
 ; X64-LFENCE:       # %bb.0: # %entry
+; X64-LFENCE-NEXT:    testl %edi, %edi
+; X64-LFENCE-NEXT:    je .LBB2_1
+; X64-LFENCE-NEXT:  # %bb.4: # %exit
+; X64-LFENCE-NEXT:    lfence
+; X64-LFENCE-NEXT:    retq
+; X64-LFENCE-NEXT:  .LBB2_1: # %l.header.preheader
 ; X64-LFENCE-NEXT:    pushq %rbp
 ; X64-LFENCE-NEXT:    pushq %r15
 ; X64-LFENCE-NEXT:    pushq %r14
 ; X64-LFENCE-NEXT:    pushq %rbx
 ; X64-LFENCE-NEXT:    pushq %rax
-; X64-LFENCE-NEXT:    testl %edi, %edi
-; X64-LFENCE-NEXT:    jne .LBB2_3
-; X64-LFENCE-NEXT:  # %bb.1: # %l.header.preheader
 ; X64-LFENCE-NEXT:    movq %rcx, %rbx
 ; X64-LFENCE-NEXT:    movq %rdx, %r14
 ; X64-LFENCE-NEXT:    movl %esi, %ebp
@@ -269,13 +275,13 @@ define void @test_basic_loop(i32 %a, i32 %b, ptr %ptr1, ptr %ptr2) nounwind spec
 ; X64-LFENCE-NEXT:    incl %r15d
 ; X64-LFENCE-NEXT:    cmpl %ebp, %r15d
 ; X64-LFENCE-NEXT:    jl .LBB2_2
-; X64-LFENCE-NEXT:  .LBB2_3: # %exit
-; X64-LFENCE-NEXT:    lfence
+; X64-LFENCE-NEXT:  # %bb.3:
 ; X64-LFENCE-NEXT:    addq $8, %rsp
 ; X64-LFENCE-NEXT:    popq %rbx
 ; X64-LFENCE-NEXT:    popq %r14
 ; X64-LFENCE-NEXT:    popq %r15
 ; X64-LFENCE-NEXT:    popq %rbp
+; X64-LFENCE-NEXT:    lfence
 ; X64-LFENCE-NEXT:    retq
 entry:
   %a.cmp = icmp eq i32 %a, 0
@@ -397,6 +403,12 @@ define void @test_basic_nested_loop(i32 %a, i32 %b, i32 %c, ptr %ptr1, ptr %ptr2
 ;
 ; X64-LFENCE-LABEL: test_basic_nested_loop:
 ; X64-LFENCE:       # %bb.0: # %entry
+; X64-LFENCE-NEXT:    testl %edi, %edi
+; X64-LFENCE-NEXT:    je .LBB3_1
+; X64-LFENCE-NEXT:  # %bb.7: # %exit
+; X64-LFENCE-NEXT:    lfence
+; X64-LFENCE-NEXT:    retq
+; X64-LFENCE-NEXT:  .LBB3_1: # %l1.header.preheader
 ; X64-LFENCE-NEXT:    pushq %rbp
 ; X64-LFENCE-NEXT:    pushq %r15
 ; X64-LFENCE-NEXT:    pushq %r14
@@ -404,19 +416,6 @@ define void @test_basic_nested_loop(i32 %a, i32 %b, i32 %c, ptr %ptr1, ptr %ptr2
 ; X64-LFENCE-NEXT:    pushq %r12
 ; X64-LFENCE-NEXT:    pushq %rbx
 ; X64-LFENCE-NEXT:    pushq %rax
-; X64-LFENCE-NEXT:    testl %edi, %edi
-; X64-LFENCE-NEXT:    je .LBB3_1
-; X64-LFENCE-NEXT:  .LBB3_6: # %exit
-; X64-LFENCE-NEXT:    lfence
-; X64-LFENCE-NEXT:    addq $8, %rsp
-; X64-LFENCE-NEXT:    popq %rbx
-; X64-LFENCE-NEXT:    popq %r12
-; X64-LFENCE-NEXT:    popq %r13
-; X64-LFENCE-NEXT:    popq %r14
-; X64-LFENCE-NEXT:    popq %r15
-; X64-LFENCE-NEXT:    popq %rbp
-; X64-LFENCE-NEXT:    retq
-; X64-LFENCE-NEXT:  .LBB3_1: # %l1.header.preheader
 ; X64-LFENCE-NEXT:    movq %r8, %rbx
 ; X64-LFENCE-NEXT:    movq %rcx, %r14
 ; X64-LFENCE-NEXT:    movl %edx, %ebp
@@ -456,6 +455,16 @@ define void @test_basic_nested_loop(i32 %a, i32 %b, i32 %c, ptr %ptr1, ptr %ptr2
 ; X64-LFENCE-NEXT:    cmpl %ebp, %r13d
 ; X64-LFENCE-NEXT:    jl .LBB3_4
 ; X64-LFENCE-NEXT:    jmp .LBB3_5
+; X64-LFENCE-NEXT:  .LBB3_6:
+; X64-LFENCE-NEXT:    addq $8, %rsp
+; X64-LFENCE-NEXT:    popq %rbx
+; X64-LFENCE-NEXT:    popq %r12
+; X64-LFENCE-NEXT:    popq %r13
+; X64-LFENCE-NEXT:    popq %r14
+; X64-LFENCE-NEXT:    popq %r15
+; X64-LFENCE-NEXT:    popq %rbp
+; X64-LFENCE-NEXT:    lfence
+; X64-LFENCE-NEXT:    retq
 entry:
   %a.cmp = icmp eq i32 %a, 0
   br i1 %a.cmp, label %l1.header, label %exit

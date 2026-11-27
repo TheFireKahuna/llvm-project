@@ -17,13 +17,14 @@ define void @g64xh(i64 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g64xh:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testl $2048, %ecx # imm = 0x800
 ; CHECK-WIN32-64-NEXT:    jne .LBB0_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB0_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB0_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: g64xh:
@@ -59,13 +60,14 @@ define void @g64xl(i64 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g64xl:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testb $8, %cl
 ; CHECK-WIN32-64-NEXT:    jne .LBB1_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB1_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB1_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: g64xl:
@@ -101,13 +103,14 @@ define void @g32xh(i32 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g32xh:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testl $2048, %ecx # imm = 0x800
 ; CHECK-WIN32-64-NEXT:    jne .LBB2_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB2_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB2_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: g32xh:
@@ -143,13 +146,14 @@ define void @g32xl(i32 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g32xl:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testb $8, %cl
 ; CHECK-WIN32-64-NEXT:    jne .LBB3_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB3_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB3_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: g32xl:
@@ -185,14 +189,15 @@ define void @g16xh(i16 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g16xh:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    # kill: def $cx killed $cx def $ecx
 ; CHECK-WIN32-64-NEXT:    testl $2048, %ecx # imm = 0x800
 ; CHECK-WIN32-64-NEXT:    jne .LBB4_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB4_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB4_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: g16xh:
@@ -228,14 +233,15 @@ define void @g16xl(i16 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g16xl:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    # kill: def $cx killed $cx def $ecx
 ; CHECK-WIN32-64-NEXT:    testb $8, %cl
 ; CHECK-WIN32-64-NEXT:    jne .LBB5_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB5_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB5_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: g16xl:
@@ -272,13 +278,12 @@ define void @g64x16(i64 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g64x16:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testl $32896, %ecx # imm = 0x8080
 ; CHECK-WIN32-64-NEXT:    je .LBB6_1
 ; CHECK-WIN32-64-NEXT:  # %bb.2: # %no
-; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
 ; CHECK-WIN32-64-NEXT:  .LBB6_1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
@@ -318,12 +323,13 @@ define void @g64x16minsize(i64 inreg %x) nounwind minsize {
 ;
 ; CHECK-WIN32-64-LABEL: g64x16minsize:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testw $-32640, %cx # imm = 0x8080
-; CHECK-WIN32-64-NEXT:    jne .LBB7_2
-; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    je .LBB7_1
+; CHECK-WIN32-64-NEXT:  # %bb.2: # %no
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB7_1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB7_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
 ;
@@ -362,13 +368,12 @@ define void @g32x16(i32 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g32x16:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testl $32896, %ecx # imm = 0x8080
 ; CHECK-WIN32-64-NEXT:    je .LBB8_1
 ; CHECK-WIN32-64-NEXT:  # %bb.2: # %no
-; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
 ; CHECK-WIN32-64-NEXT:  .LBB8_1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
@@ -408,12 +413,13 @@ define void @g32x16minsize(i32 inreg %x) nounwind minsize {
 ;
 ; CHECK-WIN32-64-LABEL: g32x16minsize:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testw $-32640, %cx # imm = 0x8080
-; CHECK-WIN32-64-NEXT:    jne .LBB9_2
-; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    je .LBB9_1
+; CHECK-WIN32-64-NEXT:  # %bb.2: # %no
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB9_1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB9_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
 ;
@@ -452,13 +458,12 @@ define void @g64x32(i64 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: g64x32:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testl $268468352, %ecx # imm = 0x10008080
 ; CHECK-WIN32-64-NEXT:    je .LBB10_1
 ; CHECK-WIN32-64-NEXT:  # %bb.2: # %no
-; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
 ; CHECK-WIN32-64-NEXT:  .LBB10_1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
@@ -498,14 +503,13 @@ define void @truncand32(i16 inreg %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: truncand32:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    # kill: def $cx killed $cx def $ecx
 ; CHECK-WIN32-64-NEXT:    testl $2049, %ecx # imm = 0x801
 ; CHECK-WIN32-64-NEXT:    je .LBB11_1
 ; CHECK-WIN32-64-NEXT:  # %bb.2: # %no
-; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
 ; CHECK-WIN32-64-NEXT:  .LBB11_1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
@@ -545,12 +549,13 @@ define void @testw(i16 inreg %x) nounwind minsize {
 ;
 ; CHECK-WIN32-64-LABEL: testw:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testw $2049, %cx # imm = 0x801
-; CHECK-WIN32-64-NEXT:    jne .LBB12_2
-; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    je .LBB12_1
+; CHECK-WIN32-64-NEXT:  # %bb.2: # %no
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB12_1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB12_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    retq
 ;
@@ -588,13 +593,14 @@ define void @and16_trunc_8_sign(i16 %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: and16_trunc_8_sign:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testb %cl, %cl
 ; CHECK-WIN32-64-NEXT:    js .LBB13_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB13_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB13_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: and16_trunc_8_sign:
@@ -631,13 +637,14 @@ define void @and32_trunc_8_sign(i32 %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: and32_trunc_8_sign:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testb %cl, %cl
 ; CHECK-WIN32-64-NEXT:    js .LBB14_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB14_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB14_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: and32_trunc_8_sign:
@@ -674,13 +681,14 @@ define void @and64_trunc_8_sign(i64 %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: and64_trunc_8_sign:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testb %cl, %cl
 ; CHECK-WIN32-64-NEXT:    js .LBB15_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB15_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB15_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: and64_trunc_8_sign:
@@ -717,13 +725,14 @@ define void @and32_trunc_16_sign(i32 %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: and32_trunc_16_sign:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testw %cx, %cx
 ; CHECK-WIN32-64-NEXT:    js .LBB16_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB16_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB16_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: and32_trunc_16_sign:
@@ -760,13 +769,14 @@ define void @and32_trunc_16_sign_minsize(i32 %x) minsize nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: and32_trunc_16_sign_minsize:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testw %cx, %cx
 ; CHECK-WIN32-64-NEXT:    js .LBB17_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB17_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB17_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: and32_trunc_16_sign_minsize:
@@ -803,13 +813,14 @@ define void @and64_trunc_16_sign(i64 %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: and64_trunc_16_sign:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testw %cx, %cx
 ; CHECK-WIN32-64-NEXT:    js .LBB18_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB18_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB18_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: and64_trunc_16_sign:
@@ -847,13 +858,14 @@ define void @and64_trunc_16_sign_minsize(i64 %x) minsize nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: and64_trunc_16_sign_minsize:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testw %cx, %cx
 ; CHECK-WIN32-64-NEXT:    js .LBB19_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB19_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB19_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: and64_trunc_16_sign_minsize:
@@ -891,13 +903,14 @@ define void @and64_trunc_32_sign(i64 %x) nounwind {
 ;
 ; CHECK-WIN32-64-LABEL: and64_trunc_32_sign:
 ; CHECK-WIN32-64:       # %bb.0:
-; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    testl %ecx, %ecx
 ; CHECK-WIN32-64-NEXT:    js .LBB20_2
 ; CHECK-WIN32-64-NEXT:  # %bb.1: # %yes
+; CHECK-WIN32-64-NEXT:    subq $40, %rsp
 ; CHECK-WIN32-64-NEXT:    callq bar
-; CHECK-WIN32-64-NEXT:  .LBB20_2: # %no
 ; CHECK-WIN32-64-NEXT:    addq $40, %rsp
+; CHECK-WIN32-64-NEXT:    retq
+; CHECK-WIN32-64-NEXT:  .LBB20_2: # %no
 ; CHECK-WIN32-64-NEXT:    retq
 ;
 ; CHECK-X86-LABEL: and64_trunc_32_sign:

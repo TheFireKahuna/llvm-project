@@ -560,6 +560,8 @@ define i128 @abd_ext_i128(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    xor t6, t0, t1
 ; RV32I-NEXT:    xor s0, a7, a6
 ; RV32I-NEXT:    or t6, s0, t6
+; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    beqz t6, .LBB11_6
 ; RV32I-NEXT:  # %bb.5:
 ; RV32I-NEXT:    mv t3, t4
@@ -603,8 +605,6 @@ define i128 @abd_ext_i128(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    sw a1, 4(a0)
 ; RV32I-NEXT:    sw a3, 8(a0)
 ; RV32I-NEXT:    sw a2, 12(a0)
-; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    ret
 ;
 ; RV64I-LABEL: abd_ext_i128:
@@ -656,6 +656,8 @@ define i128 @abd_ext_i128(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    xor t6, t0, t1
 ; RV32ZBB-NEXT:    xor s0, a7, a6
 ; RV32ZBB-NEXT:    or t6, s0, t6
+; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    beqz t6, .LBB11_6
 ; RV32ZBB-NEXT:  # %bb.5:
 ; RV32ZBB-NEXT:    mv t3, t4
@@ -699,8 +701,6 @@ define i128 @abd_ext_i128(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    sw a1, 4(a0)
 ; RV32ZBB-NEXT:    sw a3, 8(a0)
 ; RV32ZBB-NEXT:    sw a2, 12(a0)
-; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    ret
 ;
 ; RV64ZBB-LABEL: abd_ext_i128:
@@ -760,6 +760,8 @@ define i128 @abd_ext_i128_undef(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    xor t6, t0, t1
 ; RV32I-NEXT:    xor s0, a7, a6
 ; RV32I-NEXT:    or t6, s0, t6
+; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    beqz t6, .LBB12_6
 ; RV32I-NEXT:  # %bb.5:
 ; RV32I-NEXT:    mv t3, t4
@@ -803,8 +805,6 @@ define i128 @abd_ext_i128_undef(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    sw a1, 4(a0)
 ; RV32I-NEXT:    sw a3, 8(a0)
 ; RV32I-NEXT:    sw a2, 12(a0)
-; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    ret
 ;
 ; RV64I-LABEL: abd_ext_i128_undef:
@@ -856,6 +856,8 @@ define i128 @abd_ext_i128_undef(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    xor t6, t0, t1
 ; RV32ZBB-NEXT:    xor s0, a7, a6
 ; RV32ZBB-NEXT:    or t6, s0, t6
+; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    beqz t6, .LBB12_6
 ; RV32ZBB-NEXT:  # %bb.5:
 ; RV32ZBB-NEXT:    mv t3, t4
@@ -899,8 +901,6 @@ define i128 @abd_ext_i128_undef(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    sw a1, 4(a0)
 ; RV32ZBB-NEXT:    sw a3, 8(a0)
 ; RV32ZBB-NEXT:    sw a2, 12(a0)
-; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    ret
 ;
 ; RV64ZBB-LABEL: abd_ext_i128_undef:
@@ -1149,6 +1149,8 @@ define i128 @abd_minmax_i128(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    xor t6, t0, t1
 ; RV32I-NEXT:    xor s0, a7, a6
 ; RV32I-NEXT:    or t6, s0, t6
+; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    beqz t6, .LBB17_6
 ; RV32I-NEXT:  # %bb.5:
 ; RV32I-NEXT:    mv t3, t4
@@ -1192,8 +1194,6 @@ define i128 @abd_minmax_i128(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    sw a1, 4(a0)
 ; RV32I-NEXT:    sw a3, 8(a0)
 ; RV32I-NEXT:    sw a2, 12(a0)
-; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    ret
 ;
 ; RV64I-LABEL: abd_minmax_i128:
@@ -1245,6 +1245,8 @@ define i128 @abd_minmax_i128(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    xor t6, t0, t1
 ; RV32ZBB-NEXT:    xor s0, a7, a6
 ; RV32ZBB-NEXT:    or t6, s0, t6
+; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    beqz t6, .LBB17_6
 ; RV32ZBB-NEXT:  # %bb.5:
 ; RV32ZBB-NEXT:    mv t3, t4
@@ -1288,8 +1290,6 @@ define i128 @abd_minmax_i128(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    sw a1, 4(a0)
 ; RV32ZBB-NEXT:    sw a3, 8(a0)
 ; RV32ZBB-NEXT:    sw a2, 12(a0)
-; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    ret
 ;
 ; RV64ZBB-LABEL: abd_minmax_i128:
@@ -1540,6 +1540,8 @@ define i128 @abd_cmp_i128(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    xor t6, t0, t1
 ; RV32I-NEXT:    xor s0, a7, a6
 ; RV32I-NEXT:    or t6, s0, t6
+; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    beqz t6, .LBB22_6
 ; RV32I-NEXT:  # %bb.5:
 ; RV32I-NEXT:    mv t3, t4
@@ -1583,8 +1585,6 @@ define i128 @abd_cmp_i128(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    sw a1, 4(a0)
 ; RV32I-NEXT:    sw a3, 8(a0)
 ; RV32I-NEXT:    sw a2, 12(a0)
-; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    ret
 ;
 ; RV64I-LABEL: abd_cmp_i128:
@@ -1636,6 +1636,8 @@ define i128 @abd_cmp_i128(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    xor t6, t0, t1
 ; RV32ZBB-NEXT:    xor s0, a7, a6
 ; RV32ZBB-NEXT:    or t6, s0, t6
+; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    beqz t6, .LBB22_6
 ; RV32ZBB-NEXT:  # %bb.5:
 ; RV32ZBB-NEXT:    mv t3, t4
@@ -1679,8 +1681,6 @@ define i128 @abd_cmp_i128(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    sw a1, 4(a0)
 ; RV32ZBB-NEXT:    sw a3, 8(a0)
 ; RV32ZBB-NEXT:    sw a2, 12(a0)
-; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    ret
 ;
 ; RV64ZBB-LABEL: abd_cmp_i128:
@@ -2531,6 +2531,8 @@ define i128 @abd_select_i128(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    xor t6, t0, t1
 ; RV32I-NEXT:    xor s0, a7, a6
 ; RV32I-NEXT:    or t6, s0, t6
+; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    beqz t6, .LBB38_6
 ; RV32I-NEXT:  # %bb.5:
 ; RV32I-NEXT:    mv t3, t4
@@ -2574,8 +2576,6 @@ define i128 @abd_select_i128(i128 %a, i128 %b) nounwind {
 ; RV32I-NEXT:    sw a1, 4(a0)
 ; RV32I-NEXT:    sw a3, 8(a0)
 ; RV32I-NEXT:    sw a2, 12(a0)
-; RV32I-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32I-NEXT:    addi sp, sp, 16
 ; RV32I-NEXT:    ret
 ;
 ; RV64I-LABEL: abd_select_i128:
@@ -2627,6 +2627,8 @@ define i128 @abd_select_i128(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    xor t6, t0, t1
 ; RV32ZBB-NEXT:    xor s0, a7, a6
 ; RV32ZBB-NEXT:    or t6, s0, t6
+; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
+; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    beqz t6, .LBB38_6
 ; RV32ZBB-NEXT:  # %bb.5:
 ; RV32ZBB-NEXT:    mv t3, t4
@@ -2670,8 +2672,6 @@ define i128 @abd_select_i128(i128 %a, i128 %b) nounwind {
 ; RV32ZBB-NEXT:    sw a1, 4(a0)
 ; RV32ZBB-NEXT:    sw a3, 8(a0)
 ; RV32ZBB-NEXT:    sw a2, 12(a0)
-; RV32ZBB-NEXT:    lw s0, 12(sp) # 4-byte Folded Reload
-; RV32ZBB-NEXT:    addi sp, sp, 16
 ; RV32ZBB-NEXT:    ret
 ;
 ; RV64ZBB-LABEL: abd_select_i128:

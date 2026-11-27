@@ -279,7 +279,8 @@ void EHStreamer::computeCallSiteTable(
       // every basic block section.
       auto &Range = Asm->MBBSectionRanges[MBB.getSectionID()];
       CallSiteRanges.push_back(
-          {Range.BeginLabel,
+          {RegionBegin && &MBB == &Asm->MF->front() ? RegionBegin
+                                                     : Range.BeginLabel,
            FirstFunclet ? FirstFunclet->getSymbol() : Range.EndLabel,
            Asm->getMBBExceptionSym(MBB), CallSites.size()});
       PreviousIsInvoke = false;
@@ -529,7 +530,7 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   // scope gives the number of the scope around it, zero for none, the number
   // of its handlers and, for a cleanup, which has none, the cleanup, or for
   // each handler its selector and its pad. A call site gives its start and
-  // its scope. Offsets are from the function's start.
+  // its scope. Offsets are from the start of the function's unwind range.
   if (usesCalledCleanups(MF->getFunction())) {
     MCSymbol *FuncBegin = CallSiteRanges.front().FragmentBeginLabel;
     MCSymbol *ScopesBegin = Asm->createTempSymbol("scopes_begin");

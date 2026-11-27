@@ -149,6 +149,20 @@ getDescribableGlobalAddress(const Constant *C, int64_t &Offset,
 /// it cannot, a register holding the address is the more robust description.
 LLVM_ABI bool canDescribeGlobalAddressInLocationList(const MachineFunction &MF);
 
+/// Returns the blocks that \p MF's frame spans, where shrink-wrapping placed
+/// the prologue of a function with Windows unwind info past its entry block:
+/// the prologue's block and those it dominates that no path from an epilogue
+/// reaches without passing the prologue. The prologue begins its block once
+/// FuncletLayout has run.
+/// They are the function's unwind range, laid out contiguously; the others
+/// touch no frame and are leaf code, with no unwind info. Empty otherwise.
+LLVM_ABI SmallPtrSet<const MachineBasicBlock *, 16>
+getShrinkWrappedFrame(const MachineFunction &MF);
+
+/// Returns the block where \p MF's unwind range begins: the first block of its
+/// shrink-wrapped frame, else its entry block.
+LLVM_ABI MachineBasicBlock &getUnwindRangeStart(MachineFunction &MF);
+
 /// Returns true if \p Call is in a cleanup funclet that Windows Itanium's
 /// unwinder calls. Such a call may be a tail call, though the IR cannot mark
 /// it one: its arguments reach the function's frame, which outlives the

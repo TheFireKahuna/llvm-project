@@ -22,6 +22,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/CodeGen/LiveRegMatrix.h"
+#include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
@@ -65,6 +66,44 @@ bool AArch64RegisterInfo::regNeedsCFI(MCRegister Reg,
 
   RegToUseForCFI = Reg;
   return true;
+}
+
+unsigned AArch64RegisterInfo::getCSRCostScale(const MachineFunction &MF) const {
+  // A call saves the link register, and a callee-saved register is saved in
+  // a pair with it or with another, so a register kept unused saves little
+  // where the frame is set up at the function's entry anyway. The registers
+  // are worth their cost only where keeping them out of the code that is not
+  // cold lets the frame leave the entry: where the function has no stack
+  // object, and cold code alone calls, and is entered at one block and left
+  // from one, the one place each that shrink wrapping has for the frame's
+  // setup and its removal. Cold code is what a branch taken less than once in
+  // a hundred leads to.
+  if (MF.getFrameInfo().hasStackObjects())
+    return 0;
+  MachineBranchProbabilityInfo MBPI;
+  SmallVector<const MachineBasicBlock *, 16> Work = {&MF.front()};
+  SmallPtrSet<const MachineBasicBlock *, 16> Warm = {&MF.front()};
+  while (!Work.empty()) {
+    const MachineBasicBlock *MBB = Work.pop_back_val();
+    for (const MachineInstr &MI : *MBB)
+      if (MI.isCall() && !MI.isReturn())
+        return 0;
+    for (const MachineBasicBlock *Succ : MBB->successors())
+      if (MBPI.getEdgeProbability(MBB, Succ) >= BranchProbability(1, 100) &&
+          Warm.insert(Succ).second)
+        Work.push_back(Succ);
+  }
+  auto IsWarm = [&](const MachineBasicBlock *MBB) {
+    return Warm.contains(MBB);
+  };
+  unsigned Entered = 0, Left = 0;
+  for (const MachineBasicBlock &MBB : MF) {
+    if (IsWarm(&MBB))
+      continue;
+    Entered += any_of(MBB.predecessors(), IsWarm);
+    Left += any_of(MBB.successors(), IsWarm) || MBB.isReturnBlock();
+  }
+  return Entered <= 1 && Left <= 1;
 }
 
 const MCPhysReg *

@@ -254,18 +254,17 @@ declare ptr @llvm.launder.invariant.group.p0(ptr)
 define void @test_invariant_group(i32 %arg, i1 %c) {
 ; CHECK-LABEL: test_invariant_group:
 ; CHECK:       // %bb.0: // %bb
-; CHECK-NEXT:    tbz w1, #0, .LBB5_4
+; CHECK-NEXT:    tbz w1, #0, .LBB5_3
 ; CHECK-NEXT:  // %bb.1: // %bb6
-; CHECK-NEXT:    cbz w0, .LBB5_3
+; CHECK-NEXT:    cbz w0, .LBB5_4
 ; CHECK-NEXT:  .LBB5_2: // %bb1
 ; CHECK-NEXT:    // =>This Inner Loop Header: Depth=1
 ; CHECK-NEXT:    tbnz w1, #0, .LBB5_2
-; CHECK-NEXT:    b .LBB5_4
-; CHECK-NEXT:  .LBB5_3: // %bb2
-; CHECK-NEXT:    tbz w1, #0, .LBB5_5
-; CHECK-NEXT:  .LBB5_4: // %bb5
+; CHECK-NEXT:  .LBB5_3: // %bb5
 ; CHECK-NEXT:    ret
-; CHECK-NEXT:  .LBB5_5: // %bb4
+; CHECK-NEXT:  .LBB5_4: // %bb2
+; CHECK-NEXT:    tbnz w1, #0, .LBB5_3
+; CHECK-NEXT:  // %bb.5: // %bb4
 ; CHECK-NEXT:    mov w8, #1 // =0x1
 ; CHECK-NEXT:    str x8, [x8]
 ; CHECK-NEXT:    ret

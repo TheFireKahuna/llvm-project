@@ -6,7 +6,7 @@ define <32 x half> @dump_vec() {
 ; CHECK:       # %bb.0:
 ; CHECK-NEXT:    testb %al, %al
 ; CHECK-NEXT:    jne .LBB0_1
-; CHECK-NEXT:  # %bb.3: # %cond.load
+; CHECK-NEXT:  # %bb.2: # %cond.load
 ; CHECK-NEXT:    vmovups (%rax), %zmm0
 ; CHECK-NEXT:    retq
 ; CHECK-NEXT:  .LBB0_1:

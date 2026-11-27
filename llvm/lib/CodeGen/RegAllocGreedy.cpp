@@ -2523,7 +2523,61 @@ void RAGreedy::aboutToRemoveInterval(const LiveInterval &LI) {
   SetOfBrokenHints.remove(&LI);
 }
 
+const MachineBasicBlock *
+RAGreedy::getUseDominator(Register Reg, const MachineBasicBlock *MBB) const {
+  auto Join = [&](const MachineBasicBlock *Use) {
+    MBB = MBB ? DomTree->findNearestCommonDominator(MBB, Use) : Use;
+  };
+  if (Reg.isVirtual()) {
+    for (const MachineInstr &MI : MRI->reg_nodbg_instructions(Reg))
+      Join(MI.getParent());
+    return MBB;
+  }
+  for (MCRegUnit Unit : TRI->regunits(Reg.asMCReg()))
+    for (auto SI = Matrix->getLiveUnions()[static_cast<unsigned>(Unit)].begin();
+         SI.valid(); ++SI)
+      MBB = getUseDominator(SI.value()->reg(), MBB);
+  return MBB;
+}
+
+BlockFrequency RAGreedy::getCSRCost(const LiveInterval &VirtReg,
+                                    MCRegister PhysReg) const {
+  // The callee-saved registers are saved in one place, which dominates all
+  // the code that calls or uses any of them, so a live range pays for moving
+  // the saves from there to the block that dominates its own code too, and
+  // nothing where that is the same block or one no hotter. Nor does it where
+  // the frame holds an object other than a spill slot, whose uses are not
+  // known to stay clear of the function's entry.
+  if (!CSRCost.getFrequency() || !RegClassInfo.getLastCalleeSavedAlias(PhysReg))
+    return BlockFrequency(0);
+  const MachineFrameInfo &MFI = MF->getFrameInfo();
+  for (int I = 0, E = MFI.getObjectIndexEnd(); I != E; ++I)
+    if (!MFI.isDeadObjectIndex(I) && !MFI.isSpillSlotObjectIndex(I))
+      return BlockFrequency(0);
+  const MachineBasicBlock *Save = CallDominator;
+  for (const MCPhysReg *CSR = MRI->getCalleeSavedRegs(); *CSR; ++CSR)
+    Save = getUseDominator(*CSR, Save);
+  BlockFrequency Entry = MBFI->getEntryFreq();
+  BlockFrequency From =
+      Save ? std::min(MBFI->getBlockFreq(Save), Entry) : BlockFrequency(0);
+  BlockFrequency To = std::min(
+      MBFI->getBlockFreq(getUseDominator(VirtReg.reg(), Save)), Entry);
+  if (To <= From)
+    return BlockFrequency(0);
+  return CSRCost * BranchProbability::getBranchProbability(
+                       (To - From).getFrequency(), Entry.getFrequency());
+}
+
 void RAGreedy::initializeCSRCost() {
+  CSRCost = BlockFrequency(0);
+  CallDominator = nullptr;
+  for (const MachineBasicBlock &MBB : *MF)
+    if (any_of(MBB, [](const MachineInstr &MI) {
+          return MI.isCall() && !MI.isReturn();
+        }))
+      CallDominator = CallDominator ? DomTree->findNearestCommonDominator(
+                                          CallDominator, &MBB)
+                                    : &MBB;
   if (!CSRCostScale.getNumOccurrences() &&
       (CSRFirstTimeCost.getNumOccurrences() || TRI->getCSRCost())) {
     // We should deprecate the usage of CSRFirstTimeCost!
@@ -2553,19 +2607,23 @@ void RAGreedy::initializeCSRCost() {
       CSRCost =
           BlockFrequency(CSRCost.getFrequency() * (ActualEntry / FixedEntry));
     }
-  } else {
-    uint64_t EntryFreq = MBFI->getEntryFreq().getFrequency();
-    CSRCost = BlockFrequency(TRI->getCSRFirstUseCost(*MF) * EntryFreq);
-    unsigned Scale = TRI->getCSRCostScale(*MF);
-    // Command line specified CSRCostScale can override target's default value.
-    if (CSRCostScale.getNumOccurrences())
-      Scale = CSRCostScale;
-
-    if (Scale < 100)
-      CSRCost *= BranchProbability(Scale, 100);
-    else
-      CSRCost /= BranchProbability(100, Scale);
+    if (CSRFirstTimeCost.getNumOccurrences())
+      return;
   }
+
+  // Where the target states both costs, the larger one holds.
+  uint64_t EntryFreq = MBFI->getEntryFreq().getFrequency();
+  BlockFrequency Cost(TRI->getCSRFirstUseCost(*MF) * EntryFreq);
+  unsigned Scale = TRI->getCSRCostScale(*MF);
+  // Command line specified CSRCostScale can override target's default value.
+  if (CSRCostScale.getNumOccurrences())
+    Scale = CSRCostScale;
+
+  if (Scale < 100)
+    Cost *= BranchProbability(Scale, 100);
+  else
+    Cost /= BranchProbability(100, Scale);
+  CSRCost = std::max(CSRCost, Cost);
 }
 
 /// Collect the hint info for \p Reg.
@@ -2686,6 +2744,10 @@ void RAGreedy::tryHintRecoloring(const LiveInterval &VirtReg,
       LLVM_DEBUG(dbgs() << "Checking profitability:\n");
       BlockFrequency OldCopiesCost = getBrokenHintFreq(Info, CurrPhys);
       BlockFrequency NewCopiesCost = getBrokenHintFreq(Info, PhysReg);
+      // A live range that moves into a callee-saved register from one that
+      // needs no save pays for the save as its first assignment would.
+      if (!RegClassInfo.getLastCalleeSavedAlias(CurrPhys))
+        NewCopiesCost += getCSRCost(LI, PhysReg);
       LLVM_DEBUG(dbgs() << "Old Cost: " << printBlockFreq(*MBFI, OldCopiesCost)
                         << "\nNew Cost: "
                         << printBlockFreq(*MBFI, NewCopiesCost) << '\n');

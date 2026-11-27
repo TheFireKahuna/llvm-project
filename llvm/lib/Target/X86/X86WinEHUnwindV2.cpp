@@ -16,6 +16,7 @@
 #include "X86.h"
 #include "X86Subtarget.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstrBuilder.h"
@@ -422,12 +423,22 @@ bool runX86WinEHUnwindV2(MachineFunction &MF) {
     }
   }
 
-  // Note that the function is using Unwind v2.
-  MachineBasicBlock &FirstMBB = MF.front();
-  BuildMI(FirstMBB, FirstMBB.front(), findDebugLoc(FirstMBB),
-          TII->get(X86::SEH_UnwindVersion))
-      .addImm(2)
-      .setMIFlag(MachineInstr::FrameSetup);
+  // Note that the function is using Unwind v2, where its unwind range begins,
+  // and each funclet, which has unwind info of its own, where its prologue
+  // does.
+  MachineBasicBlock &FirstMBB = getUnwindRangeStart(MF);
+  for (MachineBasicBlock &MBB : MF) {
+    auto Prologue = &MBB == &FirstMBB ? MBB.begin() : MBB.end();
+    if (MBB.isEHFuncletEntry())
+      Prologue = find_if(MBB, [](const MachineInstr &MI) {
+        return MI.getFlag(MachineInstr::FrameSetup);
+      });
+    if (Prologue != MBB.end())
+      BuildMI(MBB, Prologue, findDebugLoc(MBB),
+              TII->get(X86::SEH_UnwindVersion))
+          .addImm(2)
+          .setMIFlag(MachineInstr::FrameSetup);
+  }
 
   return true;
 }

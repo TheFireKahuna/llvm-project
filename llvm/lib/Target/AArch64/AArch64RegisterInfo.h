@@ -64,6 +64,7 @@ public:
     // The cost of 2 means push and pop for each CSR.
     return 2;
   }
+  unsigned getCSRCostScale(const MachineFunction &MF) const override;
 
   const TargetRegisterClass *
   getSubClassWithSubReg(const TargetRegisterClass *RC,

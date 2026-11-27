@@ -552,52 +552,46 @@ define void @shrink_wrap_sign_non_leaf(i32 %x, i32 %cond) "sign-return-address"=
 ; NEGATE-CFI-V83A-NEXT:    ret
 ;
 ; WINCFI-COMPAT-LABEL: shrink_wrap_sign_non_leaf:
-; WINCFI-COMPAT:       .seh_proc shrink_wrap_sign_non_leaf
-; WINCFI-COMPAT-NEXT:  // %bb.0: // %entry
+; WINCFI-COMPAT:        // %bb.0: // %entry
+; WINCFI-COMPAT-NEXT:    cbnz w1, .LBB8_2
+; WINCFI-COMPAT-NEXT:  .Lunwind_begin0:
+; WINCFI-COMPAT-NEXT:  .seh_proc shrink_wrap_sign_non_leaf
+; WINCFI-COMPAT-NEXT:  // %bb.1: // %if.then
 ; WINCFI-COMPAT-NEXT:    hint #27
 ; WINCFI-COMPAT-NEXT:    .seh_pac_sign_lr
 ; WINCFI-COMPAT-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; WINCFI-COMPAT-NEXT:    .seh_save_reg_x x30, 16
 ; WINCFI-COMPAT-NEXT:    .seh_endprologue
-; WINCFI-COMPAT-NEXT:    cbnz w1, .LBB8_2
-; WINCFI-COMPAT-NEXT:  // %bb.1: // %if.then
 ; WINCFI-COMPAT-NEXT:    bl foo
-; WINCFI-COMPAT-NEXT:  .LBB8_2: // %exit
-; WINCFI-COMPAT-NEXT:    adrp x8, var
-; WINCFI-COMPAT-NEXT:    mov w9, #42 // =0x2a
-; WINCFI-COMPAT-NEXT:    str x9, [x8, :lo12:var]
 ; WINCFI-COMPAT-NEXT:    .seh_startepilogue
 ; WINCFI-COMPAT-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
 ; WINCFI-COMPAT-NEXT:    .seh_save_reg_x x30, 16
 ; WINCFI-COMPAT-NEXT:    hint #31
 ; WINCFI-COMPAT-NEXT:    .seh_pac_sign_lr
 ; WINCFI-COMPAT-NEXT:    .seh_endepilogue
-; WINCFI-COMPAT-NEXT:    ret
+; WINCFI-COMPAT-NEXT:    b .LBB8_2
 ; WINCFI-COMPAT-NEXT:    .seh_endfunclet
 ; WINCFI-COMPAT-NEXT:    .seh_endproc
 ;
 ; WINCFI-V83A-LABEL: shrink_wrap_sign_non_leaf:
-; WINCFI-V83A:       .seh_proc shrink_wrap_sign_non_leaf
-; WINCFI-V83A-NEXT:  // %bb.0: // %entry
+; WINCFI-V83A:        // %bb.0: // %entry
+; WINCFI-V83A-NEXT:    cbnz w1, .LBB8_2
+; WINCFI-V83A-NEXT:  .Lunwind_begin0:
+; WINCFI-V83A-NEXT:  .seh_proc shrink_wrap_sign_non_leaf
+; WINCFI-V83A-NEXT:  // %bb.1: // %if.then
 ; WINCFI-V83A-NEXT:    pacibsp
 ; WINCFI-V83A-NEXT:    .seh_pac_sign_lr
 ; WINCFI-V83A-NEXT:    str x30, [sp, #-16]! // 8-byte Folded Spill
 ; WINCFI-V83A-NEXT:    .seh_save_reg_x x30, 16
 ; WINCFI-V83A-NEXT:    .seh_endprologue
-; WINCFI-V83A-NEXT:    cbnz w1, .LBB8_2
-; WINCFI-V83A-NEXT:  // %bb.1: // %if.then
 ; WINCFI-V83A-NEXT:    bl foo
-; WINCFI-V83A-NEXT:  .LBB8_2: // %exit
-; WINCFI-V83A-NEXT:    adrp x8, var
-; WINCFI-V83A-NEXT:    mov w9, #42 // =0x2a
-; WINCFI-V83A-NEXT:    str x9, [x8, :lo12:var]
 ; WINCFI-V83A-NEXT:    .seh_startepilogue
 ; WINCFI-V83A-NEXT:    ldr x30, [sp], #16 // 8-byte Folded Reload
 ; WINCFI-V83A-NEXT:    .seh_save_reg_x x30, 16
 ; WINCFI-V83A-NEXT:    autibsp
 ; WINCFI-V83A-NEXT:    .seh_pac_sign_lr
 ; WINCFI-V83A-NEXT:    .seh_endepilogue
-; WINCFI-V83A-NEXT:    ret
+; WINCFI-V83A-NEXT:    b .LBB8_2
 ; WINCFI-V83A-NEXT:    .seh_endfunclet
 ; WINCFI-V83A-NEXT:    .seh_endproc
 entry:

@@ -195,6 +195,13 @@ public:
     return false;
   }
 
+  /// Returns true if shrink wrapping \p MF, whose unwind info is Windows', is
+  /// sound: its unwind range is then the frame (getShrinkWrappedFrame), so
+  /// nothing outside the frame may need an unwind of it.
+  virtual bool canShrinkWrapWindowsUnwindInfo(const MachineFunction &MF) const {
+    return false;
+  }
+
   /// Returns true if the stack slot holes in the fixed and callee-save stack
   /// area should be used when allocating other stack locations to reduce stack
   /// size.

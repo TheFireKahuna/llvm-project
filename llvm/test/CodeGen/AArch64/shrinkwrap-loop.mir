@@ -1,0 +1,84 @@
+# RUN: llc -mtriple=aarch64-unknown-windows-itanium -run-pass=shrink-wrap -o - %s | FileCheck %s
+# RUN: llc -mtriple=aarch64-linux-gnu -run-pass=shrink-wrap -o - %s | FileCheck %s
+
+# Save and restore points may lie in a loop where they alternate on every
+# path. In loop_cold only the cold call's block needs the frame. In
+# loop_after_restore the loop reaches the block that clobbers x19 after the
+# restore point and before the save point again, so the frame spans the loop.
+
+# CHECK-LABEL: name: loop_cold
+# CHECK:       savePoint:
+# CHECK-NEXT:    - point: '%bb.2'
+# CHECK:       restorePoint:
+# CHECK-NEXT:    - point: '%bb.2'
+
+# CHECK-LABEL: name: loop_after_restore
+# CHECK-NOT:   savePoint:
+# CHECK-NOT:   restorePoint:
+# CHECK:       body:
+
+--- |
+  @g = internal global i32 0
+
+  declare void @slow(i32)
+
+  define void @loop_cold() {
+    ret void
+  }
+
+  define void @loop_after_restore() {
+    ret void
+  }
+...
+---
+name:            loop_cold
+tracksRegLiveness: true
+frameInfo:
+  adjustsStack:    true
+  hasCalls:        true
+body:             |
+  bb.0:
+  bb.1:
+    successors: %bb.2(0x00106035), %bb.3(0x7fef9fcb)
+    renamable $x8 = ADRP target-flags(aarch64-page) @g
+    renamable $w0 = LDRWui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g :: (volatile dereferenceable load (s32) from @g)
+    TBZW renamable $w0, 31, %bb.3
+    B %bb.2
+  bb.2:
+    liveins: $w0
+    ADJCALLSTACKDOWN 0, 0, implicit-def dead $sp, implicit $sp
+    BL @slow, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit $w0, implicit-def $sp
+    ADJCALLSTACKUP 0, 0, implicit-def dead $sp, implicit $sp
+  bb.3:
+    successors: %bb.4(0x04000000), %bb.1(0x7c000000)
+    renamable $x8 = ADRP target-flags(aarch64-page) @g
+    renamable $w8 = LDRWui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g :: (volatile dereferenceable load (s32) from @g)
+    CBNZW killed renamable $w8, %bb.1
+    B %bb.4
+  bb.4:
+    RET_ReallyLR
+...
+---
+name:            loop_after_restore
+tracksRegLiveness: true
+frameInfo:
+  adjustsStack:    true
+  hasCalls:        true
+body:             |
+  bb.0:
+  bb.1:
+    successors: %bb.3(0x04000000), %bb.2(0x7c000000)
+    ADJCALLSTACKDOWN 0, 0, implicit-def dead $sp, implicit $sp
+    $w0 = COPY $wzr
+    BL @slow, csr_aarch64_aapcs, implicit-def dead $lr, implicit $sp, implicit $w0, implicit-def $sp
+    ADJCALLSTACKUP 0, 0, implicit-def dead $sp, implicit $sp
+    renamable $x8 = ADRP target-flags(aarch64-page) @g
+    renamable $w8 = LDRWui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g :: (volatile dereferenceable load (s32) from @g)
+    CBZW killed renamable $w8, %bb.3
+    B %bb.2
+  bb.2:
+    INLINEASM &"", sideeffect attdialect, clobber, implicit-def dead early-clobber $x19
+    B %bb.1
+  bb.3:
+    RET_ReallyLR
+...

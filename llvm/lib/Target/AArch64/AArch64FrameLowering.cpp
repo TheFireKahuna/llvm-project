@@ -916,6 +916,19 @@ AArch64FrameLowering::findScratchNonCalleeSaveRegister(MachineBasicBlock *MBB,
   return Register();
 }
 
+// Code ahead of the prologue is leaf code, which an asynchronous exception can
+// reach: an EH scope over it would go unseen. Nor may it skip the signing of a
+// return address that every path signs. An epilogue's place is recorded, so
+// one may end anywhere in the frame.
+bool AArch64FrameLowering::canShrinkWrapWindowsUnwindInfo(
+    const MachineFunction &MF) const {
+  const Function &F = MF.getFunction();
+  return !usesAsyncEHTables(F) &&
+         !MF.getInfo<AArch64FunctionInfo>()->shouldSignReturnAddress(MF) &&
+         !(F.hasPersonalityFn() &&
+           isAsynchronousEHPersonality(classifyEHPersonality(F.getPersonalityFn())));
+}
+
 bool AArch64FrameLowering::canUseAsPrologue(
     const MachineBasicBlock &MBB) const {
   const MachineFunction *MF = MBB.getParent();

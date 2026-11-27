@@ -3,15 +3,14 @@
 # RUN: llc -O2 -o - %s -mtriple=aarch64-linux -start-before=shrink-wrap \
 # RUN:   -stop-after=prolog-epilog | FileCheck %s --check-prefix=LINUX
 
-# This tests checks that shrink wrapping bails out on Windows AMR64 due to the
-# use of Windows CFI.  We don't currently support fragments for WIndows EH on
-# ARM64.
-# The same test gets shrink wrapped on Linux ARM64.
+# This test checks that shrink wrapping places the prologue in if.then on
+# Windows ARM64, as on Linux ARM64: the function's unwind range begins there,
+# and the code outside it is leaf code with no unwind info.
 
 # WIN64-LABEL: bb.0.entry:
-# WIN64: early-clobber $sp = frame-setup STRXpre killed $x19, $sp, -32
 # WIN64-LABEL: bb.1:
 # WIN64-LABEL: bb.2.if.then:
+# WIN64: early-clobber $sp = frame-setup STRXpre killed $x19, $sp, -32
 
 # LINUX-LABEL: bb.0.entry:
 # LINUX-LABEL: bb.1:
