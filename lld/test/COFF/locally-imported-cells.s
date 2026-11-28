@@ -13,7 +13,8 @@
 # RUN: %{mc} -triple=x86_64-windows-itanium defs.s -o defs.obj
 # RUN: %{link} -out:typed.exe typed.obj defs.obj 2>&1 | count 0
 # RUN: llvm-readobj --sections typed.exe | FileCheck --check-prefix=NORDATA %s
-# NORDATA-NOT: Name: .rdata
+# NORDATA:      Name: .rdata
+# NORDATA-NEXT: VirtualSize: 0x18
 
 ## A pointer only a discarded section names goes with it and its target.
 # RUN: %{mc} -triple=x86_64-windows-itanium dead.s -o dead.obj
@@ -33,8 +34,9 @@
 # RUN:   FileCheck --check-prefix=WARN-FOREIGN %s
 # RUN: llvm-objdump -d foreign.exe | FileCheck --check-prefix=MIXED %s
 
+## The pointer, then the empty offer table.
 # PTR:      Name: .rdata
-# PTR-NEXT: VirtualSize: 0x8{{$}}
+# PTR-NEXT: VirtualSize: 0x20{{$}}
 
 # WARN-FOREIGN:     warning: foreign.obj: locally defined symbol imported: f (defined in defs.obj) [LNK4217]
 # WARN-FOREIGN-NOT: typed.obj:

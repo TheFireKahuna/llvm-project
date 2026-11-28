@@ -1578,21 +1578,19 @@ struct COFFLinkImage {
     /// COFF::LinkImageEntityFlags.
     uint16_t Flags;
     uint8_t Log2Align;
-    uint32_t CheckSum;
+    /// Where Flags has COFF::LinkImageEntityCheckSum.
+    uint32_t CheckSum = 0;
     uint64_t Size;
-    /// Whether the record states CheckSum.
-    bool hasCheckSum() const {
-      return Flags &
-             (COFF::LinkImageEntityCheckSum | COFF::LinkImageEntityDescriptor);
-    }
+    /// For a type_info object, the layout shape: its name's blob after the
+    /// name and its NUL.
+    StringRef Shape;
     /// Whether two copies may be one instance: the same size, alignment and
     /// COFF::LinkImageEntityShape flags, as a fill's search compares them,
-    /// and for a type_info object the same blob.
+    /// and for a type_info object the same shape.
     bool sameShape(const Entity &O) const {
       return Size == O.Size && Log2Align == O.Log2Align &&
              !((Flags ^ O.Flags) & COFF::LinkImageEntityShape) &&
-             (!(Flags & COFF::LinkImageEntityDescriptor) ||
-              CheckSum == O.CheckSum);
+             Shape == O.Shape;
     }
   };
   StringRef Name;
@@ -1600,6 +1598,9 @@ struct COFFLinkImage {
   /// plus one for an image that it loads late.
   std::vector<uint32_t> Imports;
   std::vector<Entity> Kept;
+  std::vector<StringRef> Allowed;
+  /// The digest of the image's epoch, or 0 where it exports none.
+  uint64_t Epoch = 0;
   bool Executable = false;
 };
 

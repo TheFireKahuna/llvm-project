@@ -35,9 +35,17 @@
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium place.s -o place-pe.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc rev.s -o rev.obj
 # RUN: llvm-objcopy --redefine-sym @comp.id=@comp.xx x64-site.obj foreign.obj
-# DEFINE: %{x64dll} = lld-link -dll -noentry x64-site.obj small.obj
-# DEFINE: %{a64dll} = lld-link -machine:arm64 -dll -noentry a64-site.obj \
-# DEFINE:   cell.obj small-a64.obj
+## A DLL registers its thread-locals through its fill.
+# RUN: lld-link -machine:x64 -def:np.def -out:np.lib
+# RUN: lld-link -machine:arm64 -def:np.def -out:np-a64.lib
+# RUN: %{x64} %S/Inputs/fill-entry.s -o fill.obj && llvm-ar rcs fill.lib fill.obj
+# RUN: %{a64} %S/Inputs/fill-entry.s -o fill-a64.obj
+# RUN: llvm-ar rcs fill-a64.lib fill-a64.obj
+# DEFINE: %{dll} = lld-link -dll -noentry np.lib fill.lib
+# DEFINE: %{dlla64} = lld-link -machine:arm64 -dll -noentry np-a64.lib \
+# DEFINE:   fill-a64.lib
+# DEFINE: %{x64dll} = %{dll} x64-site.obj small.obj
+# DEFINE: %{a64dll} = %{dlla64} a64-site.obj cell.obj small-a64.obj
 
 ## The block: 16 bytes at 0x100; a scale site is the thread pointer plus the
 ## place, an lea with a SIB byte where the thread pointer is r12.
@@ -89,7 +97,7 @@
 
 ## No place: a DLL, at each relocation, and an executable of more than a
 ## kilobyte, once.
-# RUN: not lld-link -dll -noentry x64.obj small.obj end.obj -out:none.dll \
+# RUN: not %{dll} x64.obj small.obj end.obj -out:none.dll \
 # RUN:   2>&1 | FileCheck --check-prefix=NONE %s
 # RUN: not %{exe} x64.obj small.obj wide.obj \
 # RUN:   end.obj -out:none.exe 2>&1 | FileCheck --check-prefix=OVER %s
@@ -141,9 +149,9 @@
 ## In a resizable section the forms leave no bytes dead.
 # RUN: %{exe} x64.obj x64-site-r.obj small.obj end.obj -out:block-r.exe
 # RUN: llvm-objdump -d block-r.exe | FileCheck --check-prefix=X64-R-BLOCK %s
-# RUN: lld-link -dll -noentry x64-site-r.obj small.obj -out:x1-r.dll
+# RUN: %{dll} x64-site-r.obj small.obj -out:x1-r.dll
 # RUN: llvm-objdump -d x1-r.dll | FileCheck --check-prefix=X64-R1 %s
-# RUN: lld-link -dll -noentry x64-site-r.obj small.obj wide.obj -out:x3-r.dll
+# RUN: %{dll} x64-site-r.obj small.obj wide.obj -out:x3-r.dll
 # RUN: llvm-objdump -d x3-r.dll | FileCheck --check-prefix=X64-R3 %s
 
 # X64-R-BLOCK:      49 8d 96 00 01 00 00 leaq 0x100(%r14), %rdx
@@ -166,7 +174,7 @@
 # X64-R3-NEXT: imulq $0x3, %r13, %rcx
 
 ## A scale site in an object that LLVM did not make for these targets.
-# RUN: not lld-link -dll -noentry foreign.obj small.obj -out:foreign.dll 2>&1 | \
+# RUN: not %{dll} foreign.obj small.obj -out:foreign.dll 2>&1 | \
 # RUN:   FileCheck --check-prefix=FOREIGN %s
 
 # FOREIGN-COUNT-4: error: foreign.obj: IMAGE_REL_LLVM_TLS_SCALE relocation in .text of an object that LLVM did not make for Windows Itanium or NT-POSIX
@@ -223,7 +231,7 @@
 # A64-BLOCK-NEXT:   add x9, x28, #0x100
 # A64-PLANE-NEXT:   add x9, x28, #0xc, lsl #12
 # A64-NEXT:         nop
-# A64-NEXT:         ldr x9, 0x140002000
+# A64-NEXT:         ldr x9, 0x140003000
 # A64-NEXT:         nop
 # A64-NEXT:         add xzr, x9, x28
 
@@ -240,21 +248,21 @@
 
 # A64-1:        <.text>:
 # A64-1-NEXT:   nop
-# A64-1-NEXT:   ldr x9, 0x180002000
+# A64-1-NEXT:   ldr x9, 0x180004000
 # A64-1-NEXT:   nop
 # A64-1-NEXT:   add x9, x9, x28{{$}}
 # A64-3:        <.text>:
 # A64-3-NEXT:   nop
-# A64-3-NEXT:   ldr x9, 0x180002000
+# A64-3-NEXT:   ldr x9, 0x180004000
 # A64-3-NEXT:   mov x10, #0x3
 # A64-3-NEXT:   madd x9, x28, x10, x9
 # A64-4:        <.text>:
 # A64-4-NEXT:   nop
-# A64-4-NEXT:   ldr x9, 0x180002000
+# A64-4-NEXT:   ldr x9, 0x180004000
 # A64-4-NEXT:   nop
 # A64-4-NEXT:   add x9, x9, x28, lsl #2
 # A64-FAR:      <.text>:
-# A64-FAR-NEXT: adrp x9, 0x180400000
+# A64-FAR-NEXT: adrp x9, 0x180800000
 # A64-FAR-NEXT: ldr x9, [x9]
 # A64-FAR-NEXT: nop
 # A64-FAR-NEXT: add x9, x9, x28{{$}}
@@ -262,33 +270,33 @@
 # RUN: %{exe} -machine:arm64 a64.obj \
 # RUN:   a64-site-r.obj cell.obj small-a64.obj end-a64.obj -out:block-a64-r.exe
 # RUN: %{dis} block-a64-r.exe | FileCheck --check-prefix=A64-R-BLOCK %s
-# RUN: lld-link -machine:arm64 -dll -noentry a64-site-r.obj cell.obj \
+# RUN: %{dlla64} a64-site-r.obj cell.obj \
 # RUN:   small-a64.obj -out:a1-r.dll
 # RUN: %{dis} a1-r.dll | FileCheck --check-prefix=A64-R1 %s
-# RUN: lld-link -machine:arm64 -dll -noentry a64-site-r.obj cell.obj \
+# RUN: %{dlla64} a64-site-r.obj cell.obj \
 # RUN:   small-a64.obj wide-a64.obj -out:a3-r.dll
 # RUN: %{dis} a3-r.dll | FileCheck --check-prefix=A64-R3 %s
 
 # A64-R-BLOCK:      ret
 # A64-R-BLOCK-NEXT: add x9, x28, #0x100
-# A64-R-BLOCK-NEXT: ldr x9, 0x140002000
+# A64-R-BLOCK-NEXT: ldr x9, 0x140003000
 # A64-R-BLOCK-NEXT: add xzr, x9, x28
 # A64-R-BLOCK-NEXT: ret
 
 # A64-R1:      <.text>:
-# A64-R1-NEXT: ldr x9, 0x180002000
+# A64-R1-NEXT: ldr x9, 0x180004000
 # A64-R1-NEXT: add x9, x9, x28{{$}}
-# A64-R1-NEXT: ldr x9, 0x180002000
+# A64-R1-NEXT: ldr x9, 0x180004000
 # A64-R1-NEXT: add xzr, x9, x28{{$}}
 # A64-R1-NEXT: ret
 
 # A64-R3:      <.text>:
-# A64-R3-NEXT: ldr x9, 0x180002000
+# A64-R3-NEXT: ldr x9, 0x180004000
 # A64-R3-NEXT: mov x10, #0x3
 # A64-R3-NEXT: madd x9, x28, x10, x9
 
 ## A scale of more than 16 bits, 65536 for 64 MiB, at the second site.
-# RUN: not lld-link -machine:arm64 -dll -noentry a64-bad.obj small-a64.obj \
+# RUN: not %{dlla64} a64-bad.obj small-a64.obj \
 # RUN:   big-a64.obj -out:bad-a64.dll 2>&1 | FileCheck --check-prefix=A64-BAD %s
 
 # A64-BAD:      error: a64-bad.obj: .text+0x4: IMAGE_REL_LLVM_TLS_SCALE
@@ -443,6 +451,11 @@ tend:
 #--- place.s
   .globl __tp_place
 __tp_place = 0x30000
+
+#--- np.def
+LIBRARY ntposix.dll
+EXPORTS
+__tp_register
 
 #--- rev.s
   .section .drectve,"yn"

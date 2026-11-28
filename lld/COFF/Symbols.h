@@ -352,6 +352,8 @@ public:
   static bool classof(const Symbol *s) { return s->kind() == LazyArchiveKind; }
 
   MemoryBufferRef getMemberBuffer();
+  // Whether the member is an import object, which defines another image's.
+  bool isImport();
 
   ArchiveFile *file;
   const Archive::Symbol sym;

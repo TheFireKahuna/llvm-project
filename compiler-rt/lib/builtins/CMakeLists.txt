@@ -470,6 +470,9 @@ if (NOT MSVC)
       x86_64/chkstk.S
     )
   endif()
+  if (WINDOWS_FILL)
+    list(APPEND x86_64_SOURCES x86_64/fill_entry.S)
+  endif()
 
   set(i386_SOURCES
     ${GENERIC_SOURCES}
@@ -895,6 +898,9 @@ if (MINGW OR WIN32_ITANIUM)
     ${aarch64_SOURCES}
     aarch64/chkstk.S
   )
+endif()
+if (WINDOWS_FILL)
+  list(APPEND aarch64_SOURCES aarch64/fill_entry.S)
 endif()
 
 # Don't build enable_execute_stack on arm64 darwin.

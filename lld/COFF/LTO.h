@@ -61,6 +61,9 @@ private:
   llvm::DenseSet<Symbol *> exportedSyms;
   // The initialization functions that a DLL offers with its records.
   llvm::DenseSet<Symbol *> offeredInits;
+  // The variables that a DLL keeps preemptible, and their guards, which its
+  // code reaches through cells.
+  llvm::DenseSet<Symbol *> cells;
 
   std::string getThinLTOOutputFile(StringRef path);
   llvm::lto::Config createConfig();

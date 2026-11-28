@@ -38,8 +38,9 @@
 # X64-NEXT:  7c: 0f 1f 80 00 00 00 00 nopl
 # X64-NEXT:  83: e8 {{.*}} callq {{.*}} <f>
 
-## No pointer is left: the image has no read-only data.
-# NOPTR-NOT: Name: .rdata
+## No pointer is left: the image's read-only data is its empty offer table.
+# NOPTR:      Name: .rdata
+# NOPTR-NEXT: VirtualSize: 0x18
 
 ## Where the assembler did not check the sites, a fused read is the load it is,
 ## reaching the pointer's target, and the pointer goes.

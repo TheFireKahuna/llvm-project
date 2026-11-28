@@ -179,8 +179,9 @@ struct Configuration {
   bool dll = false;
   StringRef implib;
   bool noimplib = false;
-  // -offers-baseline.
+  // -offers-baseline and -offers-epoch.
   StringRef offersBaseline;
+  bool offersEpoch = false;
   llvm::StringSet<> delayLoads;
   // The delay-loaded DLLs of /delay:nocanonical, whose functions' addresses
   // stay their thunks'.
@@ -380,6 +381,8 @@ struct Configuration {
   bool cetCompatIpValidationRelaxed = false;
   bool cetCompatDynamicApisInProcOnly = false;
   bool functionOverride = false;
+  // The functions of /funcoverridedisablefunc.
+  llvm::StringSet<> disabledFunctionOverrides;
   bool hotpatchCompat = false;
   bool nxCompat = true;
   bool allowIsolation = true;

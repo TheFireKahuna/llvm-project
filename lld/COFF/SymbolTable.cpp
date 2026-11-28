@@ -320,10 +320,12 @@ bool SymbolTable::loadMinGWSymbols() {
     // An undefined __imp_X that an object for Windows Itanium or NT-POSIX
     // refers to, and that no input provides, asks for the archive member
     // defining X, which binds to it through a local pointer.
-    // A thread-local variable's record X$tls is of the member defining X.
+    // A thread-local variable's record X$tls is of the member defining X, and
+    // so is a sealed value X$val, which is that definition where it is X's.
     if (name.starts_with("__imp_")) {
       Symbol *l = sym->forkReferenced ? find(name.substr(6)) : nullptr;
-      if (!l && sym->forkReferenced && isTlsRecordPointerName(name))
+      if (!l && sym->forkReferenced &&
+          (isTlsRecordPointerName(name) || name.ends_with("$val")))
         l = find(name.slice(6, name.size() - 4));
       if (!l || l->pendingArchiveLoad || !l->isLazy())
         continue;
@@ -388,7 +390,7 @@ std::string describeShape(const COFFLinkImage::Entity &e) {
   if (e.Flags & LinkImageEntityFunction)
     return "a function";
   if (e.Flags & LinkImageEntityDescriptor)
-    return "a type whose name and layout hash to " + utohexstr(e.CheckSum);
+    return "a type whose layout hashes to " + utohexstr(xxh3_64bits(e.Shape));
   return (Twine(e.Size) + " bytes aligned to " + Twine(1 << e.Log2Align) +
           (e.Flags >> LinkImageEntityInitShift & 2 ? " under a guard" : ""))
       .str();
@@ -688,6 +690,13 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
       if (sym->strongImport && weak &&
           (x->forkReferenced || sym->forkReferenced))
         imp = nullptr;
+      // Nor does a weak one where a DLL imports what nothing defines: the
+      // executable that loads it binds it, or it is null.
+      if (weak && !sym->strongImport && ctx.config.unresolvedHostImports &&
+          ctx.config.dll && x->visibility < LinkFactProtected) {
+        undefs.insert(sym);
+        continue;
+      }
       // For an object for Windows Itanium or NT-POSIX, __imp_X of a weak
       // external X whose alternate is an import is that import's address
       // table entry, as X is its thunk or the variable it points to.
@@ -797,6 +806,14 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     bool guard = tpoff && var.consume_back("$guard");
     StringRef ptr =
         tpoff ? saver().save(var + "$tls") : name.drop_back(4 + init);
+    // The value of a word the image defines, as the runtime's under -static,
+    // is that word.
+    if (auto *own = dyn_cast_or_null<DefinedRegular>(find(ptr.drop_front(6)));
+        own && !tpoff && !init) {
+      cast<Undefined>(sym)->setWeakAlias(own);
+      aliases.push_back(cast<Undefined>(sym));
+      continue;
+    }
     Defined *source = findImport(ptr, "the word " + name);
     if (Symbol *rec = find(ptr.drop_front(6));
         tpoff && !source && TlsRecordChunk::get(rec)) {
@@ -845,7 +862,8 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     for (ObjFile *file : ctx.objFileInstances)
       for (const SymbolRef &ref : file->getCOFFObj()->symbols())
         if (COFFSymbolRef s = file->getCOFFObj()->getCOFFSymbol(ref);
-            s.isUndefined() && s.getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
+            s.isAnyUndefined() &&
+            s.getComplexType() == IMAGE_SYM_DTYPE_FUNCTION)
           functions.insert(check(file->getCOFFObj()->getSymbolName(s)));
     StringSet<> imported;
     for (Symbol *sym : undefs) {
@@ -856,10 +874,16 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
             ctx, machine, name, "",
             functions.contains(name) ? IMPORT_CODE : IMPORT_DATA, IMPORT_NAME));
     }
-    // Data that an object refers to directly is read through its pointer.
+    // What an object refers to directly, weakly too, is read through its
+    // pointer where the import defines no thunk for it.
     undefs.remove_if([&](Symbol *sym) {
       return !isa<Undefined>(sym) ||
              handleMinGWAutomaticImport(sym, sym->getName());
+    });
+    llvm::erase_if(aliases, [&](Symbol *u) {
+      return !isa<Undefined>(u) ||
+             (imported.contains(u->getName()) &&
+              handleMinGWAutomaticImport(u, u->getName()));
     });
   }
 
@@ -1027,11 +1051,13 @@ void SymbolTable::initializeLoadConfig() {
 // X becomes a stub that branches to the default body, a branch Windows
 // rewrites to the selected one. In an object that LLVM made for Windows
 // Itanium or NT-POSIX the function's stub is the compiler's and X stays the
-// default body, which the object alone may define.
+// default body, which the object alone may define. A function
+// /funcoverridedisablefunc names keeps its default body and has no record.
 void SymbolTable::initializeFunctionOverrides() {
   for (SectionChunk *bdd : functionOverrideSections) {
     StringRef name = bdd->getSectionName();
-    if (!name.consume_back("_$fo_bdd$"))
+    if (!name.consume_back("_$fo_bdd$") ||
+        ctx.config.disabledFunctionOverrides.contains(name))
       continue;
     auto fail = [&](const Twine &msg) {
       Err(ctx) << bdd->file << ": function override " << name << ": " << msg;
@@ -1119,16 +1145,24 @@ void SymbolTable::initializeFunctionOverrides() {
     fo->candidates = std::move(candidates);
     functionOverrides.push_back(fo);
     x->getChunk()->keepDistinct = true;
-    if (fork) {
-      fo->body = x;
-      ctx.functionOverrideBodies[x] = fo;
+    fo->body = fork ? x : make<DefinedRegular>(*x);
+    ctx.functionOverrideBodies[fo->body] = fo;
+    if (fork)
       continue;
-    }
 
-    // The stub begins with a copy of X's KCFI prefix.
-    fo->body = make<DefinedRegular>(*x);
-    fo->stub = make<FunctionOverrideThunk>(*fo, getTypePrefix(x, name), machine,
-                                           !ctx.config.doGC);
+    // The stub begins with a copy of what the compiler wrote before X from
+    // __cfi_X, its KCFI prefix.
+    ArrayRef<uint8_t> prefix;
+    for (Symbol *s : cast<ObjFile>(x->getFile())->getSymbols())
+      if (auto *cfi = dyn_cast_or_null<DefinedRegular>(s);
+          cfi && cfi->getChunk() == x->getChunk() &&
+          cfi->getValue() <= x->getValue() &&
+          cfi->getName() == ("__cfi_" + name).str())
+        prefix = x->getChunk()->getContents().slice(
+            cfi->getValue(), x->getValue() - cfi->getValue());
+
+    fo->stub =
+        make<FunctionOverrideThunk>(*fo, prefix, machine, !ctx.config.doGC);
     if (x->getChunk()->sym == x)
       x->getChunk()->sym = fo->body;
     replaceSymbol<DefinedSynthetic>(x, x->getName(), fo->stub,
@@ -1165,8 +1199,8 @@ void SymbolTable::bindOverrideCells() {
       llvm::erase(localImportChunks, o.check->getChunk());
     }
   for (ObjFile *file : ctx.objFileInstances) {
-    if (!file->forkObject || ownDefaults.empty())
-      continue;
+    if (ownDefaults.empty())
+      break;
     for (Chunk *c : file->getChunks()) {
       auto *sc = dyn_cast<SectionChunk>(c);
       if (!sc || !sc->live ||
@@ -1217,10 +1251,7 @@ void SymbolTable::bindOverrideCells() {
   auto vague = [&](ImportFile *f) -> const COFFLinkImage::Entity * {
     const COFFLinkImage::Entity *e =
         f->impSym ? ctx.driver.getOfferedEntity(f->impSym) : nullptr;
-    return e && (e->Flags & LinkImageEntityPreemptible) &&
-                   !isTlsRecordName(e->Name)
-               ? e
-               : nullptr;
+    return e && (e->Flags & LinkImageEntityPreemptible) ? e : nullptr;
   };
   // A word of thread-local data that holds one is no slot: the loader would
   // bind it in the template alone, after threads have copied it, and the
@@ -1277,20 +1308,16 @@ SymbolTable::OwnDefault *SymbolTable::findOwnDefault(Symbol *s) {
   auto *d = dyn_cast_or_null<DefinedRegular>(s ? s->getDefined() : nullptr);
   if (!d || ownDefaults.empty())
     return nullptr;
+  // A local symbol that an object names binds what it names, as on ELF; a
+  // section's symbol and the assembler's labels stand for a place.
+  if (!d->isExternal) {
+    COFFSymbolRef c = d->getCOFFSymbol();
+    if (c.getStorageClass() == IMAGE_SYM_CLASS_STATIC &&
+        !c.isSectionDefinition())
+      return nullptr;
+  }
   auto it = ownDefaults.find({d->getChunk(), d->getValue()});
   return it == ownDefaults.end() ? nullptr : &it->second;
-}
-
-ArrayRef<uint8_t> SymbolTable::getTypePrefix(DefinedRegular *sym,
-                                             StringRef function) {
-  std::string name = ("__cfi_" + function).str();
-  for (Symbol *s : cast<ObjFile>(sym->getFile())->getSymbols())
-    if (auto *cfi = dyn_cast_or_null<DefinedRegular>(s);
-        cfi && cfi->getChunk() == sym->getChunk() &&
-        cfi->getValue() <= sym->getValue() && cfi->getName() == name)
-      return sym->getChunk()->getContents().slice(
-          cfi->getValue(), sym->getValue() - cfi->getValue());
-  return {};
 }
 
 bool SymbolTable::replaces(const VagueEntity &e) const {
@@ -1985,14 +2012,13 @@ Symbol *SymbolTable::find(StringRef name) {
 DefinedImportData *SymbolTable::findImport(const Twine &name,
                                            const Twine &why) {
   Symbol *s = find(name.str());
-  if (auto *l = dyn_cast_or_null<LazyArchive>(s); l && !s->pendingArchiveLoad) {
-    MemoryBufferRef mb = l->getMemberBuffer();
-    if (identify_magic(mb.getBuffer()) == file_magic::coff_import_library) {
-      StringRef lib = l->file->getName();
-      Log(ctx) << "Loading lazy " << s->getName() << " from " << lib << " for "
-               << why;
-      ctx.driver.addArchiveBuffer(mb, s->getName(), lib, 0, false);
-    }
+  if (auto *l = dyn_cast_or_null<LazyArchive>(s);
+      l && !s->pendingArchiveLoad && l->isImport()) {
+    StringRef lib = l->file->getName();
+    Log(ctx) << "Loading lazy " << s->getName() << " from " << lib << " for "
+             << why;
+    ctx.driver.addArchiveBuffer(l->getMemberBuffer(), s->getName(), lib, 0,
+                                false);
   }
   return dyn_cast_or_null<DefinedImportData>(s);
 }
@@ -2673,7 +2699,8 @@ void SymbolTable::bindValueOnlySites() {
 DefinedRegular *SymbolTable::getKeptEntity(Symbol *sym) {
   DefinedRegular *d = getEntityDefinition(sym);
   SectionChunk *c = d ? d->getChunk() : nullptr;
-  if (!c || !c->isCOMDAT() || !c->live || getOfferOwner(sym->getName()))
+  if (!c || !c->isCOMDAT() || !c->live || sym->addressImported ||
+      getOfferOwner(sym->getName()))
     return nullptr;
   return d;
 }
@@ -2695,9 +2722,10 @@ SymbolTable::getImageEntity(Symbol *sym, DefinedRegular *d,
   if (entity.descriptor) {
     // A type_info object takes part where its name word holds the non-unique
     // bit, and the length of the blob that it names in bits 48 to 62, or the
-    // saturated field and the blob's own length ahead of it.
-    auto *name = dyn_cast_or_null<DefinedRegular>(
-        find(("_ZTS" + e.Name.drop_front(4)).str()));
+    // saturated field and the blob's own length ahead of it; the blob is its
+    // type's name, a NUL and the layout shape.
+    StringRef type = e.Name.drop_front(4);
+    auto *name = dyn_cast_or_null<DefinedRegular>(find(("_ZTS" + type).str()));
     ArrayRef<uint8_t> ti = c->getContents().drop_front(d->getValue());
     if (!name || !name->getChunk() || ti.size() < 16 || !(ti[15] & 0x80))
       return std::nullopt;
@@ -2708,27 +2736,29 @@ SymbolTable::getImageEntity(Symbol *sym, DefinedRegular *d,
       size = endian::read64le(blob.data() + at - 8);
     if (at > blob.size() || blob.size() - at < size)
       return std::nullopt;
+    StringRef shape = toStringRef(blob.slice(at, size));
+    if (!shape.consume_front(type) || !shape.consume_front('\0'))
+      return std::nullopt;
     e.Flags = sym->visibility | LinkImageEntityDescriptor |
               (isAddition(sym) ? LinkImageEntityAddition : 0);
     if (ctx.config.dll && isPreemptible(sym, false))
       e.Flags |= LinkImageEntityPreemptible;
     e.Size = size;
     e.Log2Align = 0;
-    e.CheckSum = xxh3_64bits(blob.slice(at, size));
+    e.Shape = shape;
     return e;
   }
   e.Flags = sym->visibility | entity.init << LinkImageEntityInitShift |
             (d->file->forkObject ? 0 : LinkImageEntityForeign) |
             (function ? LinkImageEntityFunction : 0);
   // Another image's instance may stand for a DLL's, which the DLL then
-  // reaches through a cell, a thread-local variable's record apart.
+  // reaches through a cell.
   if (ctx.config.dll && isPreemptible(sym, function) && !entity.overridable)
     e.Flags |= LinkImageEntityPreemptible;
   if (isAddition(sym))
     e.Flags |= LinkImageEntityAddition;
   e.Size = function ? 0 : c->file->getComdatLength(c);
   e.Log2Align = function ? 0 : Log2_32(c->getAlignment());
-  e.CheckSum = 0;
   if (!function && entity.init == LinkFactConstantImmutable) {
     e.Flags |= LinkImageEntityCheckSum;
     e.CheckSum = c->checksum;
@@ -2824,6 +2854,7 @@ void SymbolTable::addOffers() {
     if (!ctx.driver.admitExport(*this, e, file))
       return;
     exports.push_back(e);
+    ++offerExports;
     // The offer of a thread-local variable is its record, which the image
     // then holds.
     if (TlsRecordChunk *record = TlsRecordChunk::get(sym)) {
@@ -2844,19 +2875,22 @@ void SymbolTable::addOffers() {
     // The table lists the entity and its guard. A DLL reaches one that it
     // keeps preemptible through a cell, its import pointer, which the fill
     // binds to the instance that the executable's table names; the table
-    // names the cell.
+    // names the cell. A thread-local variable's instance is its record.
     std::optional<COFFLinkImage::Entity> e;
-    if (!offerTable || entity.overridable || TlsRecordChunk::get(sym) ||
+    if (!offerTable || entity.overridable ||
         !(e = getImageEntity(sym, getKeptEntity(sym), entity)))
       continue;
     std::optional<std::string> guard =
         getGuardName(sym->getName(), entity.init);
     for (Symbol *s : {sym, guard ? find(*guard) : nullptr}) {
-      auto *x = dyn_cast_or_null<DefinedRegular>(s);
+      auto *x = dyn_cast_or_null<Defined>(s);
+      auto *d = dyn_cast_or_null<DefinedRegular>(s);
       if (!x || !x->getChunk())
         continue;
-      // Distinct functions have distinct addresses, which the table states.
-      x->getChunk()->keepDistinct |= entity.function;
+      if (TlsRecordChunk *record = TlsRecordChunk::get(x)) {
+        record->live = true;
+        x->isUsedInRegularObj = true;
+      }
       Defined *at = x;
       uint16_t flags = e->Flags;
       // A type_info object has no cell: the fill binds its name word.

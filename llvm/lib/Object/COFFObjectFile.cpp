@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
@@ -2711,6 +2712,12 @@ Error object::readCOFFLinkImages(StringRef Payload,
   };
   auto Name = [&] { return Data.getBytes(C, Data.getULEB128(C)); };
 
+  Expected<uint64_t> NumShapes = Count("shapes", 1);
+  if (!NumShapes)
+    return NumShapes.takeError();
+  std::vector<StringRef> Shapes;
+  for (uint64_t I = 0; C && I != *NumShapes; ++I)
+    Shapes.push_back(Name());
   Expected<uint64_t> NumImages = Count("images", 4);
   if (!NumImages)
     return NumImages.takeError();
@@ -2743,6 +2750,26 @@ Error object::readCOFFLinkImages(StringRef Payload,
         C.seek(End);
         continue;
       }
+      if (C && Tag == COFF::LinkImageEpoch) {
+        Image.Epoch = Data.getU64(C);
+        if (C && C.tell() != End)
+          return createStringError(object_error::parse_failed,
+                                   "the epoch of " + Image.Name +
+                                       " does not fill its field");
+        continue;
+      }
+      if (C && Tag == COFF::LinkImageAllowed) {
+        Expected<uint64_t> NumAllowed = Count("splits", 1);
+        if (!NumAllowed)
+          return NumAllowed.takeError();
+        for (uint64_t A = 0; C && A != *NumAllowed; ++A)
+          Image.Allowed.push_back(Name());
+        if (C && C.tell() != End)
+          return createStringError(object_error::parse_failed,
+                                   "the splits that " + Image.Name +
+                                       " allows do not fill their field");
+        continue;
+      }
       if (C && Tag != COFF::LinkImageKept) {
         if (Tag & COFF::LinkRecordCritical)
           return createStringError(object_error::parse_failed,
@@ -2760,14 +2787,19 @@ Error object::readCOFFLinkImages(StringRef Payload,
         E.Size = Data.getULEB128(C);
         uint64_t Log2Align = Data.getULEB128(C);
         E.Flags = Flags;
-        E.CheckSum = E.hasCheckSum() ? Data.getU32(C) : 0;
+        E.CheckSum = Flags & COFF::LinkImageEntityCheckSum ? Data.getU32(C) : 0;
+        bool Descriptor = Flags & COFF::LinkImageEntityDescriptor;
+        uint64_t Shape = Descriptor ? Data.getULEB128(C) : 0;
         if (C && ((Flags & ~uint64_t(0x33FF)) || Log2Align > 13 ||
+                  (Descriptor && Shape >= Shapes.size()) ||
                   (Flags >> COFF::LinkImageEntityInitShift & 7) >
                       COFF::LinkFactTLSDynamic))
           return createStringError(object_error::parse_failed,
                                    "entity " + E.Name + " of " + Image.Name +
                                        " is out of range");
         E.Log2Align = Log2Align;
+        if (Descriptor)
+          E.Shape = Shapes[Shape];
         Image.Kept.push_back(E);
       }
       if (C && C.tell() != End)
@@ -2791,16 +2823,41 @@ void object::writeCOFFLinkImages(raw_ostream &OS,
     encodeULEB128(Name.size(), OS);
     OS << Name;
   };
+  MapVector<StringRef, uint64_t> Shapes;
+  for (const COFFLinkImage &Image : Images)
+    for (const COFFLinkImage::Entity &E : Image.Kept)
+      if (E.Flags & COFF::LinkImageEntityDescriptor)
+        Shapes.try_emplace(E.Shape, Shapes.size());
+  encodeULEB128(Shapes.size(), OS);
+  for (StringRef Shape : Shapes.keys())
+    Name(OS, Shape);
   encodeULEB128(Images.size(), OS);
   for (const COFFLinkImage &Image : Images) {
     Name(OS, Image.Name);
     encodeULEB128(Image.Imports.size(), OS);
     for (uint32_t Import : Image.Imports)
       encodeULEB128(Import, OS);
-    encodeULEB128(Image.Executable + !Image.Kept.empty(), OS);
+    encodeULEB128(Image.Executable + !Image.Kept.empty() +
+                      !Image.Allowed.empty() + !!Image.Epoch,
+                  OS);
     if (Image.Executable) {
       encodeULEB128(COFF::LinkImageExecutable, OS);
       encodeULEB128(0, OS);
+    }
+    if (Image.Epoch) {
+      encodeULEB128(COFF::LinkImageEpoch, OS);
+      encodeULEB128(8, OS);
+      support::endian::write(OS, Image.Epoch, llvm::endianness::little);
+    }
+    if (!Image.Allowed.empty()) {
+      SmallString<0> Allowed;
+      raw_svector_ostream AllowedOS(Allowed);
+      encodeULEB128(Image.Allowed.size(), AllowedOS);
+      for (StringRef A : Image.Allowed)
+        Name(AllowedOS, A);
+      encodeULEB128(COFF::LinkImageAllowed, OS);
+      encodeULEB128(Allowed.size(), OS);
+      OS << Allowed;
     }
     if (Image.Kept.empty())
       continue;
@@ -2812,8 +2869,10 @@ void object::writeCOFFLinkImages(raw_ostream &OS,
       encodeULEB128(E.Flags, KeptOS);
       encodeULEB128(E.Size, KeptOS);
       encodeULEB128(E.Log2Align, KeptOS);
-      if (E.hasCheckSum())
+      if (E.Flags & COFF::LinkImageEntityCheckSum)
         support::endian::write(KeptOS, E.CheckSum, llvm::endianness::little);
+      if (E.Flags & COFF::LinkImageEntityDescriptor)
+        encodeULEB128(Shapes.lookup(E.Shape), KeptOS);
     }
     encodeULEB128(COFF::LinkImageKept, OS);
     encodeULEB128(Kept.size(), OS);

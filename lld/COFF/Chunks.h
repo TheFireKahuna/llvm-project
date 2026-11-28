@@ -1006,8 +1006,7 @@ class FunctionOverrideThunk;
 // that LLVM made for Windows Itanium or NT-POSIX has the compiler's stub and
 // none of the link's, and its symbol is its default body.
 struct FunctionOverride {
-  // Returns the function override that s is the default body of, if it has
-  // no stub.
+  // Returns the function override that s is the default body of.
   static FunctionOverride *get(const Symbol *s);
 
   DefinedRegular *body;
@@ -1015,6 +1014,9 @@ struct FunctionOverride {
   std::vector<Defined *> candidates;
   FunctionOverrideThunk *stub = nullptr;
   bool live = false;
+  // The RVA of what Windows rewrites at a site: a section's is its
+  // relocation's index there, and the stub's an offset.
+  uint32_t getSiteRVA(std::pair<const Chunk *, uint32_t> site) const;
   std::vector<std::pair<const Chunk *, uint32_t>> sites;
 };
 

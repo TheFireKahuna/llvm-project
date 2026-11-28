@@ -5,13 +5,14 @@
 ;; variable stays one; the last option decides, and an executable binds nothing.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill.obj
 ; RUN: cat a.ll get.ll > dll.ll && cat a.ll main.ll > exe.ll
 ; RUN: llc -filetype=obj dll.ll -o dll.obj && llc -filetype=obj exe.ll -o exe.obj
-; RUN: lld-link -dll -noentry dll.obj -out:a.dll -implib:a.lib
+; RUN: lld-link -dll -noentry fill.obj dll.obj -out:a.dll -implib:a.lib
 
 ; DEFINE: %{kind} =
 ; DEFINE: %{keeps} = ALL
-; DEFINE: %{check} = lld-link -dll -noentry dll.obj a.lib -out:b.dll %{kind} && \
+; DEFINE: %{check} = lld-link -dll -noentry fill.obj dll.obj a.lib -out:b.dll %{kind} && \
 ; DEFINE:   llvm-readobj --coff-exports b.dll | FileCheck %s \
 ; DEFINE:     --check-prefixes=CHECK,%{keeps}
 

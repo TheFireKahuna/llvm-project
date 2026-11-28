@@ -257,16 +257,19 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
     return;
   }
 
-  // Mark 'Sym' as starting our funclet. A shrink-wrapped prologue begins the
-  // function's unwind range, and a part of the function in another section
-  // has an unwind range of its own: its tables count from there, the region
-  // start its personality is given.
+  // Mark 'Sym' as starting our funclet. A shrink-wrapped prologue or the body
+  // past an overridable default's check begins the function's unwind range,
+  // and a part of the function in another section has an unwind range of its
+  // own: its tables count from there, the region start its personality is
+  // given.
   if (shouldEmitMoves || shouldEmitPersonality) {
     if (CurrentFuncletEntry->isEHFuncletEntry()) {
       // A funclet has no table, so no region start.
+    } else if (&MBB == &Asm->MF->front()) {
+      RegionBegin = Asm->OverridableBody;
     } else if (MBB.isBeginSection()) {
-      RegionBegin = &MBB == &Asm->MF->front() ? nullptr : MBB.getSymbol();
-    } else if (&MBB != &Asm->MF->front()) {
+      RegionBegin = MBB.getSymbol();
+    } else {
       RegionBegin = Asm->createTempSymbol("unwind_begin");
       Asm->OutStreamer->emitLabel(RegionBegin);
     }

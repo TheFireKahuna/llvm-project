@@ -4,9 +4,11 @@
 ;; decided before the offers are added; an executable offers nothing.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill-x86_64.obj
+; RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium %S/Inputs/fill-entry.s -o fill-aarch64.obj
 
 ; DEFINE: %{t} = x86_64
-; DEFINE: %{dll} = lld-link -dll -noentry
+; DEFINE: %{dll} = lld-link -dll -noentry fill-%{t}.obj
 ; DEFINE: %{exports} = llvm-readobj --coff-exports
 ; DEFINE: %{run} = \
 ; DEFINE:   llc -mtriple=%{t}-windows-itanium -filetype=obj a.ll -o a.obj && \
@@ -86,10 +88,10 @@
 
 ;; A definition a version script localises or --exclude-libs hides is not
 ;; offered.
-; RUN: lld-link -dll -noentry a.obj -out:local.dll -version-script:fn.map
+; RUN: lld-link -dll -noentry fill-%{t}.obj a.obj -out:local.dll -version-script:fn.map
 ; RUN: llvm-readobj --coff-exports local.dll | FileCheck --check-prefix=LOCAL %s
 ; RUN: rm -f a.a && llvm-ar rcs a.a a.obj
-; RUN: lld-link -dll -noentry a.a -include:use -out:excluded.dll \
+; RUN: lld-link -dll -noentry fill-%{t}.obj a.a -include:use -out:excluded.dll \
 ; RUN:   -exclude-libs:a.a
 ; RUN: llvm-readobj --coff-exports excluded.dll | FileCheck --check-prefix=NONE %s
 ; LOCAL:     Name: _ZTI1A

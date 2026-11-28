@@ -166,6 +166,14 @@ public:
   void LowerHWASAN_CHECK_MEMACCESS(const MachineInstr &MI);
   void emitHwasanMemaccessSymbols(Module &M);
   void emitGuardTailCallThunk(Module &M);
+  void emitOverridableCompare() override;
+  void emitOverridableBranch(bool Equal, const MCSymbol *Label) override;
+  bool emitOverridableTarget(bool Own) override;
+  void emitOverridableJump(bool Own) override;
+  void emitOverridableTrap() override;
+  /// Whether an overridable default's tail branches to the CFG tail-call
+  /// thunk.
+  bool GuardTailCallUsed = false;
 
   void emitSled(const MachineInstr &MI, SledKind Kind);
 
@@ -1328,9 +1336,9 @@ static void emitAuthenticatedPointer(MCStreamer &OutStreamer,
 // registers and x8, and branches to it, the stack arguments above its record.
 void AArch64AsmPrinter::emitGuardTailCallThunk(Module &M) {
   const Function *F = M.getFunction(GuardTailCallThunkName);
-  if (!F || !F->isDeclaration() || F->use_empty())
+  if (!GuardTailCallUsed && (!F || !F->isDeclaration() || F->use_empty()))
     return;
-  MCSymbol *Sym = getSymbol(F);
+  MCSymbol *Sym = OutContext.getOrCreateSymbol(GuardTailCallThunkName);
   OutStreamer->switchSection(OutContext.getCOFFSection(
       ".text",
       COFF::IMAGE_SCN_CNT_CODE | COFF::IMAGE_SCN_MEM_EXECUTE |
@@ -1380,6 +1388,67 @@ void AArch64AsmPrinter::emitGuardTailCallThunk(Module &M) {
   TS.emitARM64WinCFIEpilogEnd();
   EmitToStreamer(MCInstBuilder(AArch64::BR).addReg(AArch64::X15));
   OutStreamer->emitWinCFIEndProc();
+}
+
+// The compare leaves the word in X9, the target of the transfer, and the
+// default in X16.
+void AArch64AsmPrinter::emitOverridableCompare() {
+  const MCExpr *Word = MCSymbolRefExpr::create(OverridableWord, OutContext);
+  EmitToStreamer(MCInstBuilder(AArch64::ADRP)
+                     .addReg(AArch64::X9)
+                     .addExpr(MCSpecifierExpr::create(Word, AArch64::S_ABS_PAGE,
+                                                      OutContext)));
+  EmitToStreamer(
+      MCInstBuilder(AArch64::LDRXui)
+          .addReg(AArch64::X9)
+          .addReg(AArch64::X9)
+          .addExpr(MCSpecifierExpr::create(Word, AArch64::S_LO12, OutContext)));
+  EmitToStreamer(MCInstBuilder(AArch64::ADR).addReg(AArch64::X16).addExpr(
+      MCSymbolRefExpr::create(CurrentFnSym, OutContext)));
+  EmitToStreamer(MCInstBuilder(AArch64::SUBSXrs)
+                     .addReg(AArch64::XZR)
+                     .addReg(AArch64::X9)
+                     .addReg(AArch64::X16)
+                     .addImm(0));
+}
+
+void AArch64AsmPrinter::emitOverridableBranch(bool Equal,
+                                              const MCSymbol *Label) {
+  EmitToStreamer(MCInstBuilder(AArch64::Bcc)
+                     .addImm(Equal ? AArch64CC::EQ : AArch64CC::NE)
+                     .addExpr(MCSymbolRefExpr::create(Label, OutContext)));
+}
+
+bool AArch64AsmPrinter::emitOverridableTarget(bool Own) {
+  const Function &F = MF->getFunction();
+  if (!F.hasMetadata(LLVMContext::MD_kcfi_type) ||
+      !getFunctionTypePrefixMarker(F))
+    return false;
+  int64_t Disp =
+      -8 - 4 * F.getFnAttributeAsParsedInteger("patchable-function-prefix");
+  for (auto [Dst, Src] : {std::pair(AArch64::X17, AArch64::X16),
+                          std::pair(AArch64::X16, AArch64::X9)})
+    EmitToStreamer(
+        MCInstBuilder(AArch64::LDURXi).addReg(Dst).addReg(Src).addImm(Disp));
+  EmitToStreamer(MCInstBuilder(AArch64::SUBSXrs)
+                     .addReg(AArch64::XZR)
+                     .addReg(AArch64::X16)
+                     .addReg(AArch64::X17)
+                     .addImm(0));
+  return true;
+}
+
+void AArch64AsmPrinter::emitOverridableJump(bool Own) {
+  if (Own)
+    return EmitToStreamer(MCInstBuilder(AArch64::BR).addReg(AArch64::X9));
+  GuardTailCallUsed = true;
+  EmitToStreamer(MCInstBuilder(AArch64::B).addExpr(MCSymbolRefExpr::create(
+      OutContext.getOrCreateSymbol(GuardTailCallThunkName), OutContext)));
+}
+
+// As a KCFI check's: X9 holds the target and X17 the expected type.
+void AArch64AsmPrinter::emitOverridableTrap() {
+  EmitToStreamer(MCInstBuilder(AArch64::BRK).addImm(0x8000 | 17 << 5 | 9));
 }
 
 void AArch64AsmPrinter::emitEndOfAsmFile(Module &M) {

@@ -66,7 +66,7 @@
 # RUN:   -export:xb,data -out:icf.dll
 # RUN: llvm-objdump -s -j .rdata icf.dll | FileCheck --check-prefix=ICF %s
 
-# ICF: 0509{{ }}
+# ICF: 05090000 2b1d7a4f
 
 ## A span that names a point inside a rewrite, and a list that claims more
 ## spans than its group holds, are errors.

@@ -2,13 +2,17 @@
 
 ;; Offers resolve before LTO: an offered dynamically initialized variable is not
 ;; prevailing (no copy compiled), constants prevail but are not final, functions
-;; prevail and are final; full and thin LTO import what a plain build does.
+;; prevail and are final; full and thin LTO import what a plain build does. A
+;; DLL's own preemptible variables, constants and guards are not final either,
+;; since it reaches them through cells, unless -Bsymbolic binds them; its
+;; function is, since only its address-takes read the cell.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill.obj
 ; RUN: cat a.ll main.ll > exe.ll && cat a.ll get.ll > dll.ll
 ; RUN: llc -filetype=obj dll.ll -o dll.obj && llc -filetype=obj exe.ll -o exe.obj
 ; RUN: opt exe.ll -o exe.bc && opt -module-hash -module-summary exe.ll -o thin.bc
-; RUN: lld-link -dll -noentry dll.obj -out:a.dll -implib:a.lib
+; RUN: lld-link -dll -noentry fill.obj dll.obj -out:a.dll -implib:a.lib
 
 ; DEFINE: %{in} = exe.bc a.lib
 ; DEFINE: %{obj} = exe.exe.lto.obj
@@ -53,6 +57,22 @@
 
 ; RUN: %{link} exe.obj a.lib
 ; RUN: llvm-readobj --coff-imports exe.exe | FileCheck --check-prefix=IMPORTS %s
+
+; RUN: opt dll.ll -o dll.bc
+; RUN: lld-link -dll -noentry fill.obj dll.bc -out:lto.dll -lldsavetemps
+; RUN: FileCheck --check-prefix=DLL --input-file=lto.dll.resolution.txt %s
+; RUN: lld-link -dll -noentry fill.obj dll.bc -out:sym.dll -lldsavetemps \
+; RUN:   -Bsymbolic
+; RUN: FileCheck --check-prefix=SYM --input-file=sym.dll.resolution.txt %s
+; DLL: ,fn,plx{{$}}
+; DLL: ,c,px{{$}}
+; DLL: ,m,px{{$}}
+; DLL: ,g,px{{$}}
+; DLL: ,_ZGV1g,px{{$}}
+; SYM: ,c,plx{{$}}
+; SYM: ,m,plx{{$}}
+; SYM: ,g,plx{{$}}
+; SYM: ,_ZGV1g,plx{{$}}
 
 ;; The thin LTO cache keys on the resolutions: taking no offer compiles another
 ;; entry, taking them again does not.

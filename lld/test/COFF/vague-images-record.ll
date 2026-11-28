@@ -5,10 +5,12 @@
 ;; entities); a forwarded offer's member imports from the keeping DLL.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill-x86_64.obj
+; RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium %S/Inputs/fill-entry.s -o fill-aarch64.obj
 
 ; DEFINE: %{t} = x86_64
 ; DEFINE: %{m} = x64
-; DEFINE: %{dll} = lld-link -dll -noentry
+; DEFINE: %{dll} = lld-link -dll -noentry fill-%{t}.obj
 ; DEFINE: %{records} = llvm-readobj --coff-link-records
 ; DEFINE: %{run} = \
 ; DEFINE:   llc -mtriple=%{t}-windows-itanium -filetype=obj a.ll -o a.obj && \
@@ -26,7 +28,7 @@
 ; DEFINE:   %{dll} d.obj a.lib -out:d.dll -implib:d.lib -delayload:a.dll && \
 ; DEFINE:   %{records} d.lib | FileCheck --check-prefix=DELAY %s && \
 ; DEFINE:   llc -mtriple=%{t}-windows-msvc -filetype=obj d.ll -o msvc.obj && \
-; DEFINE:   %{dll} msvc.obj a.lib -out:msvc.dll -implib:msvc.lib && \
+; DEFINE:   lld-link -dll -noentry msvc.obj a.lib -out:msvc.dll -implib:msvc.lib && \
 ; DEFINE:   llvm-nm msvc.lib | FileCheck --check-prefix=NONE %s \
 ; DEFINE:     --implicit-check-not=__llvm_link_records
 
@@ -69,13 +71,16 @@
 ; C-NEXT:   Imports: b.dll
 ; C-NEXT: }
 ;; a.dll keeps, by name, the constant (with checksum), the function and the
-;; variables; not type_info, a guard or an alias.
+;; variables; not type_info, a guard or an alias. It reaches those of default
+;; and unique visibility through cells, which another image's instance may
+;; stand for.
 ; A:      Image {
 ; A-NEXT:   Name: a.dll
 ; A-NEXT:   Entity {
 ; A-NEXT:     Name: ci
 ; A-NEXT:     Visibility: Default
 ; A-NEXT:     Init: 0
+; A-NEXT:     Binding: Preemptible
 ; A-NEXT:     Size: 4
 ; A-NEXT:     Alignment: 4
 ; A-NEXT:     CheckSum: 0x{{[0-9A-F]+}}
@@ -84,8 +89,9 @@
 ; A-NEXT:     Name: fn
 ; A-NEXT:     Visibility: Default
 ; A-NEXT:     Kind: Function
+; A-NEXT:     Binding: Preemptible
 ; A-NEXT:     Size: 0
-; A-NEXT:     Alignment: {{16|4}}
+; A-NEXT:     Alignment: 1
 ; A-NEXT:   }
 ; A-NEXT:   Entity {
 ; A-NEXT:     Name: hid
@@ -98,6 +104,7 @@
 ; A-NEXT:     Name: iv
 ; A-NEXT:     Visibility: Default
 ; A-NEXT:     Init: 3
+; A-NEXT:     Binding: Preemptible
 ; A-NEXT:     Size: 8
 ; A-NEXT:     Alignment: 8
 ; A-NEXT:   }
@@ -112,6 +119,7 @@
 ; A-NEXT:     Name: uniq
 ; A-NEXT:     Visibility: Unique
 ; A-NEXT:     Init: 2
+; A-NEXT:     Binding: Preemptible
 ; A-NEXT:     Size: 4
 ; A-NEXT:     Alignment: 4
 ; A-NEXT:   }
@@ -127,30 +135,33 @@
 ; DELAY-NEXT: DelayLoads: a.dll
 
 ;; A library's records are read with bounds: count, import index, critical
-;; field, alignment, duplicate image, critical kind, unterminated name.
+;; field, alignment, shape index, duplicate image, critical kind, unterminated
+;; name.
 ; RUN: llvm-lib -machine:x64 -def:a.def -out:base.lib
 ; DEFINE: %{data} =
 ; DEFINE: %{bad} = yaml2obj -DDATA=4C4C52430100%{data} member.yaml -o member.obj && \
 ; DEFINE:   cp base.lib bad.lib && llvm-ar rs bad.lib member.obj && \
-; DEFINE:   not %{dll} b.obj bad.lib -out:x.dll 2>&1 | FileCheck %s
+; DEFINE:   not lld-link -dll -noentry b.obj bad.lib -out:x.dll 2>&1 | FileCheck %s
 ; RUN: llc -mtriple=x86_64-windows-itanium -filetype=obj b.ll -o b.obj
 ; REDEFINE: %{data} = 04017F
 ; RUN: %{bad} --check-prefix=COUNT
-; REDEFINE: %{data} = 040A0105612E646C6C010200
+; REDEFINE: %{data} = 040B000105612E646C6C010200
 ; RUN: %{bad} --check-prefix=IMPORT
-; REDEFINE: %{data} = 040B0105612E646C6C00010300
+; REDEFINE: %{data} = 040C000105612E646C6C00010500
 ; RUN: %{bad} --check-prefix=FIELD
-; REDEFINE: %{data} = 04110105612E646C6C0001010601017800040E
+; REDEFINE: %{data} = 0412000105612E646C6C0001010601017800040E
 ; RUN: %{bad} --check-prefix=ENTITY
-; REDEFINE: %{data} = 04110205612E646C6C000005412E444C4C0000
+; REDEFINE: %{data} = 0414000105612E646C6C000101080101788040040005
+; RUN: %{bad} --check-prefix=ENTITY
+; REDEFINE: %{data} = 0412000205612E646C6C000005412E444C4C0000
 ; RUN: %{bad} --check-prefix=TWICE
 ; REDEFINE: %{data} = 0500
 ; RUN: %{bad} --check-prefix=KIND
-; REDEFINE: %{data} = 04090109612E646C6C0000
+; REDEFINE: %{data} = 040A000109612E646C6C0000
 ; RUN: %{bad} --check-prefix=NAME
-; COUNT:  error: bad.lib: link records: 127 images, which the group does not hold
+; COUNT:  error: bad.lib: link records: 127 shapes, which the group does not hold
 ; IMPORT: error: bad.lib: link records: import from image 1, which the group does not have
-; FIELD:  error: bad.lib: link records: unknown critical field 3
+; FIELD:  error: bad.lib: link records: unknown critical field 5
 ; ENTITY: error: bad.lib: link records: entity x of a.dll is out of range
 ; TWICE:  error: bad.lib: link records: two images named A.DLL
 ; KIND:   error: bad.lib: link records: unknown critical kind 5

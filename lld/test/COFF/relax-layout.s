@@ -12,13 +12,18 @@
 # RUN: llvm-mc -filetype=obj -triple=aarch64-windows-ntposix tls.s -o tls-a64.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-ntposix \
 # RUN:   %S/Inputs/loadconfig-cfg-x64.s -o loadconfig.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-ntposix fill.s -o fill.obj
+# RUN: llvm-mc -filetype=obj -triple=aarch64-windows-ntposix fill.s \
+# RUN:   -o fill-a64.obj
+# RUN: lld-link -machine:x64 -def:np.def -out:np.lib
+# RUN: lld-link -machine:arm64 -def:np.def -out:np-a64.lib
 
 # RUN: lld-link -dll -noentry -export:f -export:k -export:b -export:X \
 # RUN:   -export:mid -guard:cf \
-# RUN:   -funcoverride x64.obj tls.obj loadconfig.obj -out:x64.dll
+# RUN:   -funcoverride x64.obj tls.obj loadconfig.obj np.lib fill.obj -out:x64.dll
 # RUN: llvm-objdump -d x64.dll | FileCheck --check-prefix=X64 %s
 # RUN: lld-link -dll -noentry -export:f -debug -debugtype:fixup -pdb:x64.pdb \
-# RUN:   x64.obj tls.obj -out:x64-fixup.dll
+# RUN:   x64.obj tls.obj np.lib fill.obj -out:x64-fixup.dll
 # RUN: llvm-pdbutil dump -fixups x64.pdb | FileCheck --check-prefix=FIXUP %s
 # RUN: llvm-objdump -s -j .rdata -j .data x64.dll | \
 # RUN:   FileCheck --check-prefix=X64-DATA %s
@@ -28,7 +33,7 @@
 # RUN:   tls.obj loadconfig.obj -out:x64.exe
 # RUN: llvm-readobj --coff-load-config x64.exe | FileCheck --check-prefix=X64-SET %s
 # RUN: lld-link -machine:arm64 -dll -noentry -export:f a64.obj tls-a64.obj \
-# RUN:   -out:a64.dll
+# RUN:   np-a64.lib fill-a64.obj -out:a64.dll
 # RUN: llvm-objdump -d --no-show-raw-insn a64.dll | FileCheck --check-prefix=A64 %s
 # RUN: llvm-objdump -s -j .rdata a64.dll | FileCheck --check-prefix=A64-DATA %s
 
@@ -64,10 +69,10 @@
 
 ## The spans measure f; an addend 16 bytes into f names its je; the alias.
 # X64-DATA:      Contents of section .rdata:
-# X64-DATA-NEXT: 180002000 24000000 24
+# X64-DATA:      180002010 24000000 24
 # X64-DATA:      Contents of section .data:
-# X64-DATA-NEXT: 180003000 00000000 00000000 20100080 01000000
-# X64-DATA-NEXT: 180003010 09100080 01000000
+# X64-DATA-NEXT: 180004000 00000000 00000000 20100080 01000000
+# X64-DATA-NEXT: 180004010 09100080 01000000
 
 ## The Fixup stream records f's movabs where it went, and k's jumps as
 ## assembled.
@@ -92,7 +97,7 @@
 
 ## The adrp and movz go and the padding grows to two words before .La, which
 ## the cbz still reaches and the span measures.
-# A64:      180001000:   ldr x9, 0x180003000
+# A64:      180001000:   ldr x9, 0x180004000
 # A64-NEXT: 180001004:   add x9, x9, x28
 # A64-NEXT: 180001008:   cbz x0, 0x180001020
 # A64-NEXT: 18000100c:   nop
@@ -102,7 +107,7 @@
 # A64-NEXT: 18000101c:   nop
 # A64-NEXT: 180001020:   bl 0x180001000
 # A64-NEXT: 180001024:   ret
-# A64-DATA: 180002000 20000000
+# A64-DATA: 180002010 20000000
 
 #--- x64.s
   .section .text$a,"xr",discard,f
@@ -209,6 +214,24 @@ cell:
   .quad 0
   .section .rdata,"dr"
   .long .La - .Lf
+
+## The fill's entry, after the code that the test reads.
+#--- fill.s
+  .section .text$z,"xr",one_only,__llvm_fill_dll
+  .globl __llvm_fill_dll
+__llvm_fill_dll:
+  ret
+  .rva __llvm_fill_list
+  .rva __llvm_fill_target
+  .section .text$z,"xr",one_only,__llvm_fill_true
+  .globl __llvm_fill_true
+__llvm_fill_true:
+  ret
+
+#--- np.def
+LIBRARY ntposix.dll
+EXPORTS
+__tp_register
 
 #--- tls.s
   .section .tls$,"dw"

@@ -294,7 +294,7 @@ public:
     DefinedLocalImport *check = nullptr, *address = nullptr;
     Defined *entry = nullptr;
   };
-  // By where each is, which each name of one shares.
+  // By where each is, which each of its names shares but a local symbol.
   llvm::MapVector<std::pair<Chunk *, uint64_t>, OwnDefault> ownDefaults;
   OwnDefault *findOwnDefault(Symbol *s);
   // Whether a DLL's offer, which the loader binds, replaces o, a default
@@ -305,9 +305,6 @@ public:
   // each word that holds an import of one, and the call words of the
   // second imports of those that forward to another.
   void bindOverrideCells();
-  // Returns the bytes before the entry of function, which sym defines, that
-  // are its type prefix: what the compiler wrote from __cfi_<function>.
-  ArrayRef<uint8_t> getTypePrefix(DefinedRegular *sym, StringRef function);
   // Returns the type ID that the prefix before the entry of sym, which name
   // is, holds where a link fact says it has one, of the layout that key
   // states.
@@ -450,8 +447,12 @@ public:
   void addOffers();
   OfferTableChunk *offerTable = nullptr;
   // A DLL's baseline: the names that it exports, of which an entity that the
-  // DLL keeps is no addition.
+  // DLL keeps is no addition, and its epoch; and the DLL's own epoch, which
+  // follows the baseline's while the DLL keeps nothing that it did not.
   std::optional<llvm::StringSet<>> baseline;
+  uint64_t baselineEpoch = 0, offersEpoch = 0;
+  // How many exports addOffers made.
+  size_t offerExports = 0;
   // Whether a DLL offers sym, a vague entity that it keeps, since its
   // baseline, which exports no such name.
   bool isAddition(Symbol *sym) const;

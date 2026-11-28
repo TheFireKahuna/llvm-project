@@ -7,9 +7,10 @@ RUN: llvm-mc -filetype=obj -triple=x86_64-windows %S/Inputs/loadconfig-cfg-x64.s
 
 Under /funcoverride, the records of Microsoft's object convention become the
 function-override record (DVRT symbol 7). X, Y and Z are stubs that branch to
-their default bodies, and every reference to them other than debug info,
-unwind data and one with an addend takes the stub, which the export and the
-CFG table list too.
+their default bodies. A branch the walker finds in the compiler's code, a
+call, jcc or jmp, reaches the default body as a site of the record; every
+other reference but debug info, unwind data and one with an addend takes the
+stub, which the export and the CFG table list too.
 
 RUN: lld-link -funcoverride -entry:main -export:X -opt:ref,icf -debug:dwarf \
 RUN:   -guard:cf -out:out.exe main.obj fo.obj loadconfig.obj
@@ -17,54 +18,71 @@ RUN: llvm-readobj --coff-load-config --coff-exports out.exe | FileCheck %s
 RUN: llvm-objdump -d -s --no-show-raw-insn out.exe | FileCheck --check-prefix=DISASM %s
 
 CHECK:      Name: X
-CHECK-NEXT: RVA: 0x1080
+CHECK-NEXT: RVA: 0x1090
 CHECK:      DynamicValueRelocTableOffset: 0x18
 CHECK-NEXT: DynamicValueRelocTableSection: 5
 CHECK:      GuardFidTable [
-CHECK-NEXT:   0x140001080
+CHECK-NEXT:   0x140001000
 CHECK-NEXT:   0x140001090
 CHECK-NEXT:   0x1400010A0
+CHECK-NEXT:   0x1400010B0
 CHECK-NEXT: ]
 CHECK:      DynamicRelocations [
 CHECK-NEXT:   Version: 0x1
 CHECK-NEXT:   FunctionOverride [
 CHECK-NEXT:     Entry {
-CHECK-NEXT:       OriginalRVA: 0x1030
+CHECK-NEXT:       OriginalRVA: 0x1040
 CHECK-NEXT:       RVAs [
-CHECK-NEXT:         RVA: 0x1060
-CHECK-NEXT:         RVA: 0x1030
+CHECK-NEXT:         RVA: 0x1070
+CHECK-NEXT:         RVA: 0x1040
 CHECK-NEXT:       ]
 CHECK-NEXT:       Fixups [
 CHECK-NEXT:         Fixup {
 CHECK-NEXT:           Type: X64_REL32
-CHECK-NEXT:           RVA: 0x1081
+CHECK-NEXT:           RVA: 0x1001
 CHECK-NEXT:         }
-CHECK-NEXT:       ]
-CHECK-NEXT:       BDD [
-CHECK:            ]
-CHECK-NEXT:     }
-CHECK-NEXT:     Entry {
-CHECK-NEXT:       OriginalRVA: 0x1040
-CHECK-NEXT:       RVAs [
-CHECK-NEXT:         RVA: 0x1060
-CHECK-NEXT:       ]
-CHECK-NEXT:       Fixups [
 CHECK-NEXT:         Fixup {
 CHECK-NEXT:           Type: X64_REL32
 CHECK-NEXT:           RVA: 0x1091
 CHECK-NEXT:         }
 CHECK-NEXT:       ]
 CHECK-NEXT:       BDD [
-CHECK-NEXT:         Offset: 0x0
-CHECK:          Entry {
+CHECK:            ]
+CHECK-NEXT:     }
+CHECK-NEXT:     Entry {
 CHECK-NEXT:       OriginalRVA: 0x1050
 CHECK-NEXT:       RVAs [
-CHECK-NEXT:         RVA: 0x1060
+CHECK-NEXT:         RVA: 0x1070
 CHECK-NEXT:       ]
 CHECK-NEXT:       Fixups [
 CHECK-NEXT:         Fixup {
 CHECK-NEXT:           Type: X64_REL32
+CHECK-NEXT:           RVA: 0x100D
+CHECK-NEXT:         }
+CHECK-NEXT:         Fixup {
+CHECK-NEXT:           Type: X64_REL32
 CHECK-NEXT:           RVA: 0x10A1
+CHECK-NEXT:         }
+CHECK-NEXT:       ]
+CHECK-NEXT:       BDD [
+CHECK-NEXT:         Offset: 0x0
+CHECK:          Entry {
+CHECK-NEXT:       OriginalRVA: 0x1060
+CHECK-NEXT:       RVAs [
+CHECK-NEXT:         RVA: 0x1070
+CHECK-NEXT:       ]
+CHECK-NEXT:       Fixups [
+CHECK-NEXT:         Fixup {
+CHECK-NEXT:           Type: X64_REL32
+CHECK-NEXT:           RVA: 0x1015
+CHECK-NEXT:         }
+CHECK-NEXT:         Fixup {
+CHECK-NEXT:           Type: X64_REL32
+CHECK-NEXT:           RVA: 0x101A
+CHECK-NEXT:         }
+CHECK-NEXT:         Fixup {
+CHECK-NEXT:           Type: X64_REL32
+CHECK-NEXT:           RVA: 0x10B1
 CHECK-NEXT:         }
 CHECK-NEXT:       ]
 CHECK-NEXT:       BDD [
@@ -79,37 +97,127 @@ entry is on a 16-byte boundary, as a Control Flow Guard target's is: the 4
 bytes before the copy are not the stub's to write.
 
 DISASM:      Contents of section .text:
-DISASM:       140001070 cccccccc 90909090 909090b8 78563412
-DISASM-NEXT:  140001080 e9abffff ffcccccc cccccccc cccccccc
+DISASM:       140001080 cccccccc 90909090 909090b8 78563412
 DISASM-NEXT:  140001090 e9abffff ffcccccc cccccccc cccccccc
-DISASM-NEXT:  1400010a0 e9abffff ff
+DISASM-NEXT:  1400010a0 e9abffff ffcccccc cccccccc cccccccc
+DISASM-NEXT:  1400010b0 e9abffff ff
 DISASM:      Contents of section .data:
-DISASM-NEXT:  140003000 80100040 01000000 38100040 01000000
+DISASM-NEXT:  140003000 90100040 01000000 48100040 01000000
 DISASM:      Contents of section .pdata:
-DISASM-NEXT:  140004000 30100000 36100000
+DISASM-NEXT:  140004000 40100000 46100000
 DISASM:      Contents of section .debug_info:
-DISASM-NEXT:  140006000 30100040 01000000
+DISASM-NEXT:  140006000 40100040 01000000
 DISASM:      <main>:
-DISASM-NEXT: callq 0x140001080 <X>
-DISASM-NEXT: leaq 0x74(%rip), %rax # 0x140001080 <X>
-DISASM-NEXT: callq 0x140001090 <Y>
-DISASM-NEXT: callq 0x1400010a0 <Z>
+DISASM-NEXT: callq 0x140001040 <X_$fo_default$>
+DISASM-NEXT: leaq 0x84(%rip), %rax # 0x140001090 <X>
+DISASM-NEXT: callq 0x140001050 <Y_$fo_default$>
+DISASM-NEXT: testl %eax, %eax
+DISASM-NEXT: jne 0x140001060 <Z_$fo_default$>
+DISASM-NEXT: jmp 0x140001060 <Z_$fo_default$>
+DISASM:      <odd>:
+DISASM-NEXT: <unknown>
+DISASM-NEXT: callq 0x140001090 <X>
 
 The PDB has a thunk record for each stub, and the public X is the stub.
 
 RUN: lld-link -funcoverride -entry:main -debug -out:pdb.exe main.obj fo.obj loadconfig.obj
 RUN: llvm-pdbutil dump -publics -symbols pdb.pdb | FileCheck --check-prefix=PDB %s
 PDB:      S_PUB32 [size = 16] `X`
-PDB-NEXT:   flags = function, addr = 0001:0144
+PDB-NEXT:   flags = function, addr = 0001:0160
 PDB:      S_THUNK32 [size = 28] `X`
 PDB-NEXT:   parent = 0, end = {{[0-9]+}}, next = 0
-PDB-NEXT:   kind = thunk, size = 5, addr = 0001:0144
+PDB-NEXT:   kind = thunk, size = 5, addr = 0001:0160
 
 Without /funcoverride the records are ignored.
 
 RUN: lld-link -entry:main -out:plain.exe main.obj fo.obj loadconfig.obj
 RUN: llvm-readobj --coff-load-config plain.exe | FileCheck --check-prefix=PLAIN %s
 PLAIN-NOT: DynamicRelocations
+
+/funcoverrideoncallsites changes nothing, since every site the link can prove
+is listed. A function /funcoverridedisablefunc names keeps its default body
+and has no record. /funcoverrideemitcand is accepted with a warning and
+changes nothing: the image as linked branches to the default body.
+
+RUN: lld-link -funcoverride -funcoverrideoncallsites -funcoverridedisablefunc:Y,Z \
+RUN:   -entry:main -debug:symtab -out:off.exe main.obj fo.obj loadconfig.obj
+RUN: llvm-readobj --coff-load-config off.exe | FileCheck --check-prefix=OFF %s
+RUN: llvm-objdump -d --no-show-raw-insn off.exe | FileCheck --check-prefix=OFF-DISASM %s
+RUN: lld-link -brepro -funcoverride -funcoverrideemitcand:X=c1 -entry:main \
+RUN:   -out:emit.exe main.obj fo.obj loadconfig.obj 2>&1 | FileCheck --check-prefix=EMIT %s
+RUN: lld-link -brepro -funcoverride -entry:main -out:plain.exe main.obj fo.obj \
+RUN:   loadconfig.obj
+RUN: cmp emit.exe plain.exe
+
+OFF:          OriginalRVA:
+OFF-NOT:      OriginalRVA:
+OFF-DISASM:      <main>:
+OFF-DISASM-NEXT: callq {{.*}} <X_$fo_default$>
+OFF-DISASM-NEXT: leaq {{.*}} <X>
+OFF-DISASM-NEXT: callq {{.*}} <Y_$fo_default$>
+OFF-DISASM-NEXT: testl %eax, %eax
+OFF-DISASM-NEXT: jne {{.*}} <Z_$fo_default$>
+OFF-DISASM-NEXT: jmp {{.*}} <Z_$fo_default$>
+OFF-DISASM-NOT:  <Y>:
+EMIT: warning: /funcoverrideemitcand is ignored: the image as linked branches to each function's default body, and Windows writes the body it selects
+
+An object that LLVM made for Windows Itanium or NT-POSIX is read with no
+option. Its function f is the compiler's stub, a jump to the default body X,
+which takes no stub of the link's and no fold. Each branch to f that its
+relocation's type states reaches X as a site of X's record: the call, the
+call through f's pointer and the load of it with its call, which the link
+makes direct, the jump, which keeps its 32 bits, the jumps that end through's
+section, through the pointer, and tail's, before X's, which stay, and the
+stub's own, and over's tail jump, which with the jcc over it is one jcc of
+32 bits. Each site is the 32 bits of its instruction as the link wrote it.
+f's address keeps the stub. L is its object's own function, and D, which
+nothing reaches, has no entry and keeps no candidate.
+
+RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium fork.s -o fork.obj
+RUN: lld-link -entry:main -export:f -export:tail -export:through -export:over -opt:ref,icf -debug:symtab \
+RUN:   -out:fork.exe fork.obj loadconfig.obj
+RUN: llvm-readobj --coff-load-config fork.exe | FileCheck --check-prefix=FORK %s
+RUN: llvm-objdump -d fork.exe | FileCheck --check-prefix=FORK-DISASM %s
+
+FORK:      OriginalRVA: 0x102E
+FORK-NEXT: RVAs [
+FORK-NEXT:   RVA: 0x102F
+FORK-NEXT: ]
+FORK:          RVA: 0x1001
+FORK:          RVA: 0x1007
+FORK:          RVA: 0x100C
+FORK:          RVA: 0x101D
+FORK:          RVA: 0x1025
+FORK:          RVA: 0x102A
+FORK:          RVA: 0x1031
+FORK:          RVA: 0x1040
+FORK-NOT:  {{ }}RVA:
+FORK:      OriginalRVA: 0x103A
+FORK-NEXT: RVAs [
+FORK-NEXT:   RVA: 0x103B
+FORK-NEXT: ]
+FORK:          RVA: 0x1018
+FORK:          RVA: 0x1036
+FORK-NOT:  RVA:
+
+FORK-DISASM:      <main>:
+FORK-DISASM-NEXT: 140001000: e8 29 00 00 00 callq 0x14000102e <X>
+FORK-DISASM-NEXT: 140001005: 67 e8 23 00 00 00 addr32 callq 0x14000102e <X>
+FORK-DISASM-NEXT: 14000100b: e8 1e 00 00 00 callq 0x14000102e <X>
+FORK-DISASM-NEXT: 140001010: 48 8d 05 19 00 00 00 leaq 0x19(%rip), %rax # 0x140001030 <f>
+FORK-DISASM-NEXT: 140001017: e8 1e 00 00 00 callq 0x14000103a <L>
+FORK-DISASM-NEXT: 14000101c: e9 0d 00 00 00 jmp 0x14000102e <X>
+FORK-DISASM:      <through>:
+FORK-DISASM-NEXT: 140001024: e9 05 00 00 00 jmp 0x14000102e <X>
+FORK-DISASM:      <tail>:
+FORK-DISASM-NEXT: 140001029: e9 00 00 00 00 jmp 0x14000102e <X>
+FORK-DISASM:      <f>:
+FORK-DISASM-NEXT: 140001030: e9 f9 ff ff ff jmp 0x14000102e <X>
+FORK-DISASM:      <over>:
+FORK-DISASM-NEXT: 14000103c: 85 c9 testl %ecx, %ecx
+FORK-DISASM-NEXT: 14000103e: 0f 84 ea ff ff ff je 0x14000102e <X>
+FORK-DISASM-NOT:  <D>:
+FORK-DISASM-NOT:  <c3>:
 
 DEFINE: %{err} = not lld-link -funcoverride -entry:main -out:err.exe main.obj loadconfig.obj
 RUN: %{fo} --defsym BAD=1 -o version.obj
@@ -162,14 +270,25 @@ LTO-DISASM:      140001000: jmp 0x140001030
 LTO-DISASM:      140001030: jmp 0x140001010
 
 #--- main.s
+## The C compiler's object, whose functions are instructions from their starts
+## on; odd's is not, so its call to X is no site.
+"@comp.id" = 0x01048da7
   .text
+  .def main; .scl 2; .type 32; .endef
   .globl main
 main:
   callq X
   leaq X(%rip), %rax
   callq Y
-  callq Z
-  retq
+  testl %eax, %eax
+  jne Z
+  jmp Z
+
+  .def odd; .scl 2; .type 32; .endef
+  .globl odd
+odd:
+  .byte 0x06
+  callq X
 
   .section .text$mn,"xr",one_only,X
   .globl X
@@ -247,11 +366,11 @@ BAD = 0
   .long -2 * (BAD == 4)
   .quad 0
 .endr
-  .section "X_$fo_rvas$","dr"
 .if BAD != 5
+  .section "X_$fo_rvas$","dr"
   .globl "X_$fo_rvas$"
-.endif
   .rva c1, X
+.endif
   .section "Y_$fo_rvas$","dr"
   .globl "Y_$fo_rvas$"
   .rva c1
@@ -298,3 +417,92 @@ main:
 _load_config_used:
   .long 0x148
   .zero 0x144
+
+#--- fork.s
+  .text
+  .globl main
+main:
+  .seh_proc main
+  .seh_endprologue
+  callq f
+  callq *__imp_f(%rip)
+  movq __imp_f@LOAD_CALL(%rip), %rax
+  callq *%rax
+  leaq f(%rip), %rax
+  callq l
+  jmp f
+  .seh_endproc
+
+  .section .text$s,"xr",discard,through
+  .globl through
+through:
+  jmpq *__imp_f(%rip)
+
+  .section .text$t,"xr",discard,tail
+  .globl tail
+tail:
+  jmp f
+
+  .section .text$t,"xr",discard,X
+  .globl X
+X:
+  retq
+
+  .section .text$t,"xr",discard,c1
+  .globl c1
+c1:
+  retq
+
+  .section .text$t,"xr",discard,f
+  .globl f
+  .p2align 4
+f:
+  {disp32} jmp X
+
+## The sections as the compiler writes them: COMDATs, the candidates' with
+## the diagram's, which X_$fo$ begins.
+.macro record x, c
+  .section "\x\()_$fo_bdd$","y",discard,"\x\()_$fo$"
+"\x\()_$fo$":
+  .long 1, 0x18
+  .short 2, 1
+  .long 0x13d
+  .short 1, 1
+  .long 0
+  .quad 0
+  .section "\x\()_$fo_rvas$","y",associative,"\x\()_$fo$"
+  .long \c - 1f
+1:
+.endm
+  .globl "X_$fo$"
+  record X, c1
+
+  .section .text$u,"xr"
+l:
+  {disp32} jmp L
+  .section .text$v,"xr"
+L:
+  retq
+c2:
+  retq
+  record L, c2
+
+  .section .text$x,"xr"
+  .globl over
+over:
+  testl %ecx, %ecx
+  jne 1f
+  jmpq *__imp_f(%rip)
+1:
+  retq
+
+  .section .text$w,"xr",discard,D
+  .globl D
+D:
+  retq
+  .section .text$w,"xr",discard,c3
+  .globl c3
+c3:
+  retq
+  .globl "D_$fo$"
+  record D, c3

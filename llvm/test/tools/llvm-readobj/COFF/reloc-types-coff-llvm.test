@@ -87,8 +87,12 @@
 # A64:        Type: IMAGE_REL_LLVM_FUSED_JUMP (32833)
 # A64:        Type: IMAGE_REL_LLVM_FUSED_JUMP_TAIL (32839)
 # A64:        Type: IMAGE_REL_LLVM_TPOFF_HIGH12A (32849)
-# A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12A (32850)
-# A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12L (32851)
+# A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12A_NC (32850)
+# A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12L_NC (32851)
+# A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12A (32856)
+# A64:        Type: IMAGE_REL_LLVM_TPOFF_LOW12L (32857)
+# A64:        Type: IMAGE_REL_LLVM_DTPOFF_LOW12A (32858)
+# A64:        Type: IMAGE_REL_LLVM_DTPOFF_LOW12L (32859)
 
 --- !COFF
 header: { Machine: IMAGE_FILE_MACHINE_[[M=AMD64]], Characteristics: [] }
@@ -166,6 +170,10 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP_TAIL }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_HIGH12A }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_LOW12A_NC }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_LOW12L_NC }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_LOW12A }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF_LOW12L }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_DTPOFF_LOW12A }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_DTPOFF_LOW12L }
 symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]

@@ -140,10 +140,11 @@ void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots,
     // A call of a function with which a DLL offers to replace an overridable
     // default reaches the thunk of the default's import.
     for (auto [b, rel] : zip(sc->symbols(), sc->getRelocs())) {
-      ImportFile *owner =
+      DefinedImportData *imp =
           b && b->addressImported
-              ? sc->file->symtab.vagueEntities.find(b)->second.owner->file
+              ? sc->file->symtab.vagueEntities.lookup(b).owner
               : nullptr;
+      ImportFile *owner = imp ? imp->file : nullptr;
       if (owner && takesAddress(*sc, rel))
         addImportFile(owner);
       else if (owner && owner->thunkSym && sc->file->forkObject)

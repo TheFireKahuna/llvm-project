@@ -469,6 +469,107 @@ void X86AsmPrinter::emitFunctionBodyEnd() {
   }
 }
 
+// Adds the memory operand Base + Disp.
+static MCInstBuilder addMem(MCInstBuilder B, MCRegister Base, MCOperand Disp) {
+  B.addReg(Base).addImm(1).addReg(0).addOperand(Disp).addReg(0);
+  return B;
+}
+
+static MCOperand symbolRef(MCContext &Ctx, const MCSymbol *Sym) {
+  return MCOperand::createExpr(MCSymbolRefExpr::create(Sym, Ctx));
+}
+static MCOperand symbolRef(MCContext &Ctx, StringRef Name) {
+  return symbolRef(Ctx, Ctx.getOrCreateSymbol(Name));
+}
+
+// The compare leaves the default in R11. The CFG dispatch takes its target in
+// RAX, where a System V variadic call passes AL, so such a default's tail and
+// every own entry take it in R10.
+static bool passesAL(const X86Subtarget &STI, const Function &F) {
+  return F.isVarArg() && !STI.isCallingConvWin64(F.getCallingConv());
+}
+
+static bool hasTypePrefix(const Function &F) {
+  return F.hasMetadata(LLVMContext::MD_kcfi_type) &&
+         getFunctionTypePrefixMarker(F) && F.getParent()->getModuleFlag("kcfi");
+}
+
+void X86AsmPrinter::emitOverridableCompare() {
+  EmitAndCountInstruction(
+      addMem(MCInstBuilder(X86::LEA64r).addReg(X86::R11), X86::RIP,
+             symbolRef(OutContext, CurrentFnSym)));
+  EmitAndCountInstruction(addMem(MCInstBuilder(X86::CMP64mr), X86::RIP,
+                                 symbolRef(OutContext, OverridableWord))
+                              .addReg(X86::R11));
+}
+
+void X86AsmPrinter::emitOverridableBranch(bool Equal, const MCSymbol *Label) {
+  EmitAndCountInstruction(MCInstBuilder(X86::JCC_1)
+                              .addOperand(symbolRef(OutContext, Label))
+                              .addImm(Equal ? X86::COND_E : X86::COND_NE));
+}
+
+bool X86AsmPrinter::emitOverridableTarget(bool Own) {
+  const Function &F = MF->getFunction();
+  bool Typed = hasTypePrefix(F);
+  // An untyped own entry jumps through the word itself.
+  if (Own && !Typed)
+    return false;
+  MCRegister Target = Own || passesAL(*Subtarget, F) ? X86::R10 : X86::RAX;
+  EmitAndCountInstruction(
+      addMem(MCInstBuilder(X86::MOV64rm).addReg(Target), X86::RIP,
+             symbolRef(OutContext, OverridableWord)));
+  if (!Typed)
+    return false;
+  MCRegister Prefix = Target == X86::R10 ? X86::R11 : X86::R10;
+  MCOperand Disp = MCOperand::createImm(
+      -8 - F.getFnAttributeAsParsedInteger("patchable-function-prefix"));
+  EmitAndCountInstruction(
+      addMem(MCInstBuilder(X86::MOV64rm).addReg(Prefix), X86::R11, Disp));
+  EmitAndCountInstruction(
+      addMem(MCInstBuilder(X86::CMP64mr), Target, Disp).addReg(Prefix));
+  return true;
+}
+
+void X86AsmPrinter::emitOverridableJump(bool Own) {
+  const Function &F = MF->getFunction();
+  if (Own && hasTypePrefix(F)) {
+    EmitAndCountInstruction(MCInstBuilder(X86::JMP64r).addReg(X86::R10));
+  } else if (Own) {
+    EmitAndCountInstruction(addMem(MCInstBuilder(X86::JMP64m), X86::RIP,
+                                   symbolRef(OutContext, OverridableWord)));
+  } else if (!passesAL(*Subtarget, F)) {
+    EmitAndCountInstruction(
+        addMem(MCInstBuilder(X86::JMP64m), X86::RIP,
+               symbolRef(OutContext, "__guard_dispatch_icall_fptr")));
+  } else {
+    // The check function takes its target in RCX and writes R10, R11 and
+    // RAX. Three words keep the stack aligned for its call, in a frame with
+    // unwind data of its own, whose epilogue the pops and the REX.W jump are.
+    MCSymbol *Begin = createTempSymbol("ovr_check");
+    OutStreamer->emitLabel(Begin);
+    OutStreamer->emitWinCFIStartProc(Begin);
+    for (MCRegister R : {X86::RAX, X86::RCX, X86::R10}) {
+      EmitAndCountInstruction(MCInstBuilder(X86::PUSH64r).addReg(R));
+      OutStreamer->emitWinCFIPushReg(R);
+    }
+    OutStreamer->emitWinCFIEndProlog();
+    EmitAndCountInstruction(
+        MCInstBuilder(X86::MOV64rr).addReg(X86::RCX).addReg(X86::R10));
+    EmitAndCountInstruction(
+        addMem(MCInstBuilder(X86::CALL64m), X86::RIP,
+               symbolRef(OutContext, "__guard_check_icall_fptr")));
+    for (MCRegister R : {X86::R10, X86::RCX, X86::RAX})
+      EmitAndCountInstruction(MCInstBuilder(X86::POP64r).addReg(R));
+    EmitAndCountInstruction(MCInstBuilder(X86::JMP64r_REX).addReg(X86::R10));
+    OutStreamer->emitWinCFIEndProc();
+  }
+}
+
+void X86AsmPrinter::emitOverridableTrap() {
+  EmitAndCountInstruction(MCInstBuilder(X86::TRAP));
+}
+
 uint32_t X86AsmPrinter::MaskKCFIType(uint32_t Value) {
   return getX86KCFIType(Value);
 }

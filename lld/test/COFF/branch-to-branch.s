@@ -46,7 +46,7 @@
 
 ## The REL32_CALL field, which holds no addend, still takes f's distance
 ## from its end, not h's.
-# X64-DATA: 140003000 43e0ffff
+# X64-DATA: 140004000 43d0ffff
 
 # RUN: %{mc} -triple=aarch64-windows-itanium a64.s -o a64.obj
 # RUN: %{link} -machine:arm64 a64.obj
@@ -88,20 +88,27 @@
 # FOREIGN-LABEL: <main>:
 # FOREIGN-NEXT:  bl 0x{{.*}} <f>
 
-# RUN: %{mc} -triple=x86_64-windows-itanium -I %S/Inputs fo.s --defsym X64=1 \
-# RUN:   -o fo-x64.obj
+## A branch to a jump to a function override's stub reaches the default body
+## as a site of its record, as the jump does.
+# RUN: %{mc} -triple=x86_64-windows-itanium fo.s --defsym X64=1 -o fo-x64.obj
+# RUN: %{mc} -triple=x86_64-windows-msvc -I %S/Inputs fo-def.s -o fo-def-x64.obj
 # RUN: %{mc} -triple=x86_64-windows-itanium %S/Inputs/loadconfig-cfg-x64.s \
 # RUN:   -o lc-x64.obj
-# RUN: %{link} -funcoverride fo-x64.obj lc-x64.obj
+# RUN: %{link} -funcoverride fo-x64.obj fo-def-x64.obj lc-x64.obj
 # RUN: %{dump} | FileCheck --check-prefix=FO %s
-# RUN: %{mc} -triple=aarch64-windows-itanium -I %S/Inputs fo.s -o fo-a64.obj
+# RUN: %{mc} -triple=aarch64-windows-itanium fo.s -o fo-a64.obj
+# RUN: %{mc} -triple=aarch64-windows-msvc -I %S/Inputs fo-def.s -o fo-def-a64.obj
 # RUN: %{mc} -triple=aarch64-windows-itanium %S/Inputs/loadconfig-arm64.s \
 # RUN:   -o lc-a64.obj
-# RUN: %{link} -machine:arm64 -funcoverride fo-a64.obj lc-a64.obj
+# RUN: %{link} -machine:arm64 -funcoverride fo-a64.obj fo-def-a64.obj lc-a64.obj
 # RUN: %{dump} | FileCheck --check-prefix=FO %s
 
 # FO-LABEL: <main>:
-# FO-NEXT:  {{callq|bl}} 0x{{.*}} <ff>
+# FO-NEXT:  {{callq|bl}} 0x[[#%x,BODY:]]
+# FO-LABEL: <ff>:
+# FO-NEXT:  {{jmp|b}} 0x[[#BODY]]
+# FO-LABEL: <X>:
+# FO-NEXT:  {{jmp|b}} 0x[[#BODY]]
 
 ## .text$m keeps its size (.Lb - .La would not fit its byte), so its short jump
 ## sent on to h, out of reach, goes to .Lmid as assembled.
@@ -289,10 +296,8 @@ f:
   b h
 
 #--- fo.s
-  .include "function-override-x.s"
-  .rva c1
   .text
-  .globl main, X, c1
+  .globl main
 main:
 .ifdef X64
   call ff
@@ -307,7 +312,13 @@ ff:
 .else
   b X
 .endif
+
+## X is a function override of another producer's object, and so a stub.
+#--- fo-def.s
+  .include "function-override-x.s"
+  .rva c1
   .section .text$X,"xr"
+  .globl X, c1
 X:
   ret
   .section .text$c1,"xr"

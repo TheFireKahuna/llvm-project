@@ -45,6 +45,7 @@
 #include "llvm/Support/Parallel.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/SHA256.h"
 #include "llvm/Support/TarWriter.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/TimeProfiler.h"
@@ -1154,15 +1155,14 @@ std::string LinkerDriver::getImportName(bool asLib) {
   return std::string(out);
 }
 
-// Returns the images that lib, an import library, states in its link records:
-// its DLL and every image loaded with it. overrides takes the overridable
-// defaults that they define. A library of another linker has no records and
-// states none.
+// Returns the images that the member mb of lib, an import library, states in
+// its link records: its DLL and every image loaded with it. overrides takes
+// the overridable defaults that they define. A library of another linker has
+// no records and states none.
 static std::vector<COFFLinkImage>
-readLinkImages(COFFLinkerContext &ctx, ArchiveFile *lib,
-               COFFLinkOverrides &overrides) {
+readLinkImages(COFFLinkerContext &ctx, std::optional<MemoryBufferRef> mb,
+               StringRef lib, COFFLinkOverrides &overrides) {
   std::vector<COFFLinkImage> images;
-  std::optional<MemoryBufferRef> mb = lib->findMember(LinkRecordsMemberSymbol);
   if (!mb)
     return images;
   auto read = [&]() -> Error {
@@ -1219,7 +1219,9 @@ const LinkerDriver::LinkImages &LinkerDriver::getLinkImages(StringRef path) {
             archives, [&](auto &a) { return a.first->getName() == path; });
         archive != archives.end()) {
       COFFLinkOverrides overrides;
-      lib.images = readLinkImages(ctx, archive->first, overrides);
+      lib.images = readLinkImages(
+          ctx, archive->first->findMember(LinkRecordsMemberSymbol), path,
+          overrides);
       for (const auto &[slot, d] : enumerate(overrides.Slots))
         if (!d.Name.empty())
           ctx.symtab.addOverrideDefault(slot, d, overrides.PrefixKey, path);
@@ -1259,6 +1261,83 @@ uint16_t LinkerDriver::getImportHint(StringRef name, StringRef dll) {
   return h ? h->OrdinalHint : 0;
 }
 
+void LinkerDriver::addOffersEpochs() {
+  SymbolTable &symtab = ctx.symtab;
+  if (!ctx.config.dll || !ctx.hasForkObject || symtab.isEC() ||
+      ctx.hybridSymtab)
+    return;
+  // The DLL's epoch: the baseline's while it keeps nothing new, and otherwise
+  // the first 64 bits of the SHA-256 digest of the baseline's epoch and of
+  // the names it gained, which with no baseline are all that it keeps. It is
+  // an export of data that the DLL offers, which a function stands for where
+  // it offers none.
+  if (ctx.config.offersEpoch) {
+    std::vector<StringRef> gained;
+    for (auto &[sym, entity] : symtab.vagueEntities)
+      if (std::optional<COFFLinkImage::Entity> e =
+              symtab.getImageEntity(sym, symtab.getKeptEntity(sym), entity);
+          e && (!symtab.baseline || (e->Flags & LinkImageEntityAddition)))
+        gained.push_back(e->Name);
+    llvm::sort(gained);
+    uint64_t epoch = symtab.baselineEpoch;
+    if (!gained.empty() || !epoch) {
+      SHA256 hash;
+      uint8_t before[8];
+      support::endian::write64le(before, epoch);
+      hash.update(before);
+      for (StringRef name : gained) {
+        hash.update(name);
+        hash.update(ArrayRef<uint8_t>{0});
+      }
+      epoch = support::endian::read64be(hash.final().data());
+    }
+    auto anchor = [&](bool data) {
+      return llvm::find_if(symtab.exports, [&](const Export &e) {
+        return e.forwardTo.empty() && isa_and_nonnull<DefinedRegular>(e.sym) &&
+               symtab.vagueEntities.contains(e.sym) && e.data >= data;
+      });
+    };
+    auto it = anchor(true);
+    if (it == symtab.exports.end())
+      it = anchor(false);
+    if (it == symtab.exports.end()) {
+      Warn(ctx) << "-offers-epoch: the DLL offers no vague entity, whose "
+                   "export its epoch would name";
+    } else {
+      Export e;
+      e.name = saver().save(LinkOffersEpochPrefix +
+                            utohexstr(epoch, /*LowerCase=*/true, 16));
+      e.sym = it->sym;
+      e.data = true;
+      symtab.exports.push_back(e);
+      symtab.offersEpoch = epoch;
+    }
+  }
+  // A DLL that offers an entity, its own or another's, imports the epoch of
+  // each image that it imports from and that has one, which a release of
+  // that image that keeps more renames: the DLL then fails to load beside it.
+  if (!symtab.offerExports)
+    return;
+  std::map<std::string, ImportFile *> imports;
+  for (ImportFile *file : ctx.importFileInstances)
+    if (file->live && !file->dllName.empty() &&
+        !ctx.config.delayLoads.contains(StringRef(file->dllName).lower()))
+      imports.try_emplace(StringRef(file->dllName).lower(), file);
+  for (auto &[name, file] : imports)
+    for (const COFFLinkImage &image : getLinkImages(file->parentName).images)
+      if (image.Epoch && image.Name.equals_insensitive(name)) {
+        StringRef epoch =
+            saver().save(LinkOffersEpochPrefix +
+                         utohexstr(image.Epoch, /*LowerCase=*/true, 16));
+        ImportFile *f = ImportFile::create(
+            ctx, ctx.config.machine, epoch, image.Name, IMPORT_DATA,
+            IMPORT_NAME, "", getImportHint(epoch, image.Name));
+        addFile(f);
+        f->live = true;
+        f->uses |= ImportFile::Keep;
+      }
+}
+
 void LinkerDriver::readOffersBaseline() {
   SymbolTable &symtab = ctx.symtab;
   if (!ctx.config.dll || !ctx.hasForkObject || symtab.isEC() ||
@@ -1285,11 +1364,29 @@ void LinkerDriver::readOffersBaseline() {
                   "against with -offers-baseline";
     return;
   }
-  // What it exports was there before, whatever the DLL's name.
+  // What it exports was there before, whatever the DLL's name, and its
+  // epoch is the one that the image's own follows.
   symtab.baseline.emplace();
-  for (const Archive::Symbol &sym : (*lib)->symbols())
-    if (StringRef name = sym.getName(); name.consume_front("__imp_"))
+  std::optional<MemoryBufferRef> records;
+  for (const Archive::Symbol &sym : (*lib)->symbols()) {
+    StringRef name = sym.getName();
+    if (name.consume_front("__imp_")) {
       symtab.baseline->insert(name);
+    } else if (name == LinkRecordsMemberSymbol) {
+      Expected<Archive::Child> c = sym.getMember();
+      Expected<MemoryBufferRef> m =
+          c ? c->getMemoryBufferRef()
+            : Expected<MemoryBufferRef>(c.takeError());
+      if (m)
+        records = *m;
+      else
+        consumeError(m.takeError());
+    }
+  }
+  COFFLinkOverrides overrides;
+  std::vector<COFFLinkImage> images =
+      readLinkImages(ctx, records, path, overrides);
+  symtab.baselineEpoch = images.empty() ? 0 : images[0].Epoch;
 }
 
 const COFFLinkImage::Entity *
@@ -1417,8 +1514,8 @@ void LinkerDriver::resolveOverrides() {
     o.address = make<DefinedLocalImport>(
         ctx, saver().save("__imp_" + d.Name + "$address"), x);
     o.address->getChunk()->filled = true;
-    o.entry = dyn_cast_or_null<Defined>(
-        symtab.find((LinkOverrideOwnPrefix + d.Name).str()));
+    if (Symbol *e = symtab.find((LinkOverrideOwnPrefix + d.Name).str()))
+      o.entry = e->getDefined();
     if (o.entry && !o.entry->isGCRoot) {
       o.entry->isGCRoot = true;
       ctx.config.gcroot.push_back(o.entry);
@@ -1447,7 +1544,7 @@ void LinkerDriver::resolveOverrides() {
     // the program chose.
     if (ctx.config.dll) {
       if (llvm::none_of(symtab.exports, [&](const Export &e) {
-            return e.name == sym->getName();
+            return e.name == b->getName();
           }))
         continue;
       Export e;
@@ -1639,12 +1736,11 @@ void LinkerDriver::takeProtectedCopies() {
 }
 
 // Two copies that each keep their own instance split the entity: a protected
-// copy, an executable's and a thread-local variable's record, which no cell
-// holds; so does such a copy loaded late beside any that binds before it
-// loads. A DLL's default copy that -Bsymbolic binds is a split that its author
-// stated, as a hidden copy is. Every other copy is joined to the owner where
-// the two have one shape, and copies of other producers where their bytes
-// agree too.
+// copy and an executable's, which no cell holds; so does such a copy loaded
+// late beside any that binds before it loads. A DLL's default copy that
+// -Bsymbolic binds is a split that its author stated, as a hidden copy is.
+// Every other copy is joined to the owner where the two have one shape, and
+// copies of other producers where their bytes agree too.
 //
 // The executable owns an entity that it keeps, as an ELF executable's copy
 // relocation makes it, and imports one that a DLL owns, so that its table
@@ -1660,9 +1756,7 @@ void LinkerDriver::pickOwners() {
     StringRef name = entry.first;
     ArrayRef<Keeper> keepers = entry.second;
     auto isOwn = [](const Keeper &k) {
-      return (k.e.Flags & 3) == LinkFactProtected || k.executable ||
-             (isTlsRecordName(k.e.Name) &&
-              (k.e.Flags & LinkImageEntityPreemptible));
+      return (k.e.Flags & 3) == LinkFactProtected || k.executable;
     };
     auto allows = [&](const Keeper &k) {
       return allowed.contains(name) || allowed.contains("@" + k.image.lower());
@@ -1706,7 +1800,7 @@ void LinkerDriver::pickOwners() {
 
     Symbol *sym = symtab.find(name);
     if (ctx.config.dll || keepers.size() < 2 || !owner || owner->late ||
-        isTlsRecordName(name) || (sym && symtab.getKeptEntity(sym)))
+        (sym && symtab.getKeptEntity(sym)))
       continue;
     for (StringRef n : getMovingNames(owner->e)) {
       auto *imp = dyn_cast_or_null<DefinedImportData>(
@@ -1820,6 +1914,7 @@ void LinkerDriver::forEachImageBreadthFirst(
 std::string LinkerDriver::createLinkRecords(StringRef libName) {
   std::vector<COFFLinkImage> images = getLoadClosure(libName, /*live=*/true);
   images[0].Allowed = ctx.config.allowedDuplicates;
+  images[0].Epoch = ctx.symtab.offersEpoch;
 
   // What the DLL keeps: each entity once, under the name of its definition.
   // An image linked against the baseline may keep its own copy of one that
@@ -1857,7 +1952,7 @@ std::string LinkerDriver::createLinkRecords(StringRef libName) {
   bool anyDefault = false;
   for (auto [slot, d] : enumerate(overrides.Slots)) {
     if ((ctx.symtab.ownOverrides >> slot & 1) &&
-        llvm::none_of(ctx.symtab.exports, [&](const Export &e) {
+        llvm::none_of(ctx.symtab.exports, [&d = d](const Export &e) {
           return e.name == d.Name && e.forwardTo.empty();
         }))
       d = {};
@@ -3399,6 +3494,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       args.hasFlag(OPT_integritycheck, OPT_integritycheck_no, false);
   config->cetCompat = args.hasFlag(OPT_cetcompat, OPT_cetcompat_no, false);
   config->functionOverride = args.hasArg(OPT_funcoverride);
+  for (auto *arg : args.filtered(OPT_funcoverridedisablefunc))
+    for (StringRef name : llvm::split(arg->getValue(), ','))
+      config->disabledFunctionOverrides.insert(name);
+  if (args.hasArg(OPT_funcoverrideemitcand))
+    Warn(ctx) << "/funcoverrideemitcand is ignored: the image as linked "
+                 "branches to each function's default body, and Windows "
+                 "writes the body it selects";
   config->cetCompatStrict =
       args.hasFlag(OPT_cetcompatstrict, OPT_cetcompatstrict_no, false);
   config->cetCompatIpValidationRelaxed = args.hasFlag(
@@ -3709,7 +3811,16 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     } else if (!symtab.entry && !config->noEntry) {
       if (args.hasArg(OPT_dll)) {
         StringRef s = DllDefaultEntryPoint(config->machine, config->mingw);
-        symtab.entry = symtab.addGCRoot(s, true);
+        // A Windows Itanium or NT-POSIX DLL starts at an entry of its own, or
+        // has none where its link defines none.
+        Symbol *sym = symtab.find(s);
+        auto *lazy = dyn_cast_or_null<LazyArchive>(sym);
+        if (ctx.hasForkObject &&
+            (lazy ? lazy->isImport()
+                  : !isa_and_nonnull<DefinedRegular, LazyObject>(sym)))
+          config->noEntry = true;
+        else
+          symtab.entry = symtab.addGCRoot(s, true);
       } else if (config->driverWdm) {
         // /driver:wdm implies /entry:_NtProcessStartup
         symtab.entry =
@@ -3733,6 +3844,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       config->ignoredOffers.insert(StringRef(arg->getValue()).lower());
     if (auto *arg = args.getLastArg(OPT_offers_baseline))
       config->offersBaseline = arg->getValue();
+    config->offersEpoch = args.hasArg(OPT_offers_epoch);
     for (auto *arg : args.filtered(OPT_allow_vague_duplicate)) {
       StringRef a = arg->getValue();
       config->allowedDuplicates.push_back(
@@ -4140,6 +4252,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     symtab.resolveRemainingUndefines(aliases);
     symtab.bindValueOnlySites();
+    // An image's entry is its own code, never another image's by import.
+    if (ctx.hasForkObject &&
+        isa_and_nonnull<DefinedImportThunk, DefinedImportData>(symtab.entry))
+      Err(ctx) << "entry point " << symtab.entry->getName()
+               << " is an import; an image's entry is its own";
   });
 
   // Bind each SECTION-class symbol to the first section of its name in an
@@ -4249,6 +4366,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   readOffersBaseline();
   pickOwners();
   ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.addOffers(); });
+  addOffersEpochs();
 
   // Windows specific -- when we are creating a .dll file, we also
   // need to create a .lib file. In MinGW mode, we only do that when the

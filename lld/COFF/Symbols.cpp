@@ -173,5 +173,10 @@ MemoryBufferRef LazyArchive::getMemberBuffer() {
                "could not get the buffer for the member defining symbol " +
                    toCOFFString(file->symtab.ctx, sym));
 }
+
+bool LazyArchive::isImport() {
+  return identify_magic(getMemberBuffer().getBuffer()) ==
+         file_magic::coff_import_library;
+}
 } // namespace coff
 } // namespace lld

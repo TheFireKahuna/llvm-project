@@ -53,6 +53,41 @@ RUN: not lld-link -machine:arm64 -funcoverride -entry:main -out:err.exe mainfar.
 RUN:   | FileCheck --check-prefix=RANGE %s
 RANGE: error: function override X: candidate far is out of range of the branch at RVA 0x1000
 
+An object that LLVM made for Windows Itanium or NT-POSIX is read with no
+option. Its function f is the compiler's stub, a branch to the default body
+X, which takes no stub of the link's. The bl to f, the call through f's
+pointer, which the link makes a bl, and the b to f reach X as sites, as the
+stub's own branch is one; the b that ends its section before X's stays.
+f's address keeps the stub.
+
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium fork.s -o fork.obj
+RUN: lld-link -machine:arm64 -entry:main -debug:symtab -out:fork.exe fork.obj loadconfig.obj
+RUN: llvm-readobj --coff-load-config fork.exe | FileCheck --check-prefix=FORK %s
+RUN: llvm-objdump -d --no-show-raw-insn fork.exe | FileCheck --check-prefix=FORK-DISASM %s
+RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium --defsym FAR=1 fork.s -o forkfar.obj
+RUN: not lld-link -machine:arm64 -entry:main -out:err.exe forkfar.obj loadconfig.obj 2>&1 \
+RUN:   | FileCheck --check-prefix=FORK-RANGE %s
+
+FORK:      OriginalRVA: 0x1010
+FORK-NEXT: RVAs [
+FORK-NEXT:   RVA: 0x1018
+FORK-NEXT: ]
+FORK:          RVA: 0x1000
+FORK:          RVA: 0x1004
+FORK:          RVA: 0x100C
+FORK:          RVA: 0x1014
+FORK-NOT:  RVA:
+
+FORK-DISASM:      <main>:
+FORK-DISASM-NEXT: 140001000: bl 0x140001010 <X>
+FORK-DISASM-NEXT: 140001004: bl 0x140001010 <X>
+FORK-DISASM-NEXT: 140001008: adr x0, 0x140001014 <f>
+FORK-DISASM-NEXT: 14000100c: b 0x140001010 <X>
+FORK-DISASM:      <f>:
+FORK-DISASM-NEXT: 140001014: b 0x140001010 <X>
+
+FORK-RANGE: error: function override X: candidate c1 is out of range of the branch at RVA 0x1000
+
 #--- main.s
   .text
   .globl main
@@ -103,3 +138,47 @@ far:
 .else
   .rva c1
 .endif
+
+#--- fork.s
+  .text
+  .globl main
+main:
+  bl f
+  adrp x8, __imp_f
+  ldr x8, [x8, :fused_lo12:__imp_f]
+  .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_f
+  blr x8
+  adrp x0, f
+  add x0, x0, :lo12:f
+  b f
+
+  .section .text$t,"xr",discard,X
+  .globl X
+X:
+  ret
+
+  .section .text$t,"xr",discard,f
+  .globl f
+f:
+  b X
+
+.ifdef FAR
+  .section .text2,"xr"
+  .space 0x8000000
+.else
+  .section .text$t,"xr",discard,c1
+.endif
+  .globl c1
+c1:
+  ret
+
+## The sections as the compiler writes them: COMDATs, the candidates' with
+## the diagram's, which X_$fo$ begins.
+  .section "X_$fo_bdd$","y",discard,"X_$fo$"
+  .globl "X_$fo$"
+"X_$fo$":
+  .long 1, 0x18
+  .short 2, 1, 0xc, 1, 1, 1
+  .zero 12
+  .section "X_$fo_rvas$","y",associative,"X_$fo$"
+  bl c1

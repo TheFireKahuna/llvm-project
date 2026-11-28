@@ -5,6 +5,8 @@
 ;; in every input order and form; an export becomes a forwarder.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill-x86_64.obj
+; RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium %S/Inputs/fill-entry.s -o fill-aarch64.obj
 ; RUN: cat a.ll alias.ll > more.ll
 
 ; DEFINE: %{t} = x86_64
@@ -27,8 +29,8 @@
 ; DEFINE:   %{opt} -module-summary a.ll -o a.thin.bc && \
 ; DEFINE:   %{opt} -module-summary main.ll -o main.thin.bc && \
 ; DEFINE:   rm -f a.a && llvm-ar rcs a.a a.obj && \
-; DEFINE:   lld-link -dll -noentry a.obj dll.obj -out:a.dll -implib:a.lib && \
-; DEFINE:   lld-link -dll -noentry guard.obj -out:g.dll -implib:g.lib && \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj a.obj dll.obj -out:a.dll -implib:a.lib && \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj guard.obj -out:g.dll -implib:g.lib && \
 ; DEFINE:   %{link} a.obj main.obj a.lib && %{gone} && \
 ; DEFINE:   %{link} -opt:noref -debug -include:iv a.lib main.obj a.obj && \
 ; DEFINE:   %{gone} && %{link} main.obj a.lib a.a && %{gone} && \
@@ -81,7 +83,7 @@
 ; RUN: llc -mtriple=x86_64-windows-itanium -filetype=obj a.ll -o a.obj
 ; RUN: llc -mtriple=x86_64-windows-itanium -filetype=obj main.ll -o main.obj
 ; RUN: llc -mtriple=x86_64-windows-itanium -filetype=obj dll.ll -o dll.obj
-; RUN: lld-link -dll -noentry a.obj dll.obj -out:a.dll -implib:a.lib
+; RUN: lld-link -dll -noentry fill-x86_64.obj a.obj dll.obj -out:a.dll -implib:a.lib
 ; RUN: not lld-link -machine:arm64ec -dll -noentry a.obj main.obj a.lib \
 ; RUN:   -out:ec.dll 2>&1 | FileCheck --check-prefix=EC %s
 ; EC: error: a.obj: iv is a vague entity, which an ARM64EC or ARM64X image cannot share with another; give it hidden visibility

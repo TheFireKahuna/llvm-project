@@ -846,11 +846,10 @@ Symbol *SectionChunk::getRelocTarget(const coff_relocation &rel) const {
 }
 
 // Returns whether a relocation of the given type at off in sc, naming a
-// function override, takes the stub rather than the body: debug info and
-// unwind data describe the body, an ARM64 BRANCH26 is a site, which branches
-// to the default body as linked, and an addend points into the body. The
-// field of a load of a pointer on x86-64 holds no addend, and a JUMP8's is
-// one byte.
+// function override's stub, takes the stub rather than the body: debug info
+// and unwind data describe the body, and an addend points into it. The scan
+// binds a site to the body. The field of a load of a pointer on x86-64 holds
+// no addend, and a JUMP8's is one byte.
 static bool referencesStub(const SectionChunk *sc, uint16_t type,
                            const uint8_t *off) {
   StringRef name = sc->getSectionName();
@@ -869,7 +868,7 @@ static bool referencesStub(const SectionChunk *sc, uint16_t type,
   switch (type) {
   case IMAGE_REL_ARM64_BRANCH26:
   case IMAGE_REL_LLVM_BRANCH_TAIL:
-    return false;
+    return (read32le(off) & 0x3ffffff) == 0;
   case IMAGE_REL_ARM64_ADDR64:
     return read64le(off) == 0;
   case IMAGE_REL_ARM64_PAGEBASE_REL21:
@@ -1262,7 +1261,7 @@ void SectionChunk::getBaserels(std::vector<Baserel> *res) {
     if (ty == IMAGE_REL_BASED_ABSOLUTE)
       continue;
     // The loader writes an absolute address into an in-place import slot,
-// and the image's fill into a word of its own, which nothing may then
+    // and the image's fill into a word of its own, which nothing may then
     // adjust.
     Symbol *target = getTarget(i, s);
     if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target) ||
@@ -2029,6 +2028,13 @@ FunctionOverride *FunctionOverride::get(const Symbol *s) {
              : nullptr;
 }
 
+uint32_t
+FunctionOverride::getSiteRVA(std::pair<const Chunk *, uint32_t> site) const {
+  auto *sc = dyn_cast<SectionChunk>(site.first);
+  return site.first->getRVA() +
+         (sc ? getFunctionOverrideField(*sc, site.second) : site.second);
+}
+
 FunctionOverrideThunk *FunctionOverrideThunk::get(const Symbol *s) {
   auto *d = dyn_cast_or_null<DefinedSynthetic>(s);
   return d ? dyn_cast_or_null<FunctionOverrideThunk>(d->getChunk()) : nullptr;
@@ -2174,7 +2180,7 @@ uint32_t OfferTableChunk::getIdentity(ArrayRef<COFFLinkImage> closure,
   raw_svector_ostream os(s);
   for (const COFFLinkImage::Entity &e : image.Kept)
     os << e.Name << '\0' << e.Flags << ' ' << unsigned(e.Log2Align) << ' '
-       << e.Size << ' ' << e.CheckSum << '\0';
+       << e.Size << ' ' << e.CheckSum << e.Shape << '\0';
   for (uint32_t import : image.Imports)
     os << StringRef(closure[import / 2].Name).lower() << ' ' << import % 2
        << '\0';
@@ -2385,8 +2391,8 @@ void DynamicRelocsChunk::finalize() {
                        ? IMAGE_FUNCTION_OVERRIDE_X64_REL32
                        : IMAGE_FUNCTION_OVERRIDE_ARM64_BRANCH26;
     std::vector<Baserel> sites;
-    for (auto [c, off] : fo->sites)
-      sites.emplace_back(getOutputRVA(c, off), type);
+    for (auto site : fo->sites)
+      sites.emplace_back(fo->getSiteRVA(site), type);
     llvm::sort(sites, [](const Baserel &x, const Baserel &y) {
       return x.rva < y.rva;
     });

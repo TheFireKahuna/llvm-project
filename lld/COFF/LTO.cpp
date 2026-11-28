@@ -186,7 +186,8 @@ static void undefine(Symbol *s) {
 // symbol or one -wrap redirects after LTO. An undefined __imp_X without a weak
 // alias is a dllimport reference that a local import of X resolves, so it is
 // final where X is; a defined __imp_X is a pointer whatever X is.
-static bool isFinalInImage(SymbolTable &symtab, Symbol *sym) {
+static bool isFinalInImage(SymbolTable &symtab, Symbol *sym,
+                           const DenseSet<Symbol *> &cells) {
   // ARM64EC binds symbols through anti-dependencies and thunks, some of which
   // are created only after LTO.
   if (symtab.isEC())
@@ -205,7 +206,12 @@ static bool isFinalInImage(SymbolTable &symtab, Symbol *sym) {
   // image's, which code that takes the record's address is not.
   if (d && d->addressImported && !symtab.vagueEntities.find(d)->second.function)
     return false;
-  if (TlsRecordChunk::get(d))
+  // A DLL's replacement of an overridable default yields to the program's.
+  if (auto it = symtab.vagueEntities.find(d);
+      symtab.ctx.config.dll && it != symtab.vagueEntities.end() &&
+      it->second.overridable)
+    return false;
+  if (TlsRecordChunk::get(d) || cells.contains(d))
     return false;
   if (TlsRecordChunk *record =
           symtab.tlsRecords.empty() ? nullptr : symtab.tlsRecords.lookup(d);
@@ -241,6 +247,17 @@ void BitcodeCompiler::add(BitcodeFile &f) {
       if (Symbol *init = f.symtab.findOfferedInit(sym, entity);
           init && !f.symtab.takesOffer(sym, /*function=*/false))
         offeredInits.insert(init);
+  // So are the variables that it keeps preemptible, and their guards.
+  if (offers && cells.empty())
+    for (auto &[sym, entity] : entities)
+      if (!entity.function && !TlsRecordChunk::get(sym) &&
+          f.symtab.isPreemptible(sym, /*function=*/false)) {
+        cells.insert(sym);
+        if (std::optional<std::string> g =
+                getGuardName(sym->getName(), entity.init))
+          if (Symbol *guard = f.symtab.find(*g))
+            cells.insert(guard);
+      }
 
   // Provide a resolution to the LTO API for each symbol.
   for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
@@ -271,7 +288,7 @@ void BitcodeCompiler::add(BitcodeFile &f) {
          (entity != entities.end() || offeredInits.contains(sym))) ||
         (record && record->isNamed(/*beforeLTO=*/true));
     r.ExportDynamic = exportedSyms.contains(sym);
-    r.FinalDefinitionInLinkageUnit = isFinalInImage(f.symtab, sym);
+    r.FinalDefinitionInLinkageUnit = isFinalInImage(f.symtab, sym, cells);
     // The object LTO generates defines the symbol again. It is undefined only
     // once every file is added, so that later files still see the definition.
     if (r.Prevailing)

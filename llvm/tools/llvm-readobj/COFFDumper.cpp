@@ -2697,6 +2697,10 @@ void COFFDumper::printCOFFLinkRecords() {
                   for (uint32_t Import : Image.Imports)
                     W.printString(Import % 2 ? "DelayLoads" : "Imports",
                                   Images[Import / 2].Name);
+                  for (StringRef A : Image.Allowed)
+                    W.printString("AllowsDuplicate", A);
+                  if (Image.Epoch)
+                    W.printHex("Epoch", Image.Epoch);
                   for (const COFFLinkImage::Entity &E : Image.Kept) {
                     DictScope K(W, "Entity");
                     W.printString("Name", E.Name);
@@ -2720,8 +2724,10 @@ void COFFDumper::printCOFFLinkRecords() {
                       W.printString("Added", "Yes");
                     W.printNumber("Size", E.Size);
                     W.printNumber("Alignment", 1u << E.Log2Align);
-                    if (E.hasCheckSum())
+                    if (E.Flags & COFF::LinkImageEntityCheckSum)
                       W.printHex("CheckSum", E.CheckSum);
+                    if (E.Flags & COFF::LinkImageEntityDescriptor)
+                      W.printBinary("Shape", arrayRefFromStringRef(E.Shape));
                   }
                 }
                 return Error::success();

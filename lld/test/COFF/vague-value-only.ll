@@ -11,6 +11,8 @@
 ;; slot, but not that of a string of its own.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill-x86_64.obj
+; RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium %S/Inputs/fill-entry.s -o fill-aarch64.obj
 ; RUN: cat defs.ll dll.ll > d.ll
 ; RUN: cat defs.ll get.ll > unread.ll
 ; RUN: cat unread.ll exe.ll > e.ll
@@ -25,7 +27,7 @@
 ; DEFINE:   %{llc} unread.ll -o unread.obj && %{llc} main.ll -o main.obj && \
 ; DEFINE:   %{llc} taking.ll -o taking.obj && \
 ; DEFINE:   opt -mtriple=%{t}-windows-itanium e.ll -o e.bc && \
-; DEFINE:   lld-link -dll -noentry d.obj -out:a.dll -implib:a.lib && \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj d.obj -out:a.dll -implib:a.lib && \
 ; DEFINE:   %{link} main.obj e.obj a.lib && \
 ; DEFINE:   %{dump} | FileCheck --check-prefix=%{t} %s && \
 ; DEFINE:   llvm-readobj --coff-imports exe.exe | \
@@ -229,6 +231,7 @@ shared:
 	ret
 
 	.section	.rdata,"dr",discard,k
+	.p2align	2
 	.globl	k
 k:
 	.word	7

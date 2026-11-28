@@ -103,7 +103,8 @@
 # NOKEY: error: facts.obj: a function has a type prefix, and no object carries /failifmismatch:_WIN_ITANIUM_KCFI_PREFIX
 
 ## Bad facts: critical tag 21, a missing symbol, no operand, overlong operands,
-## a second word, unassigned visibility or initialization, two Symbols groups.
+## a second word, unassigned visibility or initialization, a slot the override
+## table lacks, two Symbols groups.
 # RUN: yaml2obj -DDATA=4C4C524301000103031500 obj.yaml -o tag.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010463000100 obj.yaml -o index.obj
 # RUN: yaml2obj -DDATA=4C4C524301000103030000 obj.yaml -o operands.obj
@@ -111,11 +112,12 @@
 # RUN: yaml2obj -DDATA=4C4C52430100010403000102 obj.yaml -o prefix.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010403010104 obj.yaml -o visibility.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010403020105 obj.yaml -o init.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010403090120 obj.yaml -o slot.obj
 # RUN: yaml2obj -DDATA=4C4C5243010001000100 obj.yaml -o two.obj
 # RUN: yaml2obj -DDATA=4C4C5243010001000006030163020800 obj.yaml -o site.obj
 # RUN: yaml2obj -DDATA=4C4C524301000100000403010002 obj.yaml -o sites.obj
 # RUN: not %{link} tag.obj index.obj operands.obj fsize.obj prefix.obj \
-# RUN:   visibility.obj init.obj two.obj site.obj sites.obj 2>&1 \
+# RUN:   visibility.obj init.obj slot.obj two.obj site.obj sites.obj 2>&1 \
 # RUN:   | FileCheck --check-prefix=BAD %s
 # BAD: error: tag.obj: .llvm_link_records: unknown critical tag 21
 # BAD: error: index.obj: .llvm_link_records: fact of symbol 99, which the file does not have
@@ -124,6 +126,7 @@
 # BAD: error: prefix.obj: .llvm_link_records: type prefix of symbol 3 is out of range
 # BAD: error: visibility.obj: .llvm_link_records: visibility of symbol 3 is out of range
 # BAD: error: init.obj: .llvm_link_records: initialization of symbol 3 is out of range
+# BAD: error: slot.obj: .llvm_link_records: overridable default of symbol 3 is out of range
 # BAD: error: two.obj: .llvm_link_records: two Symbols groups
 ## SiteFacts name a relocation by its section's symbol and index.
 # BAD: error: site.obj: .llvm_link_records: site fact of relocation 99 of the section of symbol 3, which the file does not have

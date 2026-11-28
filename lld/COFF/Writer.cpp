@@ -1159,7 +1159,6 @@ void Writer::run() {
     layoutSections();
     finalizeAddresses();
     countRVATableEntries();
-    checkFunctionOverrides();
     removeEmptySections();
     assignOutputSectionIndices();
     placeStartStopSymbols();
@@ -1180,6 +1179,7 @@ void Writer::run() {
       writeHeader<pe32_header>();
     }
     writeSections();
+    checkFunctionOverrides();
     prepareLoadConfig();
     sortExceptionTables();
     createFixups();
@@ -3521,6 +3521,17 @@ void Writer::createGuardCFTables() {
         addSymbolToRVASet(isa<DefinedImportData>(slot) ? giatsRVASet
                                                        : addressTakenSyms,
                           slot);
+  // A fill copies the address of a function that an offer table names into
+  // other images' cells: an executable's own instance, or another image's
+  // through the entry of its import, which the loader then grants.
+  if (OfferTableChunk *t = ctx.symtab.offerTable)
+    for (const OfferTableChunk::Entry &e : t->entries)
+      if (e.flags & LinkImageEntityFunction) {
+        if (isa<DefinedImportData>(e.at))
+          addSymbolToRVASet(giatsRVASet, e.at);
+        else if (!config->dll)
+          maybeAddAddressTakenFunction(addressTakenSyms, e.at);
+      }
 
   // An import's address is taken through its IAT entry, and through the load
   // thunk if it is delay-loaded; a local import's is its target's.
@@ -4430,10 +4441,8 @@ void Writer::addBaserelBlocks(std::vector<Baserel> &v) {
 }
 
 // Lays out each live function override's stub and lists the function in the
-// dynamic value relocation table with its sites: the stub's branch, on ARM64
-// each BRANCH26 to the function, which as a branch it states, and each
-// branch to a default body that has no stub of the link's that its
-// relocation's type states.
+// dynamic value relocation table with its sites: the stub's branch and each
+// branch to the default body that isFunctionOverrideSite finds.
 void Writer::createFunctionOverrides() {
   std::vector<FunctionOverride *> fos;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
@@ -4457,50 +4466,41 @@ void Writer::createFunctionOverrides() {
   if (!ctx.dynamicRelocs)
     ctx.dynamicRelocs = make<DynamicRelocsChunk>();
   ctx.dynamicRelocs->functionOverrides = std::move(fos);
-  bool arm64 = ctx.config.machine == ARM64;
-  if (!arm64 && ctx.functionOverrideBodies.empty())
-    return;
   for (OutputSection *sec : ctx.outputSections)
     for (Chunk *c : sec->chunks)
       if (auto *sc = dyn_cast<SectionChunk>(c)) {
         ArrayRef<coff_relocation> rels = sc->getRelocs();
         ScannedSection *s = rels.empty() ? nullptr : sc->getScanned();
-        for (size_t i = 0, e = rels.size(); i != e; ++i) {
-          const coff_relocation &rel = rels[i];
-          Symbol *to = sc->getTarget(i, s);
-          FunctionOverride *fo = FunctionOverride::get(to);
-          if (fo) {
-            if (!isFunctionOverrideSite(*sc, rel,
-                                        s ? s->relocs[i].expr : R_TYPE))
-              continue;
-          } else if (FunctionOverrideThunk *t =
-                         arm64 &&
-                                 (rel.Type == IMAGE_REL_ARM64_BRANCH26 ||
-                                  rel.Type == IMAGE_REL_LLVM_BRANCH_TAIL) &&
-                                 !(read32le(
-                                       &sc->getContents()[rel.VirtualAddress]) &
-                                   0x3ffffff)
-                             ? FunctionOverrideThunk::get(to)
-                             : nullptr) {
-            fo = &t->fo;
-          } else {
-            continue;
-          }
-          fo->sites.emplace_back(sc, rel.VirtualAddress);
-        }
+        for (size_t i = 0, e = rels.size(); i != e; ++i)
+          if (FunctionOverride *fo = FunctionOverride::get(sc->getTarget(i, s));
+              fo && isFunctionOverrideSite(*sc, rels[i],
+                                           s ? s->relocs[i].expr : R_TYPE))
+            fo->sites.emplace_back(sc, i);
       }
 }
 
-// Windows writes an ARM64 site's displacement without checking its range.
+// Windows writes a site's displacement over what the image holds there,
+// which as written is the default body's, and on ARM64 without checking its
+// range.
 void Writer::checkFunctionOverrides() {
-  if (!ctx.dynamicRelocs || ctx.config.machine != ARM64)
+  if (!ctx.dynamicRelocs)
     return;
+  bool arm64 = ctx.config.machine == ARM64;
   for (FunctionOverride *fo : ctx.dynamicRelocs->functionOverrides)
-    for (auto [c, off] : fo->sites) {
-      auto *sc = dyn_cast<SectionChunk>(c);
-      uint64_t p = c->getRVA() + (sc ? sc->getOutputOffset(off) : off);
+    for (auto site : fo->sites) {
+      uint64_t p = fo->getSiteRVA(site);
+      OutputSection *os = ctx.getOutputSection(site.first);
+      uint32_t field = read32le(buffer->getBufferStart() + os->getFileOff() +
+                                (p - os->getRVA()));
+      if (fo->body->getRVA() !=
+          (arm64 && (field & 0x7c000000) == 0x14000000
+               ? p + SignExtend64<28>(uint64_t(field) << 2)
+               : p + 4 + int32_t(field)))
+        Err(ctx) << "function override " << fo->body->getName()
+                 << ": the site at RVA 0x" << Twine::utohexstr(p)
+                 << " does not branch to it";
       for (Defined *d : fo->candidates)
-        if (!isInt<28>(int64_t(d->getRVA()) - int64_t(p)))
+        if (arm64 && !isInt<28>(int64_t(d->getRVA()) - int64_t(p)))
           Err(ctx) << "function override " << fo->body->getName()
                    << ": candidate " << d->getName()
                    << " is out of range of the branch at RVA 0x"

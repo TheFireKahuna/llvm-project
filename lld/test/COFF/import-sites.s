@@ -77,9 +77,9 @@
 # FIXUP:      8021 | 0000  | 00001099 | 0000111D
 
 ## Only d's (offset load), self's and k's (kept jumps) pointers stay; the other
-## eight bytes are framed's unwind data.
+## eight bytes are framed's unwind data, and then comes the empty offer table.
 # NOPTR:     Name: .rdata
-# NOPTR:     VirtualSize: 0x20{{$}}
+# NOPTR:     VirtualSize: 0x38{{$}}
 
 # RUN: %{mc} -triple=aarch64-windows-itanium a64.s -o a64.obj
 # RUN: %{mc} -triple=aarch64-windows-itanium defs.s -o defs-a64.obj

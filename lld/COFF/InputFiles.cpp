@@ -422,7 +422,7 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols,
               case LinkFactOverridable:
               case LinkFactOverridableByName: {
                 // A default states its slot, then the slot it forwards to,
-                // then one where the forward drops an argument.
+                // then 1 or 2 where the forward drops an argument.
                 DataExtractor data(operands, /*IsLittleEndian=*/true);
                 DataExtractor::Cursor c(0);
                 uint64_t n = 0, slots[3];
@@ -434,7 +434,7 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols,
                     (n && slots[0] > LinkFactMaxOverrideSlot) ||
                     (n > 1 && (slots[1] > LinkFactMaxOverrideSlot ||
                                slots[1] == slots[0])) ||
-                    (n > 2 && slots[2] != 1))
+                    (n > 2 && slots[2] - 1 > 1))
                   return createStringError("overridable default of symbol " +
                                            Twine(index) + " is out of range");
                 if (!apply || !sym || tag == LinkFactOverridableByName)
@@ -1968,11 +1968,11 @@ void ImportFile::parse() {
   if (!impSym)
     return;
 
-  // An import that only weak references name is bound by the image's fill,
-  // which leaves it null where the DLL lacks it, unless a strong reference
-  // names it too.
+  // An import that only weak references name, one of them an object's for
+  // Windows Itanium or NT-POSIX, is bound by the image's fill, which leaves
+  // it null where the DLL lacks it, unless a strong reference names it too.
   if (auto *x = dyn_cast_or_null<Undefined>(symtab.find(name));
-      x && x->weakAlias && !impSym->strongImport &&
+      x && x->weakAlias && x->forkReferenced && !impSym->strongImport &&
       (x->weakKind == Symbol::NoLibrary || x->weakKind == Symbol::Library))
     binding = Weak;
 

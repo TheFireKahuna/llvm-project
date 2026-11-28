@@ -176,6 +176,11 @@ def dll : F<"dll">, HelpText<"Create a DLL">;
 def driver : F<"driver">, HelpText<"Generate a Windows NT Kernel Mode Driver">;
 def funcoverride : F<"funcoverride">,
     HelpText<"Let Windows select function bodies as it maps the image">;
+def funcoverridedisablefunc : P<"funcoverridedisablefunc",
+    "Keep the default body of each function named, with no record">;
+// Every call site the link can prove is listed for Windows to rewrite.
+defm funcoverrideoncallsites : B_priv<"funcoverrideoncallsites">;
+def funcoverrideemitcand : P_priv<"funcoverrideemitcand">;
 def driver_wdm : F<"driver:wdm">,
     HelpText<"Set IMAGE_FILE_UP_SYSTEM_ONLY bit in PE header">;
 def driver_uponly : F<"driver:uponly">,
@@ -294,6 +299,8 @@ def allow_vague_duplicate : P<"allow-vague-duplicate",
 def offers_baseline : P<"offers-baseline",
     "Mark the vague entities that the import library of a release the DLL replaces does not export">,
     MetaVarName<"<lib>">;
+def offers_epoch : F<"offers-epoch">,
+    HelpText<"Export an epoch of what the DLL keeps, which a newer release that keeps more renames">;
 def ignore_offers : P<"ignore-offers",
     "Keep the image's own copies of the vague entities that a DLL offers">,
     MetaVarName<"<dll>">;

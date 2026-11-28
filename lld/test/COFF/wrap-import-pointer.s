@@ -112,7 +112,8 @@
 # A64-DLL-NEXT:   ldr x8, {{.*}} <__imp_foo>
 # A64-NEXT:       br x8
 
-# NOPTR-NOT: Name: .rdata
+# NOPTR:      Name: .rdata
+# NOPTR-NEXT: VirtualSize: 0x18
 
 # IMPORT: Symbol: foo (0)
 # IMPORT: Symbol: foo (0)

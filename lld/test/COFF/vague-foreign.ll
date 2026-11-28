@@ -5,6 +5,8 @@
 ;; yielding to a DLL's, and their address-takes load from the import's entry.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill-x86_64.obj
+; RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium %S/Inputs/fill-entry.s -o fill-aarch64.obj
 
 ; DEFINE: %{t} = x86_64
 ; DEFINE: %{fork} = llc -mtriple=%{t}-windows-itanium -filetype=obj
@@ -16,8 +18,8 @@
 ; DEFINE:   %{fork} bare.ll -o bare.obj && %{fork} big.ll -o forkbig.obj && \
 ; DEFINE:   %{gnu} gnu.ll -o gnu.obj && %{gnu} direct.ll -o direct.obj && \
 ; DEFINE:   %{gnu} big.ll -o big.obj && \
-; DEFINE:   lld-link -dll -noentry dll.obj -out:a.dll -implib:a.lib && \
-; DEFINE:   lld-link -dll -noentry bare.obj -out:b.dll -implib:b.lib && \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj dll.obj -out:a.dll -implib:a.lib && \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj bare.obj -out:b.dll -implib:b.lib && \
 ; DEFINE:   %{link} main.obj gnu.obj a.lib && %{imports} --check-prefix=ALL && \
 ; DEFINE:   llvm-objdump -d --no-show-raw-insn exe.exe | \
 ; DEFINE:     FileCheck --check-prefix=%{t} %s && \
@@ -29,19 +31,19 @@
 ; DEFINE:   %{imports} --check-prefix=NONE --allow-empty && \
 ; DEFINE:   lld-link -entry:addr -subsystem:console -out:exe.exe gnu.obj \
 ; DEFINE:     a.lib && %{imports} --check-prefix=NONE --allow-empty && \
-; DEFINE:   lld-link -dll -noentry main.obj gnu.obj -export:addr \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj main.obj gnu.obj -export:addr \
 ; DEFINE:     -out:g.dll -implib:g.lib && \
 ; DEFINE:   llvm-readobj --coff-exports g.dll | FileCheck %s \
 ; DEFINE:     --check-prefix=OFFERS --implicit-check-not=Name: && \
 ; DEFINE:   cat gnu.ll guard.ll | llc -mtriple=%{t}-windows-gnu -filetype=obj \
 ; DEFINE:     -o guarded.obj && \
-; DEFINE:   lld-link -dll -noentry main.obj guarded.obj -export:addr \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj main.obj guarded.obj -export:addr \
 ; DEFINE:     -out:g.dll -implib:guarded.lib && \
 ; DEFINE:   llvm-readobj --coff-exports g.dll | FileCheck %s \
 ; DEFINE:     --check-prefix=OFFERS --implicit-check-not=Name: && \
 ; DEFINE:   cat gnu.ll tables.ll | llc -mtriple=%{t}-windows-gnu -filetype=obj \
 ; DEFINE:     -o tables.obj && \
-; DEFINE:   lld-link -dll -noentry main.obj tables.obj -export:addr \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj main.obj tables.obj -export:addr \
 ; DEFINE:     -out:g.dll -implib:tables.lib && \
 ; DEFINE:   llvm-readobj --coff-exports g.dll | FileCheck %s \
 ; DEFINE:     --check-prefixes=OFFERS,TABLES --implicit-check-not=Name: && \
@@ -58,11 +60,25 @@
 
 ; RUN: %{run}
 ; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-gnu refused.s -o refused.obj
+; RUN: llc -mtriple=x86_64-windows-itanium -filetype=obj same.ll -o same.obj
 ; DEFINE: %{refused} = lld-link -entry:take -subsystem:console -out:exe.exe \
-; DEFINE:   bare.obj refused.obj a.lib
+; DEFINE:   same.obj refused.obj a.lib
 ; RUN: not %{refused} 2>&1 | FileCheck %s --check-prefix=REFUSED
 ; RUN: %{refused} -ignore-function-address-equality:refused.obj
 ; RUN: %{imports} --check-prefix=OWN --implicit-check-not='Symbol: f'
+; RUN: not lld-link -dll -noentry fill-x86_64.obj dll.obj refused.obj \
+; RUN:   -out:r.dll 2>&1 | FileCheck %s --check-prefix=REFUSED-CELL
+; RUN: lld-link -dll -noentry fill-x86_64.obj dll.obj refused.obj -out:r.dll \
+; RUN:   -ignore-function-address-equality:refused.obj
+;; A foreign word of data that holds f is a fill word computed from f's cell,
+;; at 0x3008, unless the acknowledgement keeps its object's own address.
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-gnu word.s -o word.obj
+; RUN: lld-link -dll -noentry fill-x86_64.obj dll.obj word.obj -export:fw \
+; RUN:   -out:w.dll
+; RUN: llvm-objdump -s -j .rdata w.dll | FileCheck %s --check-prefix=WORD
+; RUN: lld-link -dll -noentry fill-x86_64.obj dll.obj word.obj -export:fw \
+; RUN:   -out:w.dll -ignore-function-address-equality:word.obj
+; RUN: llvm-objdump -s -j .rdata w.dll | FileCheck %s --check-prefix=KEPT
 ; REDEFINE: %{t} = aarch64
 ; RUN: %{run}
 
@@ -78,6 +94,12 @@
 ; OWN: Symbol: iv (
 
 ; REFUSED: error: refused.obj: the reference to f at .text+0x3 is not classified: no proven path reaches it, decoded from proven starts
+
+;; So is one in a DLL that reaches its own f through a cell.
+; WORD: 00400000 08300000
+; KEPT-NOT: 00400000 08300000
+
+; REFUSED-CELL: error: refused.obj: the reference to f at .text+0x3 is not classified: {{.*}}; it may take the address of f, which is the program's; -ignore-function-address-equality:refused.obj keeps this image's own
 
 ;; addr calls the image's f and called and loads the DLL's f's address; ivaddr
 ;; and guardaddr load theirs.
@@ -115,16 +137,16 @@
 ; IGNORED: Symbol: _ZGV2iv (
 ; IGNORED: Symbol: iv (
 
-;; Copies that two producers made agree in what the link sees of them.
-; SIZE: error: [[OBJ]]: iv has [[N]] bytes, and [[M]] in [[DLL]], which provides it; the two are of different producers
+;; A copy and the instance that stands for it have one shape.
+; SIZE: error: [[OBJ]]: iv is [[N]] bytes aligned to 4{{.*}}, and [[M]] bytes aligned to 4{{.*}} in [[DLL]], which provides it; the two are not one definition
 
-; GUARD: error: gnu.obj: iv is provided by b.dll, but guard variable for iv, which its COMDAT group also defines, is not; give both the visibility they have in b.dll
+; GUARD: error: gnu.obj: iv is 8 bytes aligned to 4 under a guard, and 8 bytes aligned to 4 in b.dll, which provides it; the two are not one definition
 
 ;--- dll.ll
 $iv = comdat any
 $f = comdat any
 
-@iv = linkonce_odr global [2 x i32] zeroinitializer, comdat
+@iv = linkonce_odr global [2 x i32] zeroinitializer, comdat #0
 @_ZGV2iv = linkonce_odr global i64 0, comdat($iv)
 
 define linkonce_odr void @f() comdat {
@@ -137,6 +159,8 @@ define dllexport ptr @get() {
   ret ptr @f
 }
 
+attributes #0 = { "dynamic-init"="guarded" }
+
 ;--- bare.ll
 $iv = comdat any
 
@@ -145,6 +169,18 @@ $iv = comdat any
 define dllexport ptr @get() {
   ret ptr @iv
 }
+
+;--- same.ll
+$iv = comdat any
+
+@iv = linkonce_odr global [2 x i32] zeroinitializer, comdat #0
+@_ZGV2iv = linkonce_odr global i64 0, comdat($iv)
+
+define dllexport ptr @get() {
+  ret ptr @iv
+}
+
+attributes #0 = { "dynamic-init"="guarded" }
 
 ;--- gnu.ll
 $iv = comdat any
@@ -203,6 +239,17 @@ f:
 take:
   leaq f(%rip), %rax
   retq
+
+;--- word.s
+.section .text$f,"xr",discard,f
+.def f; .scl 2; .type 32; .endef
+.globl f
+f:
+  retq
+.data
+.globl fw
+fw:
+  .quad f
 
 ;--- direct.ll
 $iv = comdat any

@@ -1454,6 +1454,16 @@ void classifyImports(COFFLinkerContext &ctx) {
                << f->externalName
                << ", which this would make a dependency; refer to it strongly";
   }
+  for (Export &e : ctx.symtab.exports)
+    if (auto *imp = dyn_cast_or_null<DefinedImportData>(
+            isa_and_nonnull<DefinedImportThunk>(e.sym)
+                ? cast<DefinedImportThunk>(e.sym)->wrappedSym
+                : e.sym);
+        imp && (imp->file->binding & ImportFile::Weak))
+      Err(ctx) << "/export:" << e.name << ": only weak references name "
+               << imp->getExternalName() << ", imported from "
+               << imp->getDLLName()
+               << ", which this would make a dependency; refer to it strongly";
 }
 
 void selectFill(COFFLinkerContext &ctx,
@@ -1559,7 +1569,35 @@ void selectFill(COFFLinkerContext &ctx,
       ->replaceKeepingName(entry, sizeof(SymbolUnion));
   ctx.symtab.entry = fill;
   ctx.config.noEntry = false;
-  markLive(ctx, {fill}, kept);
+  // The loader runs an image's TLS callbacks before its entry, so where the
+  // image has any, the fill runs as the first of them, after only a -static
+  // runtime's founding.
+  SmallVector<Symbol *, 2> roots = {fill};
+  if (llvm::any_of(ctx.objFileInstances, [](ObjFile *f) {
+        return llvm::any_of(f->getChunks(), [](Chunk *c) {
+          auto *sc = dyn_cast<SectionChunk>(c);
+          return sc && sc->live && !sc->getRelocs().empty() &&
+                 sc->getSectionName().starts_with(".CRT$XL");
+        });
+      })) {
+    StringRef tls = imports ? "__llvm_fill_imports_tls" : "__llvm_fill_tls";
+    roots.push_back(ctx.symtab.find(tls));
+    if (!isa_and_nonnull<Defined>(roots.back())) {
+      Err(ctx) << "the image's fill runs before its TLS callbacks, which "
+                  "needs "
+               << tls << "; link the builtins library";
+      return;
+    }
+  }
+  // A callback the link did not select never runs, though a link that
+  // collects no garbage keeps every section: the fill of an image that binds
+  // imports by name, run without its search, would leave them unwritten.
+  for (StringRef tls : {"__llvm_fill_tls", "__llvm_fill_imports_tls"})
+    if (auto *d = dyn_cast_or_null<DefinedRegular>(ctx.symtab.find(tls));
+        d && !llvm::is_contained(roots, d))
+      for (SectionChunk &c : d->getChunk()->children())
+        c.live = false;
+  markLive(ctx, roots, kept);
 }
 
 void selectDelayBoundImports(COFFLinkerContext &ctx) {

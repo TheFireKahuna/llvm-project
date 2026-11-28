@@ -1167,6 +1167,19 @@ void AsmPrinter::emitFunctionHeader() {
     }
   }
 
+  // An overridable default begins with the check of its word, ahead of its
+  // unwind range, as code ahead of a shrink-wrapped prologue is.
+  if (const MDNode *MD = F.getMetadata("overridable");
+      MD && MD->getNumOperands()) {
+    OverridableWord =
+        OutContext.getOrCreateSymbol("__imp_" + CurrentFnSym->getName());
+    OverridableBody = createTempSymbol("ovr_body");
+    OverridableTail = createTempSymbol("ovr_tail");
+    emitOverridableCompare();
+    emitOverridableBranch(/*Equal=*/false, OverridableTail);
+    OutStreamer->emitLabel(OverridableBody);
+  }
+
   // Emit pre-function debug and/or EH information.
   for (auto &Handler : Handlers) {
     Handler->beginFunction(MF);
@@ -2632,6 +2645,37 @@ void AsmPrinter::emitFunctionBody() {
     Handler->endFunction(MF);
   for (auto &Handler : EHHandlers)
     Handler->endFunction(MF);
+
+  // After the unwind range, the default's tail, then its own entry, which the
+  // image's calls of the default reach: it enters the body past the check
+  // where the word holds the default, and otherwise transfers with no CFG
+  // check, the word being the image's own.
+  if (OverridableBody) {
+    OutStreamer->switchSection(MF->getSection());
+    // Both transfers check the type or neither does, and share the trap.
+    MCSymbol *Trap = createTempSymbol("ovr_trap");
+    auto Transfer = [&](bool Own) {
+      bool Typed = emitOverridableTarget(Own);
+      if (Typed)
+        emitOverridableBranch(/*Equal=*/false, Trap);
+      emitOverridableJump(Own);
+      return Typed;
+    };
+    OutStreamer->emitLabel(OverridableTail);
+    if (Transfer(/*Own=*/false)) {
+      OutStreamer->emitLabel(Trap);
+      emitOverridableTrap();
+    }
+    MCSymbol *Own = OutContext.getOrCreateSymbol(
+        Twine(COFF::LinkOverrideOwnPrefix) + CurrentFnSym->getName());
+    emitAlignment(MF->getPreferredAlignment());
+    emitLinkage(&F, Own);
+    OutStreamer->emitLabel(Own);
+    emitOverridableCompare();
+    emitOverridableBranch(/*Equal=*/true, OverridableBody);
+    Transfer(/*Own=*/true);
+    OverridableWord = OverridableBody = OverridableTail = nullptr;
+  }
 
   // Emit section containing BB address offsets and their metadata, when
   // BB labels are requested for this function. Skip empty functions.

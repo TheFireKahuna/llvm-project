@@ -1372,8 +1372,10 @@ constexpr uint16_t SpanTypes[] = {
 /// member: a linker that knows the records reads them where they are.
 static const char LinkRecordsMemberSymbol[] = "__llvm_link_records$lib";
 
-/// The payload of an Images group is a count and that many images: a DLL and
-/// then every image that is loaded with it. Each is its name, a count and
+/// The payload of an Images group is a count and that many layout shapes,
+/// each a name, which the type_info objects of its images name by index, then
+/// a count and that many images: a DLL and then every image that is loaded
+/// with it. Each is its name, a count and
 /// that many imports, and a count and that many fields. A name is its size
 /// and its bytes. An import is twice the index of an image of the group that
 /// the image imports from, plus one where it loads that image late. A field
@@ -1382,12 +1384,22 @@ static const char LinkRecordsMemberSymbol[] = "__llvm_link_records$lib";
 enum LinkImageField : uint64_t {
   /// The vague entities that the image keeps: a count, then each as its
   /// name, its LinkImageEntityFlags, its size in bytes, the logarithm of its
-  /// alignment and, where the flags say so, 32 bits of a checksum. Critical.
+  /// alignment and, where the flags say so, 32 bits of a checksum, or the
+  /// index of a type_info object's layout shape. Critical.
   LinkImageKept = 1,
   /// The image is an executable, so that an image that imports from it binds
   /// the running executable by name, whatever its file. Empty. Critical.
   LinkImageExecutable = 3,
+  /// The splits of vague entities that the image's link acknowledged: a
+  /// count, then each as a name, of an entity or of an image after '@'.
+  LinkImageAllowed = 4,
+  /// The 64 bits of the digest that the image's export of its epoch names
+  /// after LinkOffersEpochPrefix, which every DLL that offers an entity and
+  /// imports from the image imports.
+  LinkImageEpoch = 6,
 };
+
+static const char LinkOffersEpochPrefix[] = "__llvm_offers$";
 
 /// An entity's LinkFactVisibilityState is in bits 0 and 1 and a variable's
 /// LinkFactInitKind in bits 2 to 4.
@@ -1404,8 +1416,9 @@ enum LinkImageEntityFlags : uint64_t {
   /// executable of a program takes the first that the images it loads offer,
   /// in breadth-first order.
   LinkImageEntityOverride = 0x100,
-  /// The image reaches the entity through a cell that its fill binds to the
-  /// instance that the executable's offer table names.
+  /// Another image's instance may stand for the image's: the image reaches
+  /// the entity through a cell that its fill binds to the instance that the
+  /// executable's offer table names.
   LinkImageEntityPreemptible = 0x200,
   /// In an offer table: the entry names a word that holds the address of the
   /// instance, not the instance.
@@ -1420,14 +1433,14 @@ enum LinkImageEntityFlags : uint64_t {
   LinkImageEntityAddition = 0x1000,
   /// A type_info object whose name word holds the non-unique bit: its size
   /// is that of the blob that the word names, the name, its NUL and the
-  /// layout shape after it, and the checksum is the low 32 bits of the blob's
-  /// xxh3 hash. A DLL that keeps it preemptible binds its name word to the
-  /// owner's where the blobs are one.
+  /// layout shape after it, whose bytes the record states. A DLL that keeps
+  /// it preemptible binds its name word to the owner's where the blobs are
+  /// one.
   LinkImageEntityDescriptor = 0x2000,
   /// What two copies of one entity agree on besides size and alignment:
   /// whether it is a function, whether a guard initializes it and whether
-  /// it is a type_info object, whose checksum is agreed on too. A function's
-  /// alignment is 0.
+  /// it is a type_info object, whose layout shape is agreed on too. A
+  /// function's alignment is 0.
   LinkImageEntityShape = LinkImageEntityFunction |
                          2 << LinkImageEntityInitShift |
                          LinkImageEntityDescriptor,
@@ -1436,11 +1449,12 @@ enum LinkImageEntityFlags : uint64_t {
 /// An image's offer table, whose RVA the 32-bit word at OfferTableHeaderWord
 /// of its DOS header holds: OfferTableMagic, the base-two logarithm of the
 /// number of buckets, the number of entries and OfferTableFlags; the entries in
-/// the order of their keys, each 24 bytes, the key of the name, the size, the
-/// RVA, the LinkImageEntityFlags as 16 bits, the logarithm of the alignment
-/// as 8 bits and a zero byte; then for each bucket, which the top bits of a
-/// key index, the index of its first entry as 32 bits, and the number of
-/// entries.
+/// the order of their keys, each 24 bytes, the key of the name, the RVA of
+/// the NUL-terminated name, the RVA of the instance, the size as 32 bits, the
+/// LinkImageEntityFlags as 16 bits, the logarithm of the alignment as 8 bits
+/// and a zero byte; then for each bucket, which the top bits of a key index,
+/// the index of its first entry as 32 bits, and the number of entries; then
+/// the names that the image holds nowhere else. No two names have one key.
 enum : uint32_t { OfferTableMagic = 0x4F7A1D2B, OfferTableHeaderWord = 0x38 };
 enum OfferTableFlags : uint32_t {
   /// An entry is of a type_info object.

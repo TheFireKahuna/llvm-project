@@ -5,6 +5,8 @@
 ;; the image's copy, dropped once nothing branches to it.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
+; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill-x86_64.obj
+; RUN: llvm-mc -filetype=obj -triple=aarch64-windows-itanium %S/Inputs/fill-entry.s -o fill-aarch64.obj
 
 ; DEFINE: %{t} = x86_64
 ; DEFINE: %{llc} = llc -mtriple=%{t}-windows-itanium -filetype=obj
@@ -21,7 +23,7 @@
 ; DEFINE:   opt -mtriple=%{t}-windows-itanium f.ll -o f.bc && \
 ; DEFINE:   llvm-mc -triple=%{t}-windows-itanium -filetype=obj \
 ; DEFINE:     %S/Inputs/loadconfig-cfg-iat.s -o config.obj && \
-; DEFINE:   lld-link -dll -noentry dll.obj -out:f.dll -implib:f.lib && \
+; DEFINE:   lld-link -dll -noentry fill-%{t}.obj dll.obj -out:f.dll -implib:f.lib && \
 ; DEFINE:   %{link} -guard:cf f.obj f.lib config.obj && %{check} && \
 ; DEFINE:   %{link} -guard:cf f.lib f.obj config.obj && %{check} && \
 ; DEFINE:   %{link} f.bc f.lib -include:addr && %{imports} && \

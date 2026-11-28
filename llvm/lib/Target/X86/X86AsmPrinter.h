@@ -214,6 +214,11 @@ public:
   COFF::FusedUse getLoweredFusedUse(const MachineInstr &MI, unsigned &RegOp);
   void emitFunctionBodyStart() override;
   void emitFunctionBodyEnd() override;
+  void emitOverridableCompare() override;
+  void emitOverridableBranch(bool Equal, const MCSymbol *Label) override;
+  bool emitOverridableTarget(bool Own) override;
+  void emitOverridableJump(bool Own) override;
+  void emitOverridableTrap() override;
   void emitKCFITypeId(const GlobalObject &GO) override;
 
   bool shouldEmitWeakSwiftAsyncExtendedFramePointerFlags() const override {

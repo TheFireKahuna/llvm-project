@@ -93,10 +93,11 @@
 # X64-NEXT:    movq $0x1234, %rcx
 
 ## The image holds no pointer to v or to f: its read-only data is the byte
-## of the span, and on ARM64 it has none.
-# SPAN:      Name: .rdata
-# SPAN-NEXT: VirtualSize: 0x1
-# NOPTR-NOT: Name: .rdata
+## of the span and its empty offer table, and on ARM64 the table alone.
+# SPAN:       Name: .rdata
+# SPAN-NEXT:  VirtualSize: 0x20
+# NOPTR:      Name: .rdata
+# NOPTR-NEXT: VirtualSize: 0x18
 
 # X64-IMP-LABEL: <main>:
 # X64-IMP-NEXT:    movq {{.*}}(%rip), %rax

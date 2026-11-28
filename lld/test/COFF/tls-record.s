@@ -98,13 +98,6 @@
 # SYM:      <readx>:
 # SYM-NEXT: movq {{.*}}(%rip), %rax # {{.*}} <__imp_x$tls>
 
-## An image of the ntposix model has no _tls_index for a record to point at.
-# RUN: llvm-mc -triple=x86_64-windows-ntposix -filetype=obj def.s -o np.obj
-# RUN: llvm-mc -triple=x86_64-windows-ntposix -filetype=obj %S/Inputs/tls-support.s \
-# RUN:   -o np-sup.obj
-# RUN: not lld-link -dll -noentry np.obj np-sup.obj -out:err.dll -export:x$tls,data 2>&1 \
-# RUN:   | FileCheck %s --check-prefix=NTPOSIX
-
 ## An export keeps a record, not the variable: _tls_index at 0x2000, x 12 and
 ## its guard 21 bytes into the groups, y 16 and its guard 20.
 # RECORDS:      00001000 00200080 01000000
@@ -164,8 +157,6 @@
 # NORECORD:      error: undefined symbol: __declspec(dllimport) h$tls
 # NORECORD-NEXT: >>> referenced by norecord.obj:(.data)
 # NORECORD-NEXT: NOTE: the definition of h in norecord.obj states no record: it is hidden there, or of another producer; give the declaration its visibility.
-
-# NTPOSIX: error: thread-local record x$tls needs the image's thread-local place, __imp___tp_register$init, which an image of the ntposix thread-local model does not have yet
 
 #--- def.s
         .section .tls$,"dw"

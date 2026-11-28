@@ -106,17 +106,17 @@
 ## The first pass's thunks put near out of reach; they are thrown away and every
 ## branch retargets before the second.
 # RESTART-LOG: Added 9001 thunks with margin 204800 in 2 passes
-# RESTART:      140001000:   adr x0, 0x140025000
+# RESTART:      140001000:   adr x0, 0x140026000
 # RESTART-NEXT: 140001004:   b 0x140009cac
 # RESTART-NEXT: 140001008:   b 0x140009cb8
-# RESTART:      140009cac:   adrp x16, 0x148002000
+# RESTART:      140009cac:   adrp x16, 0x148003000
 # RESTART-NEXT: 140009cb0:   add x16, x16, #0x0
 # RESTART-NEXT: 140009cb4:   br x16
-# RESTART-NEXT: 140009cb8:   adrp x16, 0x148042000
+# RESTART-NEXT: 140009cb8:   adrp x16, 0x148043000
 # RESTART-NEXT: 140009cbc:   add x16, x16, #0x4
 # RESTART-NEXT: 140009cc0:   br x16
 
-# FO:      180001000:   jmp 0x180001010
+# FO:      180001000:   jmp 0x180001005 <X>
 # FO:      <X>:
 
 ## f, whose address is not significant, is g's address, even where its guard

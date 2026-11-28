@@ -155,6 +155,14 @@ public:
   SmallPtrSet<const MachineBasicBlock *, 16> ShrinkWrappedFrame;
   bool InShrinkWrappedFrame = false;
 
+  /// An overridable default's word, the image's __imp_ pointer of it; where
+  /// its body begins past its check, which also begins its unwind range; and
+  /// the tail the check leaves by where the word holds another function. Null
+  /// in any other function.
+  MCSymbol *OverridableWord = nullptr;
+  MCSymbol *OverridableBody = nullptr;
+  MCSymbol *OverridableTail = nullptr;
+
   /// The label after each jump yet to be emitted that ends a loop whose
   /// alignment names its end.
   DenseMap<const MachineInstr *, MCSymbol *> LoopEnds;
@@ -705,6 +713,22 @@ public:
   /// Targets can override this to emit stuff after the last basic block in the
   /// function.
   virtual void emitFunctionBodyEnd() {}
+
+  /// The instructions of an overridable default's check, its tail and its own
+  /// entry, which emitFunctionHeader and emitFunctionBody arrange. None writes
+  /// an argument register or a register a variadic call passes.
+  /// Compares the default's word with the default.
+  virtual void emitOverridableCompare() {}
+  /// Branches to Label where the last compare found its operands equal, or
+  /// with !Equal where it did not.
+  virtual void emitOverridableBranch(bool Equal, const MCSymbol *Label) {}
+  /// Takes the word as the target of the transfer, and returns whether it
+  /// compared the 8 bytes before the target with those before the default,
+  /// the type prefix that every function the word may hold shares.
+  virtual bool emitOverridableTarget(bool Own) { return false; }
+  /// Transfers to the target: from the own entry a jump, else through CFG.
+  virtual void emitOverridableJump(bool Own) {}
+  virtual void emitOverridableTrap() {}
 
   /// Targets can override this to emit stuff at the start of a basic block.
   /// By default, this method prints the label for the specified

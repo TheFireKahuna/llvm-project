@@ -263,6 +263,10 @@ private:
   // replaces: -offers-baseline, or the one that the link is about to replace.
   void readOffersBaseline();
 
+  // A DLL that offers an entity imports the epoch of each image that it
+  // imports from, and under -offers-epoch exports its own.
+  void addOffersEpochs();
+
   // Used by the resolver to parse .drectve section contents.
   void parseDirectives(InputFile *file);
 

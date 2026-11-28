@@ -10,10 +10,13 @@
 # DEFINE: %{t} = x86_64
 # DEFINE: %{e} = itanium
 # DEFINE: %{mc} = llvm-mc -filetype=obj -triple=%{t}-windows-%{e}
-# DEFINE: %{link} = lld-link -machine:%{a} -dll -noentry imp.lib \
+# DEFINE: %{rt} =
+# DEFINE: %{link} = lld-link -machine:%{a} -dll -noentry imp.lib %{rt} \
 # DEFINE:   -include:__imp_fn
 # DEFINE: %{dump} = llvm-readobj --file-headers --sections --coff-imports
 # DEFINE: %{run} = lld-link -machine:%{a} -def:imp.def -out:imp.lib && \
+# DEFINE:   lld-link -machine:%{a} -def:np.def -out:ntposix.lib && \
+# DEFINE:   %{mc} %S/Inputs/fill-entry.s -o fill.obj && \
 # DEFINE:   %{mc} rdata.s -o rdata.obj && %{mc} groups.s -o groups.obj && \
 # DEFINE:   %{mc} ro.s -o ro.obj && %{mc} data.s -o data.obj && \
 # DEFINE:   %{mc} xdata.s -o xdata.obj && %{mc} tls.s -o tls.obj && \
@@ -45,8 +48,9 @@
 # REDEFINE: %{a} = arm64
 # REDEFINE: %{t} = aarch64
 # RUN: %{run}
-## An NT-POSIX DLL's thread-local data is read-only.
+## An NT-POSIX DLL's thread-local data is read-only, and its fill registers it.
 # REDEFINE: %{e} = ntposix
+# REDEFINE: %{rt} = ntposix.lib fill.obj
 # RUN: %{run}
 
 ## The directory holds the table, its terminator and the section's two words.
@@ -86,8 +90,8 @@
 # TLS-itanium:      Name: .rdata
 # TLS-itanium:      Name: .tls
 # TLS-itanium:      IMAGE_SCN_MEM_WRITE
-# TLS-ntposix:      IATRVA: 0x1000
-# TLS-ntposix-NEXT: IATSize: 0x1010
+# TLS-ntposix:      IATRVA: 0x2000
+# TLS-ntposix-NEXT: IATSize: 0x1020
 # TLS-ntposix:      Name: .tls
 # TLS-ntposix-NOT:  IMAGE_SCN_MEM_WRITE
 # TLS-ntposix:      Name: .rdata
@@ -130,6 +134,11 @@ fn2
 #--- data.s
 .data
   .quad fn
+
+#--- np.def
+LIBRARY ntposix.dll
+EXPORTS
+__tp_register
 
 #--- xdata.s
 .section .xdata,"dr"
