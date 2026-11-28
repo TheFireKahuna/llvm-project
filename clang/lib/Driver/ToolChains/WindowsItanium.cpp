@@ -76,11 +76,23 @@ void tools::windowsitanium::Linker::ConstructJob(
     SmallString<128> ImpLib(Output.getFilename());
     llvm::sys::path::replace_extension(ImpLib, "dll.lib");
     CmdArgs.push_back(Args.MakeArgString("-implib:" + ImpLib));
-  } else if (const Arg *A = Args.getLastArg(options::OPT_mwindows,
-                                            options::OPT_mconsole)) {
-    CmdArgs.push_back(A->getOption().matches(options::OPT_mwindows)
-                          ? "-subsystem:windows"
-                          : "-subsystem:console");
+  } else {
+    if (const Arg *A =
+            Args.getLastArg(options::OPT_mwindows, options::OPT_mconsole))
+      CmdArgs.push_back(A->getOption().matches(options::OPT_mwindows)
+                            ? "-subsystem:windows"
+                            : "-subsystem:console");
+    // Every executable embeds a manifest, so that neither a loose manifest
+    // nor a .local redirection changes what the loader binds. On Windows
+    // Itanium it is the one shipped beside wincrt, which selects the segment
+    // heap that wincrt's start-up requires.
+    CmdArgs.push_back("-manifest:embed");
+    if (TC.getTriple().isWindowsItaniumEnvironment()) {
+      SmallString<128> Manifest(
+          llvm::sys::path::parent_path(TC.getCompilerRT(Args, "wincrt")));
+      llvm::sys::path::append(Manifest, "segment_heap.manifest");
+      CmdArgs.push_back(Args.MakeArgString("-manifestinput:" + Manifest));
+    }
   }
 
   if (Args.hasArg(options::OPT_g_Group, options::OPT__SLASH_Z7))
@@ -330,18 +342,23 @@ void WindowsItaniumToolChain::AddClangSystemIncludeArgs(
 void WindowsItaniumToolChain::addSystemLibArgs(const ArgList &Args,
                                                ArgStringList &CmdArgs) const {
   // wincrt starts the image and bridges the Universal CRT to the Itanium C++
-  // ABI. clang_rt.ucrt_memory imports the functions ucrtbase exports and
-  // Microsoft declares in vcruntime.
-  for (const char *Lib : {"wincrt", "ucrt_memory"})
+  // ABI; its process-wide parts are in clang_rt.wincrt_dynamic's DLL, or with
+  // -static in the image. clang_rt.ucrt_memory imports the functions ucrtbase
+  // exports and Microsoft declares in vcruntime.
+  for (const char *Lib :
+       {"wincrt",
+        Args.hasArg(options::OPT_static) ? "wincrt_static" : "wincrt_dynamic",
+        "ucrt_memory"})
     CmdArgs.push_back(
         Args.MakeArgString("-defaultlib:" + getCompilerRTBasename(Args, Lib)));
+  // oldnames maps the POSIX names to the Universal CRT's underscored ones.
   // The API-set umbrella comes last: kernel32 still binds what it covers, and
   // the registry, security, COM and shell-core functions bind to their API
   // sets, not to advapi32, ole32 and shell32, which load msvcrt.dll or
   // connect to win32k. A program connects to win32k only by naming user32,
   // gdi32 or shell32; -mwindows names user32, which every window needs.
   for (const char *Lib : {"-defaultlib:ucrt.lib", "-defaultlib:kernel32.lib",
-                          "-defaultlib:ntdll.lib",
+                          "-defaultlib:ntdll.lib", "-defaultlib:oldnames.lib",
                           "-defaultlib:onecore_apiset.lib"})
     CmdArgs.push_back(Lib);
   if (const Arg *A =

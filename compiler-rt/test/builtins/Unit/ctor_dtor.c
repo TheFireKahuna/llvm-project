@@ -1,4 +1,5 @@
 // REQUIRES: crt
+// UNSUPPORTED: target={{.*-windows-.*}}
 
 // RUN: %clang -fno-use-init-array -g -c %s -o %t.o
 // RUN: %clang -o %t -no-pie -nostdlib %crt1 %crti %crtbegin %t.o %libc %libgcc %crtend %crtn

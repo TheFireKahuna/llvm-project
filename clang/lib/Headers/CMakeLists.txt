@@ -433,20 +433,33 @@ set(zos_wrapper_files
 set(win32_itanium_wrapper_files
   win32_itanium_wrappers/__winnt_declspec.h
   win32_itanium_wrappers/complex.h
+  win32_itanium_wrappers/corecrt.h
+  win32_itanium_wrappers/corecrt_share.h
   win32_itanium_wrappers/corecrt_stdio_config.h
+  win32_itanium_wrappers/ctype.h
+  win32_itanium_wrappers/delayimp.h
   win32_itanium_wrappers/excpt.h
+  win32_itanium_wrappers/float.h
+  win32_itanium_wrappers/malloc.h
   win32_itanium_wrappers/math.h
   win32_itanium_wrappers/new.h
   win32_itanium_wrappers/ntdef.h
   win32_itanium_wrappers/sal.h
   win32_itanium_wrappers/setjmp.h
+  win32_itanium_wrappers/stdio.h
   win32_itanium_wrappers/stdlib.h
+  win32_itanium_wrappers/string.h
+  win32_itanium_wrappers/sys/stat.h
+  win32_itanium_wrappers/sys/types.h
+  win32_itanium_wrappers/time.h
+  win32_itanium_wrappers/unistd.h
   win32_itanium_wrappers/vadefs.h
   win32_itanium_wrappers/vcruntime.h
   win32_itanium_wrappers/vcruntime_new.h
   win32_itanium_wrappers/vcruntime_new_debug.h
   win32_itanium_wrappers/vcruntime_startup.h
   win32_itanium_wrappers/vcruntime_string.h
+  win32_itanium_wrappers/wchar.h
   win32_itanium_wrappers/winnt.h
   win32_itanium_wrappers/wrl/def.h
 )

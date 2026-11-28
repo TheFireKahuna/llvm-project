@@ -355,6 +355,15 @@ if(NOT FUCHSIA AND NOT COMPILER_RT_BAREMETAL_BUILD AND NOT COMPILER_RT_GPU_BUILD
   )
 endif()
 
+# Windows Itanium's thread-local variables are native and its stacks are never
+# executable, and __eprintf, which only the assert.h of GCC before 4.0 calls,
+# would tie the builtins to stdio. Its images link no MSVC start-up objects,
+# which would define the CRT table bounds, __dso_handle and _fltused.
+if(WIN32_ITANIUM)
+  list(REMOVE_ITEM GENERIC_SOURCES emutls.c enable_execute_stack.c eprintf.c)
+  list(APPEND GENERIC_SOURCES crt_windows.c)
+endif()
+
 option(COMPILER_RT_LIBATOMIC_USE_PTHREAD
   "Whether libatomic should use pthreads if available."
   Off)
@@ -873,7 +882,7 @@ foreach(pat cas swp ldadd ldclr ldeor ldset)
   endforeach(size)
 endforeach(pat)
 
-if (MINGW)
+if (MINGW OR WIN32_ITANIUM)
   set(aarch64_SOURCES
     ${aarch64_SOURCES}
     aarch64/chkstk.S
@@ -1294,7 +1303,10 @@ endif()
 
 cmake_dependent_option(COMPILER_RT_BUILD_CRT "Build crtbegin.o/crtend.o" ON "COMPILER_RT_HAS_CRT" OFF)
 
-if (COMPILER_RT_BUILD_CRT)
+if (COMPILER_RT_BUILD_CRT AND WIN32_ITANIUM)
+  add_subdirectory(${COMPILER_RT_SOURCE_DIR}/lib/wincrt
+                   ${CMAKE_CURRENT_BINARY_DIR}/wincrt)
+elseif (COMPILER_RT_BUILD_CRT)
   add_compiler_rt_component(crt)
 
   option(COMPILER_RT_CRT_USE_EH_FRAME_REGISTRY "Use eh_frame in crtbegin.o/crtend.o" ON)

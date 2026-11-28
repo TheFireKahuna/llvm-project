@@ -297,8 +297,16 @@ else()
   endforeach()
 endif()
 
-if(OS_NAME MATCHES "Linux|SerenityOS" AND NOT LLVM_USE_SANITIZER AND NOT
-   COMPILER_RT_GPU_BUILD)
+# Windows Itanium links no MSVC runtime: the builtins and wincrt, its start-up
+# library, supply what vcruntime would.
+if(COMPILER_RT_DEFAULT_TARGET_TRIPLE MATCHES "-windows-itanium$")
+  set(WIN32_ITANIUM TRUE)
+elseif(COMPILER_RT_DEFAULT_TARGET_TRIPLE MATCHES "-windows-ntposix$")
+  set(WIN32_NTPOSIX TRUE)
+endif()
+
+if((OS_NAME MATCHES "Linux|SerenityOS" OR WIN32_ITANIUM) AND
+   NOT LLVM_USE_SANITIZER AND NOT COMPILER_RT_GPU_BUILD)
   set(COMPILER_RT_HAS_CRT TRUE)
 else()
   set(COMPILER_RT_HAS_CRT FALSE)

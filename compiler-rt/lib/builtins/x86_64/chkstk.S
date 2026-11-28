@@ -37,4 +37,10 @@ DEFINE_COMPILERRT_FUNCTION(___chkstk_ms)
         ret
 END_COMPILERRT_FUNCTION(___chkstk_ms)
 
+// Windows Itanium and NT-POSIX code calls __chkstk, as MSVC code does, but
+// links no MSVC runtime to define it.
+#if defined(_WIN32_ITANIUM) || defined(__NTPOSIX__)
+DEFINE_COMPILERRT_FUNCTION_ALIAS(__chkstk, ___chkstk_ms)
+#endif
+
 #endif // __x86_64__

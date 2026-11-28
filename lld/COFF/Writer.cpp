@@ -1937,6 +1937,16 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     buf += sizeof(dosProgram);
   }
 
+  // An executable's C runtime start-up reserves the state of the process's
+  // exit list. Every copy of the runtime's termination registries finds it
+  // through the image base and this {tag, RVA} in the header's reserved words.
+  if (auto *state = dyn_cast_or_null<DefinedRegular>(
+          ctx.symtab.findUnderscore("__wincrt_exit_state"));
+      state && state->isLive() && !config->dll) {
+    write32le(buffer->getBufferStart() + 0x30, 0x7E1A5C03);
+    write32le(buffer->getBufferStart() + 0x34, state->getRVA());
+  }
+
   // Make sure DOS stub is aligned to 8 bytes at this point
   assert((buf - buffer->getBufferStart()) % 8 == 0);
 

@@ -4,19 +4,20 @@
 
 // ntposix.dll's import library and the builtins, as default libraries after
 // the inputs: no C library, no unwind library, no start files, and no option
-// that selects how imports bind.
+// that selects how imports bind. An executable embeds a manifest.
 // RUN: %clang -### --target=x86_64-pc-windows-ntposix %s --sysroot=%t 2>&1 \
 // RUN:   | FileCheck --check-prefix=EXE %s \
 // RUN:       --implicit-check-not=libc++ --implicit-check-not=libunwind \
 // RUN:       --implicit-check-not=wincrt --implicit-check-not=oldnames \
 // RUN:       --implicit-check-not=-defaultlib:ucrt --implicit-check-not=.obj \
 // RUN:       --implicit-check-not=-entry: \
+// RUN:       --implicit-check-not=-manifestinput: \
 // RUN:       --implicit-check-not=-auto-import \
 // RUN:       --implicit-check-not=-runtime-pseudo-reloc \
 // RUN:       --implicit-check-not=-import-slots \
 // RUN:       --implicit-check-not=-start-stop-symbols \
 // RUN:       --implicit-check-not=-boundary-symbols
-// EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-lldignoreenv"
+// EXE:      lld-link{{(.exe)?}}" "-out:a.exe" "-lldignoreenv" "-manifest:embed"
 // EXE-SAME: "-libpath:[[ROOT:[^"]*]]{{/|\\\\}}lib{{/|\\\\}}x86_64-pc-windows-ntposix"
 // EXE-SAME: "-libpath:[[ROOT]]{{/|\\\\}}lib"
 // EXE-SAME: "{{[^"]*}}.o"
@@ -30,7 +31,8 @@
 // A C++ link adds libc++; the unwinder is ntposix.dll's.
 // RUN: %clangxx -### --target=aarch64-pc-windows-ntposix %s -shared \
 // RUN:     -o foo.dll 2>&1 \
-// RUN:   | FileCheck --check-prefix=DLL %s --implicit-check-not=libunwind
+// RUN:   | FileCheck --check-prefix=DLL %s --implicit-check-not=libunwind \
+// RUN:       --implicit-check-not=-manifest
 // DLL:      "-out:foo.dll" "-lldignoreenv" "-dll" "-implib:foo.dll.lib"
 // DLL-SAME: "-defaultlib:libc++.dll.lib"
 // DLL-SAME: "-defaultlib:clang_rt.builtins{{[^"]*}}.lib" "-defaultlib:ntposix"

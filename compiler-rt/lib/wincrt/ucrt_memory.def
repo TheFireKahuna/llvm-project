@@ -1,0 +1,42 @@
+#include "ucrt_names.h"
+LIBRARY ucrtbase.dll
+EXPORTS
+    ; Functions that ucrtbase.dll exports and the SDK's ucrt.lib leaves out,
+    ; since Visual C++ imports them through vcruntime.lib.
+
+    ; The memory operations the compiler calls.
+    memcpy
+    memmove
+    memset
+    memcmp
+    memchr
+
+    ; The string scans that vcruntime_string.h declares.
+    strchr
+    strrchr
+    strstr
+    wcschr
+    wcsrchr
+    wcsstr
+
+    ; setjmp records the frame address clang passes as its second argument,
+    ; and longjmp unwinds with RtlUnwindEx, which keeps a CET shadow stack
+    ; consistent. setjmp.h names setjmp as _setjmp, for which clang calls
+    ; _setjmpex on AArch64.
+    setjmp
+    longjmp
+    _setjmp EXPORTAS setjmp
+    _setjmpex EXPORTAS __intrinsic_setjmpex
+
+    ; The personality routine of __try frames.
+    __C_specific_handler
+
+    ; The pure virtual call handler, which the Universal CRT owns.
+    _get_purecall_handler
+    _set_purecall_handler
+
+    ; The functions that another import library offers too, each under the
+    ; name that the wrap of an entry object gives every reference to it.
+#define WINCRT_IMPORT(Name, Export, ...) __wrap_##Name EXPORTAS Export
+#define WINCRT_WRAPPED(...) WINCRT_IMPORT(__VA_ARGS__, __VA_ARGS__)
+    WINCRT_UCRT_SHARED(WINCRT_WRAPPED)
