@@ -1,6 +1,8 @@
+#ifndef __NTPOSIX__
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <processthreadsapi.h>
+#endif
 
 #ifndef PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE
 #define PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE 34

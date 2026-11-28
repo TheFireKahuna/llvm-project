@@ -22,6 +22,12 @@
 uint32_t FlushInstructionCache(uintptr_t hProcess, void *lpBaseAddress,
                                uintptr_t dwSize);
 uintptr_t GetCurrentProcess(void);
+#elif defined(__NTPOSIX__) && defined(__aarch64__)
+// NT runs user code with SCTLR_EL1.UCT and UCI clear, so reading CTR_EL0 and
+// the cache maintenance instructions trap: the kernel maintains the range.
+__attribute__((ms_abi)) int32_t
+NtFlushInstructionCache(intptr_t ProcessHandle, void *BaseAddress,
+                        uintptr_t Length);
 #endif
 
 #if defined(__FreeBSD__) && defined(__arm__)
@@ -57,6 +63,8 @@ void __clear_cache(void *start, void *end) {
 #if defined(_WIN32) &&                                                         \
     (defined(__arm__) || defined(__aarch64__) || defined(__arm64ec__))
   FlushInstructionCache(GetCurrentProcess(), start, end - start);
+#elif defined(__NTPOSIX__) && defined(__aarch64__)
+  NtFlushInstructionCache(-1, start, end - start); // The current process.
 #elif __i386__ || __x86_64__ || defined(_M_IX86) || defined(_M_X64)
 // Intel processors have a unified instruction and data cache
 // so there is nothing to do

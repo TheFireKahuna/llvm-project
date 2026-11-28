@@ -425,7 +425,8 @@ if (NOT MSVC)
     x86_64/floatdidf.c
     x86_64/floatdisf.c
   )
-  if (NOT WIN32)
+  # NT-POSIX's C convention is SysV's, and its long double x87's.
+  if (NOT WIN32 OR WIN32_NTPOSIX)
     set(x86_64_SOURCES
       ${x86_64_SOURCES}
       x86_64/floatundidf.S
@@ -433,7 +434,7 @@ if (NOT MSVC)
     )
   endif()
 
-  if(NOT ANDROID AND (NOT WIN32 OR MINGW))
+  if(NOT ANDROID AND (NOT WIN32 OR MINGW OR WIN32_NTPOSIX))
     set(x86_64_SOURCES
       ${x86_64_SOURCES}
       ${x86_80_BIT_SOURCES}
@@ -442,7 +443,7 @@ if (NOT MSVC)
 
     # TODO(compnerd) floatundixf.S currently implements the SysV calling
     # convention, this must be ported to the Windows ABI.
-    if(NOT WIN32)
+    if(NOT WIN32 OR WIN32_NTPOSIX)
       set(x86_64_SOURCES
         ${x86_64_SOURCES}
         x86_64/floatundixf.S
@@ -1116,6 +1117,11 @@ else ()
     endif()
   endif()
 
+  # NT-POSIX's builtins need no C library, which ntposix.dll does not provide.
+  if(WIN32_NTPOSIX)
+    append_list_if(COMPILER_RT_HAS_FFREESTANDING_FLAG -ffreestanding BUILTIN_CFLAGS)
+  endif()
+
   # Directly targeting the GPU requires a few extra flags.
   if(COMPILER_RT_GPU_BUILD)
     append_list_if(COMPILER_RT_HAS_FFREESTANDING_FLAG -ffreestanding BUILTIN_CFLAGS)
@@ -1219,6 +1225,27 @@ else ()
       get_compiler_rt_output_dir(${arch} BUILTIN_LIB_OUTPUT_DIR)
       set_output_name(BUILTIN_LIB_OUTPUT_NAME clang_rt.builtins ${arch})
       file(WRITE "${BUILTIN_LIB_OUTPUT_DIR}/${BUILTIN_LIB_OUTPUT_NAME}.sources.txt" "${${arch}_SOURCES}")
+
+      # On NT-POSIX the builtins import from ntdll through this library, which
+      # fill_entry.o names in every image.
+      if(WIN32_NTPOSIX)
+        set(ntdll_lib ${BUILTIN_LIB_OUTPUT_DIR}/clang_rt.ntdll.lib)
+        if(arch STREQUAL "aarch64")
+          set(machine arm64)
+        else()
+          set(machine i386:x86-64)
+        endif()
+        add_custom_command(OUTPUT ${ntdll_lib}
+          COMMAND ${CMAKE_DLLTOOL} -m ${machine}
+                  -d ${CMAKE_CURRENT_SOURCE_DIR}/ntdll.def -l ${ntdll_lib}
+          DEPENDS ntdll.def
+          VERBATIM)
+        add_custom_target(clang_rt.ntdll-${arch} DEPENDS ${ntdll_lib})
+        add_dependencies(builtins clang_rt.ntdll-${arch})
+        get_compiler_rt_install_dir(${arch} BUILTIN_INSTALL_DIR)
+        install(FILES ${ntdll_lib} DESTINATION ${BUILTIN_INSTALL_DIR}
+                COMPONENT clang_rt.builtins-${arch})
+      endif()
 
       # For spirv64, produce a combined bitcode file alongside the static archive.
       # -mlink-builtin-bitcode expects raw LLVM IR and cannot unpack a static archive,

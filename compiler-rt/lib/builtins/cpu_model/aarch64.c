@@ -29,6 +29,20 @@ typedef struct __ifunc_arg_t {
 } __ifunc_arg_t;
 #endif // __has_include(<sys/ifunc.h>)
 
+#if defined(__NTPOSIX__)
+// NT-POSIX has no Windows headers. Below 64, an AArch64 feature is the byte of
+// KUSER_SHARED_DATA.ProcessorFeatures, mapped at 0x7ffe0274 in every process,
+// that ntdll's predicate reads; above, only ntdll's predicate knows it, through
+// the import library of ntdll the fill names in every image.
+#define PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE 30
+#define PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE 31
+#define PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE 34
+__declspec(dllimport) unsigned char RtlIsProcessorFeaturePresent(unsigned F);
+#define IsProcessorFeaturePresent(F)                                           \
+  ((F) < 64 ? ((const unsigned char *)0x7ffe0274)[F]                           \
+            : RtlIsProcessorFeaturePresent(F))
+#endif
+
 // LSE support detection for out-of-line atomics
 // using HWCAP and Auxiliary vector
 _Bool __aarch64_have_lse_atomics
@@ -51,7 +65,7 @@ _Bool __aarch64_have_lse_atomics
 #include <sys/auxv.h>
 #include "aarch64/hwcap.inc"
 #include "aarch64/lse_atomics/getauxval.inc"
-#elif defined(_WIN32)
+#elif defined(_WIN32) || defined(__NTPOSIX__)
 #include "aarch64/lse_atomics/windows.inc"
 #else
 // When unimplemented, we leave __aarch64_have_lse_atomics initialized to false.
@@ -84,7 +98,7 @@ struct {
 #elif defined(__linux__)
 #include "aarch64/fmv/hwcap.inc"
 #include "aarch64/fmv/getauxval.inc"
-#elif defined(_WIN32)
+#elif defined(_WIN32) || defined(__NTPOSIX__)
 #include "aarch64/fmv/windows.inc"
 #else
 #include "aarch64/fmv/unimplemented.inc"

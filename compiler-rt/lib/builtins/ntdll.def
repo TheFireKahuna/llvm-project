@@ -1,0 +1,16 @@
+; What the builtins import from ntdll.dll on NT-POSIX: the fill's functions,
+; the /GS handler's language handler, and, on AArch64, NtFlushInstructionCache,
+; which __clear_cache calls, and RtlIsProcessorFeaturePresent, which the CPU
+; feature probe calls.
+LIBRARY ntdll.dll
+EXPORTS
+  LdrAddRefDll
+  LdrGetDllHandleEx
+  LdrGetProcedureAddressForCaller
+  LdrResolveDelayLoadedAPI
+  NtFlushInstructionCache
+  NtProtectVirtualMemory
+  NtQueryVirtualMemory
+  RtlExitUserProcess
+  RtlIsProcessorFeaturePresent
+  __C_specific_handler

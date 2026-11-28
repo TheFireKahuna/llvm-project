@@ -1,6 +1,9 @@
+#ifndef __NTPOSIX__
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <processthreadsapi.h>
+#endif
+#include <stddef.h>
 #include <stdint.h>
 
 #ifndef PF_ARM_V82_DP_INSTRUCTIONS_AVAILABLE
@@ -139,5 +142,6 @@ void CONSTRUCTOR_ATTRIBUTE __init_cpu_features(void) {
   if (features & (1ULL << FEAT_SVE_SM4))
     setCPUFeature(FEAT_SM4);
 
-  __atomic_store(&__aarch64_cpu_features.features, &features, __ATOMIC_RELAXED);
+  __atomic_store_n(&__aarch64_cpu_features.features, features,
+                   __ATOMIC_RELAXED);
 }

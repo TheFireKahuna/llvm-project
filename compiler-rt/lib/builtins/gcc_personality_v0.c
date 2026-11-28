@@ -22,12 +22,23 @@
 #endif
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
+#if defined(__NTPOSIX__)
+// NT-POSIX has no Windows headers. The handler passes the system dispatcher's
+// arguments on unread, and the dispatcher calls with Windows's convention.
+typedef int EXCEPTION_DISPOSITION;
+typedef struct _EXCEPTION_RECORD *PEXCEPTION_RECORD;
+typedef struct _CONTEXT *PCONTEXT;
+typedef struct _DISPATCHER_CONTEXT *PDISPATCHER_CONTEXT;
+#define SEH_HANDLER_CC __attribute__((ms_abi))
+#else
 #define WIN32_LEAN_AND_MEAN 1
 #include <windows.h>
+#define SEH_HANDLER_CC
+#endif
 
-EXCEPTION_DISPOSITION _GCC_specific_handler(PEXCEPTION_RECORD, void *, PCONTEXT,
-                                            PDISPATCHER_CONTEXT,
-                                            _Unwind_Personality_Fn);
+SEH_HANDLER_CC EXCEPTION_DISPOSITION
+_GCC_specific_handler(PEXCEPTION_RECORD, void *, PCONTEXT, PDISPATCHER_CONTEXT,
+                      _Unwind_Personality_Fn);
 #endif
 
 #ifndef __has_feature
@@ -321,7 +332,7 @@ COMPILER_RT_ABI _Unwind_Reason_Code __gcc_personality_v0(
 }
 
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
-COMPILER_RT_ABI EXCEPTION_DISPOSITION
+COMPILER_RT_ABI SEH_HANDLER_CC EXCEPTION_DISPOSITION
 __gcc_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
                        PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp) {
   return _GCC_specific_handler(ms_exc, this_frame, ms_orig_context, ms_disp,
