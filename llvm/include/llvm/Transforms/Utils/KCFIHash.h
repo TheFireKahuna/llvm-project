@@ -45,15 +45,21 @@ LLVM_ABI uint32_t getTypePrefixMarker(bool NormalizeIntegers,
                                       bool GeneralizePointers,
                                       KCFIHashAlgorithm Algorithm);
 
+/// Returns the type ID that a function type prefix stores for the type that
+/// hashes to \p Hash: its low 31 bits, since the prefix of a function with an
+/// entry that is passed the thread pointer sets the 32nd, and one more where
+/// that is the sealed type or the tagged type would spell ENDBR64 or ENDBR32.
+LLVM_ABI uint32_t getTypePrefixTypeId(uint32_t Hash);
+
 /// Returns the 8 bytes that precede the type ID in a function type prefix, as
-/// a little-endian integer: 0F 1F, then 80 or, in a prefix that holds a second
-/// word before them, 81, the marker, and B8, which x86 decodes as a nopl whose
-/// displacement is the marker, from RAX or from RCX, and the opcode of a move
-/// of the type ID. A check of a second word compares it together with the 4
-/// bytes that follow, so it fails on a prefix that has none, whatever
-/// precedes that prefix.
-inline uint64_t getTypePrefixPattern(uint32_t Marker, bool SecondWord) {
-  return 0xB8000000'00801F0FULL | uint64_t(SecondWord) << 16 |
+/// a little-endian integer: 0F 1F, then 80 with the set of
+/// COFF::LinkFactPrefixWord that the prefix holds before them, the marker, and
+/// B8, which x86 decodes as a nopl whose displacement is the marker and the
+/// opcode of a move of the type ID. A check of a word before them compares it
+/// together with the 4 bytes that follow, so it fails on a prefix that has
+/// another set, whatever precedes that prefix.
+inline uint64_t getTypePrefixPattern(uint32_t Marker, unsigned Words) {
+  return 0xB8000000'00801F0FULL | uint64_t(Words) << 16 |
          uint64_t(Marker) << 24;
 }
 

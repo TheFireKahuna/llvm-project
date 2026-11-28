@@ -7,7 +7,7 @@
 ## and :gottprel_lo12: on a 64-bit load are GOTTPOFF_PAGE21 and
 ## GOTTPOFF_LOW12L, each a relocation against the thread-local whose offset the
 ## word the linker makes holds, as on ELF. .reloc marks the instructions that form an image's thread-local base
-## with TLS_SCALE, which names no symbol. Each error is one row under ERR.
+## with TLS_BASE, which names no symbol. Each error is one row under ERR.
 
 # REQUIRES: aarch64-registered-target
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-ntposix %s -o %t.obj
@@ -32,7 +32,7 @@
 # X64:      0x3 IMAGE_REL_LLVM_TPOFF32 tv
 # X64-NEXT: 0xA IMAGE_REL_LLVM_TPOFF32 tv
 # X64-NEXT: 0x11 IMAGE_REL_LLVM_TPOFF32 tv
-# X64-NEXT: 0x15 IMAGE_REL_LLVM_TLS_SCALE - (0)
+# X64-NEXT: 0x15 IMAGE_REL_LLVM_TLS_BASE - (0)
 # X64-NEXT: 0x1F IMAGE_REL_LLVM_REL32_INSN place
 # X64-NEXT: 0x23 IMAGE_REL_LLVM_TPOFF32 tv
 # X64-NEXT: 0x2A IMAGE_REL_LLVM_GOTTPOFF32 tv
@@ -55,7 +55,7 @@
 # A64-NEXT: 0xC IMAGE_REL_LLVM_TPOFF_LOW12L tv
 # A64-NEXT: 0x10 IMAGE_REL_LLVM_TPOFF_LOW12L tv
 # A64-NEXT: 0x14 IMAGE_REL_ARM64_PAGEBASE_REL21 place
-# A64-NEXT: 0x14 IMAGE_REL_LLVM_TLS_SCALE - (0)
+# A64-NEXT: 0x14 IMAGE_REL_LLVM_TLS_BASE - (0)
 # A64-NEXT: 0x18 IMAGE_REL_ARM64_PAGEOFFSET_12L place
 # A64-NEXT: 0x24 IMAGE_REL_LLVM_GOTTPOFF_PAGE21 tv
 # A64-NEXT: 0x28 IMAGE_REL_LLVM_GOTTPOFF_LOW12L tv
@@ -77,7 +77,7 @@ f:
   movl tv@TPOFF(%r14), %eax
   leaq tv@TPOFF+4(%r14), %rcx
   addq $tv@TPOFF, %rcx
-  .reloc ., IMAGE_REL_LLVM_TLS_SCALE
+  .reloc ., IMAGE_REL_LLVM_TLS_BASE
   imulq $128, %r14, %rdx
   addq place(%rip), %rdx
   .long tv@TPOFF
@@ -97,7 +97,7 @@ f:
   add x0, x28, :tprel_lo12:tv
   ldr w1, [x28, :tprel_lo12:tv]
   str x1, [x28, :tprel_lo12_nc:tv+8]
-  .reloc ., IMAGE_REL_LLVM_TLS_SCALE
+  .reloc ., IMAGE_REL_LLVM_TLS_BASE
   adrp x9, place
   ldr x9, [x9, :lo12:place]
   movz x10, #0

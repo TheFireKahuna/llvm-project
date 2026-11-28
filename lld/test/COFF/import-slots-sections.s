@@ -2,7 +2,8 @@
 
 ## Read-only slots lie inside the IAT directory: .rdata sections holding them
 ## follow the tables, other read-only sections precede .rdata; slots in unwind
-## data or outside the laid-out directory are errors.
+## data, the loader's thread-local template, or outside the laid-out directory
+## are errors.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 
@@ -14,6 +15,8 @@
 # DEFINE: %{link} = lld-link -machine:%{a} -dll -noentry imp.lib %{rt} \
 # DEFINE:   -include:__imp_fn
 # DEFINE: %{dump} = llvm-readobj --file-headers --sections --coff-imports
+# DEFINE: %{tls} = not %{link} tls.obj -out:tls.dll 2>&1 | \
+# DEFINE:   FileCheck --check-prefix=TLS-itanium %s
 # DEFINE: %{run} = lld-link -machine:%{a} -def:imp.def -out:imp.lib && \
 # DEFINE:   lld-link -machine:%{a} -def:np.def -out:ntposix.lib && \
 # DEFINE:   %{mc} %S/Inputs/fill-entry.s -o fill.obj && \
@@ -28,11 +31,10 @@
 # DEFINE:   lld-link -machine:%{a} -dll -noentry imp.lib ro.obj \
 # DEFINE:     -out:only.dll && \
 # DEFINE:   %{dump} only.dll | FileCheck --check-prefix=ONLY %s && \
-# DEFINE:   %{link} tls.obj -out:tls.dll && \
-# DEFINE:   %{dump} tls.dll | FileCheck --check-prefix=TLS-%{e} %s && \
+# DEFINE:   %{tls} && \
 # DEFINE:   not lld-link -machine:%{a} -entry:tv -subsystem:console imp.lib \
 # DEFINE:     tls.obj xdata.obj -out:bad.exe 2>&1 | \
-# DEFINE:     FileCheck --check-prefix=BAD %s && \
+# DEFINE:     FileCheck --check-prefixes=BAD,BAD-%{e} --allow-unused-prefixes %s && \
 # DEFINE:   %{link} ro.obj -merge:.ro=.data -out:merged.dll && \
 # DEFINE:   %{dump} merged.dll | FileCheck --check-prefix=MERGED %s && \
 # DEFINE:   not %{link} ro.obj -merge:.ro=.rdata -out:bad.dll 2>&1 | \
@@ -51,6 +53,8 @@
 ## An NT-POSIX DLL's thread-local data is read-only, and its fill registers it.
 # REDEFINE: %{e} = ntposix
 # REDEFINE: %{rt} = ntposix.lib fill.obj
+# REDEFINE: %{tls} = %{link} tls.obj -out:tls.dll && \
+# REDEFINE:   %{dump} tls.dll | FileCheck --check-prefix=TLS-ntposix %s
 # RUN: %{run}
 
 ## The directory holds the table, its terminator and the section's two words.
@@ -84,18 +88,17 @@
 # ONLY:      IATRVA: 0x1000
 # ONLY-NEXT: IATSize: 0x10
 
-## A DLL's thread-local data holds slots: writable ones where it is, read-only
-## ones in a section before .rdata.
-# TLS-itanium:      IATSize: 0x10
-# TLS-itanium:      Name: .rdata
-# TLS-itanium:      Name: .tls
-# TLS-itanium:      IMAGE_SCN_MEM_WRITE
+## The image's thread-local template holds read-only slots, in a section
+## before .rdata, in a DLL as in an executable; the loader's holds none, since
+## threads copy it before the image's fill runs.
+# TLS-itanium:      error: tls.obj: .tls$ holds the address of fn, imported from imp.dll, at offset 0x0, in the loader's thread-local template, which threads copy before the image's fill runs
 # TLS-ntposix:      IATRVA: 0x2000
 # TLS-ntposix-NEXT: IATSize: 0x1020
 # TLS-ntposix:      Name: .tls
 # TLS-ntposix-NOT:  IMAGE_SCN_MEM_WRITE
 # TLS-ntposix:      Name: .rdata
 
+# BAD-itanium-DAG: error: tls.obj: .tls$ holds the address of fn, imported from imp.dll, at offset 0x0, in the loader's thread-local template, which threads copy before the image's fill runs
 # BAD-DAG: error: xdata.obj: .xdata holds the address of fn, imported from imp.dll, at offset 0x8, but is read-only and cannot be laid out with the import address table; refer to __imp_fn there
 
 ## Merged into a writable section, .ro's slot is writable and stays there.

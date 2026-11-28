@@ -2591,6 +2591,11 @@ let Defs = [ X9, X16, X17, NZCV ], Size = 24 in {
 def KCFI_CHECK : Pseudo<
   (outs), (ins GPR64:$ptr, i32imm:$type), []>, Sched<[]>;
 }
+// The check of a call that passes the thread pointer, which leaves the target
+// in $dst, or its thread-pointer entry where its type prefix states one.
+let Defs = [ X9, X16, X17, NZCV ], Size = 52 in
+def KCFI_CHECK_TP : Pseudo<
+  (outs GPR64:$dst), (ins GPR64:$ptr, i32imm:$type), []>, Sched<[]>;
 
 let Uses = [ X9 ], Defs = [ X16, X17, LR, NZCV ] in {
 def HWASAN_CHECK_MEMACCESS : Pseudo<

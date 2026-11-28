@@ -19,11 +19,13 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/MD5.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/KCFIHash.h"
 
 using namespace llvm;
@@ -220,8 +222,8 @@ void llvm::setKCFIType(Module &M, Function &F, StringRef MangledType) {
       parseKCFIHashAlgorithm(MD ? MD->getString() : "");
 
   uint32_t TypeId = getKCFITypeID(Type, Algorithm);
-  if (TypeId == COFF::SealedTypeId && M.getModuleFlag("function-type-prefix"))
-    ++TypeId;
+  if (M.getModuleFlag("function-type-prefix"))
+    TypeId = getTypePrefixTypeId(TypeId);
   F.setMetadata(LLVMContext::MD_kcfi_type,
                 MDNode::get(Ctx, MDB.createConstant(ConstantInt::get(
                                      Type::getInt32Ty(Ctx), TypeId))));
@@ -615,4 +617,275 @@ bool llvm::collectFunctionOverride(
       FO.Candidates.emplace_back(V, std::move(Capabilities));
   }
   return FO.Default || Fail("no version runs on every processor");
+}
+
+bool llvm::callsThreadPointerReader(const CallBase &CB) {
+  const Function *Callee = CB.getCalledFunction();
+  if (!Callee || !Callee->hasFnAttribute("thread-pointer-argument") ||
+      Callee->hasFnAttribute("thread-pointer-unused"))
+    return false;
+  return !Callee->isDeclaration() ||
+         (Callee->getFnAttribute("thread-pointer-argument")
+                  .getValueAsString() == "read" &&
+          !CB.getMemoryEffects()
+               .getWithoutLoc(IRMemLocation::ArgMem)
+               .getWithoutLoc(IRMemLocation::InaccessibleMem)
+               .doesNotAccessMemory());
+}
+
+/// The function whose marks describe what \p CB calls by name: the callee, or
+/// an ifunc's resolver. A function's address is its plain entry, so a call
+/// through a pointer has none.
+static const Function *getCalledByName(const CallBase &CB) {
+  const Value *Callee = CB.getCalledOperand()->stripPointerCastsAndAliases();
+  if (const auto *GI = dyn_cast<GlobalIFunc>(Callee))
+    return GI->getResolverFunction();
+  return dyn_cast<Function>(Callee);
+}
+
+bool llvm::passesThreadPointer(const CallBase &CB) {
+  if (CB.isInlineAsm() || CB.getOperandBundle(LLVMContext::OB_threadpointer) ||
+      (CB.isMustTailCall() &&
+       !CB.getFunction()->hasFnAttribute("thread-pointer-argument")))
+    return false;
+  const Function *Callee = getCalledByName(CB);
+  if (!Callee)
+    return CB.isIndirectCall() && CB.getOperandBundle(LLVMContext::OB_kcfi) &&
+           CB.getModule()->getControlFlowGuardMode() !=
+               ControlFlowGuardMode::Enabled;
+  return !Callee->isIntrinsic() &&
+         Callee->hasFnAttribute("thread-pointer-argument") &&
+         !Callee->hasFnAttribute("thread-pointer-unused") &&
+         !(Callee->isDeclaration() &&
+           CB.getMemoryEffects()
+               .getWithoutLoc(IRMemLocation::ArgMem)
+               .getWithoutLoc(IRMemLocation::InaccessibleMem)
+               .doesNotAccessMemory());
+}
+
+bool llvm::needsThreadPointer(const Instruction &I) {
+  // A variadic ifunc has no plain entry.
+  const auto *CB = dyn_cast<CallBase>(&I);
+  return CB &&
+         (CB->getIntrinsicID() == Intrinsic::thread_pointer ||
+          CB->getIntrinsicID() == Intrinsic::threadlocal_address ||
+          (isa<GlobalIFunc>(
+               CB->getCalledOperand()->stripPointerCastsAndAliases()) &&
+           CB->getFunctionType()->isVarArg() && passesThreadPointer(*CB)));
+}
+
+bool llvm::holdsThreadPointer(const Function &F) {
+  if (F.hasFnAttribute("thread-pointer-argument"))
+    return !F.hasFnAttribute("thread-pointer-unused");
+  if (F.hasFnAttribute("thread-pointer-probe") ||
+      F.hasFnAttribute("thread-pointer-refusal") ||
+      F.hasFnAttribute("no-thread-pointer"))
+    return true;
+  return any_of(instructions(F), [](const Instruction &I) {
+    const auto *CB = dyn_cast<CallBase>(&I);
+    return needsThreadPointer(I) || (CB && callsThreadPointerReader(*CB));
+  });
+}
+
+void llvm::takeThreadPointerPlainEntries(Module &M) {
+  // A resolver returns the version its ifunc hands its thread pointer, and
+  // what the compiler or the linker keeps names the function itself, as does
+  // a filter's recovery of the frame of the body it belongs to. A filter
+  // that holds none is its own plain entry, which a catchpad names as the
+  // function it is.
+  SmallPtrSet<const Function *, 4> Resolvers;
+  for (GlobalIFunc &GI : M.ifuncs())
+    Resolvers.insert(GI.getResolverFunction());
+  auto Keeps = [&](const Use &U) {
+    const User *Owner = U.getUser();
+    if (const auto *CB = dyn_cast<CallBase>(Owner);
+        CB && (CB->isCallee(&U) ||
+               CB->getIntrinsicID() == Intrinsic::localrecover ||
+               CB->getIntrinsicID() == Intrinsic::eh_recoverfp))
+      return true;
+    if (isa<CatchPadInst>(Owner))
+      return cast<Function>(U.get())->hasFnAttribute("thread-pointer-unused");
+    if (const auto *I = dyn_cast<Instruction>(Owner))
+      return Resolvers.contains(I->getFunction());
+    return isa<GlobalAlias, GlobalIFunc>(Owner) ||
+           (isa<ConstantArray>(Owner) &&
+            any_of(Owner->users(), [](const User *Array) {
+              const auto *GV = dyn_cast<GlobalVariable>(Array);
+              return GV && (GV->getName() == "llvm.used" ||
+                            GV->getName() == "llvm.compiler.used");
+            }));
+  };
+  for (Function &F : make_early_inc_range(M))
+    if (F.hasFnAttribute("thread-pointer-argument") &&
+        !F.getName().starts_with("\01") &&
+        any_of(F.uses(), [&](const Use &U) { return !Keeps(U); }))
+      F.replaceUsesWithIf(getThreadPointerPlainEntry(F),
+                          [&](Use &U) { return !Keeps(U); });
+}
+
+GlobalValue *llvm::getThreadPointerPlainEntry(GlobalValue &GV) {
+  Module &M = *GV.getParent();
+  std::string Name = ("\01" + GV.getName()).str();
+  if (GlobalValue *Plain = M.getNamedValue(Name))
+    return Plain;
+  // A weak reference's plain entry is weak too.
+  auto &F = cast<Function>(GV);
+  Function *Plain = Function::Create(
+      F.getFunctionType(),
+      F.hasExternalWeakLinkage() ? GlobalValue::ExternalWeakLinkage
+                                 : GlobalValue::ExternalLinkage,
+      F.getAddressSpace(), Name, &M);
+  Plain->copyAttributesFrom(&F);
+  Plain->removeFnAttr("thread-pointer-argument");
+  Plain->removeFnAttr("thread-pointer-unused");
+  return Plain;
+}
+
+void llvm::createThreadPointerPlainEntries(Module &M) {
+  // Every function passed its thread pointer that code passing none may call
+  // has one: any but a local one that only callers holding it call.
+  SmallVector<std::pair<Function *, GlobalValue *>, 16> Bodies;
+  for (Function &F : M)
+    if (!F.isDeclaration() && !F.hasAvailableExternallyLinkage() &&
+        F.hasFnAttribute("thread-pointer-argument") &&
+        !F.getName().starts_with("\01") &&
+        !M.getNamedValue(("\01" + F.getName()).str()) &&
+        (!F.hasLocalLinkage() || any_of(F.uses(), [](const Use &U) {
+          const auto *CB = dyn_cast<CallBase>(U.getUser());
+          return !CB || !CB->isCallee(&U) ||
+                 !holdsThreadPointer(*CB->getFunction()) ||
+                 !passesThreadPointer(*CB);
+        })))
+      Bodies.push_back({&F, &F});
+  // A weak external passed its thread pointer defines both entries, each
+  // falling back to its alternate's entry of the same kind.
+  DenseMap<GlobalValue *, GlobalValue *> Plain;
+  for (Function &F : make_early_inc_range(M))
+    if (Attribute Alt = F.getFnAttribute("weak-alternate");
+        Alt.isValid() && F.hasFnAttribute("thread-pointer-argument")) {
+      Plain[&F] = getThreadPointerPlainEntry(F);
+      F.addFnAttr("weak-alternate", (Alt.getValueAsString() + "$tp").str());
+    }
+  // A resolver's marks are its ifunc's, which its plain entry calls.
+  for (GlobalIFunc &GI : M.ifuncs())
+    for (auto &[F, Callee] : Bodies)
+      if (F == GI.getResolverFunction())
+        Callee = &GI;
+  for (auto [F, Callee] : Bodies) {
+    // No call forwards a variadic ifunc's arguments.
+    if (Callee != F && cast<FunctionType>(Callee->getValueType())->isVarArg())
+      continue;
+    bool Refusal =
+        F->getFnAttribute("thread-pointer-plain-entry").getValueAsString() ==
+        "refusal";
+    F->removeFnAttr("thread-pointer-plain-entry");
+    // A function that holds no thread pointer runs the same whoever calls it,
+    // so its plain entry is it: one body, one address. An ifunc passes its
+    // thread pointer to the version it chooses.
+    GlobalValue *G;
+    if (Callee == F && F->hasFnAttribute("thread-pointer-unused") && !Refusal) {
+      G = GlobalAlias::create(Callee->getValueType(), Callee->getAddressSpace(),
+                              Callee->getLinkage(), "", Callee, &M);
+      G->setVisibility(Callee->getVisibility());
+      G->setDLLStorageClass(Callee->getDLLStorageClass());
+      G->setUnnamedAddr(Callee->getUnnamedAddr());
+      G->setDSOLocal(Callee->isDSOLocal());
+    } else if (F->isVarArg() &&
+               (any_of(*F,
+                       [&](BasicBlock &BB) {
+                         BlockAddress *BA = BlockAddress::lookup(&BB);
+                         return BA && any_of(BA->users(), [&](User *U) {
+                                  auto *I = dyn_cast<Instruction>(U);
+                                  return !I || I->getFunction() != F;
+                                });
+                       }) ||
+                any_of(instructions(*F), [](const Instruction &I) {
+                  const auto *II = dyn_cast<IntrinsicInst>(&I);
+                  return II && II->getIntrinsicID() == Intrinsic::localescape;
+                }))) {
+      // A block address held outside a variadic function names a block of
+      // one body, as a filter's recovery names the frame of one, so such a
+      // function keeps the one body, passed none.
+      F->removeFnAttr("thread-pointer-argument");
+      F->removeFnAttr("pin-thread-pointer");
+      continue;
+    } else {
+      Function *Body;
+      if (F->isVarArg()) {
+        ValueToValueMapTy VMap;
+        Body = CloneFunction(F, VMap);
+      } else {
+        auto *FTy = cast<FunctionType>(Callee->getValueType());
+        Body = Function::Create(FTy, Callee->getLinkage(), F->getAddressSpace(),
+                                "", &M);
+        Body->copyAttributesFrom(F);
+        // It unwinds through nothing of its own, so its derivation's probe
+        // takes a landing pad whatever the function's personality.
+        Body->setPersonalityFn(nullptr);
+        Body->setVisibility(Callee->getVisibility());
+        Body->setDLLStorageClass(Callee->getDLLStorageClass());
+        Body->setDSOLocal(Callee->isDSOLocal());
+        SmallVector<std::pair<unsigned, MDNode *>, 4> MDs;
+        cast<GlobalObject>(Callee)->getAllMetadata(MDs);
+        for (auto &[Kind, MD] : MDs)
+          if (Kind != LLVMContext::MD_dbg)
+            Body->addMetadata(Kind, *MD);
+        IRBuilder<> B(BasicBlock::Create(M.getContext(), "", Body));
+        CallInst *Call = B.CreateCall(
+            FTy, Callee,
+            SmallVector<Value *, 8>(make_pointer_range(Body->args())));
+        Call->setCallingConv(F->getCallingConv());
+        Call->setTailCall();
+        if (Body->getReturnType()->isVoidTy())
+          B.CreateRetVoid();
+        else
+          B.CreateRet(Call);
+      }
+      // An ifunc's resolver leaves no section on COFF, so an inline ifunc's
+      // plain entry is a COMDAT of its own.
+      Body->setComdat(
+          Callee == F ? F->getComdat()
+          : Body->isWeakForLinker()
+              ? M.getOrInsertComdat(("\01" + Callee->getName()).str())
+              : nullptr);
+      Body->removeFnAttr("thread-pointer-argument");
+      Body->removeFnAttr("pin-thread-pointer");
+      Body->removeFnAttr("thread-pointer-unused");
+      Body->addFnAttr("thread-pointer-plain-entry");
+      if (Refusal)
+        Body->addFnAttr("thread-pointer-refusal");
+      G = Body;
+    }
+    G->setName("\01" + Callee->getName());
+    Plain[Callee] = G;
+  }
+  // An alias of such a function, or of such an alias, names both of its
+  // entries.
+  auto PlainOf = [&](auto &Self, GlobalValue *GV) -> GlobalValue * {
+    auto *A = dyn_cast_or_null<GlobalAlias>(GV);
+    if (!A || A->getName().starts_with("\01") || Plain.contains(A))
+      return Plain.lookup(GV);
+    GlobalValue *G = Self(
+        Self, dyn_cast<GlobalValue>(A->getAliasee()->stripPointerCasts()));
+    if (G) {
+      auto *PA =
+          GlobalAlias::create(A->getValueType(), A->getAddressSpace(),
+                              A->getLinkage(), "\01" + A->getName(), G, &M);
+      PA->copyAttributesFrom(A);
+      G = PA;
+    }
+    return Plain[A] = G;
+  };
+  for (GlobalAlias &A : make_early_inc_range(M.aliases()))
+    PlainOf(PlainOf, &A);
+  // What is kept for a reference the compiler cannot see is kept with its
+  // plain entry, which is what such a reference names.
+  for (bool CompilerUsed : {false, true}) {
+    SmallVector<GlobalValue *, 8> Used, New;
+    collectUsedGlobalVariables(M, Used, CompilerUsed);
+    for (GlobalValue *GV : Used)
+      if (GlobalValue *G = Plain.lookup(GV))
+        New.push_back(G);
+    CompilerUsed ? appendToCompilerUsed(M, New) : appendToUsed(M, New);
+  }
 }

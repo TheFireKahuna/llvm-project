@@ -109,7 +109,7 @@
 # RUN: yaml2obj -DDATA=4C4C52430100010463000100 obj.yaml -o index.obj
 # RUN: yaml2obj -DDATA=4C4C524301000103030000 obj.yaml -o operands.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010403000500 obj.yaml -o fsize.obj
-# RUN: yaml2obj -DDATA=4C4C52430100010403000102 obj.yaml -o prefix.obj
+# RUN: yaml2obj -DDATA=4C4C52430100010403000104 obj.yaml -o prefix.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010403010104 obj.yaml -o visibility.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010403020105 obj.yaml -o init.obj
 # RUN: yaml2obj -DDATA=4C4C52430100010403090120 obj.yaml -o slot.obj

@@ -31,7 +31,7 @@ struct C : A, B {
   int g(int) override;
 };
 
-// CHECK: @_ZTV1A = {{.*}} ptr @_ZN1A1fEi, ptr @[[PURE:_purecall|__cxa_pure_virtual]].kcfi.94ba7fdb, ptr @__cxa_deleted_virtual.kcfi.94ba7fdb]
+// CHECK: @_ZTV1A = {{.*}} ptr @_ZN1A1fEi, ptr @[[PURE:_purecall|__cxa_pure_virtual]].kcfi.14ba7fdb, ptr @__cxa_deleted_virtual.kcfi.14ba7fdb]
 // CHECK: @_ZTV1C = {{.*}} ptr @_ZThn8_N1C1gEi.kcfi.4dddf17a]
 
 // CHECK: define dso_local void @_ZN1AD2Ev({{.*}} !kcfi_type ![[#DTOR:]] {
@@ -56,7 +56,7 @@ int C::f(int x) { return x + 1; }
 int C::g(int x) { return x + 2; }
 
 // CHECK-LABEL: define dso_local noundef i32 @_Z5vcallP1A(
-// CHECKS:   call noundef i32 %{{.*}}(ptr {{.*}}, i32 noundef 1) [ "kcfi"(i32 -45758786) ]
+// CHECKS:   call noundef i32 %{{.*}}(ptr {{.*}}, i32 noundef 1) [ "kcfi"(i32 2101724862) ]
 // NOCHECKS: call noundef i32 %{{.*}}(ptr {{.*}}, i32 noundef 1){{$}}
 int vcall(A *a) { return a->f(1); }
 
@@ -71,8 +71,8 @@ void vdtor(A *a) { a->~A(); }
 /// A call through a member function pointer checks the second type on the
 /// virtual path and the plain type on the other, and nothing more at the call.
 // CHECK-LABEL: define dso_local noundef i32 @_Z5mcallP1AMS_FiiE(
-// CHECKS:      call void @llvm.kcfi.check(ptr %memptr.virtualfn, i32 -91764089, i32 16)
-// CHECKS:      call void @llvm.kcfi.check(ptr %memptr.nonvirtualfn, i32 -1526708030, i32 4)
+// CHECKS:      call void @llvm.kcfi.check(ptr %memptr.virtualfn, i32 2055719559, i32 16)
+// CHECKS:      call void @llvm.kcfi.check(ptr %memptr.nonvirtualfn, i32 620775618, i32 4)
 // CHECKS:      call noundef i32 %{{.*}}(ptr {{.*}}, i32 noundef 2) #[[NOCF:[0-9]+]]{{$}}
 // NOCHECKS-NOT: @llvm.kcfi.check
 int mcall(A *a, int (A::*p)(int)) { return (a->*p)(2); }
@@ -89,24 +89,24 @@ S arr[2];
 // CHECK: call i32 @__llvm_kcfi_cxa_thread_atexit(ptr @_ZN1SD1Ev, ptr @t,
 thread_local S t;
 
-// CHECK: define linkonce_odr hidden void @[[PURE]].kcfi.94ba7fdb() unnamed_addr {{.*}}comdat !kcfi_type ![[#A_PURE:]] !kcfi_vfn_type ![[#VFN_VOID:]] {
+// CHECK: define linkonce_odr hidden void @[[PURE]].kcfi.14ba7fdb() unnamed_addr {{.*}}comdat !kcfi_type ![[#A_PURE:]] !kcfi_vfn_type ![[#VFN_VOID:]] {
 // CHECK-NEXT: entry:
 // CHECK-NEXT:   call void @[[PURE]]() #[[NORETURN:[0-9]+]]
 // CHECK-NEXT:   unreachable
-// CHECK: define linkonce_odr hidden void @__cxa_deleted_virtual.kcfi.94ba7fdb() unnamed_addr {{.*}}comdat !kcfi_type ![[#A_PURE]] !kcfi_vfn_type ![[#VFN_VOID]] {
+// CHECK: define linkonce_odr hidden void @__cxa_deleted_virtual.kcfi.14ba7fdb() unnamed_addr {{.*}}comdat !kcfi_type ![[#A_PURE]] !kcfi_vfn_type ![[#VFN_VOID]] {
 
 // CHECK:  attributes #[[NORETURN]] = { noreturn nounwind }
 // CHECKS: attributes #[[NOCF]] = { "guard_nocf" }
 
 // CHECK: ![[#DTOR]] = !{i32 1318596029}
 // CHECK: ![[#A_D0]] = !{i32 1380494204}
-// CHECK: ![[#A_F]] = !{i32 -45758786}
-// CHECK: ![[#VFN]] = !{i32 -91764089}
-// CHECK: ![[#PLAIN]] = !{i32 -1526708030}
-// CHECK: ![[#C_G]] = !{i32 -1177288725}
+// CHECK: ![[#A_F]] = !{i32 2101724862}
+// CHECK: ![[#VFN]] = !{i32 2055719559}
+// CHECK: ![[#PLAIN]] = !{i32 620775618}
+// CHECK: ![[#C_G]] = !{i32 970194923}
 // CHECK: ![[#B_G]] = !{i32 1306390906}
-// CHECK: ![[#A_PURE]] = !{i32 -1799716901}
-// CHECK: ![[#VFN_VOID]] = !{i32 -1621490657}
+// CHECK: ![[#A_PURE]] = !{i32 347766747}
+// CHECK: ![[#VFN_VOID]] = !{i32 525992991}
 
 /// Elsewhere a virtual function carries its plain type, no call through a
 /// vtable is checked, and a destructor is registered as before.

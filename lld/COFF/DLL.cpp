@@ -1506,11 +1506,7 @@ void selectFill(COFFLinkerContext &ctx,
   // A word of a thread-local template, which each thread copies: the image's
   // is read-only and copied by its runtime once the fill has written it; the
   // loader copies its own into threads before the fill runs.
-  bool registers = llvm::any_of(ctx.fill.words, [](const FillWord &w) {
-    return w.kind == FillWord::Init &&
-           cast<DefinedImportData>(w.source)->getExternalName() ==
-               COFF::TP::Register;
-  });
+  bool registers = ctx.symtab.placeWord && ctx.symtab.placeWord->registers;
   for (FillWord &w : ctx.fill.words) {
     auto *sc = dyn_cast_or_null<SectionChunk>(w.chunk);
     if (!sc || sc->getSectionName().split('$').first != ".tls")

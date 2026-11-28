@@ -393,17 +393,8 @@ bool X86InstrInfo::isDataInvariantLoad(MachineInstr &MI) {
 void X86InstrInfo::insertThreadPointerCheck(MachineBasicBlock &MBB,
                                             MachineBasicBlock::iterator MI,
                                             Register Reg) const {
-  // The flags of an instruction that reads them stay.
-  bool Flags = MBB.computeRegisterLiveness(&RI, X86::EFLAGS, MI) !=
-               MachineBasicBlock::LQR_Dead;
-  DebugLoc DL = MI->getDebugLoc();
-  if (Flags)
-    BuildMI(MBB, MI, DL, get(X86::PUSHF64))
-        ->findRegisterUseOperand(X86::DF, &RI)
-        ->setIsUndef();
-  BuildMI(MBB, MI, DL, get(X86::TP_CHECK)).addReg(Reg);
-  if (Flags)
-    BuildMI(MBB, MI, DL, get(X86::POPF64));
+  // LOAD_THREAD_POINTER sets the flags, so nothing reads them here.
+  BuildMI(MBB, MI, MI->getDebugLoc(), get(X86::TP_CHECK)).addReg(Reg);
 }
 
 int X86InstrInfo::getSPAdjust(const MachineInstr &MI) const {
@@ -762,9 +753,9 @@ bool X86InstrInfo::isReMaterializableImpl(
     llvm_unreachable("Unknown rematerializable operation!");
     break;
   case X86::IMPLICIT_DEF:
-  case TargetOpcode::LOAD_THREAD_POINTER:
     // Defer to generic logic.
     break;
+  case TargetOpcode::LOAD_THREAD_POINTER:
   case X86::LOAD_STACK_GUARD:
   case X86::LD_Fp032:
   case X86::LD_Fp064:
@@ -1983,15 +1974,6 @@ MachineInstr *X86InstrInfo::convertToThreeAddress(MachineInstr &MI,
 
   if (!NewMI)
     return nullptr;
-
-  // A register the instruction reads beyond its description, as a record
-  // access reads the thread pointer, the new one reads too.
-  for (const MachineOperand &MO :
-       drop_begin(MI.operands(), MI.getNumExplicitOperands() +
-                                     MI.getDesc().implicit_defs().size() +
-                                     MI.getDesc().implicit_uses().size()))
-    if (MO.isReg() && MO.isUse())
-      NewMI->addOperand(MF, MO);
 
   MachineBasicBlock &MBB = *MI.getParent();
   MBB.insert(MI.getIterator(), NewMI); // Insert the new inst

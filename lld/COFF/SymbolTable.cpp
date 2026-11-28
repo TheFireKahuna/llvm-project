@@ -56,8 +56,10 @@ static void forceLazy(Symbol *s) {
   s->pendingArchiveLoad = true;
   switch (s->kind()) {
   case Symbol::Kind::LazyArchiveKind: {
+    // A member the link keeps out leaves the name undefined.
     auto *l = cast<LazyArchive>(s);
-    l->file->addMember(l->sym);
+    if (!l->file->addMember(l->sym))
+      replaceSymbol<Undefined>(s, s->getName());
     break;
   }
   case Symbol::Kind::LazyObjectKind: {
@@ -274,6 +276,69 @@ void SymbolTable::reportUndefinedSymbol(const UndefinedDiag &undefDiag) {
   }
 }
 
+void SymbolTable::addThreadDataExports() {
+  bool any = false;
+  for (Export &e : exports) {
+    if (!e.threadData)
+      continue;
+    auto *offset = make<TlsOffsetChunk>(ctx, addGCRoot(e.name));
+    threadDataOffsets.push_back(offset);
+    e.name = saver().save("__tls_offset_" + e.name);
+    e.data = true;
+    e.threadData = false;
+    addSynthetic(e.name, offset);
+    any = true;
+  }
+  if (!any)
+    return;
+  // Added with each such export, of which fixupExports keeps one.
+  Export index, function;
+  index.name = "_tls_index";
+  index.data = true;
+  function.name = "__safe_get_tls_index";
+  function.extName = "__tls_safe_get_tls_index";
+  for (Export *e : {&index, &function}) {
+    e->source = ExportSource::Export;
+    exports.push_back(*e);
+  }
+}
+
+bool SymbolTable::addThreadDataImports() {
+  bool added = false;
+  for (Symbol *sym : getSymbols()) {
+    StringRef var = sym->getName();
+    if (!isa<Undefined>(sym) ||
+        !var.consume_front("__imp___tls_safe_get_tls_index_"))
+      continue;
+    Symbol *offset = find(("__imp___tls_offset_" + var).str());
+    if (offset && offset->isLazy() && !offset->pendingArchiveLoad) {
+      forceLazy(offset);
+      added = true;
+    } else if (auto *d = dyn_cast_or_null<DefinedImportData>(offset)) {
+      // One import of each DLL's function serves all its variables.
+      Symbol *&index = threadDataIndex[d->getDLLName()];
+      if (index) {
+        cast<Undefined>(sym)->setWeakAlias(index);
+        continue;
+      }
+      index = sym;
+      ctx.driver.addFile(ImportFile::create(
+          ctx, machine, sym->getName().drop_front(strlen("__imp_")),
+          d->getDLLName(), llvm::COFF::IMPORT_CODE,
+          llvm::COFF::IMPORT_NAME_EXPORTAS, "__tls_safe_get_tls_index"));
+      added = true;
+    }
+  }
+  return added;
+}
+
+// X$tp is the entry of function X that callers passing the thread pointer
+// reach, and X its address, which an offer binds; a call stays with the
+// image's own copy.
+static bool isCallOnly(Symbol *sym, const SymbolTable::VagueEntity &entity) {
+  return entity.function && sym->getName().ends_with("$tp");
+}
+
 bool SymbolTable::loadMinGWSymbols() {
   bool loaded = false;
   for (Symbol *sym : getSymbols()) {
@@ -359,7 +424,8 @@ bool SymbolTable::loadMinGWSymbols() {
   // function it defines by the function's own name.
   for (auto &[sym, entity] : vagueEntities) {
     DefinedRegular *d = getEntityDefinition(sym);
-    if (!d || !isPreemptible(sym, entity.function) || replaces(entity))
+    if (!d || !isPreemptible(sym, entity.function) || replaces(entity) ||
+        isCallOnly(sym, entity))
       continue;
     for (Symbol *s : {sym, entity.function ? nullptr : findOwnGuard(d)}) {
       Symbol *l = s ? find(("__imp_" + s->getName()).str()) : nullptr;
@@ -415,6 +481,10 @@ Symbol *SymbolTable::findOfferedInit(Symbol *sym, const VagueEntity &entity) {
 
 DefinedRegular *SymbolTable::getEntityDefinition(Symbol *sym) {
   TlsRecordChunk *record = TlsRecordChunk::get(sym);
+  // A function's plain entry that is its argument entry's body is an alias of
+  // X$tp, and the entity is defined there.
+  if (auto *u = dyn_cast<Undefined>(sym); u && !record)
+    return dyn_cast_or_null<DefinedRegular>(u->getDefinedWeakAlias());
   return dyn_cast<DefinedRegular>(record ? record->var : sym);
 }
 
@@ -1335,7 +1405,9 @@ std::optional<uint32_t> SymbolTable::getTypeId(DefinedRegular *sym,
   ArrayRef<uint8_t> c = sym->getChunk()->getContents();
   if (sym->getValue() < at || sym->getValue() > c.size())
     return std::nullopt;
-  return endian::read32le(c.data() + sym->getValue() - at);
+  // A tag says where the function's thread-pointer entry is.
+  return endian::read32le(c.data() + sym->getValue() - at) &
+         ~ThreadPointerTypeTag;
 }
 
 void SymbolTable::addOverrideDefault(unsigned slot,
@@ -1446,6 +1518,24 @@ void SymbolTable::initializeSameAddressThunks() {
 
 Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
                                   bool overrideLazy) {
+  // X$tp is the entry of X that is passed its thread pointer, and which
+  // definition it names follows X: a fork reference is weak over X, which it
+  // names without holding it used, and keeps X$tp's member out until X is
+  // resolved (pairThreadPointerEntries).
+  if (!overrideLazy && name.ends_with("$tp") &&
+      (f ? f->forkObject : ctx.hasForkObject)) {
+    Symbol *s = addUndefined(name, f, /*overrideLazy=*/true);
+    if (auto *u = dyn_cast<Undefined>(s); u && !u->weakAlias) {
+      Symbol *x = find(name.drop_back(3));
+      bool used = x && x->isUsedInRegularObj, fresh = !x;
+      x = addUndefined(name.drop_back(3));
+      x->isUsedInRegularObj = used;
+      // Nor does it refer to X, so a later weak reference sets its default.
+      x->deferUndefined |= fresh;
+      u->setWeakAlias(x);
+    }
+    return s;
+  }
   auto [s, wasInserted] = insert(name, f);
   if (f && f->forkObject)
     s->forkReferenced = true;
@@ -1479,13 +1569,90 @@ void SymbolTable::addStrongReference(Symbol *s) {
     return;
   CachedHashStringRef key(s->getName());
   if (auto it = archiveSymbols.find(key); it != archiveSymbols.end()) {
-    s->pendingArchiveLoad = true;
-    it->second.first->addMember(it->second.second);
+    s->pendingArchiveLoad = it->second.first->addMember(it->second.second);
   } else if (InputFile *f = lazyObjects.lookup(key); f && f->lazy) {
     s->pendingArchiveLoad = true;
     f->lazy = false;
     ctx.driver.addFile(f);
   }
+}
+
+// Whether s is a reference to X$tp still weak over X.
+static Undefined *getThreadPointerEntry(Symbol *s) {
+  auto *u = dyn_cast<Undefined>(s);
+  return u && u->weakAlias && s->getName().ends_with("$tp") &&
+                 u->weakAlias->getName() == s->getName().drop_back(3)
+             ? u
+             : nullptr;
+}
+
+// The archive an import X came from, or nothing where X is no import.
+static StringRef getImportLibrary(Symbol *x) {
+  auto *imp = dyn_cast<DefinedImportData>(x);
+  if (auto *thunk = dyn_cast<DefinedImportThunk>(x))
+    imp = thunk->wrappedSym;
+  return imp ? imp->file->parentName : StringRef();
+}
+
+bool SymbolTable::pairThreadPointerEntries() {
+  // X$tp's member loads where it is X's own: X is an import from the same
+  // library, or nothing defines X. The image's own X, or another provider's,
+  // is what X$tp names otherwise.
+  SmallVector<std::pair<Symbol *, std::pair<ArchiveFile *, Archive::Symbol>>, 0>
+      offered;
+  for (Symbol *s : getSymbols()) {
+    Undefined *u = getThreadPointerEntry(s);
+    auto it = u ? archiveSymbols.find(CachedHashStringRef(s->getName()))
+                : archiveSymbols.end();
+    if (it == archiveSymbols.end() || s->pendingArchiveLoad ||
+        u->weakAlias->pendingArchiveLoad)
+      continue;
+    if (!isa<Defined>(u->weakAlias) ||
+        getImportLibrary(u->weakAlias) == it->second.first->getName())
+      offered.push_back({s, it->second});
+  }
+  for (auto &[s, member] : offered)
+    s->pendingArchiveLoad = member.first->addMember(member.second);
+  // An export of X carries the X$tp defined with it, and an export of X$tp
+  // the plain entry X that bitcode defines with it or makes a weak external.
+  StringSet<> names;
+  for (const Export &e : exports)
+    names.insert(e.name);
+  size_t n = exports.size();
+  for (size_t i = 0; i != n; ++i) {
+    const Export &e = exports[i];
+    StringRef other = e.name;
+    bool tp = other.consume_back("$tp");
+    if (!tp)
+      other = saver().save(e.name + "$tp");
+    Symbol *s = find(other);
+    auto *u = dyn_cast_or_null<Undefined>(s);
+    if (!e.data && e.forwardTo.empty() && e.extName.empty() &&
+        e.exportAs.empty() && !names.contains(other) &&
+        (tp ? (u && u->weakAlias) || (isa_and_nonnull<DefinedRegular>(s) &&
+                                      isa<BitcodeFile>(s->getFile()))
+            : isa_and_nonnull<DefinedRegular>(s))) {
+      Export x;
+      x.name = other;
+      x.source = e.source;
+      x.isPrivate = e.isPrivate;
+      exports.push_back(x);
+    }
+  }
+  return !offered.empty() || exports.size() != n;
+}
+
+void SymbolTable::bindThreadPointerEntries() {
+  // X$tp that nothing defined is X where X resolves, to a definition or to
+  // the null of a weak reference, which it then holds used, and else
+  // undefined.
+  for (Symbol *s : getSymbols())
+    if (Undefined *u = getThreadPointerEntry(s)) {
+      if (u->weakAlias->getDefined())
+        u->weakAlias->isUsedInRegularObj |= s->isUsedInRegularObj;
+      else
+        u->setWeakAlias(nullptr);
+    }
 }
 
 Symbol *SymbolTable::addGCRoot(StringRef name, bool aliasEC) {
@@ -1576,12 +1743,58 @@ void SymbolTable::warnWeakDefinition(Symbol *s, InputFile *lazy,
             << ", whose weak definition in " << weak << " is used";
 }
 
+// Returns "archive(member)" for the member that offers sym where its object
+// states the owned thread-local model, as wincrt's do, and else "".
+static StringRef getModelMember(ArchiveFile *f, const Archive::Symbol &sym) {
+  std::optional<Archive::Child> c = expectedToOptional(sym.getMember());
+  std::optional<MemoryBufferRef> mb =
+      c ? expectedToOptional(c->getMemoryBufferRef()) : std::nullopt;
+  if (!mb || identify_magic(mb->getBuffer()) != file_magic::coff_object)
+    return "";
+  std::optional<std::unique_ptr<COFFObjectFile>> obj =
+      expectedToOptional(COFFObjectFile::create(*mb));
+  if (!obj)
+    return "";
+  for (const SectionRef &sec : (*obj)->sections())
+    if (expectedToOptional(sec.getName()) == ".drectve")
+      return expectedToOptional(sec.getContents())
+                     .value_or("")
+                     .contains("_TLS_MODEL=")
+                 ? saver().save(toString(f) + "(" + mb->getBufferIdentifier() +
+                                ")")
+                 : "";
+  return "";
+}
+
 void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
   StringRef name = sym.getName();
   if (isEC() && !checkLazyECPair<LazyArchive>(this, name, f))
     return;
   CachedHashStringRef key(name);
   auto it = symMap.find(key);
+  // The TLS directory is wincrt's, whose callbacks run an image's fill and a
+  // -static runtime's founding: once its member offers it, no other
+  // library's member that offers it is loaded.
+  if (name == "_tls_used") {
+    StringRef model = getModelMember(f, sym);
+    if (model.empty()) {
+      if (!tlsDirectory.empty())
+        f->dropMember(sym);
+    } else if (tlsDirectory.empty()) {
+      tlsDirectory = model;
+      auto ai = archiveSymbols.find(key);
+      auto *l = it == symMap.end()
+                    ? nullptr
+                    : dyn_cast<LazyArchive>(symVector[it->second]);
+      if (ai != archiveSymbols.end()) {
+        ai->second.first->dropMember(ai->second.second);
+        ai->second = {f, sym};
+      } else if (l) {
+        l->file->dropMember(l->sym);
+        replaceSymbol<LazyArchive>(l, f, sym);
+      }
+    }
+  }
   if (it == symMap.end()) {
     // Hybrid links check each lazy symbol against its counterpart as they
     // enter it, and before the machine is known the link may become one.
@@ -1598,8 +1811,7 @@ void SymbolTable::addLazyArchive(ArchiveFile *f, const Archive::Symbol &sym) {
       archiveSymbols.try_emplace(key, f, sym);
     return;
   }
-  s->pendingArchiveLoad = true;
-  f->addMember(sym);
+  s->pendingArchiveLoad = f->addMember(sym);
 }
 
 void SymbolTable::addLazyObject(InputFile *f, StringRef n) {
@@ -1771,6 +1983,15 @@ void SymbolTable::checkTlsTemplates() {
       replaceSymbol<DefinedSynthetic>(sym, sym->getName(), c);
     }
   }
+  // A definition that stands in place of wincrt's directory would leave
+  // the fill and the founding out of its callbacks.
+  if (auto *d = dyn_cast_or_null<DefinedRegular>(findUnderscore("_tls_used"));
+      d && !tlsDirectory.empty() && !ctx.tlsRuntime().empty() &&
+      !d->getFile()->tlsModel)
+    Err(ctx) << d->getFile()
+             << ": defines _tls_used, which stands in place of the TLS "
+                "directory of the image's thread-local model, in "
+             << tlsDirectory;
   // Each copy of a C selectany thread-local is in its object's template, so
   // copies of both models are an error whichever the link would keep.
   MapVector<DefinedRegular *, SetVector<InputFile *>> copies;
@@ -1796,36 +2017,47 @@ void SymbolTable::checkTlsTemplates() {
 
 // The slot is an in-place import slot of the runtime's release, which only
 // an import of it reaches: a -static runtime's callback is the release.
-void SymbolTable::keepThreadEndSlot() {
+bool SymbolTable::keepThreadEndSlot() {
   Symbol *end = findUnderscore("__wincrt_thread_end");
-  auto *lazy = dyn_cast_or_null<LazyArchive>(end);
-  if (ctx.config.dll ||
-      !(isa_and_nonnull<DefinedImportThunk, DefinedImportData>(end) ||
-        (lazy && identify_magic(lazy->getMemberBuffer().getBuffer()) ==
-                     file_magic::coff_import_library)))
-    return;
-  // A callback is the image's own unless the slot's archive gives it.
   Symbol *slot = findUnderscore("__wincrt_thread_end_slot");
-  StringRef rt;
-  if (auto *l = dyn_cast_or_null<LazyArchive>(slot))
-    rt = l->file->getName();
-  else if (auto *d = dyn_cast_or_null<DefinedRegular>(slot))
-    rt = d->getFile()->parentName;
+  auto *lazy = dyn_cast_or_null<LazyArchive>(end);
+  if (ctx.config.dll || !slot || !slot->isLazy() ||
+      !(isa_and_nonnull<DefinedImportThunk, DefinedImportData>(end) ||
+        (lazy && lazy->isImport())))
+    return false;
+  // A callback is the image's own unless the slot's archive gives it.
+  auto *l = dyn_cast<LazyArchive>(slot);
+  StringRef rt = l ? l->file->getName() : StringRef();
   auto refers = [&](StringRef name) {
     Symbol *s = findUnderscore(name);
     return s && s->isUsedInRegularObj;
   };
   if (refers("__cxa_thread_atexit_impl") ||
       refers("__llvm_kcfi_cxa_thread_atexit_impl") ||
-      llvm::any_of(ctx.objFileInstances, [&](ObjFile *f) {
-        return &f->symtab == this && f->parentName != rt &&
-               llvm::any_of(f->getChunks(), [](Chunk *c) {
-                 auto *sc = dyn_cast<SectionChunk>(c);
-                 return sc && sc->getSize() &&
-                        sc->getSectionName().starts_with(".CRT$XL");
+      llvm::any_of(ctx.objFileInstances,
+                   [&](ObjFile *f) {
+                     return &f->symtab == this && f->parentName != rt &&
+                            llvm::any_of(f->getChunks(), [](Chunk *c) {
+                              // The fill's callback is the link's to add.
+                              auto *sc = dyn_cast<SectionChunk>(c);
+                              return sc && sc->getSize() &&
+                                     sc->getSectionName().starts_with(
+                                         ".CRT$XL") &&
+                                     sc->getSectionName() != ".CRT$XLAF";
+                            });
+                   }) ||
+      // Bitcode states its callback as a definition in such a section.
+      llvm::any_of(bitcodeFileInstances, [&](BitcodeFile *f) {
+        return f->parentName != rt &&
+               llvm::any_of(f->obj->symbols(), [](const auto &sym) {
+                 return !sym.isUndefined() &&
+                        sym.getSectionName().starts_with(".CRT$XL");
                });
-      }))
-    addGCRoot(mangle("__wincrt_thread_end_slot"));
+      })) {
+    addGCRoot(slot->getName());
+    return true;
+  }
+  return false;
 }
 
 TlsPlaceChunk *SymbolTable::getPlaceWord() {
@@ -1886,8 +2118,18 @@ void SymbolTable::selectPlaceWord() {
     return;
   DefinedImportData *imp = findImport(Twine("__imp_") + COFF::TP::Register,
                                       "the image's thread-local place");
+  Defined *reg = imp;
+  // Under -static the register function is the image's own.
+  if (auto *own = dyn_cast_or_null<DefinedRegular>(find(COFF::TP::Register));
+      own && !imp) {
+    auto *li = make<DefinedLocalImport>(
+        ctx, saver().save(Twine("__imp_") + COFF::TP::Register), own);
+    li->getChunk()->uses |= LocalImportChunk::Keep;
+    localImportChunks.push_back(li->getChunk());
+    reg = li;
+  }
   // An executable's words are reported where the fill selects its entry.
-  if (!imp) {
+  if (!reg) {
     if (ctx.config.dll)
       Err(ctx) << "the image's thread-locals need its place, "
                << COFF::TP::RegisterImport << ", which ntposix.dll's "
@@ -1895,10 +2137,12 @@ void SymbolTable::selectPlaceWord() {
     return;
   }
   placeWord->registers = true;
-  imp->file->live = true;
-  imp->file->uses |= ImportFile::Keep;
+  if (imp) {
+    imp->file->live = true;
+    imp->file->uses |= ImportFile::Keep;
+  }
   ctx.fill.words.insert(ctx.fill.words.begin(),
-                        {placeWord, 0, imp, 0, FillWord::Init});
+                        {placeWord, 0, reg, 0, FillWord::Init});
   // A wide DLL's fill writes its key from the runtime's.
   if (!ctx.tlsWide || !ctx.config.dll)
     return;
@@ -1906,8 +2150,7 @@ void SymbolTable::selectPlaceWord() {
           findImport(Twine("__imp_") + COFF::TP::Key, "the image's key")) {
     key->file->live = true;
     key->file->uses |= ImportFile::Keep;
-    ctx.fill.words.push_back(
-        {placeWord, TP_KEY_AT, key, 0, FillWord::Value});
+    ctx.fill.words.push_back({placeWord, TP_KEY_AT, key, 0, FillWord::Value});
   } else {
     Err(ctx) << "the image's wide thread-locals need its key, "
              << COFF::TP::KeyImport << ", which ntposix.dll's "
@@ -2403,10 +2646,11 @@ void SymbolTable::preemptVagueEntities() {
   SmallPtrSet<Symbol *, 4> reported;
   for (auto &[sym, entity] : vagueEntities) {
     DefinedRegular *d = getEntityDefinition(sym);
-    DefinedImportData *imp =
-        d && isPreemptible(sym, entity.function) && !replaces(entity)
-            ? findTakenOffer(sym->getName())
-            : nullptr;
+    DefinedImportData *imp = d && isPreemptible(sym, entity.function) &&
+                                     !replaces(entity) &&
+                                     !isCallOnly(sym, entity)
+                                 ? findTakenOffer(sym->getName())
+                                 : nullptr;
     if (!imp)
       continue;
     if (isEC() || ctx.hybridSymtab)
@@ -2579,6 +2823,14 @@ void SymbolTable::preemptVagueEntities() {
   }
   for (SectionChunk *c : preempted)
     c->live = false;
+  // X$tp's address is X's.
+  for (auto &[sym, entity] : vagueEntities)
+    if (Symbol *x = isCallOnly(sym, entity) ? find(sym->getName().drop_back(3))
+                                            : nullptr;
+        x && x->addressImported) {
+      sym->addressImported = true;
+      entity.owner = vagueEntities.lookup(x).owner;
+    }
 
   for (Symbol *s : members)
     if (DefinedRegular *d = getEntityDefinition(s); d && !reported.count(s))
@@ -2713,7 +2965,12 @@ bool SymbolTable::isAddition(Symbol *sym) const {
 std::optional<COFFLinkImage::Entity>
 SymbolTable::getImageEntity(Symbol *sym, DefinedRegular *d,
                             const VagueEntity &entity) {
-  if (!d || d->getChunk()->sym != d)
+  // A function's plain entry is its address: an alias of its argument
+  // entry, which is no entity of its own, or a section of that entry's group.
+  DefinedRegular *leader = d ? d->getChunk()->sym : nullptr;
+  if (!d || isCallOnly(sym, entity) ||
+      (leader != d && !(entity.function &&
+                        (!leader || leader->getValue() == d->getValue()))))
     return std::nullopt;
   SectionChunk *c = d->getChunk();
   bool function = c->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE;

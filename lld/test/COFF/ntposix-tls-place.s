@@ -2,7 +2,7 @@
 
 ## In the ntposix model an image's thread-local place is
 ## __imp___tp_register$init, the first word of .sealed after the word that
-## the fill sets, with the image's scale beside it. A DLL with thread-local
+## the fill sets, {place, form, key}. A DLL with thread-local
 ## data has it whether or not code names it, and its fill writes it with what
 ## ntposix.dll's __tp_register returns for the image, the first word of
 ## the fill's list, of kind 2; the records of its thread-locals name it. An
@@ -52,16 +52,17 @@
 ## A DLL has its list's one word, the place at 0x3008, from __tp_register's
 ## entry at 0x2000, kind 2; the record of x names the place, then x's
 ## offset, 4, and its guard's, 12; .sealed's done word, the place, which
-## holds 0xF1F1F1F1F1F1F1F1 until the fill writes it, and the scale, 1.
+## holds 0xF1F1F1F1F1F1F1F1 until the fill writes it, the form, 0, direct, and
+## the key, 0.
 # DLL:      Contents of section .rdata:
 # DLL-NEXT: 180002000 c8200000 00000000 00000000 00000000
 # DLL-NEXT: 180002010 00000000 00000000 01000000 00000000
-# DLL-NEXT: 180002020 00300000 18000000 00000000 00000000
+# DLL-NEXT: 180002020 00300000 20000000 00000000 00000000
 # DLL-NEXT: 180002030 08300000 02200000 00000000 00000000
 # DLL-NEXT: 180002040 08300080 01000000 04000000 0c000000
 # DLL:      Contents of section .sealed:
 # DLL-NEXT: 180003000 00000000 00000000 f1f1f1f1 f1f1f1f1
-# DLL-NEXT: 180003010 01000000 00000000
+# DLL-NEXT: 180003010 00000000 00000000 00000000 00000000
 
 ## The importer: its guard's offset at 0x3008 and x's at 0x3010, each from
 ## the entry of x$tls at 0x2000, kind 5, and the record's word, 12 or 8;
@@ -77,27 +78,28 @@
 # USE-NEXT: 180003010 f1f1f1f1 f1f1f1f1{{ }}
 
 ## The executable: its words are computed from the pointer at 0x2040 to its
-## record, which names its place, 0x100, and scale, constants of .rdata.
+## record, which names its place, 0x140 past the wide area, its form and its
+## key, constants of .rdata.
 # EXE:      Contents of section .rdata:
 # EXE-NEXT: 140002000 00000000 00000000 02000000 00000000
 # EXE-NEXT: 140002010 00300000 18000000 00000000 00000000
 # EXE-NEXT: 140002020 08300000 45200000 0c000000 00000000
 # EXE-NEXT: 140002030 10300000 45200000 08000000 00000000
 # EXE-NEXT: 140002040 48200040 01000000 58200040 01000000
-# EXE-NEXT: 140002050 04000000 0c000000 00010000 00000000
-# EXE-NEXT: 140002060 01000000 00000000
+# EXE-NEXT: 140002050 04000000 0c000000 40010000 00000000
+# EXE-NEXT: 140002060 00000000 00000000 00000000 00000000
 
 ## An executable whose template holds a word that the fill writes registers
-## again: its place, first in .sealed, holds 0x100 from the start, and the
+## again: its place, first in .sealed, holds 0x140 from the start, and the
 ## list names it, kind 2, before the word of the template.
 # WORD:      Contents of section .rdata:
 # WORD:      140002020 01000000 00000000 02000000 00000000
-# WORD-NEXT: 140002030 00300000 18000000 00000000 00000000
+# WORD-NEXT: 140002030 00300000 20000000 00000000 00000000
 # WORD-NEXT: 140002040 10400000 08000000 08300000 12200000
 # WORD-NEXT: 140002050 00000000 00000000 10400000 00200000
 # WORD:      Contents of section .sealed:
-# WORD-NEXT: 140003000 00000000 00000000 00010000 00000000
-# WORD-NEXT: 140003010 01000000 00000000
+# WORD-NEXT: 140003000 00000000 00000000 40010000 00000000
+# WORD-NEXT: 140003010 00000000 00000000 00000000 00000000
 
 # NONE: error: the image's thread-locals need its place, __imp___tp_register$init, which ntposix.dll's __tp_register gives; link ntposix.lib
 

@@ -938,8 +938,9 @@ void X86AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
   // and thus emitting potential call target gadgets at each indirect call
   // site, load a negated constant to a register and compare that to the
   // expected value at the call target.
-  const Register AddrReg = MI.getOperand(0).getReg();
-  const uint32_t Type = MI.getOperand(1).getImm();
+  bool TP = MI.getOpcode() == X86::KCFI_CHECK_TP;
+  const Register AddrReg = MI.getOperand(TP).getReg();
+  const uint32_t Type = MI.getOperand(TP + 1).getImm();
   // The check is immediately before the call, or before a tail call's
   // epilogue. If the call target is in R10, we can clobber R11 for the check
   // instead.
@@ -954,6 +955,13 @@ void X86AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
                               .addReg(X86::NoRegister)
                               .addImm(-(PrefixNops + 4))
                               .addReg(X86::NoRegister));
+  // The tag of a prefix that holds a thread-pointer entry's offset is bit 31,
+  // which doubling moves into the carry, leaving zero for either.
+  if (TP)
+    EmitAndCountInstruction(MCInstBuilder(X86::ADD32rr)
+                                .addReg(TempReg)
+                                .addReg(TempReg)
+                                .addReg(TempReg));
 
   MCSymbol *Pass = OutContext.createTempSymbol();
   EmitAndCountInstruction(
@@ -966,6 +974,42 @@ void X86AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
   EmitAndCountInstruction(MCInstBuilder(X86::TRAP));
   emitKCFITrapEntry(MF, Trap);
   OutStreamer->emitLabel(Pass);
+  if (!TP)
+    return;
+
+  // The call goes to the target plus the offset in its prefix where it is
+  // tagged, and the prefix states that it holds one.
+  Register Dest = MI.getOperand(0).getReg();
+  Register Offset = getX86SubSuperRegister(TempReg, 64);
+  if (Dest != AddrReg)
+    EmitAndCountInstruction(
+        MCInstBuilder(X86::MOV64rr).addReg(Dest).addReg(AddrReg));
+  MCSymbol *Untagged = OutContext.createTempSymbol();
+  EmitAndCountInstruction(
+      MCInstBuilder(X86::JCC_1)
+          .addExpr(MCSymbolRefExpr::create(Untagged, OutContext))
+          .addImm(X86::COND_AE));
+  EmitAndCountInstruction(MCInstBuilder(X86::TEST8mi)
+                              .addReg(AddrReg)
+                              .addImm(1)
+                              .addReg(X86::NoRegister)
+                              .addImm(-(PrefixNops + 10))
+                              .addReg(X86::NoRegister)
+                              .addImm(COFF::LinkFactThreadPointerEntry));
+  EmitAndCountInstruction(
+      MCInstBuilder(X86::JCC_1)
+          .addExpr(MCSymbolRefExpr::create(Trap, OutContext))
+          .addImm(X86::COND_E));
+  EmitAndCountInstruction(MCInstBuilder(X86::MOVSX64rm32)
+                              .addReg(Offset)
+                              .addReg(AddrReg)
+                              .addImm(1)
+                              .addReg(X86::NoRegister)
+                              .addImm(-(PrefixNops + 16))
+                              .addReg(X86::NoRegister));
+  EmitAndCountInstruction(
+      MCInstBuilder(X86::ADD64rr).addReg(Dest).addReg(Dest).addReg(Offset));
+  OutStreamer->emitLabel(Untagged);
 }
 
 void X86AsmPrinter::LowerASAN_CHECK_MEMACCESS(const MachineInstr &MI) {
@@ -2655,6 +2699,7 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
     return;
 
   case X86::KCFI_CHECK:
+  case X86::KCFI_CHECK_TP:
     return LowerKCFI_CHECK(*MI);
 
   case X86::TP_CHECK: {

@@ -26,6 +26,7 @@ namespace llvm {
 template <typename T> class SmallVectorImpl;
 
 template <typename T> class ArrayRef;
+class CallBase;
 class Module;
 class Function;
 class FunctionCallee;
@@ -34,6 +35,7 @@ class GlobalValue;
 class TargetTransformInfo;
 class Constant;
 class ConstantStruct;
+class Instruction;
 class Value;
 class Type;
 class raw_ostream;
@@ -203,6 +205,54 @@ LLVM_ABI bool collectFunctionOverride(
     function_ref<StringRef(const Function &, SmallVectorImpl<uint32_t> &)>
         GetCapabilities,
     FunctionOverride &FO, raw_ostream *Why = nullptr);
+
+/// Whether \p CB's callee reads the thread pointer, so that a caller holding
+/// it saves a derivation by passing it: a definition not inferred
+/// "thread-pointer-unused", or a declaration whose "thread-pointer-argument"
+/// is "read" that may touch global memory.
+LLVM_ABI bool callsThreadPointerReader(const CallBase &CB);
+
+/// Whether \p CB, made by a function that holds a thread pointer, passes it:
+/// a direct call of a function passed one that may read it, one that touches
+/// no global memory never does. A function's address is its plain entry, so a
+/// call through a pointer passes one only under a KCFI check, which finds the
+/// target's thread-pointer entry from its type prefix, and without Control
+/// Flow Guard checks, which accept no such entry.
+LLVM_ABI bool passesThreadPointer(const CallBase &CB);
+
+/// Whether \p I needs its function's thread pointer whatever its callees do:
+/// it reads it, or calls a variadic ifunc, which has no plain entry.
+LLVM_ABI bool needsThreadPointer(const Instruction &I);
+
+/// Whether \p F holds a thread pointer to pass on: one passed it that is not
+/// "thread-pointer-unused", one that comes by its own in a way that never
+/// adopts or has none, or one that derives and needs it or calls a reader.
+LLVM_ABI bool holdsThreadPointer(const Function &F);
+
+/// Makes each address of a function of \p M that is passed its thread pointer
+/// its plain entry, which code holding a thread pointer and code holding none
+/// call alike: one address everywhere, in vtables and pointers as in what
+/// foreign code is given. A resolver's version, which its ifunc hands its
+/// thread pointer, and llvm.used and llvm.compiler.used keep the function.
+LLVM_ABI void takeThreadPointerPlainEntries(Module &M);
+
+/// Returns the plain entry of \p GV, a function passed its thread pointer or
+/// an alias of one: \p GV's symbol with no "$tp", declared where \p GV is.
+LLVM_ABI GlobalValue *getThreadPointerPlainEntry(GlobalValue &GV);
+
+/// Gives each function of \p M that carries "thread-pointer-argument", and
+/// that code passing none may call, its plain entry, the entry of its name
+/// for such callers: every one that is not local, and a local one that a
+/// function holding no thread pointer calls or whose address is taken. The
+/// plain entry of a function that holds none is an alias of it; any other's is
+/// a function of its type passed none, which calls it, or for a variadic
+/// function a second body, since no call forwards its arguments. An ifunc
+/// whose resolver carries the mark has the plain entry, which calls the
+/// ifunc. The plain entry of a function whose "thread-pointer-plain-entry" is
+/// "refusal" carries "thread-pointer-refusal". An alias names the entry of
+/// its aliasee of its own kind, and a weak external's two entries fall back
+/// to its alternate's.
+LLVM_ABI void createThreadPointerPlainEntries(Module &M);
 
 } // End llvm namespace
 

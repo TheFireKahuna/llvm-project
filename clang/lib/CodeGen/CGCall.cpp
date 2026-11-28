@@ -2771,6 +2771,22 @@ void CodeGenModule::ConstructAttributeList(StringRef Name,
                                      CalleeInfo.getCalleeFunctionProtoType());
   const Decl *TargetDecl = CalleeInfo.getCalleeDecl().getDecl();
 
+  // On NT-POSIX a function of the C convention says it is passed its thread
+  // pointer, and that it reads it where its declaration says so; a direct call
+  // follows the function it calls. A function the compiler makes, a naked
+  // function and one that the thread_pointer attribute says derives its own,
+  // looks it up or has none are passed none.
+  if (const auto *FD = dyn_cast_or_null<FunctionDecl>(TargetDecl);
+      FD && !AttrOnCallSite && FI.getASTCallingConvention() == CC_C &&
+      !FD->hasAttr<NakedAttr>() && isPassedThreadPointer(FD)) {
+    const auto *A = FD->getAttr<ThreadPointerEntryAttr>();
+    if (!A || A->getEntry() == ThreadPointerEntryAttr::Refusal ||
+        A->getEntry() == ThreadPointerEntryAttr::Read)
+      FuncAttrs.addAttribute(
+          "thread-pointer-argument",
+          A && A->getEntry() == ThreadPointerEntryAttr::Read ? "read" : "");
+  }
+
   // Attach assumption attributes to the declaration. If this is a call
   // site, attach assumptions from the caller to the call as well.
   AddAttributesFromOMPAssumes(FuncAttrs, TargetDecl);

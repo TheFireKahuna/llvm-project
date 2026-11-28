@@ -1446,9 +1446,8 @@ void lld::coff::setTlsForm(COFFLinkerContext &ctx) {
       Err(ctx) << COFF::TP::Place << ": the runtime's thread-locals "
                << "exceed " << TP_BLOCK << " bytes; it has " << ctx.tlsSize;
   } else if (!ctx.config.dll && !groups.empty() && !ctx.tlsWide) {
-    ctx.tlsPlace = ctx.tlsSize <= TP_BLOCK - TP_EXE_PLACE
-                       ? TP_EXE_PLACE
-                       : TP_PLANE;
+    ctx.tlsPlace =
+        ctx.tlsSize <= TP_BLOCK - TP_EXE_PLACE ? TP_EXE_PLACE : TP_PLANE;
   }
 }
 
@@ -2206,6 +2205,8 @@ void Writer::createMiscChunks() {
       for (Chunk *c : symtab.localImportChunks)
         rdataSec->addChunk(c);
     }
+    for (Chunk *c : symtab.threadDataOffsets)
+      rdataSec->addChunk(c);
   });
 
   // Write the records of thread-local variables that are still named, by

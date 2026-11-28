@@ -31,7 +31,8 @@ define void @pass(i64 %a) "thread-pointer-argument" {
 ; CHECK-LABEL: load$tp:
 ; CHECK:       ldr x0, [x28, #80]
 ; O0-LABEL:    load$tp:
-; O0:          ldr x0, [x28, #80]
+; O0:          mov [[T:x[0-9]+]], x28
+; O0-NEXT:     ldr x0, [[[T]], #80]
 define i64 @load() "thread-pointer-argument" {
   %tp = call ptr @llvm.thread.pointer.p0()
   %p = getelementptr i8, ptr %tp, i64 80

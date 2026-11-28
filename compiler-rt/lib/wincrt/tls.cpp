@@ -7,22 +7,20 @@
 //===----------------------------------------------------------------------===//
 //
 // Code that uses a thread-local variable names _tls_index, which links this
-// file and with it the directory the loader reads. The linker merges the
-// .tls$ sections, in name order, between _tls_start and _tls_end, and the
-// .CRT$XL sections into the callback array between __xl_a and __xl_z.
+// file and with it the directory the loader reads. The linker lays out the
+// foreign objects' .tls$ sections, in name order, as the loader's template
+// and defines _tls_start and _tls_end at its bounds, and merges the .CRT$XL
+// sections into the callback array between __xl_a and __xl_z.
 //
 //===----------------------------------------------------------------------===//
 
 #include "wincrt.h"
 
-#pragma section(".tls", read, write)
-#pragma section(".tls$ZZZ", read, write)
 #pragma section(".CRT$XLA", read)
 #pragma section(".CRT$XLZ", read)
 #pragma section(".rdata$T", read)
 
-extern "C" __declspec(allocate(".tls")) char _tls_start = 0;
-extern "C" __declspec(allocate(".tls$ZZZ")) char _tls_end = 0;
+extern "C" char _tls_start, _tls_end;
 // Written by the loader.
 extern "C" ULONG _tls_index = 0;
 

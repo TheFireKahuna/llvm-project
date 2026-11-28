@@ -744,7 +744,8 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
   if (IsRead)
     getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
   // Every reader of a value a record chain derived says so: one marker for
-  // each value, but the base that an index of an offset reads.
+  // each value, but the base that an index of an offset reads. A write of a
+  // register's low half writes all of it.
   for (unsigned I = Desc.getNumDefs(), E = Inst.getNumOperands(); I != E; ++I) {
     if (!Inst.getOperand(I).isReg() || !Inst.getOperand(I).getReg() ||
         is_contained(Marked, Inst.getOperand(I).getReg()))
@@ -752,7 +753,8 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
     MCRegister Reg = Inst.getOperand(I).getReg();
     for (MCRegUnit Unit : MRI.regunits(Reg)) {
       auto Write = RunWrites.find(static_cast<unsigned>(Unit));
-      if (Write == RunWrites.end() || Write->second.getInt() != Derived ||
+      if (Write == RunWrites.end() || MRI.isArtificialRegUnit(Unit) ||
+          Write->second.getInt() != Derived ||
           Write->second.getPointer() == OffsetOf)
         continue;
       getContext().reportError(Inst.getLoc(),

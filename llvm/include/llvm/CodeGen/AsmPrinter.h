@@ -282,14 +282,14 @@ protected:
   /// COFF::SiteFactValueOnly or COFF::SiteFactValueOnlyAccess, that the site
   /// states, or that a load of a pointer or the instruction that gives one
   /// its page states, which is then listed with no Load if it is no fused
-  /// read.
+  /// read. ThreadPointer is COFF::SiteFactThreadPointer's register, or -1.
   struct FusedSite {
     const MachineInstr *Load = nullptr;
     COFF::FusedUse Use{};
     uint8_t Index = 0;
     bool IndexedRead = false;
     uint8_t ValueOnly = 0;
-    bool ReadsThreadPointer = false;
+    int8_t ThreadPointer = -1;
   };
   /// The current function's fused reads and sites.
   DenseMap<const MachineInstr *, FusedSite> FusedSites;
@@ -560,6 +560,10 @@ public:
 
   void emitKCFITrapEntry(const MachineFunction &MF, const MCSymbol *Symbol);
   virtual void emitKCFITypeId(const GlobalObject &GO);
+  /// Emits the word of a function type prefix that holds the offset of
+  /// \p TPEntry from the function, which lies \p Distance bytes after it.
+  void emitThreadPointerEntryOffset(const GlobalValue *TPEntry,
+                                    int64_t Distance);
 
   void emitCallGraphSection(const MachineFunction &MF,
                             FunctionCallGraphInfo &FuncCGInfo);

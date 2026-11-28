@@ -3294,6 +3294,11 @@ ItaniumCXXABI::getOrCreateThreadLocalWrapper(const VarDecl *VD,
 
   CGM.SetLLVMFunctionAttributes(GlobalDecl(), FI, Wrapper, /*IsThunk=*/false);
 
+  // Every access of the variable calls the wrapper, from code that holds the
+  // thread pointer, so it is passed it.
+  if (CGM.isPassedThreadPointer())
+    Wrapper->addFnAttr("thread-pointer-argument");
+
   // Always resolve references to the wrapper at link time.
   if (!Wrapper->hasLocalLinkage())
     if (!isThreadWrapperReplaceable(VD, CGM) ||

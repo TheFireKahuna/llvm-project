@@ -224,6 +224,18 @@ bool VirtRegAuxInfo::allUsesAvailableAt(
     SmallVectorImpl<std::pair<const MachineInstr *, Register>> *Chain) {
   SlotIndex OrigIdx = LIS.getInstructionIndex(*MI).getRegSlot(true);
   UseIdx = std::max(UseIdx, UseIdx.getRegSlot(true));
+  // A thread pointer's reload is checked by an instruction that writes the
+  // registers the pseudo defines, so it is not taken again where one is live.
+  if (MI->getOpcode() == TargetOpcode::LOAD_THREAD_POINTER) {
+    const MachineInstr *At = LIS.getInstructionFromIndex(UseIdx);
+    if (!At || any_of(MI->all_defs(), [&](const MachineOperand &MO) {
+          return MO.getReg().isPhysical() &&
+                 At->getParent()->computeRegisterLiveness(
+                     MRI.getTargetRegisterInfo(), MO.getReg(), At) !=
+                     MachineBasicBlock::LQR_Dead;
+        }))
+      return false;
+  }
   bool Rematted = false;
   for (const MachineOperand &MO : MI->operands()) {
     if (!MO.isReg() || !MO.getReg() || !MO.readsReg())

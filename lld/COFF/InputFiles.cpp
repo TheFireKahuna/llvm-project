@@ -235,18 +235,25 @@ void ArchiveFile::parse() {
 }
 
 // Returns a buffer pointing to a member file containing a given symbol.
-void ArchiveFile::addMember(const Archive::Symbol &sym) {
+bool ArchiveFile::addMember(const Archive::Symbol &sym) {
   const Archive::Child &c =
       CHECK(sym.getMember(), "could not get the member for symbol " +
                                  toCOFFString(symtab.ctx, sym));
+  if (dropped.contains(c.getChildOffset()))
+    return false;
 
   // Return an empty buffer if we have already returned the same buffer.
   // FIXME: Remove this once we resolve all defineds before all undefineds in
   //        ObjFile::initializeSymbols().
-  if (!seen.insert(c.getChildOffset()).second)
-    return;
+  if (seen.insert(c.getChildOffset()).second)
+    symtab.ctx.driver.enqueueArchiveMember(c, sym, getName());
+  return true;
+}
 
-  symtab.ctx.driver.enqueueArchiveMember(c, sym, getName());
+void ArchiveFile::dropMember(const Archive::Symbol &sym) {
+  dropped.insert(CHECK(sym.getMember(), "could not get the member for symbol " +
+                                            toCOFFString(symtab.ctx, sym))
+                     .getChildOffset());
 }
 
 void ArchiveFile::addAllMembers(bool lazy) {
@@ -301,12 +308,12 @@ ObjFile::createCOFFObject(COFFLinkerContext &ctx, MemoryBufferRef m) {
 // prefix's marker instruction follows them. Padding as large as the alignment
 // holds something else, a function of no-operations among them.
 static void leaveOutPrefixPadding(SectionChunk *c, uint32_t entry,
-                                  bool secondWord) {
+                                  unsigned words) {
   ArrayRef<uint8_t> b = c->getContents();
-  uint32_t size = secondWord ? 16 : 12, pad = entry - size;
+  uint32_t size = 12 + 4 * llvm::popcount(words), pad = entry - size;
   if (entry < size || entry > b.size() || !pad || pad % 4 || pad > 28 ||
       pad >= c->getAlignment() || memcmp(&b[entry - 12], "\x0f\x1f", 2) ||
-      b[entry - 10] != (0x80 | secondWord))
+      b[entry - 10] != (0x80 | words))
     return;
   b = b.take_front(pad);
   if (c->getMachine() == AMD64)
@@ -333,18 +340,17 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols,
               case LinkFactTypePrefix: {
                 DataExtractor data(operands, /*IsLittleEndian=*/true);
                 DataExtractor::Cursor c(0);
-                uint64_t secondWord = data.getULEB128(c);
+                uint64_t words = data.getULEB128(c);
                 if (!c)
                   return c.takeError();
-                if (secondWord > LinkFactVfnType)
+                if (words > (LinkFactVfnType | LinkFactThreadPointerEntry))
                   return createStringError("type prefix of symbol " +
                                            Twine(index) + " is out of range");
                 if (apply && sym) {
-                  sym->typePrefix = 1 + secondWord;
+                  sym->typePrefix = 1 + words;
                   if (auto *d = dyn_cast<DefinedRegular>(sym);
                       d && d->file == this && isa<ObjFile>(this))
-                    leaveOutPrefixPadding(d->getChunk(), d->getValue(),
-                                          secondWord);
+                    leaveOutPrefixPadding(d->getChunk(), d->getValue(), words);
                   if (!symtab.ctx.typePrefixFile)
                     symtab.ctx.typePrefixFile = this;
                 }
@@ -2107,7 +2113,8 @@ void BitcodeFile::parse() {
   // weak definition. Any other is a weak external, which LTO does not link
   // and which the link binds, as it does the references to it, to its target,
   // so the object that LTO generates defines the target. So is a declaration that names its
-  // alternate, which may be anywhere.
+  // alternate, which may be anywhere, and the plain entry of one passed the
+  // thread pointer is the weak external of the alternate's plain entry.
   auto bind = [&](Symbol *s, StringRef target) {
     Symbol *alias = symtab.addUndefined(target, this, false);
     if (auto *u = dyn_cast<Undefined>(s))
@@ -2117,9 +2124,11 @@ void BitcodeFile::parse() {
   for (auto [objSym, sym] : llvm::zip(obj->symbols(), symbols)) {
     if (!objSym.isWeak())
       continue;
-    StringRef alt = objSym.getCOFFWeakExternalFallback();
+    StringRef alt = objSym.getCOFFWeakExternalFallback(), x = sym->getName();
     if (objSym.isUndefined() && !alt.empty()) {
       bind(sym, alt);
+      if (forkObject && x.consume_back("$tp") && alt.consume_back("$tp"))
+        bind(symtab.addUndefined(x, this, true), alt);
     } else if (!objSym.isIndirect()) {
       continue;
     } else if (Symbol *alias = symtab.find(alt)) {
@@ -2129,6 +2138,17 @@ void BitcodeFile::parse() {
       symtab.addRegular(this, sym->getName(), nullptr, getFakeSC(objSym), 0,
                         true);
     }
+  }
+
+  // The code generated for a function X$tp also defines its plain entry X,
+  // which the bitcode does not list.
+  for (auto [objSym, sym] : llvm::zip(obj->symbols(), symbols)) {
+    StringRef x = sym->getName();
+    if (forkObject && objSym.isExecutable() && x.consume_back("$tp") &&
+        isa<DefinedRegular>(sym) && sym->getFile() == this &&
+        !isa_and_nonnull<Defined>(symtab.find(x)))
+      symtab.addRegular(this, x, nullptr, getFakeSC(objSym), 0,
+                        objSym.isWeak());
   }
   directives = saver.save(obj->getCOFFLinkerOpts());
 

@@ -1,8 +1,9 @@
 # REQUIRES: libxml2, x86, aarch64
 
 ## A fork executable embeds its manifest (by default; /manifest:no is an error)
-## and merges a .res manifest into it, keeping a Windows Itanium executable on
-## the segment heap; DLLs and executables without fork objects are unchanged.
+## and merges a .res manifest into it, keeping a Windows Itanium executable,
+## whose objects state wincrt's model, on the segment heap; DLLs and
+## executables without fork objects are unchanged.
 
 # RUN: rm -rf %t && mkdir %t && cd %t
 # DEFINE: %{t} = x86_64
@@ -29,7 +30,8 @@
 # DEFINE:   env LLD_IN_TEST=1 not %{exe} wi.obj %{heap} \
 # DEFINE:     %{in}/manifest-ntheap.res 2>&1 | \
 # DEFINE:     FileCheck --check-prefix=CONFLICT %s && \
-# DEFINE:   not %{exe} wi.obj %{in}/manifest-xml.res 2>&1 | \
+# DEFINE:   not %{exe} wi.obj -failifmismatch:_TLS_MODEL=wincrt.1 \
+# DEFINE:     %{in}/manifest-xml.res 2>&1 | \
 # DEFINE:     FileCheck --check-prefix=HEAP %s && \
 # DEFINE:   %{exe} ntposix.obj %{in}/manifest-ntheap.res && \
 # DEFINE:   lld-link -dll -noentry -out:a.dll wi.obj && \

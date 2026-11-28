@@ -211,7 +211,7 @@
 ## error, and so is an executable that would not register it again. The place
 ## that it registers through comes first, and holds the executable's place.
 # NP:      140002030 01000000 00000000 02000000 00000000
-# NP-NEXT: 140002040 00300000 18000000 00000000 00000000
+# NP-NEXT: 140002040 00300000 20000000 00000000 00000000
 # NP-NEXT: 140002050 00400000 08000000 08300000 22200000
 # NP-NEXT: 140002060 00000000 00000000 00400000 10200000
 # NP-NEXT: 140002070 08000000 00000000
@@ -224,6 +224,16 @@
 # RUN:   FileCheck --check-prefix=NP-ODD %s
 # NP-REG: error: np.obj: .tls$+0x0: holds an address inside obj, for which imp.dll exports no name, in the thread-local template of an executable, which its fill registers again through __imp___tp_register$init, which the image does not have
 # NP-ODD: error: npo.obj: .tls$+0x4: holds an address inside obj, for which imp.dll exports no name, at an offset from the start of the thread-local template that is not a multiple of 8 bytes
+
+## Under -static the register function is the image's own, which the fill
+## calls through a pointer of the image's.
+# RUN: %{np} rtreg.s -o rtreg.obj
+# RUN: lld-link -machine:%{a} -subsystem:console imp.lib ntdll.lib rtn.lib \
+# RUN:   -entry:start np.obj rtreg.obj -out:static.exe
+# RUN: llvm-objdump -s -j .rdata static.exe | FileCheck --check-prefix=STATIC %s
+# STATIC:      140002040 00400000 08000000 08300000 6a200000
+# STATIC-NEXT: 140002050 00000000 00000000 00400000 10200000
+# STATIC-NEXT: 140002060 08000000 00000000 04100040 01000000
 
 ## An image that has no word for the fill has none of this, though a library
 ## offers the function: its entry is its own, and where the link collects
@@ -318,8 +328,8 @@
 # RUN: not %{link} -dll -noentry data.obj bad.obj -merge:.rgrp=.text \
 # RUN:   -merge:.sealed=.rdata -section:.sealed,rw -align:512 -out:bad.dll \
 # RUN:   2>&1 | FileCheck --check-prefix=BAD %s
-# BAD: error: bad.obj: .tls$+0x0: holds an address inside obj, for which imp.dll exports no name, in thread-local data; set the variable when the program starts
-# BAD: error: bad.obj: .tls$r+0x0: holds an address inside obj, for which imp.dll exports no name, in thread-local data; set the variable when the program starts
+# BAD: error: bad.obj: .tls$+0x0: holds an address inside obj, for which imp.dll exports no name, in the loader's thread-local template, which threads copy before the image's fill runs
+# BAD: error: bad.obj: .tls$r+0x0: holds an address inside obj, for which imp.dll exports no name, in the loader's thread-local template, which threads copy before the image's fill runs
 # BAD: error: bad.obj: refers to __llvm_fill_dll, which the loader calls, and nothing else may name
 # BAD: error: /merge: cannot merge '.sealed' with any section: it holds what the image writes as it starts and nothing else
 # BAD: error: data.obj: .rgrp$m+0x8: holds an address inside obj, for which imp.dll exports no name, in the executable section .text, where the image cannot write it as it starts; keep its section apart from /merge and /section
@@ -486,6 +496,12 @@ start:
   .long 0
 .endif
   .quad obj+8
+
+#--- rtreg.s
+.text
+.globl __tp_register
+__tp_register:
+  .long 0
 
 #--- bad.s
 .data

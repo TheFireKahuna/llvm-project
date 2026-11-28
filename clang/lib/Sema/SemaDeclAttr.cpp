@@ -5946,19 +5946,23 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
   bool HasDistinctMSABI =
       Triple.isGenericWindowsItaniumEnvironment() &&
       !getLangOpts().isCompatibleWith(LangOptions::ClangABI::Ver23);
+  // On NT-POSIX the Windows conventions' spellings, __cdecl among them, name
+  // Windows's convention, which is passed no thread pointer, on both
+  // machines: a Windows declaration means it whatever header it is in.
+  bool WindowsSpelling = Triple.isWindowsNTPOSIXEnvironment();
   // TODO: diagnose uses of these conventions on the wrong target.
   switch (Attrs.getKind()) {
   case ParsedAttr::AT_CDecl:
-    CC = CC_C;
+    CC = WindowsSpelling ? CC_Win64 : CC_C;
     break;
   case ParsedAttr::AT_FastCall:
-    CC = CC_X86FastCall;
+    CC = WindowsSpelling ? CC_Win64 : CC_X86FastCall;
     break;
   case ParsedAttr::AT_StdCall:
-    CC = HasDistinctMSABI ? CC_Win64 : CC_X86StdCall;
+    CC = HasDistinctMSABI || WindowsSpelling ? CC_Win64 : CC_X86StdCall;
     break;
   case ParsedAttr::AT_ThisCall:
-    CC = HasDistinctMSABI ? CC_Win64 : CC_X86ThisCall;
+    CC = HasDistinctMSABI || WindowsSpelling ? CC_Win64 : CC_X86ThisCall;
     break;
   case ParsedAttr::AT_Pascal:
     CC = CC_X86Pascal;
@@ -5982,7 +5986,9 @@ bool Sema::CheckCallingConvAttr(const ParsedAttr &Attrs, CallingConv &CC,
     CC = CC_X86RegCall;
     break;
   case ParsedAttr::AT_MSABI:
-    CC = IsTargetDefaultMSABI && !HasDistinctMSABI ? CC_C : CC_Win64;
+    CC = IsTargetDefaultMSABI && !HasDistinctMSABI && !WindowsSpelling
+             ? CC_C
+             : CC_Win64;
     break;
   case ParsedAttr::AT_SysVABI:
     CC = IsTargetDefaultMSABI ? CC_X86_64SysV : CC_C;
@@ -7186,6 +7192,21 @@ static void handleInternalLinkageAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
     D->addAttr(Internal);
 }
 
+static void handleThreadPointerEntryAttr(Sema &S, Decl *D,
+                                         const ParsedAttr &AL) {
+  StringRef Str;
+  SourceLocation LiteralLoc;
+  ThreadPointerEntryAttr::EntryKind Entry;
+  if (!S.checkStringLiteralArgumentAttr(AL, 0, Str, &LiteralLoc))
+    return;
+  if (!ThreadPointerEntryAttr::ConvertStrToEntryKind(Str, Entry)) {
+    S.Diag(LiteralLoc, diag::warn_attribute_type_not_supported) << AL << Str;
+    return;
+  }
+  D->dropAttr<ThreadPointerEntryAttr>();
+  D->addAttr(ThreadPointerEntryAttr::Create(S.Context, Entry, AL));
+}
+
 static void handleZeroCallUsedRegsAttr(Sema &S, Decl *D, const ParsedAttr &AL) {
   // Check that the argument is a string literal.
   StringRef KindStr;
@@ -8349,6 +8370,9 @@ ProcessDeclAttribute(Sema &S, Decl *D, const ParsedAttr &AL,
     break;
   case ParsedAttr::AT_ZeroCallUsedRegs:
     handleZeroCallUsedRegsAttr(S, D, AL);
+    break;
+  case ParsedAttr::AT_ThreadPointerEntry:
+    handleThreadPointerEntryAttr(S, D, AL);
     break;
   case ParsedAttr::AT_FunctionReturnThunks:
     handleFunctionReturnThunksAttr(S, D, AL);

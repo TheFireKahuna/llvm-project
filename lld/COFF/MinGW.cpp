@@ -254,6 +254,10 @@ bool lld::coff::addWrappedSymbols(SymbolTable &symtab,
 
 void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name,
                                  bool fromDirective) {
+  // A wrap of X renames the references to its entry that is passed its
+  // thread pointer too, whose __wrap_X$tp follows __wrap_X.
+  if (symtab.ctx.hasForkObject && !name.ends_with("$tp"))
+    addWrappedSymbol(symtab, saver().save(name + "$tp"), fromDirective);
   Symbol *sym = symtab.findUnderscore(name);
   if (llvm::any_of(symtab.wrapped,
                    [&](const WrappedSymbol &w) { return w.sym == sym; }))

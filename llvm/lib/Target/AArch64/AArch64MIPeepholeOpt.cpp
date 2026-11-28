@@ -71,6 +71,10 @@
 //     its own load of the pointer where the load it has reaches it past
 //     another call, unless that load was hoisted out of the call's loop.
 //
+// 11. Fold the low part of a thread-local's offset into the loads and stores
+//     at offset 0 from it, which the selector folds only in its own block:
+//     %lo = ADDlowTLS %hi, v; LDRXui %x, %lo, 0 ==> LDRXui %x, %hi, v
+//
 //===----------------------------------------------------------------------===//
 
 #include "AArch64ExpandImm.h"
@@ -147,6 +151,7 @@ private:
   bool visitFMOVDr(MachineInstr &MI);
   bool visitUBFMXri(MachineInstr &MI);
   bool visitLOADgot(MachineInstr &MI);
+  bool visitADDlowTLS(MachineInstr &MI);
   bool visitCopy(MachineInstr &MI);
 };
 
@@ -1042,6 +1047,43 @@ bool AArch64MIPeepholeOptImpl::visitLOADgot(MachineInstr &MI) {
   return Changed;
 }
 
+bool AArch64MIPeepholeOptImpl::visitADDlowTLS(MachineInstr &MI) {
+  Register Lo = MI.getOperand(0).getReg(), Hi = MI.getOperand(1).getReg();
+  const MachineOperand &Low = MI.getOperand(2);
+  Align A = Low.getGlobal()->getPointerAlignment(MI.getMF()->getDataLayout());
+  // Every use, through copies, is an access's base at immediate 0 whose
+  // scale the variable's alignment and offset prove, as the selector's fold.
+  SmallVector<Register> Regs = {Lo};
+  SmallVector<MachineInstr *> Accesses;
+  for (unsigned I = 0; I != Regs.size(); ++I)
+    for (MachineOperand &MO : MRI->use_nodbg_operands(Regs[I])) {
+      MachineInstr &Use = *MO.getParent();
+      if (Use.isFullCopy() && Use.getOperand(0).getReg().isVirtual()) {
+        Regs.push_back(Use.getOperand(0).getReg());
+        continue;
+      }
+      int Size = AArch64InstrInfo::getUnscaledLdSt(Use.getOpcode())
+                     ? AArch64InstrInfo::getMemScale(Use)
+                     : 0;
+      if (!Size || MO.getOperandNo() != 1 || !Use.getOperand(2).isImm() ||
+          Use.getOperand(2).getImm() || Low.getOffset() % Size ||
+          A < Size)
+        return false;
+      Accesses.push_back(&Use);
+    }
+  if (!MRI->constrainRegClass(Hi, MRI->getRegClass(Lo)))
+    return false;
+  for (Register R : Regs)
+    MRI->markUsesInDebugValueAsUndef(R);
+  MRI->clearKillFlags(Hi);
+  MRI->replaceRegWith(Lo, Hi);
+  for (MachineInstr *Use : Accesses)
+    Use->getOperand(2).ChangeToGA(Low.getGlobal(), Low.getOffset(),
+                                  Low.getTargetFlags());
+  MI.eraseFromParent();
+  return true;
+}
+
 bool AArch64MIPeepholeOptImpl::run(MachineFunction &MF) {
   TII = static_cast<const AArch64InstrInfo *>(MF.getSubtarget().getInstrInfo());
   TRI = static_cast<const AArch64RegisterInfo *>(
@@ -1059,6 +1101,9 @@ bool AArch64MIPeepholeOptImpl::run(MachineFunction &MF) {
         break;
       case AArch64::LOADgot:
         Changed |= visitLOADgot(MI);
+        break;
+      case AArch64::ADDlowTLS:
+        Changed |= visitADDlowTLS(MI);
         break;
       case AArch64::INSERT_SUBREG:
         Changed |= visitINSERT(MI);

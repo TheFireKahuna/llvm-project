@@ -17,6 +17,7 @@
 #include "llvm/Analysis/ObjCARCUtil.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/CodeGen/ExpandVectorPredication.h"
 #include "llvm/CodeGen/LibcallLoweringInfo.h"
 #include "llvm/CodeGen/Passes.h"
@@ -128,25 +129,53 @@ static bool expandKCFICheck(Function &Intr) {
     uint64_t Type = cast<ConstantInt>(Call->getArgOperand(1))->getZExtValue();
     if (M.getTargetTriple().isX86())
       Type = getX86KCFIType(Type);
-    // A word before the type is a function type prefix's second word, which
-    // the marker instruction after it states: compared as one, the two never
-    // match a prefix without a second word, whatever precedes it.
-    IntegerType *Ty = B.getInt32Ty();
-    if (auto *Marker = mdconst::extract_or_null<ConstantInt>(
-            M.getModuleFlag("function-type-prefix"));
-        Marker && !cast<ConstantInt>(Call->getArgOperand(2))->equalsInt(4)) {
-      Ty = B.getInt64Ty();
-      Type |= getTypePrefixPattern(Marker->getZExtValue(), /*SecondWord=*/true)
-              << 32;
+    int64_t Offset = cast<ConstantInt>(Call->getArgOperand(2))->getSExtValue();
+    auto Load = [&](IntegerType *Ty, int64_t At) {
+      return B.CreateAlignedLoad(
+          Ty, B.CreatePtrAdd(Call->getArgOperand(0), B.getInt64(-At)),
+          Align(1));
+    };
+    auto *Marker = mdconst::extract_or_null<ConstantInt>(
+        M.getModuleFlag("function-type-prefix"));
+    // Under a function type prefix a type's tag says only where the function's
+    // thread-pointer entry is. A word before the type is compared with the 4
+    // bytes after it, which state the words the prefix holds, so the two never
+    // match another prefix, whatever precedes it; the word with the offset of
+    // a thread-pointer entry after it is the prefix's other form.
+    Value *Bad;
+    if (!Marker)
+      Bad = B.CreateICmpNE(Load(B.getInt32Ty(), Offset), B.getInt32(Type));
+    else if (Offset == 4)
+      Bad = B.CreateICmpNE(B.CreateAnd(Load(B.getInt32Ty(), Offset),
+                                       ~uint32_t(COFF::ThreadPointerTypeTag)),
+                           B.getInt32(Type));
+    else
+      Bad = B.CreateICmpNE(
+          Load(B.getInt64Ty(), Offset),
+          B.getInt64(Type | getTypePrefixPattern(Marker->getZExtValue(),
+                                                 COFF::LinkFactVfnType)
+                                << 32));
+    Instruction *Trap =
+        SplitBlockAndInsertIfThen(Bad, Call, /*Unreachable=*/true,
+                                  MDBuilder(Ctx).createUnlikelyBranchWeights());
+    if (Marker && Offset != 4) {
+      BasicBlock *Other = Trap->getParent();
+      BasicBlock *Fail = SplitBlock(Other, Trap);
+      BasicBlock *Word = BasicBlock::Create(Ctx, "", Fail->getParent(), Fail);
+      Other->getTerminator()->eraseFromParent();
+      B.SetInsertPoint(Other);
+      B.CreateCondBr(
+          B.CreateICmpEQ(
+              Load(B.getInt32Ty(), Offset - 4),
+              B.getInt32(uint32_t(getTypePrefixPattern(
+                  Marker->getZExtValue(),
+                  COFF::LinkFactVfnType | COFF::LinkFactThreadPointerEntry)))),
+          Word, Fail);
+      B.SetInsertPoint(Word);
+      B.CreateCondBr(
+          B.CreateICmpEQ(Load(B.getInt32Ty(), Offset + 4), B.getInt32(Type)),
+          Call->getParent(), Fail);
     }
-    Value *Word =
-        B.CreateAlignedLoad(Ty,
-                            B.CreatePtrAdd(Call->getArgOperand(0),
-                                           B.CreateNeg(Call->getArgOperand(2))),
-                            Align(1));
-    Instruction *Trap = SplitBlockAndInsertIfThen(
-        B.CreateICmpNE(Word, ConstantInt::get(Ty, Type)), Call,
-        /*Unreachable=*/true, MDBuilder(Ctx).createUnlikelyBranchWeights());
     B.SetInsertPoint(Trap);
     B.CreateIntrinsic(Intrinsic::trap, {});
     Call->eraseFromParent();

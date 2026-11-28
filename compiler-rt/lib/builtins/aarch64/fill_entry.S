@@ -157,8 +157,6 @@
 
   fill_dll __llvm_fill_dll, __llvm_fill
   fill_dll __llvm_fill_dll_imports, __llvm_fill_imports
-  fill_dll __llvm_fill_dll_threads, __llvm_fill_threads
-  fill_dll __llvm_fill_dll_imports_threads, __llvm_fill_imports_threads
   fill_exe __llvm_fill_exe, __llvm_fill
   fill_exe __llvm_fill_exe_imports, __llvm_fill_imports
   fill_tls __llvm_fill_tls, __llvm_fill

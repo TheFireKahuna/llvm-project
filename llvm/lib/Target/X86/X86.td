@@ -937,7 +937,11 @@ include "X86Schedule.td"
 include "X86InstrInfo.td"
 include "X86SchedPredicates.td"
 
-defm : RemapAllTargetPseudoPointerOperands<x86_ptr_rc>;
+foreach inst = !listremove(PseudosWithPtrOps, [LOAD_THREAD_POINTER]) in
+  def : RemapPointerOperands<inst, x86_ptr_rc>;
+// The check of a thread pointer reloaded from its save slot sets the flags.
+let Defs = [EFLAGS] in
+def : RemapPointerOperands<LOAD_THREAD_POINTER, x86_ptr_rc>;
 
 def X86InstrInfo : InstrInfo;
 

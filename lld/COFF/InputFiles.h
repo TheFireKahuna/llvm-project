@@ -147,8 +147,11 @@ public:
 
   // Enqueues an archive member load for the given symbol. If we've already
   // enqueued a load for the same archive member, this function does nothing,
-  // which ensures that we don't load the same member more than once.
-  void addMember(const Archive::Symbol &sym);
+  // which ensures that we don't load the same member more than once. Returns
+  // whether the member loads, which one the link keeps out does not.
+  bool addMember(const Archive::Symbol &sym);
+  // Keeps the member that defines sym out of the link.
+  void dropMember(const Archive::Symbol &sym);
   // Adds every member not enqueued or added yet, lazily if lazy.
   void addAllMembers(bool lazy);
   // Returns the member that defines the symbol named name, which no link
@@ -158,6 +161,7 @@ public:
 private:
   std::unique_ptr<Archive> file;
   llvm::DenseSet<uint64_t> seen;
+  llvm::DenseSet<uint64_t> dropped;
 };
 
 // A dispatch through a jump table that an object states: its branch, the

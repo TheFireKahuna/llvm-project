@@ -25005,38 +25005,69 @@ static SDValue performConditionalSubCombine(SDNode *N, SelectionDAG &DAG) {
                      ZeroOnTrue ? Diff : X, Sel.getOperand(2), Flags);
 }
 
-// add(x, ADDlow(ADDXri(0, hi), lo)), a thread-local's offset added to a
-// base, as ADDlow(ADDXri(x, hi), lo), so that an access folds the low part.
-static SDValue performAddThreadLocalOffsetCombine(SDNode *N,
-                                                  SelectionDAG &DAG) {
+// add(x, ADDlow(ADDXri(b, hi), lo)), a thread-local's offset: added to a
+// base x where b is zero, as ADDlow(ADDXri(x, hi), lo); a constant x joins
+// both parts' offset, which COFF's high part carries below 4096 only, also
+// past the add(ADDlow, y) of an indexed access that reassociation leaves
+// between them. An access then folds the low part.
+static SDValue
+performAddThreadLocalOffsetCombine(SDNode *N,
+                                   TargetLowering::DAGCombinerInfo &DCI) {
   if (N->getOpcode() != ISD::ADD || N->getValueType(0) != MVT::i64)
     return SDValue();
-  for (unsigned I = 0; I != 2; ++I) {
-    SDValue Low = N->getOperand(I);
+  SelectionDAG &DAG = DCI.DAG;
+  SDLoc DL(N);
+  auto Fold = [&](SDValue Low, SDValue X, bool Join) {
     if (Low.getOpcode() != AArch64ISD::ADDlow || !Low.hasOneUse())
-      continue;
+      return SDValue();
     SDValue Hi = Low.getOperand(0);
     auto *GA = Hi.isMachineOpcode() &&
                        Hi.getMachineOpcode() == AArch64::ADDXri &&
-                       Hi.hasOneUse() && isNullConstant(Hi.getOperand(0))
+                       Hi.hasOneUse()
                    ? dyn_cast<GlobalAddressSDNode>(Hi.getOperand(1))
                    : nullptr;
     if (!GA || !(GA->getTargetFlags() & AArch64II::MO_TLS))
-      continue;
-    SDLoc DL(N);
-    SDValue NewHi = SDValue(
-        DAG.getMachineNode(AArch64::ADDXri, DL, MVT::i64, N->getOperand(1 - I),
-                           Hi.getOperand(1), Hi.getOperand(2)),
-        0);
+      return SDValue();
+    SDValue Base = Hi.getOperand(0);
+    int64_t Offset = GA->getOffset();
+    auto *C = dyn_cast<ConstantSDNode>(X);
+    if (C && isUInt<12>(Offset + C->getSExtValue()))
+      Offset += C->getSExtValue();
+    else if (!Join && isNullConstant(Base))
+      Base = X;
+    else
+      return SDValue();
+    auto Part = [&](SDValue Op) {
+      return DAG.getTargetGlobalAddress(
+          GA->getGlobal(), DL, MVT::i64, Offset,
+          cast<GlobalAddressSDNode>(Op)->getTargetFlags());
+    };
+    SDValue NewHi =
+        SDValue(DAG.getMachineNode(AArch64::ADDXri, DL, MVT::i64, Base,
+                                   Part(Hi.getOperand(1)), Hi.getOperand(2)),
+                0);
     return DAG.getNode(AArch64ISD::ADDlow, DL, MVT::i64, NewHi,
-                       Low.getOperand(1));
+                       Part(Low.getOperand(1)));
+  };
+  for (unsigned I = 0; I != 2; ++I) {
+    SDValue Op = N->getOperand(I), X = N->getOperand(1 - I);
+    if (SDValue Folded = Fold(Op, X, false))
+      return Folded;
+    // The add of a constant above an ADDlow formed here is revisited.
+    if (Op.getOpcode() == AArch64ISD::ADDlow && N->hasOneUse())
+      DCI.AddToWorklist(*N->user_begin());
+    if (Op.getOpcode() == ISD::ADD && Op.hasOneUse() && isa<ConstantSDNode>(X))
+      for (unsigned J = 0; J != 2; ++J)
+        if (SDValue Folded = Fold(Op.getOperand(J), X, true))
+          return DAG.getNode(ISD::ADD, DL, MVT::i64, Folded,
+                             Op.getOperand(1 - J));
   }
   return SDValue();
 }
 
 static SDValue performAddSubCombine(SDNode *N,
                                     TargetLowering::DAGCombinerInfo &DCI) {
-  if (SDValue Val = performAddThreadLocalOffsetCombine(N, DCI.DAG))
+  if (SDValue Val = performAddThreadLocalOffsetCombine(N, DCI))
     return Val;
   // Try to change sum of two reductions.
   if (SDValue Val = performAddAddCombine(N, DCI.DAG))
@@ -34330,9 +34361,28 @@ AArch64TargetLowering::EmitKCFICheck(MachineBasicBlock &MBB,
     llvm_unreachable("Unexpected CFI call opcode");
   }
 
-  const MachineOperand &Target = MBBI->getOperand(0);
-  return BuildMI(MBB, MBBI, MBBI->getDebugLoc(), TII->get(AArch64::KCFI_CHECK))
-      .addReg(Target.isReg() ? Target.getReg() : Register(AArch64::X9))
+  MachineOperand &Target = MBBI->getOperand(0);
+  Register TargetReg = Target.isReg() ? Target.getReg() : Register(AArch64::X9);
+  MCRegister TP = getThreadPointerRegister();
+  if (!TP || !MBBI->readsRegister(TP, /*TRI=*/nullptr))
+    return BuildMI(MBB, MBBI, MBBI->getDebugLoc(),
+                   TII->get(AArch64::KCFI_CHECK))
+        .addReg(TargetReg)
+        .addImm(MBBI->getCFIType())
+        .getInstr();
+  // A call that passes the thread pointer goes where the check leaves it: in
+  // the target's register, unless the call preserves that, and then in X9.
+  Register Dest = TargetReg;
+  if (!MBBI->isReturn() &&
+      any_of(MBBI->operands(), [&](const MachineOperand &MO) {
+        return MO.isRegMask() && !MO.clobbersPhysReg(TargetReg);
+      })) {
+    Dest = AArch64::X9;
+    Target.setReg(Dest);
+  }
+  return BuildMI(MBB, MBBI, MBBI->getDebugLoc(),
+                 TII->get(AArch64::KCFI_CHECK_TP), Dest)
+      .addReg(TargetReg)
       .addImm(MBBI->getCFIType())
       .getInstr();
 }

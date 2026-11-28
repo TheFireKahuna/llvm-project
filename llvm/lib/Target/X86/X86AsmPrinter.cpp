@@ -455,10 +455,9 @@ void X86AsmPrinter::emitFunctionBodyStart() {
 void X86AsmPrinter::emitFunctionBodyEnd() {
   if (ThreadPointerCheckFail) {
     OutStreamer->emitLabel(ThreadPointerCheckFail);
-    EmitAndCountInstruction(
-        MCInstBuilder(X86::MOV32ri)
-            .addReg(X86::ECX)
-            .addImm(COFF::TP::ThreadPointerCheckFailure));
+    EmitAndCountInstruction(MCInstBuilder(X86::MOV32ri)
+                                .addReg(X86::ECX)
+                                .addImm(COFF::TP::ThreadPointerCheckFailure));
     EmitAndCountInstruction(MCInstBuilder(X86::INT).addImm(0x29));
     ThreadPointerCheckFail = nullptr;
   }
@@ -630,20 +629,27 @@ void X86AsmPrinter::emitKCFITypeId(const GlobalObject &F) {
   // Embed the type hash in the X86::MOV32ri instruction to avoid special
   // casing object file parsers. The instruction is 5 bytes long.
   const Module *M = F.getParent();
+  const GlobalValue *TPEntry = nullptr;
   if (const ConstantInt *Marker = getFunctionTypePrefixMarker(F)) {
     // In a function type prefix a 7-byte nopl precedes the move, with the
     // marker as its displacement, so that the 8 bytes before the type are
-    // fixed. A function that can fill a vtable slot carries a second type
-    // before them, which the nopl states by its base register. The symbol
-    // follows the padding and so marks the prefix's start.
-    const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
-    EmitKCFITypePadding(F, VfnMD ? 16 : 12);
+    // fixed. Words before them, the second type of a function that can fill a
+    // vtable slot and the offset of the entry that is passed the thread
+    // pointer, are stated by the nopl's base register. The symbol follows the
+    // padding and so marks the prefix's start.
+    unsigned Words = getTypePrefixWords(F, &TPEntry);
+    EmitKCFITypePadding(F, 12 + 4 * llvm::popcount(Words));
     OutStreamer->emitLabel(FnSym);
-    if (VfnMD)
+    if (const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type"))
       OutStreamer->emitInt32(MaskKCFIType(
           mdconst::extract<ConstantInt>(VfnMD->getOperand(0))->getZExtValue()));
+    if (TPEntry)
+      emitThreadPointerEntryOffset(
+          TPEntry, 16 + cast<Function>(F).getFnAttributeAsParsedInteger(
+                            "patchable-function-prefix"));
+    const MCPhysReg Bases[] = {X86::RAX, X86::RCX, X86::RDX, X86::RBX};
     MCInst Nop = MCInstBuilder(X86::NOOPL)
-                     .addReg(VfnMD ? X86::RCX : X86::RAX)
+                     .addReg(Bases[Words])
                      .addImm(1)
                      .addReg(X86::NoRegister)
                      .addImm(static_cast<int32_t>(Marker->getZExtValue()))
@@ -688,10 +694,12 @@ void X86AsmPrinter::emitKCFITypeId(const GlobalObject &F) {
     DestReg = ArityToRegMap[Arity];
   }
 
-  OutStreamer->emitInstruction(MCInstBuilder(X86::MOV32ri)
-                                   .addReg(DestReg)
-                                   .addImm(MaskKCFIType(Type->getZExtValue())),
-                               *Subtarget);
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::MOV32ri)
+          .addReg(DestReg)
+          .addImm(MaskKCFIType(Type->getZExtValue()) |
+                  (TPEntry ? COFF::ThreadPointerTypeTag : 0)),
+      *Subtarget);
 
   if (MAI.hasDotTypeDotSizeDirective()) {
     MCSymbol *EndSym = OutContext.createTempSymbol("cfi_func_end");

@@ -890,7 +890,7 @@ static bool referencesStub(const SectionChunk *sc, uint16_t type,
 void SectionChunk::applyRelocation(uint8_t *off, const coff_relocation &rel,
                                    uint32_t offset, const Relocation *r) const {
   // ABSOLUTE writes nothing; a PAIR is applied with the relocation before it.
-  // The scan rewrites a TLS_SCALE site, which only an object that LLVM made
+  // The scan rewrites a TLS_BASE site, which only an object that LLVM made
   // for Windows Itanium or NT-POSIX may hold.
   COFFLinkerContext &ctx = file->symtab.ctx;
   if (relocationNamesNoSymbol(rel.Type)) {
@@ -1024,8 +1024,11 @@ void SectionChunk::applyRelocation(uint8_t *off, const coff_relocation &rel,
               << " is out of range";
 
   // Code of the model reaches its thread-locals through the thread pointer;
-  // _tls_used's index field names _tls_index as data.
+  // _tls_used's index field names _tls_index as data. A local's name is read
+  // lazily, which sections written in parallel may not do.
+  auto *d = dyn_cast<DefinedCOFF>(sym);
   if (file->tlsModel && (header->Characteristics & IMAGE_SCN_CNT_CODE) &&
+      (!d || d->getCOFFSymbol().isExternal()) &&
       sym->getName() == "_tls_index") {
     Err(ctx) << file << ": code of the " << ctx.tlsRuntime()
              << " thread-local model names _tls_index; its thread-locals are "
@@ -1861,6 +1864,21 @@ void AbsolutePointerChunk::writeTo(uint8_t *buf) const {
 
 MachineTypes AbsolutePointerChunk::getMachine() const { return symtab.machine; }
 
+void TlsOffsetChunk::writeTo(uint8_t *buf) const {
+  // The offset from the start of the loader's template, which a foreign
+  // object's .tls groups make, whether or not an input bounds it.
+  auto *d = dyn_cast<DefinedRegular>(var);
+  SectionChunk *sc = d ? d->getChunk() : nullptr;
+  std::optional<uint64_t> offset;
+  if (sc && !sc->file->tlsModel && ctx.tlsLoader[0] &&
+      sc->getSectionName().split('$').first == ".tls")
+    offset = d->getRVA() - ctx.tlsLoader[0]->getRVA();
+  if (!offset)
+    Err(ctx) << "/export:" << var->getName()
+             << ",THREAD_DATA names no thread-local variable";
+  write32le(buf, offset.value_or(0));
+}
+
 void ECExportThunkChunk::writeTo(uint8_t *buf) const {
   memcpy(buf, ECExportThunkCode, sizeof(ECExportThunkCode));
   write32le(buf + 10, target->getRVA() - rva - 14);
@@ -2066,7 +2084,7 @@ OverrideThunk::OverrideThunk(COFFLinkerContext &ctx, StringRef key,
   uint32_t m = 0, n = 0;
   if (typeId && !marker.getAsInteger(16, m) && !nops.getAsInteger(10, n)) {
     prefix.resize(12);
-    write64le(prefix.data(), getTypePrefixPattern(m, /*SecondWord=*/false));
+    write64le(prefix.data(), getTypePrefixPattern(m, /*Words=*/0));
     write32le(prefix.data() + 8, *typeId);
     for (; n; --n)
       if (getMachine() == AMD64)

@@ -152,6 +152,8 @@ bool Undefined::resolveWeakAlias() {
   // are dealing with and copy the correct number of bytes.
   StringRef name = getName();
   unsigned kind = weakKind;
+  // Whether the name's address is an import is the name's own.
+  bool imported = addressImported;
   if (isa<DefinedRegular>(d))
     memcpy(this, d, sizeof(DefinedRegular));
   else if (isa<DefinedAbsolute>(d))
@@ -162,6 +164,7 @@ bool Undefined::resolveWeakAlias() {
   nameData = name.data();
   nameSize = name.size();
   weakKind = kind;
+  addressImported = imported;
   return true;
 }
 

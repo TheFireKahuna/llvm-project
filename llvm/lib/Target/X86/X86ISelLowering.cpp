@@ -27077,9 +27077,10 @@ static SDValue recoverFramePointer(SelectionDAG &DAG, const Function *Fn,
   SDLoc dl;
 
   // It's possible that the parent function no longer has a personality function
-  // if the exceptional code was optimized away, in which case we just return
-  // the incoming EBP.
-  if (!Fn->hasPersonalityFn())
+  // if the exceptional code was optimized away, or has one that keeps no SEH
+  // table, in which case we just return the incoming EBP.
+  if (!Fn->hasPersonalityFn() ||
+      !isAsynchronousEHPersonality(classifyEHPersonality(Fn->getPersonalityFn())))
     return EntryEBP;
 
   // Get an MCSymbol that will ultimately resolve to the frame offset of the EH
@@ -65882,7 +65883,24 @@ X86TargetLowering::EmitKCFICheck(MachineBasicBlock &MBB,
     break;
   }
 
-  return BuildMI(MBB, MBBI, MIMetadata(*MBBI), TII->get(X86::KCFI_CHECK))
+  MCRegister TP = getThreadPointerRegister();
+  if (!TP || !MBBI->readsRegister(TP, /*TRI=*/nullptr))
+    return BuildMI(MBB, MBBI, MIMetadata(*MBBI), TII->get(X86::KCFI_CHECK))
+        .addReg(TargetReg)
+        .addImm(MBBI->getCFIType())
+        .getInstr();
+  // A call that passes the thread pointer goes where the check leaves it: in
+  // the target's register, unless the call preserves that, and then in R11.
+  Register Dest = TargetReg;
+  if (!MBBI->isReturn() &&
+      any_of(MBBI->operands(), [&](const MachineOperand &MO) {
+        return MO.isRegMask() && !MO.clobbersPhysReg(TargetReg);
+      })) {
+    Dest = X86::R11;
+    Target.setReg(Dest);
+  }
+  return BuildMI(MBB, MBBI, MIMetadata(*MBBI), TII->get(X86::KCFI_CHECK_TP),
+                 Dest)
       .addReg(TargetReg)
       .addImm(MBBI->getCFIType())
       .getInstr();

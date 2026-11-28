@@ -1718,6 +1718,20 @@ void AsmPrinter::emitKCFITypeId(const GlobalObject &GO) {
                        mdconst::extract<ConstantInt>(MD->getOperand(0)));
 }
 
+void AsmPrinter::emitThreadPointerEntryOffset(const GlobalValue *TPEntry,
+                                              int64_t Distance) {
+  MCSymbol *Word = OutContext.createTempSymbol();
+  OutStreamer->emitLabel(Word);
+  OutStreamer->emitValue(
+      MCBinaryExpr::createSub(
+          MCSymbolRefExpr::create(getSymbol(TPEntry), OutContext),
+          MCBinaryExpr::createAdd(MCSymbolRefExpr::create(Word, OutContext),
+                                  MCConstantExpr::create(Distance, OutContext),
+                                  OutContext),
+          OutContext),
+      4);
+}
+
 void AsmPrinter::emitPseudoProbe(const MachineInstr &MI) {
   if (PP) {
     auto GUID = MI.getOperand(0).getImm();
@@ -5888,6 +5902,10 @@ void AsmPrinter::findDerivedReads(
     uint8_t Code;
     const MachineInstr *Load;
   };
+  // Loads of one pointer give one record's chains.
+  auto SamePointer = [](const MachineInstr *A, const MachineInstr *B) {
+    return A == B || (A && B && A->isIdenticalTo(*B, MachineInstr::IgnoreDefs));
+  };
   auto IsKey = [](const MachineInstr &Load) {
     return any_of(Load.operands(), [](const MachineOperand &MO) {
       return MO.isGlobal() && MO.getGlobal()->getName() == COFF::TP::Key;
@@ -5913,6 +5931,32 @@ void AsmPrinter::findDerivedReads(
         }) == 1)
       Heads.push_back({Head, {Head, 0, Key, Fused.Load}});
   }
+  // Whether Reg holds at Use what it held before From, through which every
+  // path to Use passes, but for what Chain's instructions write, which the
+  // chain's relaxation to $tpoff words deletes or makes the thread pointer.
+  auto HoldsSince = [&](Register Reg, const MachineInstr &From,
+                        const MachineInstr &Use, const auto &Chain) {
+    SmallVector<const MachineBasicBlock *, 8> Work;
+    SmallPtrSet<const MachineBasicBlock *, 8> Seen;
+    const MachineBasicBlock *Block = Use.getParent();
+    for (MachineBasicBlock::const_reverse_iterator I =
+             std::next(Use.getReverseIterator());
+         ; I = Block->rbegin()) {
+      for (; I != Block->rend() && &*I != &From; ++I)
+        if (!Chain.contains(&*I) && I->modifiesRegister(Reg, TRI))
+          return false;
+      if (I == Block->rend()) {
+        if (Block->pred_empty())
+          return false;
+        for (const MachineBasicBlock *Pred : Block->predecessors())
+          if (Seen.insert(Pred).second)
+            Work.push_back(Pred);
+      }
+      if (Work.empty())
+        return true;
+      Block = Work.pop_back_val();
+    }
+  };
   // A key is stated where it meets a chain that is.
   std::stable_partition(Heads.begin(), Heads.end(),
                         [&](const auto &H) { return H.second.Code != Key; });
@@ -5925,9 +5969,10 @@ void AsmPrinter::findDerivedReads(
     SmallPtrSet<const MachineInstr *, 8> Seen;
     SmallVector<MachineInstr *, 4> DebugValues;
     // The thread pointer that the direct arm adds the place to, and the
-    // accesses that read it.
+    // accesses.
     Register Tp;
-    SmallVector<const MachineInstr *, 4> OnTp;
+    const MachineInstr *Direct = nullptr;
+    SmallVector<const MachineInstr *, 4> Accesses;
     bool Whole = true;
     while (!Work.empty() && Whole) {
       Value V = Work.pop_back_val();
@@ -5936,17 +5981,14 @@ void AsmPrinter::findDerivedReads(
           *V.Def, DebugValues,
           [&](MachineInstr &I) {
             // The base is read by indexes of the variable's offset or of its
-            // guard's, as their registers' second addend or their first, of
-            // which those that also read the thread pointer the base was
-            // formed from say so.
+            // guard's, as their registers' second addend or their first.
             if (V.Code == End) {
               FusedSite Fused = FusedSites.lookup(&I);
               Whole &= Fused.Use == COFF::FusedUse::Index &&
-                       Fused.Load == V.Load &&
+                       SamePointer(Fused.Load, V.Load) &&
                        COFF::getTlsRecordWordSize(Fused.Index &
                                                   ~COFF::SiteFactViaFirst) == 4;
-              if (Tp && I.readsRegister(Tp, TRI))
-                OnTp.push_back(&I);
+              Accesses.push_back(&I);
               return;
             }
             SmallVector<Register, 3> Sources;
@@ -5955,8 +5997,10 @@ void AsmPrinter::findDerivedReads(
                 Sources.push_back(MO.getReg());
             bool ViaFirst =
                 Sources.size() > 1 && TRI->regsOverlap(Sources.front(), Reg);
-            if (V.Code == Place && !I.mayLoad() && Sources.size() == 2 && !Tp)
+            if (V.Code == Place && !I.mayLoad() && Sources.size() == 2 && !Tp) {
               Tp = Sources[ViaFirst];
+              Direct = &I;
+            }
             if (I.mayStore() || I.isCall() || I.isInlineAsm() ||
                 Sources.empty()) {
               Whole = false;
@@ -5977,6 +6021,8 @@ void AsmPrinter::findDerivedReads(
                           : V.Code == Place ? (I.mayLoad() ? Wide : Base)
                           : V.Code == Base  ? (I.mayLoad() ? Wide : End)
                                             : Wide;
+            // The base is formed apart from its addends.
+            Whole &= Out != Base || !I.getOperand(0).isTied();
             Work.push_back({&I, 0, Out, V.Load});
           },
           V.DefOp);
@@ -5986,7 +6032,8 @@ void AsmPrinter::findDerivedReads(
         Dropped.insert(Head);
         FusedSites.erase(Head);
         for (auto &[MI, Fused] : FusedSites)
-          if (Fused.Load == First.Load && Fused.Use == COFF::FusedUse::Access &&
+          if (SamePointer(Fused.Load, First.Load) &&
+              Fused.Use == COFF::FusedUse::Access &&
               GetWord(*Fused.Load, *MI) == 0)
             Fused.IndexedRead = false;
       }
@@ -5995,8 +6042,11 @@ void AsmPrinter::findDerivedReads(
     for (auto &[I, R] : Reads)
       if (First.Code != Key || DerivedReads.contains(I))
         append_range(DerivedReads[I], R);
-    for (const MachineInstr *I : OnTp)
-      FusedSites[I].ReadsThreadPointer = true;
+    // An access where the thread pointer the base was formed from is still
+    // in its register names that register.
+    for (const MachineInstr *I : Accesses)
+      if (Tp && HoldsSince(Tp, *Direct, *I, Reads))
+        FusedSites[I].ThreadPointer = TRI->getEncodingValue(Tp);
   }
 }
 
@@ -6156,8 +6206,9 @@ void AsmPrinter::emitFusedSite(const FusedSite &Site, const MCSymbol *Pointer) {
     OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndex, Site.Index);
   else if (Site.IndexedRead)
     OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndexedRead, 0);
-  if (Site.ReadsThreadPointer)
-    OutStreamer->emitCOFFSiteFact(COFF::SiteFactThreadPointer, 0);
+  if (Site.ThreadPointer >= 0)
+    OutStreamer->emitCOFFSiteFact(COFF::SiteFactThreadPointer,
+                                  Site.ThreadPointer);
   if (Site.ValueOnly && Pointer)
     OutStreamer->emitCOFFSiteFact(Site.ValueOnly, 0);
 }

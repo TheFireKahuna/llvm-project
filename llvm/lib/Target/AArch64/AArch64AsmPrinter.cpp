@@ -952,12 +952,12 @@ void AArch64AsmPrinter::emitKCFITypeId(const GlobalObject &F) {
   const MDNode *MD = F.getMetadata(LLVMContext::MD_kcfi_type);
 
   // A function type prefix holds the bytes x86 emits: the pattern with the
-  // marker, then the type, 12 bytes, after the second type of a function that
-  // can fill a vtable slot. Nops before it align the entry to 16 bytes, where
-  // Control Flow Guard can make a target valid alone, and the symbol marks the
-  // prefix's start, as on x86.
-  const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type");
-  unsigned PrefixBytes = VfnMD ? 16 : 12;
+  // marker, then the type, 12 bytes, after the words before them. Nops before
+  // it align the entry to 16 bytes, where Control Flow Guard can make a target
+  // valid alone, and the symbol marks the prefix's start, as on x86.
+  const GlobalValue *TPEntry;
+  unsigned Words = getTypePrefixWords(F, &TPEntry);
+  unsigned PrefixBytes = 12 + 4 * llvm::popcount(Words);
   emitAlignment(Align(16));
   // Nothing runs into an ifunc's stub.
   if (const auto *Fn = dyn_cast<Function>(&F))
@@ -970,16 +970,22 @@ void AArch64AsmPrinter::emitKCFITypeId(const GlobalObject &F) {
     OutStreamer->emitZeros(offsetToAlignment(PrefixBytes, Align(16)));
   OutStreamer->emitLabel(
       OutContext.getOrCreateSymbol("__cfi_" + getSymbol(&F)->getName()));
-  if (VfnMD)
+  if (const MDNode *VfnMD = F.getMetadata("kcfi_vfn_type"))
     OutStreamer->emitInt32(
         mdconst::extract<ConstantInt>(VfnMD->getOperand(0))->getZExtValue());
-  OutStreamer->emitInt64(getTypePrefixPattern(Marker->getZExtValue(), VfnMD));
+  if (TPEntry)
+    emitThreadPointerEntryOffset(
+        TPEntry, 16 + 4 * cast<Function>(F).getFnAttributeAsParsedInteger(
+                              "patchable-function-prefix"));
+  OutStreamer->emitInt64(getTypePrefixPattern(Marker->getZExtValue(), Words));
   OutStreamer->emitInt32(
-      mdconst::extract<ConstantInt>(MD->getOperand(0))->getZExtValue());
+      mdconst::extract<ConstantInt>(MD->getOperand(0))->getZExtValue() |
+      (TPEntry ? COFF::ThreadPointerTypeTag : 0));
 }
 
 void AArch64AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
-  Register AddrReg = MI.getOperand(0).getReg();
+  bool TP = MI.getOpcode() == AArch64::KCFI_CHECK_TP;
+  Register AddrReg = MI.getOperand(TP).getReg();
 #ifndef NDEBUG
   // A tail call's epilogue may lie between the check and the call.
   const MachineInstr &Call = *find_if(
@@ -989,7 +995,7 @@ void AArch64AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
       });
   assert(Call.isCall() && "KCFI_CHECK not followed by a call instruction");
   assert((!Call.getOperand(0).isReg() ||
-          Call.getOperand(0).getReg() == AddrReg) &&
+          Call.getOperand(0).getReg() == MI.getOperand(0).getReg()) &&
          "KCFI_CHECK call target doesn't match call operand");
 #endif
 
@@ -1029,16 +1035,26 @@ void AArch64AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
   }
 
   // Load the expected type hash.
-  const int64_t Type = MI.getOperand(1).getImm();
+  const int64_t Type = MI.getOperand(TP + 1).getImm();
   emitMOVK(ScratchRegs[1], Type & 0xFFFF, 0);
   emitMOVK(ScratchRegs[1], (Type >> 16) & 0xFFFF, 16);
 
-  // Compare the hashes and trap if there's a mismatch.
-  EmitToStreamer(*OutStreamer, MCInstBuilder(AArch64::SUBSWrs)
-                                   .addReg(AArch64::WZR)
-                                   .addReg(ScratchRegs[0])
-                                   .addReg(ScratchRegs[1])
-                                   .addImm(0));
+  // Compare the hashes and trap if there's a mismatch. The tag of a prefix
+  // that holds a thread-pointer entry's offset is bit 31, which a compare of
+  // the difference shifted left by one leaves out.
+  if (TP)
+    EmitToStreamer(*OutStreamer, MCInstBuilder(AArch64::EORWrs)
+                                     .addReg(ScratchRegs[0])
+                                     .addReg(ScratchRegs[0])
+                                     .addReg(ScratchRegs[1])
+                                     .addImm(0));
+  EmitToStreamer(
+      *OutStreamer,
+      MCInstBuilder(AArch64::SUBSWrs)
+          .addReg(AArch64::WZR)
+          .addReg(TP ? unsigned(AArch64::WZR) : ScratchRegs[0])
+          .addReg(ScratchRegs[TP ? 0 : 1])
+          .addImm(TP ? AArch64_AM::getShifterImm(AArch64_AM::LSL, 1) : 0));
 
   MCSymbol *Pass = OutContext.createTempSymbol();
   EmitToStreamer(*OutStreamer,
@@ -1068,8 +1084,48 @@ void AArch64AsmPrinter::LowerKCFI_CHECK(const MachineInstr &MI) {
   assert(AddrIndex < 31 && TypeIndex < 31);
 
   unsigned ESR = 0x8000 | ((TypeIndex & 31) << 5) | (AddrIndex & 31);
+  MCSymbol *Trap = TP ? OutContext.createTempSymbol() : nullptr;
+  if (Trap)
+    OutStreamer->emitLabel(Trap);
   EmitToStreamer(*OutStreamer, MCInstBuilder(AArch64::BRK).addImm(ESR));
   OutStreamer->emitLabel(Pass);
+  if (!TP)
+    return;
+
+  // The call goes to the target plus the offset in its prefix where it is
+  // tagged, and the prefix states that it holds one.
+  Register Dest = MI.getOperand(0).getReg();
+  Register Offset = getXRegFromWReg(ScratchRegs[1]);
+  int64_t PrefixBytes =
+      4 * MI.getMF()->getFunction().getFnAttributeAsParsedInteger(
+              "patchable-function-prefix");
+  if (Dest != AddrReg)
+    emitMovXReg(Dest, AddrReg);
+  MCSymbol *Untagged = OutContext.createTempSymbol();
+  EmitToStreamer(*OutStreamer,
+                 MCInstBuilder(AArch64::TBZW)
+                     .addReg(ScratchRegs[0])
+                     .addImm(31)
+                     .addExpr(MCSymbolRefExpr::create(Untagged, OutContext)));
+  EmitToStreamer(*OutStreamer, MCInstBuilder(AArch64::LDURBBi)
+                                   .addReg(ScratchRegs[1])
+                                   .addReg(AddrReg)
+                                   .addImm(-(PrefixBytes + 10)));
+  EmitToStreamer(*OutStreamer,
+                 MCInstBuilder(AArch64::TBZW)
+                     .addReg(ScratchRegs[1])
+                     .addImm(1)
+                     .addExpr(MCSymbolRefExpr::create(Trap, OutContext)));
+  EmitToStreamer(*OutStreamer, MCInstBuilder(AArch64::LDURSWi)
+                                   .addReg(Offset)
+                                   .addReg(AddrReg)
+                                   .addImm(-(PrefixBytes + 16)));
+  EmitToStreamer(*OutStreamer, MCInstBuilder(AArch64::ADDXrs)
+                                   .addReg(Dest)
+                                   .addReg(Dest)
+                                   .addReg(Offset)
+                                   .addImm(0));
+  OutStreamer->emitLabel(Untagged);
 }
 
 void AArch64AsmPrinter::LowerHWASAN_CHECK_MEMACCESS(const MachineInstr &MI) {
@@ -4394,6 +4450,7 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
     return LowerPATCHABLE_EVENT_CALL(*MI, true);
 
   case AArch64::KCFI_CHECK:
+  case AArch64::KCFI_CHECK_TP:
     LowerKCFI_CHECK(*MI);
     return;
 

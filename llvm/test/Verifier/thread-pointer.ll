@@ -23,3 +23,13 @@ define void @musttail(ptr %p) {
   musttail call void @g() [ "threadpointer"(ptr %p) ]
   ret void
 }
+
+; CHECK: a function comes by its thread pointer in one way
+define void @two_ways() "thread-pointer-argument" "no-thread-pointer" {
+  ret void
+}
+
+; CHECK: 'thread-pointer-refusal' requires an integer return type
+define void @refusal_void() "thread-pointer-refusal" {
+  ret void
+}

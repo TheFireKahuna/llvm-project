@@ -3,7 +3,9 @@
 ;; A declaration that names its alternate is a weak external of it, which LTO
 ;; does not link: the link binds it to the alternate wherever that is and
 ;; keeps the alternate from internalization. A destructor whose base
-;; destructor another unit defines is such a declaration.
+;; destructor another unit defines is such a declaration. One passed the
+;; thread pointer falls back to the alternate's entry of the same kind, and
+;; its plain entry, which the bitcode does not list, is exported with it.
 
 ; RUN: rm -rf %t && split-file %s %t && cd %t
 ; RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium %S/Inputs/fill-entry.s -o fill-x86_64.obj
@@ -20,11 +22,21 @@
 ; RUN: %{run}
 
 ; CHECK:      Name: c{{$}}
+; CHECK-NEXT: RVA: [[C:0x[0-9A-F]+]]
+; CHECK:      Name: e{{$}}
+; CHECK-NEXT: RVA: [[RVA:0x[0-9A-F]+]]
+; CHECK:      Name: e$tp
+; CHECK-NEXT: RVA: [[RVA]]
 
 ;--- main.ll
 declare extern_weak dllexport i32 @c() "weak-alternate"="b"
+declare extern_weak dllexport i32 @e() "thread-pointer-argument" "weak-alternate"="d"
 
 ;--- base.ll
 define i32 @b() {
   ret i32 6
+}
+
+define i32 @d() "thread-pointer-argument" "thread-pointer-unused" {
+  ret i32 7
 }

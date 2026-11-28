@@ -1555,6 +1555,10 @@ public:
   /// \param Attrs [out] - On return, the attribute list to use.
   /// \param CallingConv [out] - On return, the LLVM calling convention to use.
   /// \param AttrOnCallSite - Whether or not the attributes are on a call site
+  /// Whether a function of the C convention that \p FD, if any, declares is
+  /// passed its thread pointer: on NT-POSIX, any but a foreign one.
+  bool isPassedThreadPointer(const FunctionDecl *FD = nullptr) const;
+
   void ConstructAttributeList(StringRef Name, const CGFunctionInfo &Info,
                               CGCalleeInfo CalleeInfo,
                               llvm::AttributeList &Attrs, unsigned &CallingConv,

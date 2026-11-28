@@ -173,8 +173,12 @@ void Mangler::getNameWithPrefix(raw_ostream &OS, const GlobalValue *GV,
   getNameWithPrefixImpl(OS, Name, PrefixTy, DL, Prefix);
 
   // A function that is passed its thread pointer says so in its symbol, so
-  // that a reference which passes none never binds it.
-  if (const auto *F = dyn_cast_or_null<Function>(GV->getAliaseeObject());
+  // that a reference which passes none never binds it. An ifunc's resolver
+  // says it for the ifunc.
+  const GlobalObject *GO = GV->getAliaseeObject();
+  if (const auto *GI = dyn_cast_or_null<GlobalIFunc>(GO))
+    GO = GI->getResolverFunction();
+  if (const auto *F = dyn_cast_or_null<Function>(GO);
       F && !Name.starts_with("\01") &&
       F->hasFnAttribute("thread-pointer-argument"))
     OS << "$tp";
@@ -297,6 +301,20 @@ const ConstantInt *llvm::getFunctionTypePrefixMarker(const GlobalObject &F) {
       M->getModuleFlag("function-type-prefix"));
 }
 
+unsigned llvm::getTypePrefixWords(const GlobalObject &F,
+                                  const GlobalValue **TPEntry) {
+  const auto *Fn = dyn_cast<Function>(&F);
+  const GlobalValue *Entry =
+      Fn && Fn->getName().starts_with("\01") &&
+              Fn->hasFnAttribute("thread-pointer-plain-entry")
+          ? Fn->getParent()->getNamedValue(Fn->getName().drop_front())
+          : nullptr;
+  if (TPEntry)
+    *TPEntry = Entry;
+  return (F.hasMetadata("kcfi_vfn_type") ? COFF::LinkFactVfnType : 0) |
+         (Entry ? COFF::LinkFactThreadPointerEntry : 0);
+}
+
 // Whether GV is a name of a vague entity: a definition that each unit that
 // needs it emits, in a COMDAT that the link chooses among, and of which a
 // process has one. So is every alias of one and whatever shares its COMDAT, a
@@ -356,9 +374,7 @@ void llvm::emitLinkFactsForGlobalCOFF(
 
   if (auto *F = dyn_cast<GlobalObject>(GV);
       F && getFunctionTypePrefixMarker(*F))
-    Fact(COFF::LinkFactTypePrefix,
-         {F->hasMetadata("kcfi_vfn_type") ? COFF::LinkFactVfnType
-                                          : COFF::LinkFactNoSecondWord});
+    Fact(COFF::LinkFactTypePrefix, {getTypePrefixWords(*F)});
 
   // A function that a program replaces for every image says so under each of
   // its names, as does a definition that replaces one. A default's own name

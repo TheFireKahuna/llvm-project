@@ -283,6 +283,13 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
       }
     if (Read || IsTest)
       MovingSections.insert(getCurrentSectionOnly());
+    // A xor or sub of a register from itself reads nothing of it.
+    if ((Opcode == X86::XOR32rr || Opcode == X86::XOR64rr ||
+         Opcode == X86::SUB32rr || Opcode == X86::SUB64rr) &&
+        Inst.getOperand(1).getReg() == Inst.getOperand(2).getReg())
+      for (MCRegUnit Unit :
+           getContext().getRegisterInfo()->regunits(Inst.getOperand(1).getReg()))
+        RunWrites.erase(static_cast<unsigned>(Unit));
     Marker = checkFused(Inst, Use, RegOp, Load, Read || IsTest);
   }
   // The field of a fused read holds twice the length of the instruction after

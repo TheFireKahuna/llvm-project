@@ -173,8 +173,8 @@ public:
   bool isAntiDep() const { return weakKind == AntiDependency; }
 
   // The type prefix that a link fact gives the function: 0 for none, or 1
-  // and the llvm::COFF::LinkFactSecondWord of the prefix.
-  unsigned typePrefix : 2;
+  // and the set of llvm::COFF::LinkFactPrefixWord that the prefix holds.
+  unsigned typePrefix : 3;
 
   // The greatest llvm::COFF::LinkFactVisibilityState that a link fact states
   // for the symbol, so one from Protected on is of a symbol that no other

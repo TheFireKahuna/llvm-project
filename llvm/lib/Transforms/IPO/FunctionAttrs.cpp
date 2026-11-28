@@ -24,6 +24,7 @@
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/BasicAliasAnalysis.h"
+#include "llvm/Analysis/BlockFrequencyInfo.h"
 #include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/CGSCCPassManager.h"
 #include "llvm/Analysis/CallGraph.h"
@@ -60,6 +61,7 @@
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
 #include "llvm/Transforms/Utils/Local.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 #include <cassert>
 #include <iterator>
 #include <map>
@@ -1959,28 +1961,30 @@ static bool InstrBreaksNoSync(Instruction &I, const SCCNodeSet &SCCNodes) {
 }
 
 /// Helper for thread-pointer-unused inference predicate InstrBreaksAttribute:
-/// whether I reads the thread pointer of its function, or passes it to a
-/// callee outside the SCC that may read it.
-static bool InstrBreaksThreadPointerUnused(Instruction &I,
-                                           const SCCNodeSet &SCCNodes) {
+/// whether I reads the thread pointer of its function, or is a call to a
+/// reader outside the SCC that, with the function's other such calls, is made
+/// at least once per entry, which is when passing the thread pointer costs
+/// less than the plain entries' derivations. Every other call is made at the
+/// callee's plain entry.
+static bool InstrBreaksThreadPointerUnused(
+    Instruction &I, const SCCNodeSet &SCCNodes,
+    function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
+    DenseMap<const Function *, BlockFrequency> &Calls) {
   // Safe stack lowering reaches the unsafe stack through a thread-local.
-  const Function &F = *I.getFunction();
+  Function &F = *I.getFunction();
   if (&I == &F.getEntryBlock().front() &&
       F.hasFnAttribute(Attribute::SafeStack))
     return true;
+  if (needsThreadPointer(I))
+    return true;
   auto *CB = dyn_cast<CallBase>(&I);
-  if (!CB || CB->isInlineAsm())
+  if (!CB || SCCNodes.contains(CB->getCalledFunction()) ||
+      !callsThreadPointerReader(*CB))
     return false;
-  Function *Callee = CB->getCalledFunction();
-  if (!Callee)
-    return CB->getCallingConv() == CallingConv::C &&
-           !CB->hasFnAttr("no-thread-pointer-argument");
-  if (Callee->isIntrinsic())
-    return Callee->getIntrinsicID() == Intrinsic::thread_pointer ||
-           Callee->getIntrinsicID() == Intrinsic::threadlocal_address;
-  return Callee->hasFnAttribute("thread-pointer-argument") &&
-         !Callee->hasFnAttribute("thread-pointer-unused") &&
-         !SCCNodes.contains(Callee);
+  BlockFrequencyInfo &BFI = GetBFI(F);
+  BlockFrequency &Sum = Calls[&F];
+  Sum += BFI.getBlockFreq(I.getParent());
+  return Sum >= BFI.getEntryFreq();
 }
 
 /// Attempt to remove convergent function attribute when possible.
@@ -2017,8 +2021,10 @@ static void inferConvergent(const SCCNodeSet &SCCNodes,
 /// instruction for compliance to the attribute assumptions.
 ///
 /// Returns true if any changes to function attributes were made.
-static void inferAttrsFromFunctionBodies(const SCCNodeSet &SCCNodes,
-                                         SmallPtrSet<Function *, 8> &Changed) {
+static void inferAttrsFromFunctionBodies(
+    const SCCNodeSet &SCCNodes,
+    function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
+    SmallPtrSet<Function *, 8> &Changed) {
   AttributeInferer AI;
 
   if (!DisableNoUnwindInference)
@@ -2083,22 +2089,26 @@ static void inferAttrsFromFunctionBodies(const SCCNodeSet &SCCNodes,
       /* RequiresExactDefinition= */ true});
 
   // A function that never reads the thread pointer it may be passed, and
-  // passes it to nothing that does, need not be passed one. A copy of an
-  // inexact definition may call what the chosen one does not.
+  // would pass it to readers too seldom to be worth holding, holds none: it
+  // makes every call at the callee's plain entry. Any definition may be so,
+  // since a call that passes none names the plain entry, which derives where
+  // the definition the link chooses reads the thread pointer.
+  DenseMap<const Function *, BlockFrequency> ThreadPointerCalls;
   AI.registerAttrInference(AttributeInferer::InferenceDescriptor{
       Attribute::None,
       [](const Function &F) {
         return !F.hasFnAttribute("thread-pointer-argument") ||
                F.hasFnAttribute("thread-pointer-unused");
       },
-      [&SCCNodes](Instruction &I) {
-        return InstrBreaksThreadPointerUnused(I, SCCNodes);
+      [&](Instruction &I) {
+        return InstrBreaksThreadPointerUnused(I, SCCNodes, GetBFI,
+                                              ThreadPointerCalls);
       },
       [](Function &F) {
         F.addFnAttr("thread-pointer-unused");
         ++NumThreadPointerUnused;
       },
-      /* RequiresExactDefinition= */ true});
+      /* RequiresExactDefinition= */ false});
 
   // Perform all the requested attribute inference actions.
   AI.run(SCCNodes, Changed);
@@ -2293,6 +2303,7 @@ static SCCNodesResult createSCCNodeSet(ArrayRef<Function *> Functions) {
 template <typename AARGetterT>
 static SmallPtrSet<Function *, 8>
 deriveAttrsInPostOrder(ArrayRef<Function *> Functions, AARGetterT &&AARGetter,
+                       function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
                        bool ArgAttrsOnly) {
   SCCNodesResult Nodes = createSCCNodeSet(Functions);
 
@@ -2319,7 +2330,7 @@ deriveAttrsInPostOrder(ArrayRef<Function *> Functions, AARGetterT &&AARGetter,
   addNoUndefAttrs(Nodes.SCCNodes, Changed);
   addNoAliasAttrs(Nodes.SCCNodes, Changed);
   addNonNullAttrs(Nodes.SCCNodes, Changed);
-  inferAttrsFromFunctionBodies(Nodes.SCCNodes, Changed);
+  inferAttrsFromFunctionBodies(Nodes.SCCNodes, GetBFI, Changed);
   addNoRecurseAttrs(Nodes.SCCNodes, Changed);
 
   // Finally, infer the maximal set of attributes from the ones we've inferred
@@ -2362,8 +2373,12 @@ PreservedAnalyses PostOrderFunctionAttrsPass::run(LazyCallGraph::SCC &C,
     Functions.push_back(&N.getFunction());
   }
 
+  auto GetBFI = [&](Function &F) -> BlockFrequencyInfo & {
+    return FAM.getResult<BlockFrequencyAnalysis>(F);
+  };
+
   auto ChangedFunctions =
-      deriveAttrsInPostOrder(Functions, AARGetter, ArgAttrsOnly);
+      deriveAttrsInPostOrder(Functions, AARGetter, GetBFI, ArgAttrsOnly);
   if (ChangedFunctions.empty())
     return PreservedAnalyses::all();
 

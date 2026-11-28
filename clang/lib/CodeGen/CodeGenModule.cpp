@@ -3235,8 +3235,8 @@ llvm::ConstantInt *CodeGenModule::CreateKCFITypeId(QualType T, StringRef Salt) {
 
   uint32_t TypeId =
       llvm::getKCFITypeID(OutName, getCodeGenOpts().SanitizeKcfiHash);
-  if (LangOpts.FunctionTypePrefix && TypeId == llvm::COFF::SealedTypeId)
-    ++TypeId;
+  if (LangOpts.FunctionTypePrefix)
+    TypeId = llvm::getTypePrefixTypeId(TypeId);
   return llvm::ConstantInt::get(Int32Ty, TypeId);
 }
 
@@ -3560,6 +3560,19 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
   if (const auto *A = D->getAttr<CFGuardAttr>();
       A && A->getGuard() == CFGuardAttr::GuardArg::suppress)
     B.addAttribute("guard_suppress");
+
+  // A function passed no thread pointer says how it comes by its own; one
+  // passed it has a plain entry that does (EmitGlobalFunctionDefinition).
+  if (const auto *A = D->getAttr<ThreadPointerEntryAttr>();
+      A && getTriple().isWindowsNTPOSIXEnvironment() &&
+      !F->hasFnAttribute("thread-pointer-argument")) {
+    if (A->getEntry() == ThreadPointerEntryAttr::Probe)
+      B.addAttribute("thread-pointer-probe");
+    else if (A->getEntry() == ThreadPointerEntryAttr::Refusal)
+      B.addAttribute("thread-pointer-refusal");
+    else if (A->getEntry() == ThreadPointerEntryAttr::None)
+      B.addAttribute("no-thread-pointer");
+  }
 
   // Handle SME attributes that apply to function definitions,
   // rather than to function prototypes.
@@ -6103,6 +6116,16 @@ void CodeGenModule::setMultiVersionResolverAttributes(llvm::Function *Resolver,
     if (isa_and_nonnull<FunctionDecl>(GD.getDecl()))
       setKCFIType(GD, Resolver);
 
+  // Callers reach the resolver, or the ifunc it resolves, which the
+  // resolver's mark describes: it hands the version it chooses the thread
+  // pointer it was passed.
+  StringRef Name = Resolver->getName();
+  Name.consume_back(".resolver");
+  if (const auto *FD = dyn_cast_or_null<FunctionDecl>(D);
+      FD && FD->getType()->castAs<FunctionType>()->getCallConv() == CC_C &&
+      isPassedThreadPointer(FD))
+    Resolver->addFnAttr("thread-pointer-argument");
+
   // The resolver must be exempt from sanitizer instrumentation, as it can run
   // before the sanitizer is initialized.
   // (https://github.com/llvm/llvm-project/issues/163369)
@@ -6496,6 +6519,46 @@ llvm::FunctionCallee CodeGenModule::CreateRuntimeFunction(
   return {ConvTy, C};
 }
 
+// Whether a program replaces the function for every image: an overridable
+// default, a replaceable allocation function or libc++'s verbose abort. An
+// asm label names a function that no other image calls by this name, and an
+// allocation function that takes a hint is not replaceable.
+static bool isOverridable(const FunctionDecl *D) {
+  return !D->hasAttr<AsmLabelAttr>() &&
+         (D->hasAttr<OverridableDefaultAttr>() ||
+          (D->isReplaceableGlobalAllocationFunction() &&
+           llvm::none_of(D->parameters(),
+                         [](const ParmVarDecl *P) {
+                           QualType T = P->getType();
+                           return T->isEnumeralType() && !T->isAlignValT();
+                         })) ||
+          (D->isInStdNamespace() && D->getIdentifier() &&
+           D->getName() == "__libcpp_verbose_abort"));
+}
+
+bool CodeGenModule::isPassedThreadPointer(const FunctionDecl *FD) const {
+  if (!getTriple().isWindowsNTPOSIXEnvironment())
+    return false;
+  // A function that a program replaces for every image is one body at its
+  // address, which a default's slot, the executable's table and every cell
+  // hold and a replacement replaces; every caller reaches it there.
+  if (FD && isOverridable(FD))
+    return false;
+  // On Windows Itanium a declaration of the UCRT or the SDK is foreign: one
+  // written with a Windows convention's keyword, as every one of theirs is,
+  // or a C library function, whose library there is the UCRT and whose
+  // redeclaration the builtin's type takes. A definition the unit compiles
+  // is never foreign.
+  if (!FD || !getTriple().isWindowsItaniumEnvironment() || FD->isDefined())
+    return true;
+  unsigned ID = FD->getBuiltinID();
+  return !(ID && Context.BuiltinInfo.isPredefinedLibFunction(ID)) &&
+         none_of(FD->redecls(), [](const FunctionDecl *D) {
+           const auto *AT = D->getType()->getAs<AttributedType>();
+           return AT && AT->isCallingConv();
+         });
+}
+
 /// CreateRuntimeFunction - Create a new runtime function with the specified
 /// type and name.
 llvm::FunctionCallee
@@ -6521,6 +6584,10 @@ CodeGenModule::CreateRuntimeFunction(llvm::FunctionType *FTy, StringRef Name,
       // that is only declared may otherwise be another image's.
       if (Local && getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
         F->setDSOLocal(true);
+      // A runtime function another image provides is passed its thread
+      // pointer, but the unwinder's doors, which read their caller's frame.
+      if (!Local && !Name.starts_with("_Unwind_") && isPassedThreadPointer())
+        F->addFnAttr("thread-pointer-argument");
       // FIXME: We should use CodeGenModule::SetLLVMFunctionAttributes() instead
       // of trying to approximate the attributes using the LLVM function
       // signature.  The other overload of CreateRuntimeFunction does this; it
@@ -7594,21 +7661,9 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
     CodeGenFunction(*this).GenerateCode(GD, Fn, FI);
 
   // A definition of a function that a program replaces for every image says
-  // that it is one, and a default says its slot and its forwarding. An asm
-  // label names a function that no other image calls by this name, and an
-  // allocation function that takes a hint is not replaceable.
+  // that it is one, and a default says its slot and its forwarding.
   if (const auto *OD = D->getAttr<OverridableDefaultAttr>();
-      getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      !D->hasAttr<AsmLabelAttr>() &&
-      (OD ||
-       (D->isReplaceableGlobalAllocationFunction() &&
-        llvm::none_of(D->parameters(),
-                      [](const ParmVarDecl *P) {
-                        QualType T = P->getType();
-                        return T->isEnumeralType() && !T->isAlignValT();
-                      })) ||
-       (D->isInStdNamespace() && D->getIdentifier() &&
-        D->getName() == "__libcpp_verbose_abort"))) {
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment() && isOverridable(D)) {
     SmallVector<llvm::Metadata *, 3> Slots;
     auto Add = [&](unsigned N) {
       Slots.push_back(
@@ -7643,6 +7698,13 @@ void CodeGenModule::EmitGlobalFunctionDefinition(GlobalDecl GD,
   }
 
   SetLLVMFunctionAttributesForDefinition(D, Fn);
+
+  // The plain entry of a function passed its thread pointer that reports
+  // refuses.
+  if (const auto *A = D->getAttr<ThreadPointerEntryAttr>();
+      A && A->getEntry() == ThreadPointerEntryAttr::Refusal &&
+      Fn->hasFnAttribute("thread-pointer-argument"))
+    Fn->addFnAttr("thread-pointer-plain-entry", "refusal");
 
   // EGPR (R16-R31) requires V3 unwind info on Windows x64 because V1/V2 cannot
   // encode extended register numbers. Check per-function so that `target`

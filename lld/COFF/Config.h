@@ -69,6 +69,8 @@ struct Export {
   bool noname = false;
   bool data = false;
   bool isPrivate = false;
+  // link.exe's THREAD_DATA: name is a thread-local, exported by its offset.
+  bool threadData = false;
   bool constant = false;
 
   // If an export is a form of /export:foo=dllname.bar, that means

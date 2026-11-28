@@ -721,7 +721,7 @@ void LinkerDriver::createSideBySideManifest() {
 }
 
 // Parse a string in the form of
-// "<name>[=<internalname>][,@ordinal[,NONAME]][,DATA][,PRIVATE]"
+// "<name>[=<internalname>][,@ordinal[,NONAME]][,DATA][,THREAD_DATA][,PRIVATE]"
 // or "<name>=<dllname>.<name>".
 // Used for parsing /export arguments.
 Export LinkerDriver::parseExport(StringRef arg) {
@@ -761,6 +761,10 @@ Export LinkerDriver::parseExport(StringRef arg) {
     }
     if (tok.equals_insensitive("data")) {
       e.data = true;
+      continue;
+    }
+    if (tok.equals_insensitive("thread_data")) {
+      e.threadData = true;
       continue;
     }
     if (tok.equals_insensitive("constant")) {

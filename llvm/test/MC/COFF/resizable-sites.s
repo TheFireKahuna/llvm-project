@@ -64,10 +64,11 @@
 // X64-NEXT:   0x9 IMAGE_REL_LLVM_JUMP8 $L
 // X64-NEXT:   0xD IMAGE_REL_AMD64_SREL32 $L
 // X64-NEXT: }
-// X64-NEXT: Section ({{[0-9]+}}) .text$scale {
-// X64-NEXT:   0x0 IMAGE_REL_LLVM_TLS_SCALE -
-// X64-NEXT:   0xA IMAGE_REL_LLVM_REL32_INSN place
-// X64-NEXT:   0x11 IMAGE_REL_AMD64_SREL32 $L
+// X64-NEXT: Section ({{[0-9]+}}) .text$base {
+// X64-NEXT:   0x0 IMAGE_REL_LLVM_TLS_BASE -
+// X64-NEXT:   0x3 IMAGE_REL_LLVM_MEM_LOAD place
+// X64-NEXT:   0x12 IMAGE_REL_LLVM_REL32_INSN place
+// X64-NEXT:   0x19 IMAGE_REL_AMD64_SREL32 $L
 // X64-NEXT: }
 // X64-NEXT: Section ({{[0-9]+}}) .text$align {
 // X64-NEXT:   0x3 IMAGE_REL_LLVM_FUSED_READ __imp_f
@@ -102,7 +103,7 @@
 // X64-NEXT: ResizableSection: .text$read (
 // X64-NEXT: ResizableSection: .text$readrex2 (
 // X64-NEXT: ResizableSection: .text$test (
-// X64-NEXT: ResizableSection: .text$scale (
+// X64-NEXT: ResizableSection: .text$base (
 // X64-NEXT: ResizableSection: .text$align (
 // X64-NEXT: ResizableSection: .text$cell (
 // X64-NEXT: }
@@ -150,11 +151,13 @@
 // A64-NEXT:   0x0 IMAGE_REL_LLVM_FUSED_TEST __imp_f
 // A64-NEXT:   0x4 IMAGE_REL_ARM64_REL21 $L
 // A64-NEXT: }
-// A64-NEXT: Section ({{[0-9]+}}) .text$scale {
+// A64-NEXT: Section ({{[0-9]+}}) .text$base {
 // A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 place
-// A64-NEXT:   0x0 IMAGE_REL_LLVM_TLS_SCALE -
+// A64-NEXT:   0x0 IMAGE_REL_LLVM_TLS_BASE -
 // A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L place
-// A64-NEXT:   0x10 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT:   0xC IMAGE_REL_ARM64_PAGEBASE_REL21 place
+// A64-NEXT:   0x10 IMAGE_REL_ARM64_PAGEOFFSET_12L place
+// A64-NEXT:   0x18 IMAGE_REL_ARM64_REL21 $L
 // A64-NEXT: }
 // A64-NEXT: Section ({{[0-9]+}}) .text$call {
 // A64-NEXT:   0x0 IMAGE_REL_ARM64_BRANCH26 ext
@@ -205,7 +208,7 @@
 // A64-NEXT: ResizableSection: .text$read (
 // A64-NEXT: ResizableSection: .text$tail (
 // A64-NEXT: ResizableSection: .text$test (
-// A64-NEXT: ResizableSection: .text$scale (
+// A64-NEXT: ResizableSection: .text$base (
 // A64-NEXT: ResizableSection: .text$fjump (
 // A64-NEXT: }
 
@@ -239,12 +242,14 @@
   je .Ltest
   leaq .Ltest(%rip), %rcx
 
-  .section .text$scale,"xr"
-.Lscale:
-  .reloc ., IMAGE_REL_LLVM_TLS_SCALE
-  imulq $128, %r14, %rdx
-  addq place(%rip), %rdx
-  leaq .Lscale(%rip), %rcx
+  .section .text$base,"xr"
+.Lbase:
+  .reloc ., IMAGE_REL_LLVM_TLS_BASE
+  movq place(%rip), %rdx
+  movq (%r14,%rdx), %rdx
+  rorq $17, %rdx
+  xorq place+16(%rip), %rdx
+  leaq .Lbase(%rip), %rcx
 
   .section .text$align,"xr"
   movq __imp_f@FUSED(%rip), %rdx
@@ -294,14 +299,16 @@
   site tail, b ext
   rsite test, IMAGE_REL_LLVM_FUSED_TEST, cbz x8, ext
 
-  .section .text$scale,"xr"
-.Lscale:
-  .reloc ., IMAGE_REL_LLVM_TLS_SCALE
+  .section .text$base,"xr"
+.Lbase:
+  .reloc ., IMAGE_REL_LLVM_TLS_BASE
   adrp x8, place
   ldr x8, [x8, :lo12:place]
 .Lb2:
-  movz x9, #128
-  madd x0, x1, x9, x8
+  ldr x8, [x28, x8]
+  adrp x9, place+16
+  ldr x9, [x9, :lo12:place+16]
+  eor x8, x9, x8, ror #17
   adr x2, .Lb2
 
   site call, bl ext

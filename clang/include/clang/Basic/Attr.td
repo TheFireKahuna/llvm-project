@@ -3635,6 +3635,16 @@ def VectorCall : DeclOrTypeAttr {
   let Documentation = [VectorCallDocs];
 }
 
+def ThreadPointerEntry : InheritableAttr,
+                         TargetSpecificAttr<TargetWindowsItaniumOrNTPOSIX> {
+  let Spellings = [Clang<"thread_pointer">];
+  let Subjects = SubjectList<[Function], ErrorDiag>;
+  let Args = [EnumArgument<"Entry", "EntryKind", /*is_string=*/true,
+                           ["derive", "probe", "refusal", "none", "read"],
+                           ["Derive", "Probe", "Refusal", "None", "Read"]>];
+  let Documentation = [ThreadPointerEntryDocs];
+}
+
 def ZeroCallUsedRegs : InheritableAttr {
   let Spellings = [GCC<"zero_call_used_regs">];
   let Subjects = SubjectList<[Function], ErrorDiag>;

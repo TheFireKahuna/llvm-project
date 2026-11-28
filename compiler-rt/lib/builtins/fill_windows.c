@@ -20,19 +20,18 @@
 // An image also holds words that only it can compute, which the linker lists
 // with what each is computed from. The fill writes them before any other
 // code of the image runs: the image's entry point, fill_entry.S's, calls it
-// and then the entry that the image was linked with, or an executable whose
-// thread-local template holds such a word runs it from its first TLS
-// callback. The words of read-only data are read-only again when it returns.
-// Each thread copies a thread-local word before the fill writes it, so the
-// fill also writes it in every thread that holds the template's value from
-// before: its own, every other of a DLL loaded at run time, and each that
-// attaches to the DLL later. It also binds by name
-// what a DLL imports from the executable that loads it, in the running
-// executable, which the loader would look for by its file's name, and the
-// weak imports, which are null where their DLL is not loaded or lacks them.
+// and then the entry that the image was linked with. The words of read-only
+// data are read-only again when it returns. A word of a thread-local template
+// is written there, before the image registers it with the thread-local
+// runtime, which copies the written template into every thread. It also
+// binds by name what a DLL imports from the executable that loads it, in the
+// running executable, which the loader would look for by its file's name, and
+// the weak imports, which are null where their DLL is not loaded or lacks
+// them.
 //
 //===----------------------------------------------------------------------===//
 
+#include "tls/ThreadPointer.inc"
 #include <stdint.h>
 
 #if defined(__x86_64__)
@@ -129,19 +128,19 @@ void __llvm_delay_resolve(const struct DelayList *List) {
 
 // The fill's list, as the linker writes it, with every address relative to
 // the image base: the header, then the ranges and the words, of which the
-// first are cells, the vague ones first, and the last thread-local. A range is
+// first are cells, the vague ones first. A range is
 // read-only memory that holds words the fill writes where they are, and Sealed
 // the read-only section that the linker gives the others, which begins with a
-// word that is set once the fill has written. The header ends with the entry
-// of a DLL's offer table that names the DLL itself, or zero, and the number of
-// cells that are name words, which follow the other vague cells.
+// word that is set once the fill has written. The header gives the number of
+// cells that are name words, which follow the other vague cells, and ends
+// with the entry of a DLL's offer table that names the DLL itself, or zero.
 struct FillRange {
   uint32_t Rva, Size;
 };
 struct FillList {
-  uint32_t Ranges, Cells, Words, ThreadLocalWords;
+  uint32_t Ranges, Cells, Words, Names;
   struct FillRange Sealed;
-  uint32_t Self, Names;
+  uint32_t Self, Pad;
 };
 // A word, and the entry of an import's address table that it is computed
 // from, which is 8-aligned, with the kind of the word in its low three bits:
@@ -241,53 +240,6 @@ __declspec(dllimport) int32_t NTAPI LdrGetDllHandleEx(
     const struct UnicodeString *Name, void **Module);
 __declspec(dllimport) int32_t NTAPI LdrAddRefDll(uint32_t Flags,
                                                  const void *Module);
-__declspec(dllimport) void NTAPI RtlExitUserProcess(int32_t Status);
-
-// What the fill calls to write the thread-local words of other threads.
-struct ClientId {
-  uintptr_t Process, Thread;
-};
-struct ObjectAttributes {
-  uint32_t Length;
-  void *Root, *Name;
-  uint32_t Attributes;
-  void *Descriptor, *Qos;
-};
-__declspec(dllimport) int32_t NTAPI NtQuerySystemInformation(
-    uint32_t Class, void *Information, uint32_t Length, uint32_t *Returned);
-__declspec(dllimport) int32_t NTAPI
-NtAllocateVirtualMemory(void *Process, void **Base, uintptr_t ZeroBits,
-                        uintptr_t *Size, uint32_t Type, uint32_t Protection);
-__declspec(dllimport) int32_t NTAPI NtFreeVirtualMemory(void *Process,
-                                                        void **Base,
-                                                        uintptr_t *Size,
-                                                        uint32_t Type);
-__declspec(dllimport) int32_t NTAPI NtOpenThread(
-    void **Thread, uint32_t Access, const struct ObjectAttributes *Attributes,
-    const struct ClientId *Id);
-__declspec(dllimport) int32_t NTAPI NtGetNextThread(void *Process, void *Thread,
-                                                    uint32_t Access,
-                                                    uint32_t Attributes,
-                                                    uint32_t Flags,
-                                                    void **Next);
-__declspec(dllimport) int32_t NTAPI
-NtQueryInformationThread(void *Thread, uint32_t Class, void *Information,
-                         uint32_t Length, uint32_t *Returned);
-__declspec(dllimport) int32_t NTAPI NtSuspendThread(void *Thread,
-                                                    uint32_t *Count);
-__declspec(dllimport) int32_t NTAPI NtResumeThread(void *Thread,
-                                                   uint32_t *Count);
-__declspec(dllimport) int32_t NTAPI NtGetContextThread(void *Thread,
-                                                       void *Context);
-__declspec(dllimport) int32_t NTAPI NtClose(void *Handle);
-__declspec(dllimport) int32_t NTAPI NtOpenThreadToken(void *Thread,
-                                                      uint32_t Access,
-                                                      uint8_t AsSelf,
-                                                      void **Token);
-__declspec(dllimport) int32_t NTAPI NtSetInformationThread(
-    void *Thread, uint32_t Class, const void *Information, uint32_t Length);
-__declspec(dllimport) int32_t NTAPI NtTerminateProcess(void *Process,
-                                                       int32_t Status);
 
 extern const struct FillList __llvm_fill_list
     __attribute__((visibility("hidden")));
@@ -348,50 +300,6 @@ static void put(struct Pass *P, uint32_t Rva, uint64_t Value) {
     P->Rva[P->Changes] = Rva;
     P->Value[P->Changes++] = Value;
   }
-}
-
-// The running thread's environment block.
-static char *teb(void) {
-  char *Teb;
-#if defined(__x86_64__)
-  __asm__("movq %%gs:0x30, %0" : "=r"(Teb));
-#else
-  __asm__("mov %0, x18" : "=r"(Teb));
-#endif
-  return Teb;
-}
-
-// A thread-local word holds this until the fill writes it, which no pointer
-// holds, so that a thread's own store is never taken for it.
-static const uint64_t Unfilled = 0xF1F1F1F1F1F1F1F1;
-
-// Writes each thread-local word of the copy of the image's thread-local data
-// in the thread whose environment block is Teb that still holds Unfilled with
-// the template's. The block names the thread's array of copies, which the
-// image's TLS directory states the index into and its template the start of
-// each; a thread that has no array has copied nothing.
-static void fillCopy(const struct FillList *L, const char *Teb) {
-  const char *Optional =
-      __ImageBase + *(const int32_t *)(__ImageBase + 0x3c) + 24;
-  const uintptr_t *Directory =
-      (const uintptr_t *)(__ImageBase +
-                          *(const uint32_t *)(Optional + 112 + 9 * 8));
-  char *const *Copies = *(char *const *const *)(Teb + 0x58);
-  char *Copy = Copies && (const char *)Copies != Teb + 0x58
-                   ? Copies[*(const uint32_t *)Directory[2]]
-                   : 0;
-  if (!Copy)
-    return;
-  // The copy less the template's address in the image, at which a word's
-  // RVA is its copy.
-  Copy -= Directory[0] - (uintptr_t)__ImageBase;
-  const struct FillWord *W =
-      (const struct FillWord *)((const char *)(L + 1) + 8 * L->Ranges) +
-      L->Words - L->ThreadLocalWords;
-  for (uint32_t I = 0; I != L->ThreadLocalWords; ++I)
-    if (*(Unaligned *)(Copy + W[I].Word) == Unfilled)
-      *(Unaligned *)(Copy + W[I].Word) =
-          *(const Unaligned *)(__ImageBase + W[I].Word);
 }
 
 // What the word at Rva holds once the fill has written: a read-only word that
@@ -1155,7 +1063,7 @@ static inline __attribute__((always_inline)) void walkWords(struct Pass *P,
       case WordTlsOffset: {
         // The record's image's place, which this pass may have computed where
         // the image is this one, plus the record's word at Addend. An image
-        // of a scale other than 1 is reached through its record.
+        // whose form is not direct is reached through its record.
         if (!P->Inits) {
           P->Full = 1;
           continue;
@@ -1164,7 +1072,8 @@ static inline __attribute__((always_inline)) void walkWords(struct Pass *P,
         uint64_t Place = *(const uint64_t *)Record,
                  At = Place - (uint64_t)__ImageBase;
         Value = At >> 32 ? *(const uint64_t *)Place : valueAt(P, (uint32_t)At);
-        if (!Value || *(const uint64_t *)(Place + 8) != 1) {
+        if (!Value ||
+            *(const uint64_t *)(Place + TP_FORM_AT) != TP_FORM_DIRECT) {
           P->Status = STATUS_DLL_INIT_FAILED;
           return;
         }
@@ -1196,158 +1105,6 @@ static inline __attribute__((always_inline)) void walk(struct Pass *P,
     walkLocal(P);
 }
 
-enum {
-  ProcessList = 5,
-  ThreadBasic = 0,
-  ThreadImpersonation = 5,
-  TokenImpersonate = 4,
-  ThreadSuspendGetContext = 0xa | 0x800,
-  MemCommitReserve = 0x3000,
-  MemRelease = 0x8000,
-};
-#define STATUS_INFO_LENGTH_MISMATCH ((int32_t)0xC0000004)
-#define STATUS_INVALID_CID ((int32_t)0xC000000B)
-#define STATUS_THREAD_IS_TERMINATING ((int32_t)0xC000004B)
-#define STATUS_NO_TOKEN ((int32_t)0xC000007C)
-#define STATUS_ACCESS_DENIED ((int32_t)0xC0000022)
-
-// Writes the thread-local words of the thread that Thread names, suspended
-// once reading its context has made the suspension take effect, so that it
-// neither runs nor frees its copies meanwhile; one that ends meanwhile runs
-// no more code. A thread that this suspends and cannot resume would hang the
-// process, which ends instead.
-static int32_t fillThread(const struct FillList *L, void *Thread) {
-  struct {
-    int32_t ExitStatus;
-    const char *Teb;
-    struct ClientId Id;
-    uintptr_t Affinity;
-    int32_t Priority, BasePriority;
-  } Basic;
-  // A CONTEXT, of which the kernel reads only the flags, at 0x30 on x86-64,
-  // so that no memset is called, which an NT-POSIX image does not link.
-#if defined(__x86_64__)
-  _Alignas(16) uint32_t Context[0x4d0 / 4] __attribute__((uninitialized));
-  Context[12] = 0x100001;
-#else
-  _Alignas(16) uint32_t Context[0x390 / 4] __attribute__((uninitialized));
-  Context[0] = 0x400001;
-#endif
-  int32_t Status =
-      NtQueryInformationThread(Thread, ThreadBasic, &Basic, sizeof(Basic), 0);
-  if (Status < 0 || Basic.Id.Thread == *(const uintptr_t *)(teb() + 0x48))
-    return Status;
-  if ((Status = NtSuspendThread(Thread, 0)) >= 0) {
-    if ((Status = NtGetContextThread(Thread, Context)) >= 0)
-      fillCopy(L, Basic.Teb);
-    int32_t Resumed = NtResumeThread(Thread, 0);
-    if (Resumed < 0)
-      NtTerminateProcess((void *)-1, Resumed);
-  }
-  return Status == STATUS_THREAD_IS_TERMINATING ? 0 : Status;
-}
-
-// Writes the thread-local words of each thread of the process that the
-// system lists, once the template is written, other than the running one,
-// and returns a negative status where one cannot be reached. The list names
-// every thread of a process that the caller may query or whose integrity is
-// at least medium, which then opens each by its thread and this process's id,
-// which the kernel refuses for a thread of another process; a thread that
-// starts later copies the written template. Otherwise this opens the threads
-// it may open.
-static int32_t fillListed(const struct FillList *L) {
-  // Asking for the size would list every process twice; the list grows with
-  // every thread that starts meanwhile.
-  uint32_t Need = 1 << 20;
-  int32_t Status;
-  char *List;
-  uintptr_t Size;
-  do {
-    List = 0;
-    Size = Need + Need / 4;
-    if ((Status = NtAllocateVirtualMemory((void *)-1, (void **)&List, 0, &Size,
-                                          MemCommitReserve, PageReadWrite)) < 0)
-      return Status;
-    Status = NtQuerySystemInformation(ProcessList, List, (uint32_t)Size, &Need);
-    if (Status < 0) {
-      Size = 0;
-      NtFreeVirtualMemory((void *)-1, (void **)&List, &Size, MemRelease);
-    }
-  } while (Status == STATUS_INFO_LENGTH_MISMATCH);
-  if (Status < 0)
-    return Status;
-  // Each process's entry, of 0x100 bytes with its id at 0x50, is followed by
-  // its threads', of 0x50 bytes with their ids at 0x28.
-  const char *Teb = teb(), *Entry = List;
-  struct ClientId Id = {*(const uintptr_t *)(Teb + 0x40), 0};
-  while (*(const uintptr_t *)(Entry + 0x50) != Id.Process &&
-         *(const uint32_t *)Entry)
-    Entry += *(const uint32_t *)Entry;
-  int Listed = *(const uintptr_t *)(Entry + 0x50) == Id.Process;
-  const char *T = Entry + 0x100;
-  for (uint32_t N = Listed ? *(const uint32_t *)(Entry + 4) : 0;
-       N && Status >= 0; --N, T += 0x50) {
-    struct ObjectAttributes Attributes = {sizeof(Attributes), 0, 0, 0, 0, 0};
-    void *Thread;
-    Id.Thread = *(const uintptr_t *)(T + 0x30);
-    // A thread that has ended since is not there to open.
-    if ((Status = NtOpenThread(&Thread, ThreadSuspendGetContext, &Attributes,
-                               &Id)) == STATUS_INVALID_CID)
-      Status = 0;
-    else if (Status >= 0) {
-      Status = fillThread(L, Thread);
-      NtClose(Thread);
-    }
-  }
-  Size = 0;
-  NtFreeVirtualMemory((void *)-1, (void **)&List, &Size, MemRelease);
-  if (Listed)
-    return Status;
-  void *Thread = 0, *Next;
-  while (Status >= 0 &&
-         NtGetNextThread((void *)-1, Thread, ThreadSuspendGetContext, 0, 0,
-                         &Next) >= 0) {
-    if (Thread)
-      NtClose(Thread);
-    Status = fillThread(L, Thread = Next);
-  }
-  if (Thread)
-    NtClose(Thread);
-  return Status;
-}
-
-// Writes the thread-local words of every other thread of the process, which
-// a DLL fails its load with where that is negative. A thread that
-// impersonates opens them as the process does meanwhile: it fails where it
-// still holds a token once it has given its own up, and the process ends
-// where the thread does not hold one again afterwards, which would otherwise
-// go on with the process's rights.
-static __attribute__((noinline)) int32_t fillThreads(const struct FillList *L) {
-  void *Token = 0, *None = 0, *Held;
-  int32_t Status = 0;
-  if (NtOpenThreadToken((void *)-2, TokenImpersonate, 1, &Token) >= 0 &&
-      (Status = NtSetInformationThread((void *)-2, ThreadImpersonation, &None,
-                                       sizeof(None))) >= 0) {
-    Status = NtOpenThreadToken((void *)-2, TokenImpersonate, 1, &Held);
-    if (Status >= 0)
-      NtClose(Held);
-    Status = Status == STATUS_NO_TOKEN ? 0 : STATUS_ACCESS_DENIED;
-  }
-  if (Status >= 0)
-    Status = fillListed(L);
-  if (Token) {
-    int32_t Restored = NtSetInformationThread((void *)-2, ThreadImpersonation,
-                                              &Token, sizeof(Token));
-    if (Restored >= 0 && (Restored = NtOpenThreadToken(
-                              (void *)-2, TokenImpersonate, 1, &Held)) >= 0)
-      NtClose(Held);
-    if (Restored < 0)
-      NtTerminateProcess((void *)-1, Restored);
-    NtClose(Token);
-  }
-  return Status;
-}
-
 // Writes the image's words, and returns a status that is negative where the
 // image cannot run. Again makes it write an image that it has written, whose
 // words another program's start may have left stale. Read-only memory is
@@ -1355,13 +1112,10 @@ static __attribute__((noinline)) int32_t fillThreads(const struct FillList *L) {
 // time as a pass collects, and what it then holds is checked against a second
 // computation, so that a write that reached it meanwhile fails the image.
 // Loaded says that a DLL was loaded after the process started, and is
-// negative where that is not known; Visit that the fill writes the
-// thread-local words of every other thread, and otherwise only the running
-// thread's.
+// negative where that is not known.
 static inline __attribute__((always_inline)) int32_t fill(uint32_t Again,
                                                           int Imports,
-                                                          int Loaded,
-                                                          int Visit) {
+                                                          int Loaded) {
   const struct FillList *L = &__llvm_fill_list;
   Unaligned *Done = (Unaligned *)(__ImageBase + L->Sealed.Rva);
   // An image in which the fill writes no read-only memory has no such word.
@@ -1402,11 +1156,6 @@ static inline __attribute__((always_inline)) int32_t fill(uint32_t Again,
     P.Check = 1;
     walk(&P, Imports);
   }
-  if (P.Status >= 0 && L->ThreadLocalWords) {
-    fillCopy(L, teb());
-    if (Visit)
-      P.Status = fillThreads(L);
-  }
   return P.Status;
 }
 
@@ -1415,61 +1164,14 @@ static inline __attribute__((always_inline)) int32_t fill(uint32_t Again,
 // whatever it has.
 int32_t NTAPI __llvm_fill(uint32_t Again, const void *Reserved) {
   (void)Reserved;
-  return fill(Again, 0, 0, 0);
+  return fill(Again, 0, 0);
 }
 
 // The fill of an image that binds imports by name or is a DLL with vague
 // cells, which the image's entry calls in place of __llvm_fill, so that no
 // other image holds the search or imports what it calls.
 int32_t NTAPI __llvm_fill_imports(uint32_t Again, const void *Reserved) {
-  return fill(Again, 1, Reserved ? -1 : 1, 0);
+  return fill(Again, 1, Reserved ? -1 : 1);
 }
-
-// The fills of a DLL whose template holds a thread-local word, which also
-// write it in every other thread where the process loaded the DLL after it
-// started, so that no other image holds what that calls.
-int32_t NTAPI __llvm_fill_threads(uint32_t Again, const void *Reserved) {
-  return fill(Again, 0, 0, !Reserved);
-}
-int32_t NTAPI __llvm_fill_imports_threads(uint32_t Again,
-                                          const void *Reserved) {
-  return fill(Again, 1, Reserved ? -1 : 1, !Reserved);
-}
-
-// The first TLS callback of a DLL whose template holds a thread-local word,
-// which writes it in each thread that attaches: one the loader started while
-// it loaded the DLL copied the template before the fill wrote it.
-static void NTAPI attach(void *Module, uint32_t Reason, void *Reserved) {
-  (void)Module, (void)Reserved;
-  if (Reason == 2)
-    fillCopy(&__llvm_fill_list, teb());
-}
-
-// The first TLS callback of an executable whose template holds a thread-local
-// word, which runs the fill in place of the entry point: the loader starts
-// every other thread once these callbacks have run, which then copy the
-// written template, but runs the executable's entry point only after that.
-// A fill that fails ends the process, as the entry would.
-static inline __attribute__((always_inline)) void
-exeAttach(void *Module, uint32_t Reason, void *Reserved, int Imports) {
-  (void)Module, (void)Reserved;
-  int32_t Status = Reason == 1 ? fill(0, Imports, 0, 0) : 0;
-  if (Status < 0)
-    RtlExitUserProcess(Status);
-}
-static void NTAPI exeLocal(void *Module, uint32_t Reason, void *Reserved) {
-  exeAttach(Module, Reason, Reserved, 0);
-}
-static void NTAPI exeImports(void *Module, uint32_t Reason, void *Reserved) {
-  exeAttach(Module, Reason, Reserved, 1);
-}
-
-// Each in .CRT$XLA$fill, which sorts after the start of the callbacks and
-// before any other, where the linker keeps the one the image needs.
-typedef void(NTAPI *TlsCallback)(void *, uint32_t, void *);
-__attribute__((selectany, section(".CRT$XLA$fill")))
-const TlsCallback __llvm_fill_attach = attach,
-                  __llvm_fill_exe_attach = exeLocal,
-                  __llvm_fill_exe_attach_imports = exeImports;
 
 #pragma clang attribute pop

@@ -51,9 +51,8 @@
 # DEFINE:   llvm-objdump -d --no-show-raw-insn user.dll >> user.txt && \
 # DEFINE:   llvm-objdump -s -j .rdata -j .sealed user.dll >> user.txt && \
 # DEFINE:   FileCheck --check-prefixes=USER,USER-%{a} %s < user.txt && \
-# DEFINE:   %{mc} tl.s -o tl.obj && %{dll} tl.obj rt.lib -out:tl.dll && \
-# DEFINE:   llvm-objdump -s -j .rdata -j .tls tl.dll \
-# DEFINE:     | FileCheck --check-prefix=TL %s && \
+# DEFINE:   %{mc} tl.s -o tl.obj && not %{dll} tl.obj rt.lib -out:tl.dll \
+# DEFINE:     2>&1 | FileCheck --check-prefix=TL %s && \
 # DEFINE:   lld-link -machine:%{a} -entry:inner -subsystem:console fill.lib \
 # DEFINE:     rt.obj -out:static.exe && \
 # DEFINE:   llvm-objdump -d --no-show-raw-insn static.exe \
@@ -145,17 +144,10 @@
 # USER-NEXT: 180002080 18200000 0c010000 00000000 00000000
 # USER-NEXT: 180002090 00400000 0c020000
 
-## A word of thread-local data that holds a default's address is no slot,
-## which the loader would bind in the template alone: the fill writes it, the
-## last of its list, from the entry, which is a cell, and it holds no pointer
-## until then.
-# TL:      180002030 00000000 00001000 01000000 01000000
-# TL-NEXT: 180002040 02000000 01000000 00300000 08000000
-# TL-NEXT: 180002050 00000000 00000000 00200000 08000000
-# TL-NEXT: 180002060 00200000 0c020000 00000000 00000000
-# TL-NEXT: 180002070 00500000 00200000 00000000 00000000
-# TL:      Contents of section .tls:
-# TL-NEXT: 180005000 f1f1f1f1 f1f1f1f1
+## A word of the loader's thread-local template that holds a default's
+## address would be the fill's, which no thread that copied the template
+## before it ran sees.
+# TL: error: tl.obj: .tls$+0x0: holds an address inside del, for which rt.dll exports no name, in the loader's thread-local template, which threads copy before the image's fill runs
 # STATIC-x64:      <inner>:
 # STATIC-x64-NEXT: callq
 # STATIC-x64-NEXT: callq

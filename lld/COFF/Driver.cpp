@@ -4038,6 +4038,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
           symtab.mangleMaybe(symtab.entry);
 
         // Windows specific -- Make sure we resolve all dllexported symbols.
+        symtab.addThreadDataExports();
         for (Export &e : symtab.exports) {
           if (!e.forwardTo.empty())
             continue;
@@ -4091,7 +4092,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       // Once the ordinary loads have settled, so that an import library
       // offering __imp_X keeps precedence, an object for Windows Itanium or
       // NT-POSIX loads the partners of its references to X and __imp_X.
-    } while (run() || (ctx.hasForkObject && loadImportPartners()));
+    } while (run() || ctx.symtab.addThreadDataImports() ||
+             (ctx.hasForkObject &&
+              (loadImportPartners() || ctx.symtab.pairThreadPointerEntries() ||
+               ctx.symtab.keepThreadEndSlot())));
   }
 
   // Handle /includeglob
@@ -4202,15 +4206,24 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (config->emit != EmitKind::Obj || config->thinLTOIndexOnly)
     return;
 
-  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.keepThreadEndSlot(); });
-
   // If we generated native object files from bitcode files, this resolves
   // references to the symbols we use from them. A library call that LTO made
-  // may ask for a partner, whose member may ask for another.
+  // may ask for a partner, whose member may ask for another, or export what
+  // it defines.
+  auto exportLoaded = [&] {
+    bool added = false;
+    for (Export &e : ctx.symtab.exports)
+      if (!e.sym && e.forwardTo.empty()) {
+        e.sym = ctx.symtab.addGCRoot(e.name, !e.data);
+        added = true;
+      }
+    return added;
+  };
   run();
-  if (ctx.hasForkObject)
-    while (loadImportPartners())
-      run();
+  while (exportLoaded() ||
+         (ctx.hasForkObject &&
+          (loadImportPartners() || ctx.symtab.pairThreadPointerEntries())))
+    run();
   preemptVagueEntities();
 
   // A definition that replaced an import's thunk, in whatever order the two
@@ -4245,7 +4258,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         [](SymbolTable &symtab) { symtab.addStartStopSymbols(); });
 
   findObservedDelayImports(ctx);
-  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.checkTlsTemplates(); });
+  ctx.forEachSymtab([](SymbolTable &symtab) {
+    symtab.checkTlsTemplates();
+    symtab.bindThreadPointerEntries();
+  });
 
   // Resolve remaining undefined symbols and warn about imported locals.
   std::vector<Undefined *> aliases;
@@ -4337,8 +4353,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     symtab.bindLocalImports();
   });
 
-  ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.exportTlsUnit(); });
   setTlsForm(ctx);
+  ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.exportTlsUnit(); });
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {
     assert(alias->kind() == Symbol::UndefinedKind);

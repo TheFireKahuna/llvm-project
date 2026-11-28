@@ -2629,6 +2629,25 @@ static bool checkDenormMode(const Function &Caller, const Function &Callee) {
   return false;
 }
 
+static bool checkThreadPointerEntry(const Function &Caller,
+                                    const Function &Callee) {
+  // A function passed its thread pointer takes its caller's wherever it is
+  // inlined, and one with none depends on none. Any other comes by its own,
+  // which is its caller's only where the caller comes by it the same way: a
+  // caller that was passed one may run on a thread the callee would adopt.
+  if (Callee.hasFnAttribute("thread-pointer-argument") ||
+      Callee.hasFnAttribute("no-thread-pointer"))
+    return true;
+  return !Caller.hasFnAttribute("thread-pointer-argument") &&
+         all_of(ArrayRef<StringRef>{"thread-pointer-probe",
+                                    "thread-pointer-refusal"},
+                [&](StringRef Kind) {
+                  return Callee.hasFnAttribute(Kind) ==
+                         Caller.hasFnAttribute(Kind);
+                }) &&
+         !Caller.hasFnAttribute("no-thread-pointer");
+}
+
 static bool checkStrictFP(const Function &Caller, const Function &Callee) {
   // Do not inline strictfp function into non-strictfp one. It would require
   // conversion of all FP operations in host function to constrained intrinsics.

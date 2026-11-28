@@ -287,6 +287,13 @@ void BitcodeCompiler::add(BitcodeFile &f) {
         (offers && sym->visibility != COFF::LinkFactHidden &&
          (entity != entities.end() || offeredInits.contains(sym))) ||
         (record && record->isNamed(/*beforeLTO=*/true));
+    // What references the plain entry of X$tp keeps X$tp.
+    StringRef x = sym->getName();
+    if (r.Prevailing && f.forkObject && x.consume_back("$tp"))
+      if (Symbol *plain = f.symtab.find(x); plain && plain->getFile() == &f) {
+        r.VisibleToRegularObj |= plain->isUsedInRegularObj;
+        prevailingSyms.push_back(plain);
+      }
     r.ExportDynamic = exportedSyms.contains(sym);
     r.FinalDefinitionInLinkageUnit = isFinalInImage(f.symtab, sym, cells);
     // The object LTO generates defines the symbol again. It is undefined only

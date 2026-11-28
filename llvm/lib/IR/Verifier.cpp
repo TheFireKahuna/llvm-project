@@ -2592,6 +2592,15 @@ void Verifier::verifyFunctionAttrs(FunctionType *FT, AttributeList Attrs,
   Check(!Attrs.hasFnAttr("pin-thread-pointer") ||
             Attrs.hasFnAttr("thread-pointer-argument"),
         "'pin-thread-pointer' requires 'thread-pointer-argument'", V);
+  Check(Attrs.hasFnAttr("thread-pointer-argument") +
+                Attrs.hasFnAttr("thread-pointer-probe") +
+                Attrs.hasFnAttr("thread-pointer-refusal") +
+                Attrs.hasFnAttr("no-thread-pointer") <=
+            1,
+        "a function comes by its thread pointer in one way", V);
+  Check(!Attrs.hasFnAttr("thread-pointer-refusal") ||
+            FT->getReturnType()->isIntegerTy(),
+        "'thread-pointer-refusal' requires an integer return type", V);
 
   if (Attrs.hasFnAttr("aarch64_pstate_sm_enabled")) {
     Check(!Attrs.hasFnAttr("aarch64_pstate_sm_compatible"),

@@ -75,6 +75,13 @@ LLVM_ABI void emitLinkerFlagsForGlobalCOFF(raw_ostream &OS,
 /// with !kcfi_type, which x86 emits type data for only under the kcfi flag.
 LLVM_ABI const ConstantInt *getFunctionTypePrefixMarker(const GlobalObject &F);
 
+/// Returns the set of COFF::LinkFactPrefixWord that the type prefix of \p F
+/// holds before its marker. A plain entry that is a body of its own holds the
+/// offset of the entry that is passed the thread pointer, its function, which
+/// is returned in \p TPEntry.
+LLVM_ABI unsigned getTypePrefixWords(const GlobalObject &F,
+                                     const GlobalValue **TPEntry = nullptr);
+
 /// An operand of a link fact: a symbol or a number.
 struct LinkFactOperand {
   const GlobalValue *Symbol = nullptr;

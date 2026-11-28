@@ -29,9 +29,15 @@
 //                                       where e & 0x30, else the cold arm
 //
 // A funclet the unwinder calls is entered with no thread pointer of the
-// function's, so its own uses take one from __tp_probe at its head.
+// function's, so its own uses take one from __tp_probe at its head; on
+// NT-POSIX, whose unwind driver calls it with the thread pointer in its
+// register, a funclet of a function passed one reads it there.
 //
-// This pass hands each call that passes the thread pointer its
+// A function holds a thread pointer where it reads one or passes it to calls
+// that read it often enough (holdsThreadPointer); it passes it to each callee
+// that may read it, and makes every other call at the callee's plain entry,
+// which this pass gives each function passed one that code holding none may
+// call. It hands each call that passes the thread pointer its
 // "threadpointer" bundle, replaces llvm.thread.pointer, and lowers
 // llvm.threadlocal.address: a local-exec variable at its offset from the
 // thread pointer, a variable of the image at its offset from the image's
@@ -55,9 +61,11 @@
 #include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/MDBuilder.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/ReplaceConstant.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/Transforms/Utils/ModuleUtils.h"
 
 using namespace llvm;
 
@@ -67,31 +75,6 @@ using namespace llvm;
 static constexpr uint64_t SlotBits = 63;
 static constexpr unsigned ChunkShift =
     TP_CHUNK_SHIFT - TP_BLOCK_SHIFT - 6;
-
-// Whether CB is still to be handed the thread pointer it passes. A direct
-// call follows its callee; an indirect call of the C convention passes one
-// unless its pointer's type says it is passed none. A function that
-// was passed none gives its caller's register back before it returns, so it
-// passes none to a call that returns for it.
-static bool passesThreadPointer(const CallBase &CB) {
-  if (CB.isInlineAsm() || CB.getOperandBundle(LLVMContext::OB_threadpointer) ||
-      (CB.isMustTailCall() &&
-       !CB.getFunction()->hasFnAttribute("thread-pointer-argument")))
-    return false;
-  if (const auto *F = dyn_cast_or_null<Function>(
-          CB.getCalledOperand()->stripPointerCastsAndAliases()))
-    return !F->isIntrinsic() && F->hasFnAttribute("thread-pointer-argument") &&
-           !F->hasFnAttribute("thread-pointer-unused");
-  return CB.getCallingConv() == CallingConv::C &&
-         !CB.hasFnAttr("no-thread-pointer-argument");
-}
-
-static bool usesThreadPointer(const Instruction &I) {
-  auto *CB = dyn_cast<CallBase>(&I);
-  return CB && (CB->getIntrinsicID() == Intrinsic::thread_pointer ||
-                CB->getIntrinsicID() == Intrinsic::threadlocal_address ||
-                passesThreadPointer(*CB));
-}
 
 // A word of the image's own that its fill writes from the runtime's export.
 static GlobalVariable *getSealedValue(Module &M, const char *Name) {
@@ -306,12 +289,36 @@ static Value *getRecordAddress(IRBuilder<> &B, Module &M, const GlobalValue *GV,
 }
 
 static bool runImpl(Function &F, DominatorTree &DT, const TargetMachine &TM) {
+  // The uses of the thread pointer the function holds, if any: what reads it
+  // and the calls that pass it. Every other call of a function passed one is
+  // made at its plain entry, but a plain entry's call of its own function.
   SmallVector<CallBase *, 8> Uses;
-  for (Instruction &I : instructions(F))
-    if (usesThreadPointer(I))
-      Uses.push_back(cast<CallBase>(&I));
+  bool Holds = holdsThreadPointer(F), Changed = false;
+  for (Instruction &I : instructions(F)) {
+    auto *CB = dyn_cast<CallBase>(&I);
+    if (!CB || CB->getOperandBundle(LLVMContext::OB_threadpointer))
+      continue;
+    if (CB->getIntrinsicID() == Intrinsic::thread_pointer ||
+        CB->getIntrinsicID() == Intrinsic::threadlocal_address ||
+        (Holds && passesThreadPointer(*CB))) {
+      Uses.push_back(CB);
+      continue;
+    }
+    auto *Callee = dyn_cast<GlobalValue>(CB->getCalledOperand());
+    const auto *Body = dyn_cast_or_null<Function>(
+        Callee ? Callee->getAliaseeObject() : nullptr);
+    // A definition of the module's own that holds none is its plain entry,
+    // whose callee the call keeps.
+    if (Body && Body->hasFnAttribute("thread-pointer-argument") &&
+        !F.hasFnAttribute("thread-pointer-plain-entry") &&
+        !(Body->hasFnAttribute("thread-pointer-unused") &&
+          !Body->isDeclaration() && Body->isDefinitionExact())) {
+      CB->setCalledOperand(getThreadPointerPlainEntry(*Callee));
+      Changed = true;
+    }
+  }
   if (Uses.empty())
-    return false;
+    return Changed;
 
   Module &M = *F.getParent();
   LLVMContext &C = F.getContext();
@@ -350,9 +357,15 @@ static bool runImpl(Function &F, DominatorTree &DT, const TargetMachine &TM) {
     for (CallBase *Use : Uses)
       if (Use->getParent() == Home && Use->comesBefore(At))
         At = Use;
-    // A refusal is returned before anything of the body has run.
-    if (Home == &EntryBB || Reports)
+    // A refusal is returned before anything of the body has run; the frame's
+    // escape stays in the entry block with its allocas.
+    if (Home == &EntryBB || Reports) {
       At = &*EntryBB.getFirstNonPHIOrAlloca();
+      for (Instruction &I : make_range(At->getIterator(), EntryBB.end()))
+        if (auto *II = dyn_cast<IntrinsicInst>(&I);
+            II && II->getIntrinsicID() == Intrinsic::localescape)
+          At = II->getNextNode();
+    }
   }
 
   // The thread pointer of the body, and of each funclet.
@@ -384,71 +397,110 @@ static bool runImpl(Function &F, DominatorTree &DT, const TargetMachine &TM) {
     if (New && Pad) {
       IRBuilder<> B(&*Pad->getFirstInsertionPt());
       B.SetCurrentDebugLocation(getLoc(F, Use));
+      OperandBundleDef Funclet("funclet", &*Pad->getFirstNonPHIIt());
       It->second.first =
-          callRuntime(B, M, COFF::TP::Probe, {},
-                      OperandBundleDef("funclet", &*Pad->getFirstNonPHIIt()));
+          F.hasFnAttribute("thread-pointer-argument") &&
+                  TM.getTargetTriple().isWindowsNTPOSIXEnvironment()
+              ? B.CreateCall(Intrinsic::getOrInsertDeclaration(
+                                 &M, Intrinsic::thread_pointer, Ptr),
+                             {}, Funclet, "tp")
+              : callRuntime(B, M, COFF::TP::Probe, {}, Funclet);
     }
     return It->second;
   };
 
+  // Each use takes its region's thread pointer: a read of it, a call that
+  // passes it in its bundle, or a variable's address, a local-exec one's at
+  // its offset from the thread pointer, one of the image at its offset from
+  // the image's base, formed once where the thread pointer is, and any other
+  // through its record. At follows a use it was.
   for (CallBase *Use : Uses) {
     auto &[UseTp, Base] = GetTp(Use);
     Intrinsic::ID ID = Use->getIntrinsicID();
-    if (ID == Intrinsic::thread_pointer) {
-      if (UseTp != Use) {
-        Use->replaceAllUsesWith(UseTp);
-        Use->eraseFromParent();
-      }
+    Instruction *Next = Use->getNextNode();
+    Value *New = UseTp;
+    IRBuilder<> B(Use);
+    auto *GV =
+        ID == Intrinsic::threadlocal_address
+            ? cast<GlobalVariable>(Use->getArgOperand(0)->stripPointerCasts())
+            : nullptr;
+    auto [RecordOf, Word] = GV ? TargetMachine::getThreadLocalRecord(GV)
+                               : std::pair<const GlobalValue *, unsigned>();
+    bool LocalExec =
+        GV && GV->getThreadLocalMode() == GlobalValue::LocalExecTLSModel;
+    if (ID == Intrinsic::thread_pointer && UseTp == Use)
       continue;
-    }
-    if (ID != Intrinsic::threadlocal_address) {
-      CallBase *Passing = CallBase::addOperandBundle(
+    if (!GV && ID != Intrinsic::thread_pointer) {
+      auto *Passing = CallBase::addOperandBundle(
           Use, LLVMContext::OB_threadpointer,
           OperandBundleDef("threadpointer", UseTp), Use->getIterator());
       Passing->copyMetadata(*Use);
       Passing->takeName(Use);
-      Use->replaceAllUsesWith(Passing);
-      Use->eraseFromParent();
-      continue;
+      New = Next = Passing;
+    } else if (GV && !LocalExec &&
+               (!TM.shouldAssumeDSOLocal(RecordOf) ||
+                (RecordOf != GV && GV->isDeclaration()))) {
+      New = getRecordAddress(B, M, RecordOf, Word, UseTp);
+    } else if (GV) {
+      auto *TpI = dyn_cast<Instruction>(UseTp);
+      if (!LocalExec && !Base)
+        Base = IRBuilder<>(!TpI || isa<IntrinsicInst>(TpI) ? At
+                           : isa<PHINode>(TpI)
+                               ? &*TpI->getParent()->getFirstInsertionPt()
+                               : TpI->getNextNode())
+                   .CreateIntrinsic(Intrinsic::threadlocal_base, {}, {UseTp});
+      New = B.CreateGEP(B.getInt8Ty(), LocalExec ? UseTp : Base,
+                        B.CreateIntrinsic(Intrinsic::threadlocal_offset,
+                                          GV->getType(), {GV}));
     }
-    auto *GV = cast<GlobalVariable>(Use->getArgOperand(0)->stripPointerCasts());
-    IRBuilder<> B(Use);
-    Value *Addr;
-    // A variable another image may define, or its guard, is reached through
-    // the variable's record.
-    auto [RecordOf, Word] = TargetMachine::getThreadLocalRecord(GV);
-    if (GV->getThreadLocalMode() != GlobalValue::LocalExecTLSModel &&
-        !TM.shouldAssumeDSOLocal(RecordOf)) {
-      Addr = getRecordAddress(B, M, RecordOf, Word, UseTp);
-    } else {
-      Value *From = UseTp;
-      if (GV->getThreadLocalMode() != GlobalValue::LocalExecTLSModel) {
-        // The image's base, formed once where the thread pointer is.
-        if (!Base) {
-          auto *TpI = dyn_cast<Instruction>(UseTp);
-          IRBuilder<> BB(!TpI || isa<IntrinsicInst>(TpI) ? At
-                         : isa<PHINode>(TpI)
-                             ? &*TpI->getParent()->getFirstInsertionPt()
-                             : TpI->getNextNode());
-          Base = BB.CreateIntrinsic(Intrinsic::threadlocal_base, {}, {UseTp});
-        }
-        From = Base;
-      }
-      Addr = B.CreateGEP(B.getInt8Ty(), From,
-                         B.CreateIntrinsic(Intrinsic::threadlocal_offset,
-                                           GV->getType(), {GV}));
-    }
-    Use->replaceAllUsesWith(Addr);
+    if (At == Use)
+      At = Next;
+    Use->replaceAllUsesWith(New);
     Use->eraseFromParent();
   }
   return true;
 }
 
-PreservedAnalyses ThreadPointerPass::run(Function &F,
-                                                FunctionAnalysisManager &FAM) {
-  return runImpl(F, FAM.getResult<DominatorTreeAnalysis>(F), *TM)
-             ? PreservedAnalyses::none()
-             : PreservedAnalyses::all();
+// A function that reads its thread pointer holds it, whatever was inferred
+// before its body took the read; code passing none may call each function
+// passed one at its plain entry, which is the function's address. Code
+// reaches every thread-local variable through llvm.threadlocal.address,
+// which IR that names one directly gets here.
+static bool prepareModule(Module &M) {
+  for (GlobalVariable &GV : M.globals()) {
+    if (!GV.isThreadLocal())
+      continue;
+    convertUsersOfConstantsToInstructions(&GV);
+    for (Use &U : make_early_inc_range(GV.uses())) {
+      auto *I = dyn_cast<Instruction>(U.getUser());
+      auto *II = dyn_cast_or_null<IntrinsicInst>(I);
+      if (!I || (II && (II->getIntrinsicID() == Intrinsic::threadlocal_address ||
+                        II->getIntrinsicID() == Intrinsic::threadlocal_offset)))
+        continue;
+      auto *Phi = dyn_cast<PHINode>(I);
+      IRBuilder<> B(Phi ? Phi->getIncomingBlock(U)->getTerminator() : I);
+      U.set(B.CreateThreadLocalAddress(&GV));
+    }
+  }
+  for (Function &F : M)
+    if (F.hasFnAttribute("thread-pointer-unused") &&
+        (F.hasFnAttribute(Attribute::SafeStack) ||
+         any_of(instructions(F), needsThreadPointer)))
+      F.removeFnAttr("thread-pointer-unused");
+  createThreadPointerPlainEntries(M);
+  takeThreadPointerPlainEntries(M);
+  return true;
+}
+
+PreservedAnalyses ThreadPointerPass::run(Module &M,
+                                                ModuleAnalysisManager &MAM) {
+  prepareModule(M);
+  FunctionAnalysisManager &FAM =
+      MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+  for (Function &F : M)
+    if (!F.isDeclaration())
+      runImpl(F, FAM.getResult<DominatorTreeAnalysis>(F), *TM);
+  return PreservedAnalyses::none();
 }
 
 namespace {
@@ -456,6 +508,7 @@ class ThreadPointerLegacy : public FunctionPass {
 public:
   static char ID;
   ThreadPointerLegacy() : FunctionPass(ID) {}
+  bool doInitialization(Module &M) override { return prepareModule(M); }
   bool runOnFunction(Function &F) override {
     return runImpl(F, getAnalysis<DominatorTreeWrapperPass>().getDomTree(),
                    getAnalysis<TargetPassConfig>().getTM<TargetMachine>());

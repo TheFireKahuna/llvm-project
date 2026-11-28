@@ -8993,6 +8993,37 @@ more accurate locations.
   }];
 }
 
+def ThreadPointerEntryDocs : Documentation {
+  let Category = DocCatFunction;
+  let Content = [{
+On NT-POSIX each function of the C convention is passed its thread pointer, and
+a function that code passing none may call has a plain entry of its name, which
+such code calls and which derives the thread pointer, ending the process on a
+thread the runtime refuses, where the function reads it. A caller that holds
+no thread pointer calls a function at its plain entry. The ``thread_pointer``
+attribute names another way in:
+
+* ``thread_pointer("read")``: on a declaration, the function reads its thread
+  pointer, so a caller passes it one rather than calling its plain entry: for
+  a hot function of a library that reads a thread-local, such as ``malloc``.
+* ``thread_pointer("refusal")``: the plain entry returns the runtime's refusal,
+  a negative value, as the function's result before the function runs. The
+  function returns an integer.
+* ``thread_pointer("derive")``: the function is passed no thread pointer and
+  derives its own: for a function that reads its caller's frame, in front of
+  which a plain entry would stand.
+* ``thread_pointer("probe")``: the function is passed no thread pointer and
+  takes its own from the runtime's lookup, which adopts no thread.
+* ``thread_pointer("none")``: the function is passed no thread pointer and has
+  none; what it calls runs on the runtime's no-thread header.
+
+The attribute is the declaration's, not its type's: a function's address is
+its plain entry, so a call through a pointer passes no thread pointer whatever
+the function is. On a function of another convention, which is passed none,
+it says how the function comes by its own.
+  }];
+}
+
 def ZeroCallUsedRegsDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{

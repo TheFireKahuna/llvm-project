@@ -555,12 +555,16 @@ void llvm::resolveThreadPointers(MachineFunction &MF, LiveIntervals *LIS) {
       return Held || MI.getOperand(0).getReg() == TP;
     return Held && !MI.modifiesRegister(TP, TRI);
   };
+  // NT-POSIX's unwind driver enters a funclet with the thread pointer in its
+  // register.
+  bool FuncletsHold = STI.getTargetTriple().isWindowsNTPOSIXEnvironment();
   ReversePostOrderTraversal<MachineFunction *> RPOT(&MF);
   BitVector In(MF.getNumBlockIDs(), true), Out(In);
   for (bool Changed = true; Changed;) {
     Changed = false;
     for (MachineBasicBlock *MBB : RPOT) {
       bool Held = MBB->isEntryBlock() ||
+                  (MBB->isEHFuncletEntry() && FuncletsHold) ||
                   (!MBB->isEHFuncletEntry() &&
                    all_of(MBB->predecessors(), [&](MachineBasicBlock *Pred) {
                      return Out[Pred->getNumber()];

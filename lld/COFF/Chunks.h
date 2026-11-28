@@ -1264,6 +1264,21 @@ private:
   std::vector<RuntimePseudoReloc> relocs;
 };
 
+// The offset of a thread-local in the loader's template, which link.exe
+// exports as __tls_offset_X for /export:X,THREAD_DATA.
+class TlsOffsetChunk : public NonSectionChunk {
+public:
+  TlsOffsetChunk(COFFLinkerContext &ctx, Symbol *var) : ctx(ctx), var(var) {
+    setAlignment(4);
+  }
+  size_t getSize() const override { return 4; }
+  void writeTo(uint8_t *buf) const override;
+
+private:
+  COFFLinkerContext &ctx;
+  Symbol *var;
+};
+
 // MinGW specific. A Chunk that contains one pointer-sized absolute value.
 class AbsolutePointerChunk : public NonSectionChunk {
 public:

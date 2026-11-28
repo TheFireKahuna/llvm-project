@@ -1,0 +1,62 @@
+# RUN: llc -mtriple=x86_64-windows-ntposix -start-before=greedy -stop-after=prolog-epilog -verify-machineinstrs %s -o - | FileCheck %s
+
+# On x86 a thread pointer sets the flags, so it is never placed where an
+# instruction reads them, and the check of its reload meets no live flags: it
+# is reloaded and checked before the compare, and where its use reads the flags
+# and no register holds it, the allocator spills it as any value.
+
+--- |
+  define i64 @reloaded(i64 %a, i64 %b) "thread-pointer-argument" { ret i64 0 }
+  define i64 @spilled(i64 %a, i64 %b) "thread-pointer-argument" { ret i64 0 }
+...
+---
+name: reloaded
+tracksRegLiveness: true
+liveins:
+  - { reg: '$rdi' }
+  - { reg: '$rsi' }
+  - { reg: '$r14' }
+body: |
+  bb.0:
+    liveins: $rdi, $rsi, $r14
+    %1:gr64 = COPY $rdi
+    %2:gr64 = COPY $rsi
+    INLINEASM &"", 1, 12, implicit-def dead early-clobber $r14
+    %0:gr64 = LOAD_THREAD_POINTER implicit-def dead $eflags
+    CMP64rr %1, %2, implicit-def $eflags
+    %3:gr64 = COPY %1
+    %3:gr64 = CMOV64rr %3, %0, 4, implicit $eflags
+    $rax = COPY %3
+    RET 0, $rax
+...
+---
+name: spilled
+tracksRegLiveness: true
+liveins:
+  - { reg: '$rdi' }
+  - { reg: '$rsi' }
+  - { reg: '$r14' }
+body: |
+  bb.0:
+    liveins: $rdi, $rsi, $r14
+    %0:gr64 = LOAD_THREAD_POINTER implicit-def dead $eflags
+    %1:gr64 = COPY $rdi
+    %2:gr64 = COPY $rsi
+    INLINEASM &"", 1, 12, implicit-def dead early-clobber $rax, 12, implicit-def dead early-clobber $rbx, 12, implicit-def dead early-clobber $rcx, 12, implicit-def dead early-clobber $rdx, 12, implicit-def dead early-clobber $rsi, 12, implicit-def dead early-clobber $rdi, 12, implicit-def dead early-clobber $rbp, 12, implicit-def dead early-clobber $r8, 12, implicit-def dead early-clobber $r9, 12, implicit-def dead early-clobber $r10, 12, implicit-def dead early-clobber $r11, 12, implicit-def dead early-clobber $r12, 12, implicit-def dead early-clobber $r13, 12, implicit-def dead early-clobber $r14, 12, implicit-def dead early-clobber $r15
+    CMP64rr %1, %2, implicit-def $eflags
+    %3:gr64 = COPY %1
+    %3:gr64 = CMOV64rr %3, %0, 4, implicit $eflags
+    $rax = COPY %3
+    RET 0, $rax
+...
+
+# CHECK-LABEL: name: reloaded
+# CHECK:       INLINEASM
+# CHECK-NEXT:  $[[T:[a-z]+]] = MOV64rm $rsp, 1, $noreg, 0, $noreg :: (load (s64) from %fixed-stack.0, align 16)
+# CHECK-NEXT:  TP_CHECK $[[T]], implicit-def $eflags
+# CHECK-NEXT:  CMP64rr
+# CHECK:       CMOV64rr {{.*}}, killed renamable $[[T]], 4, implicit $eflags
+# CHECK-LABEL: name: spilled
+# CHECK:       MOV64mr $rsp, 1, $noreg, [[S:[0-9]+]], $noreg, $r14 :: (store (s64) into %stack.0)
+# CHECK:       CMP64rm
+# CHECK-NEXT:  CMOV64rm {{.*}}, $rsp, 1, $noreg, [[S]], $noreg, 4, implicit $eflags :: (load (s64) from %stack.0)

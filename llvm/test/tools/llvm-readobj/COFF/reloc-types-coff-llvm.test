@@ -1,6 +1,6 @@
 ## The relocation types of Windows Itanium and NT-POSIX objects take one number
 ## from 0x8000 up on both machines, and a type one machine alone has is not
-## named on the other. ABSOLUTE, ALIGN, TLS_SCALE and FUSED_ADD name no symbol:
+## named on the other. ABSOLUTE, ALIGN, TLS_BASE and FUSED_ADD name no symbol:
 ## no tool resolves their index, and yaml keeps it.
 
 # RUN: yaml2obj --docnum=1 -DM=AMD64 %s -o %t.x1
@@ -23,7 +23,7 @@
 # OTHER64: error: invalid hex16 number
 
 # OBJDUMP: 0000000000000000 IMAGE_REL_LLVM_ALIGN {{$}}
-# OBJDUMP: 0000000000000000 IMAGE_REL_LLVM_TLS_SCALE {{$}}
+# OBJDUMP: 0000000000000000 IMAGE_REL_LLVM_TLS_BASE {{$}}
 # OBJDUMP: 0000000000000000 IMAGE_REL_AMD64_ABSOLUTE {{$}}
 
 # CHECK:      Type: IMAGE_REL_LLVM_ADDR32NB_CALL (32768)
@@ -41,7 +41,7 @@
 # CHECK:      Type: IMAGE_REL_LLVM_USPAN16 (32792)
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_READ (32834)
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_TEST (32838)
-# CHECK:      Type: IMAGE_REL_LLVM_TLS_SCALE (32852)
+# CHECK:      Type: IMAGE_REL_LLVM_TLS_BASE (32852)
 # CHECK-NEXT: Symbol: -
 # CHECK-NEXT: SymbolIndex: 7
 
@@ -114,7 +114,7 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_USPAN16 }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_TEST }
-      - { VirtualAddress: 0, SymbolTableIndex: 7, Type: IMAGE_REL_LLVM_TLS_SCALE }
+      - { VirtualAddress: 0, SymbolTableIndex: 7, Type: IMAGE_REL_LLVM_TLS_BASE }
 symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]
 
 --- !COFF

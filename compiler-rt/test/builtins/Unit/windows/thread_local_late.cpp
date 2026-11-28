@@ -9,7 +9,7 @@
 // RUN: %{cc} -shared -DSOLO %s %t-other.dll.lib -o %t-solo.dll
 // RUN: %{cc} -shared -DSTART %s %t-other.dll.lib %t.dll.lib -o %t-start.dll
 // RUN: %{cc} -DEXE %s %t-rt.dll.lib -o %t.exe
-// RUN: %clang -DSTATIC -x c %s -x none %t-other.dll.lib %t-start.dll.lib %t.dll.lib \
+// RUN: %clang -static -DSTATIC -x c %s -x none %t-other.dll.lib %t-start.dll.lib %t.dll.lib \
 // RUN:   -o %t-static.exe
 // RUN: llvm-readobj --file-headers --coff-imports %t-plain.dll \
 // RUN:   | FileCheck --check-prefix=PLAIN %s

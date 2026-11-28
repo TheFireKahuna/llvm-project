@@ -4,9 +4,7 @@
 
 // The entry point of an image whose fill has something to write, which the
 // linker makes the image's: it runs the fill, __llvm_fill or, in an image
-// that binds imports by name, __llvm_fill_imports, or in a DLL whose
-// thread-local template holds a word the fill writes their _threads form,
-// and then
+// that binds imports by name, __llvm_fill_imports, and then
 // __llvm_fill_target, which the linker binds to the entry that the image was
 // linked with, or in a DLL with none to __llvm_fill_true. Each is its own
 // section, so that an image holds only the one it starts with.
@@ -167,8 +165,6 @@
 
   fill_dll __llvm_fill_dll, __llvm_fill
   fill_dll __llvm_fill_dll_imports, __llvm_fill_imports
-  fill_dll __llvm_fill_dll_threads, __llvm_fill_threads
-  fill_dll __llvm_fill_dll_imports_threads, __llvm_fill_imports_threads
   fill_exe __llvm_fill_exe, __llvm_fill
   fill_exe __llvm_fill_exe_imports, __llvm_fill_imports
   fill_tls __llvm_fill_tls, __llvm_fill

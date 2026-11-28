@@ -23,7 +23,7 @@
 # RUN:   FileCheck --check-prefix=X64 %s
 # RUN: not lld-link -machine:arm64 -dll -noentry -export:a a64-call.obj -out:a64.dll 2>&1 | \
 # RUN:   FileCheck --check-prefix=A64 %s
-# RUN: not lld-link -dll -noentry -export:a -export:b -export:c tls.obj -out:tls.dll 2>&1 | \
+# RUN: not lld-link -entry:a -subsystem:console -export:b -export:c tls.obj -out:tls.exe 2>&1 | \
 # RUN:   FileCheck --check-prefix=TLS %s
 # RUN: not lld-link -dll -noentry -export:a x64-beyond.obj -out:x64.dll 2>&1 | \
 # RUN:   FileCheck --check-prefix=BEYOND %s
@@ -100,20 +100,27 @@ c:
   ret
 
 #--- tls.s
+.macro site
+  .reloc ., IMAGE_REL_LLVM_TLS_BASE
+  movq __imp___tp_register$init(%rip), %rdx
+  movq (%r14,%rdx), %rdx
+  rorq $17, %rdx
+  xorq __imp___tp_register$init+16(%rip), %rdx
+.endm
   .section .text$a,"xr",discard,a
   .globl a
 a:
-  .reloc ., IMAGE_REL_LLVM_TLS_SCALE
-  imulq $128, %r14, %r14
+  .reloc ., IMAGE_REL_LLVM_TLS_BASE
+  movq __imp___tp_register$init(%rip), %rdx
   .reloc ., IMAGE_REL_LLVM_ALIGN, 0
-  addq place(%rip), %r14
+  movq (%r14,%rdx), %rdx
+  rorq $17, %rdx
+  xorq __imp___tp_register$init+16(%rip), %rdx
   jmp a
   .section .text$b,"xr",discard,b
 __cfi_b:
   .long 0
-  .reloc ., IMAGE_REL_LLVM_TLS_SCALE
-  imulq $128, %r14, %r14
-  addq place(%rip), %r14
+  site
   .globl b
 b:
   jmp a
@@ -124,9 +131,6 @@ __cfi_c:
 c:
   jmp a
   movq __imp_a@FUSED(%rip), %rcx
-  .data
-place:
-  .quad 0
   .section .tls$,"dw"
   .long 0
 

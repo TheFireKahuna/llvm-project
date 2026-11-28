@@ -651,10 +651,11 @@ enum SiteFact : uint64_t {
   /// fused indexes of the function's code read the register it writes.
   SiteFactIndexedRead = 9,
   /// At a FUSED_INDEX of a record's word that the instruction adds to the
-  /// base an owned-model record chain selected: the instruction also reads
-  /// the thread pointer, in the register that the chain's thread pointer plus
-  /// the place is formed from, so the linker may add the word to that.
-  SiteFactThreadPointer = 10,
+  /// base an owned-model record chain selected: the register, by its
+  /// encoding, that the chain's thread pointer plus the place is formed from,
+  /// which holds the thread pointer there but for the chain's select writing
+  /// it, so the linker may add the word to that.
+  SiteFactThreadPointer = 14,
   /// At the marker of a fused access that only reads such a constant through
   /// a load that stays: the linker may bind it alone to the image's own
   /// definition, which it then reads with no register.
@@ -794,6 +795,12 @@ enum Arm64XFixupType : uint8_t {
 /// function type prefixes. No function or call has it: a type that hashes to
 /// it is one more.
 enum : uint32_t { SealedTypeId = 0 };
+
+/// Under function type prefixes a type is 31 bits, and a prefix whose function
+/// has an entry that is passed the thread pointer stores its type with this bit
+/// set, and the entry's offset from the function in the word before its
+/// marker.
+enum : uint32_t { ThreadPointerTypeTag = 0x80000000 };
 
 enum COMDATType : uint8_t {
   IMAGE_COMDAT_SELECT_NODUPLICATES = 1,
@@ -1244,8 +1251,8 @@ enum LinkRecordKind : uint64_t {
 /// a tag, the size of its operands and the operands. A reader skips a fact
 /// whose tag it does not know, unless the tag is critical.
 enum LinkFactTag : uint64_t {
-  /// The function has a type prefix. The operand is what the prefix holds
-  /// before its marker, a LinkFactSecondWord.
+  /// The function has a type prefix. The operand is the words the prefix
+  /// holds before its marker, a set of LinkFactPrefixWord.
   LinkFactTypePrefix = 0,
   /// The visibility of the symbol, a LinkFactVisibilityState. Critical.
   /// Every name of a vague entity states it: of a definition that the images
@@ -1313,11 +1320,14 @@ enum LinkFactInitKind : uint64_t {
   LinkFactTLSDynamic = 4,
 };
 
-enum LinkFactSecondWord : uint64_t {
-  LinkFactNoSecondWord = 0,
+/// The words before a type prefix's marker, in this order, each 4 bytes.
+enum LinkFactPrefixWord : uint64_t {
   /// The type of the function as the target of a call through a pointer to
   /// a virtual member function.
   LinkFactVfnType = 1,
+  /// The offset from the function of its entry that is passed the thread
+  /// pointer.
+  LinkFactThreadPointerEntry = 2,
 };
 
 /// In a Sections group, after the resizable sections, each dispatch through a

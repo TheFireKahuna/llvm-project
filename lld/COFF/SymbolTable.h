@@ -110,13 +110,25 @@ public:
 
   // Defines the bounds of the loader's thread-local template where no
   // foreign object does, and reports what crosses the two templates by
-  // definition: a bound an object of the model defines, and a COMDAT
-  // thread-local with copies of both models.
+  // definition: a bound an object of the model defines, a TLS directory of
+  // an object of no model in place of wincrt's, and a COMDAT thread-local
+  // with copies of both models.
   void checkTlsTemplates();
+
+  // wincrt's member that offers the TLS directory, "archive(member)".
+  StringRef tlsDirectory;
+
+  // X$tp is the entry of X that is passed its thread pointer. A reference to
+  // it follows X: it names the X$tp of X's provider, or X where that has
+  // none, and an export of X carries it. Pairing returns whether the link has
+  // more to resolve.
+  bool pairThreadPointerEntries();
+  void bindThreadPointerEntries();
 
   // Keeps wincrt's thread-end slot in an executable that has TLS callbacks
   // of its own or registers a thread-local destructor.
-  void keepThreadEndSlot();
+  // Returns whether it loads it.
+  bool keepThreadEndSlot();
 
   // Load lazy objects that are needed for MinGW automatic import and for
   // doing stdcall fixups, and those that a reference to X or __imp_X from an
@@ -124,6 +136,16 @@ public:
   // any.
   bool loadMinGWSymbols();
   bool handleMinGWAutomaticImport(Symbol *sym, StringRef name);
+
+  // Thread-local exports and imports as link.exe's
+  // /experimental:tlsDllInterface has them: /export:X,THREAD_DATA exports
+  // __tls_offset_X, X's offset in the loader's template, beside _tls_index and
+  // __safe_get_tls_index as __tls_safe_get_tls_index; an importer's
+  // __imp___tls_safe_get_tls_index_X binds to that function of the DLL that
+  // offers __tls_offset_X. The second returns whether it added an import.
+  void addThreadDataExports();
+  bool addThreadDataImports();
+  llvm::DenseMap<StringRef, Symbol *> threadDataIndex;
 
   // Returns a symbol for a given name. Returns a nullptr if not found.
   Symbol *find(StringRef name);
@@ -219,6 +241,7 @@ public:
 
   // A list of chunks which to be added to .rdata.
   std::vector<Chunk *> localImportChunks;
+  std::vector<Chunk *> threadDataOffsets;
 
   // A list of EC EXP+ symbols.
   std::vector<Symbol *> expSymbols;

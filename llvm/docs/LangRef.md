@@ -2666,7 +2666,11 @@ fn -> other_fn -> other_fn ; fn is norecurse
     and a call passes a thread pointer only in a
     {ref}`threadpointer operand bundle<ob_threadpointer>`. The function's
     symbol is its name followed by `$tp`, so a reference that passes no
-    thread pointer does not bind it.
+    thread pointer does not bind it: a call that passes none names the
+    function's plain entry (`"thread-pointer-plain-entry"`), which is also
+    the function's address, so a call through a pointer passes none. On a declaration,
+    the value `"read"` says that the function reads its thread pointer, so a
+    caller that holds one passes it rather than calling the plain entry.
 
 `"pin-thread-pointer"`
 :   This attribute, which requires `"thread-pointer-argument"`, keeps the
@@ -2675,9 +2679,33 @@ fn -> other_fn -> other_fn ; fn is norecurse
 
 `"thread-pointer-unused"`
 :   This attribute, which `function-attrs` infers on a function that carries
-    `"thread-pointer-argument"`, indicates that neither the function nor
-    anything it calls reads the thread pointer it is passed, so a call need
-    not pass one.
+    `"thread-pointer-argument"`, indicates that the function holds no thread
+    pointer: it never reads the one it is passed and makes every call at the
+    callee's plain entry, so a call need not pass it one. It is inferred
+    where the function's calls to readers, by block frequency, come to less
+    than one per entry.
+
+`"thread-pointer-refusal"`, `"thread-pointer-probe"`, `"no-thread-pointer"`
+:   These attributes say how a function that is passed no thread pointer
+    comes by one, on a target whose thread pointer is derived: with
+    `"thread-pointer-refusal"`, which requires an integer return type, it
+    derives one at the head of its entry block and returns the runtime's
+    negative refusal as its result before its body runs; with
+    `"thread-pointer-probe"` it asks the runtime for one, which never adopts
+    the thread; with `"no-thread-pointer"` it and what it calls run on the
+    runtime's no-thread header; otherwise it derives one. A function carries
+    at most one of them and `"thread-pointer-argument"`. A function that comes
+    by its own is inlined only into one that comes by it the same way.
+
+`"thread-pointer-plain-entry"`
+:   This attribute marks a plain entry: the entry of a function that carries
+    `"thread-pointer-argument"` at the function's symbol with no `$tp`, which
+    a caller that holds no thread pointer calls and which derives one where
+    the function holds one. Code generation gives every such function that a
+    caller passing none may reach its plain entry, an alias of the function
+    where it is `"thread-pointer-unused"`. On a function that carries
+    `"thread-pointer-argument"`, the value `"refusal"` makes its plain entry
+    refuse.
 
 `"probe-stack"`
 :   This attribute indicates that the function will trigger a guard region
@@ -27959,6 +27987,24 @@ The `llvm.threadlocal.address` intrinsic requires a global value argument (a
 The address of a thread local global is not a constant, since it depends on
 the calling thread. The `llvm.threadlocal.address` intrinsic returns the
 address of the given thread local global in the calling thread.
+
+#### '`llvm.threadlocal.base`' and '`llvm.threadlocal.offset`' Intrinsics
+
+##### Syntax:
+
+```
+declare ptr @llvm.threadlocal.base(ptr %tp) nounwind willreturn memory(none)
+declare i64 @llvm.threadlocal.offset(ptr %var) nounwind willreturn memory(none)
+```
+
+##### Semantics:
+
+Under the owned thread-local model of Windows Itanium and NT-POSIX,
+`llvm.threadlocal.base` returns the base of the calling thread's storage of
+the image's thread-local variables, given the thread pointer `%tp`, at a site
+the linker writes in the image's form. `llvm.threadlocal.offset` returns the
+offset of the thread-local variable `%var` from that base, or, where `%var` is
+`localexec`, from the thread pointer.
 
 (int_vscale)=
 

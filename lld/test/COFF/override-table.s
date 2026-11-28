@@ -100,7 +100,8 @@
 # TABLE:       0808080b 00000000
 
 ## The thunks' prefixes end where their code begins: the pattern of the key's
-## marker, then the type ID.
+## marker, then the type ID, without the tag that states delsm's thread-pointer
+## entry.
 # TEXT:      0f1f8006 5a1c00b8 33333333 {{[^ ]+$}}
 # TEXT:      0f1f8006 5a1c00b8 44444444 {{[^ ]+$}}
 
@@ -198,6 +199,16 @@
         ret
         .link_fact \name, 0, 0
         .endm
+        .macro TPDEFAULT name, id
+        .p2align 4
+        .long \name\()$tp - . - 16, 0x06821f0f, 0xb8001c5a, \id | 0x80000000
+        .weak \name
+\name:
+        ret
+\name\()$tp:
+        ret
+        .link_fact \name, 0, 2
+        .endm
         .text
         DEFAULT new, 0x11111111
         DEFAULT newa, 0x11111111
@@ -205,7 +216,7 @@
         DEFAULT dela, 0x22222222
         DEFAULT delsa, 0x33333333
         DEFAULT delsa2, 0x33333333
-        DEFAULT delsm, 0x44444444
+        TPDEFAULT delsm, 0x44444444
         .link_fact new, 9, 0
         .link_fact newa, 9, 1, 0
         .link_fact nothrow, 9, 4

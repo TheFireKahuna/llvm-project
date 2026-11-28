@@ -109,8 +109,8 @@ define i64 @dead(ptr %p) "thread-pointer-argument" {
 ; SYSV:       movq %rax, 8(%rsp) # 8-byte Spill
 ; SYSV-NOT:   %r14
 ; SYSV:       callq g$tp
-; SYSV-NEXT:  movq 8(%rsp), %rax # 8-byte Reload
-; SYSV-NEXT:  addq 88(%r14), %rax
+; SYSV-NEXT:  movq 8(%rsp), [[V:%r[a-z]+]] # 8-byte Reload
+; SYSV-NEXT:  addq 88(%r14), [[V]]
 define i64 @pinned(ptr %p) "thread-pointer-argument" "pin-thread-pointer" {
   %tp = call ptr @llvm.thread.pointer.p0()
   %v = load i64, ptr %p

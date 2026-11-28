@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/KCFIHash.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/ErrorHandling.h"
 
@@ -153,6 +154,15 @@ uint32_t llvm::getX86KCFIType(uint32_t Type) {
     if (N == Type || -N == Type)
       return Type + 1;
   }
+  return Type;
+}
+
+uint32_t llvm::getTypePrefixTypeId(uint32_t Hash) {
+  uint32_t Type = Hash & ~COFF::ThreadPointerTypeTag;
+  if (Type == COFF::SealedTypeId ||
+      getX86KCFIType(Type | COFF::ThreadPointerTypeTag) !=
+          (Type | COFF::ThreadPointerTypeTag))
+    ++Type;
   return Type;
 }
 

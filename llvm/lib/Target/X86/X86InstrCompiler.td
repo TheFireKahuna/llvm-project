@@ -281,6 +281,10 @@ let
   Defs = [R10, R11, EFLAGS] in {
 def KCFI_CHECK : PseudoI<
   (outs), (ins GR64:$ptr, i32imm:$type), []>, Sched<[]>;
+// The check of a call that passes the thread pointer, which leaves the target
+// in $dst, or its thread-pointer entry where its type prefix states one.
+def KCFI_CHECK_TP : PseudoI<
+  (outs GR64:$dst), (ins GR64:$ptr, i32imm:$type), []>, Sched<[]>;
 }
 
 //===----------------------------------------------------------------------===//
@@ -479,7 +483,7 @@ let Defs = [RCX,RDI], isCodeGenOnly = 1 in {
 // The base of the image's thread-locals in a thread, formed from the thread
 // pointer at a site of the wide form's length that the linker writes in the
 // image's form (IMAGE_REL_LLVM_TLS_BASE). The words it reads never change.
-let hasSideEffects = 0, Constraints = "@earlyclobber $dst" in
+let Defs = [EFLAGS], hasSideEffects = 0, Constraints = "@earlyclobber $dst" in
 def TLS_BASE64 : I<0, Pseudo, (outs GR64:$dst), (ins GR64:$tp), "",
                    [(set GR64:$dst, (int_threadlocal_base GR64:$tp))]>,
                  Requires<[In64BitMode]>, Sched<[WriteLoad]>;
