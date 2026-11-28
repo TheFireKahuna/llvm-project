@@ -24,8 +24,8 @@ void f3(void) {
 }
 // LINUX: declare win64cc void @f1()
 // LINUX: declare void @f2()
-// WIN64: declare dso_local void @f1()
-// WIN64: declare dso_local void @f2()
+// WIN64: declare {{(dso_local )?}}void @f1()
+// WIN64: declare {{(dso_local )?}}void @f2()
 
 // Win64 ABI varargs
 void __attribute__((ms_abi)) f4(int a, ...) {

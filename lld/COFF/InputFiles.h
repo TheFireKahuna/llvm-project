@@ -390,6 +390,8 @@ public:
   static MachineTypes getMachineType(MemoryBufferRef m);
   bool isSameImport(const ImportFile *other) const;
   bool isEC() const { return impECSym != nullptr; }
+  // Whether a definition in the link beats this import for imp, its pointer.
+  bool yieldsToDefinition(Symbol *imp) const;
 
   DefinedImportData *impSym = nullptr;
   Defined *thunkSym = nullptr;

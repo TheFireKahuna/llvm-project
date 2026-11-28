@@ -8387,6 +8387,14 @@ X86InstrInfo::foldMemoryOperandImpl(MachineFunction &MF, MachineInstr &MI,
                                     LiveIntervals *LIS, VirtRegMap *VRM) const {
   MachineBasicBlock::iterator InsertPt = MI;
 
+  // Only a call folds the load of an import pointer the linker may relax.
+  if (LoadMI.getOpcode() == X86::MOV64rm && !MI.isCall()) {
+    const MachineOperand &Disp = LoadMI.getOperand(1 + X86::AddrDisp);
+    if (Disp.isGlobal() &&
+        isRelaxableImportReference(Disp.getGlobal(), Disp.getTargetFlags()))
+      return nullptr;
+  }
+
   // If LoadMI is a masked load, check MI having the same mask.
   const MCInstrDesc &MCID = get(LoadMI.getOpcode());
   unsigned NumOps = MCID.getNumOperands();

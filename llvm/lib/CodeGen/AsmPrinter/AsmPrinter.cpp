@@ -3109,15 +3109,25 @@ bool AsmPrinter::doFinalization(Module &M) {
       const DataLayout &DL = M.getDataLayout();
 
       for (const auto &Stub : Stubs) {
-        SmallString<256> SectionName = StringRef(".rdata$");
-        SectionName += Stub.first->getName();
-        OutStreamer->switchSection(OutContext.getCOFFSection(
-            SectionName,
-            COFF::IMAGE_SCN_CNT_INITIALIZED_DATA | COFF::IMAGE_SCN_MEM_READ |
-                COFF::IMAGE_SCN_LNK_COMDAT,
-            Stub.first->getName(), COFF::IMAGE_COMDAT_SELECT_ANY));
+        // A stub that is not external is this object's own pointer: with data
+        // sections, in a section the linker discards with its last user.
+        bool External = Stub.second.getInt();
+        SmallString<256> SectionName = StringRef(".rdata");
+        if (External)
+          (SectionName += "$") += Stub.first->getName();
+        OutStreamer->switchSection(
+            External || TM.getDataSections()
+                ? OutContext.getCOFFSection(
+                      SectionName,
+                      COFF::IMAGE_SCN_CNT_INITIALIZED_DATA |
+                          COFF::IMAGE_SCN_MEM_READ | COFF::IMAGE_SCN_LNK_COMDAT,
+                      Stub.first->getName(),
+                      External ? COFF::IMAGE_COMDAT_SELECT_ANY
+                               : COFF::IMAGE_COMDAT_SELECT_NODUPLICATES)
+                : getObjFileLowering().getReadOnlySection());
         emitAlignment(Align(DL.getPointerSize()));
-        OutStreamer->emitSymbolAttribute(Stub.first, MCSA_Global);
+        if (External)
+          OutStreamer->emitSymbolAttribute(Stub.first, MCSA_Global);
         OutStreamer->emitLabel(Stub.first);
         OutStreamer->emitSymbolValue(Stub.second.getPointer(),
                                      DL.getPointerSize());
@@ -3255,14 +3265,22 @@ bool AsmPrinter::doFinalization(Module &M) {
       if (!GV.use_empty() && !GV.isThreadLocal() &&
           !GV.getName().starts_with("llvm.") &&
           !GV.hasAtLeastLocalUnnamedAddr()) {
-        // An imported global is listed by the __imp_ pointer the code loads,
-        // so the entry adds no symbol; a COFF import defines it for code and
-        // data alike.
+        // An imported global is listed by the __imp_ pointer the code loads;
+        // a COFF import defines it for code and data alike. So is a
+        // declaration that the code reaches through that pointer because it
+        // may be imported. Where only data names an imported global, the
+        // object names its pointer for the list.
         MCSymbol *Sym = getSymbol(&GV);
-        if (GV.hasDLLImportStorageClass())
-          Sym = OutContext.lookupSymbol("__imp_" + Sym->getName());
-        if (Sym)
-          OutStreamer->emitAddrsigSym(Sym);
+        MCSymbol *Imp = nullptr;
+        if (GV.isDeclarationForLinker() && !TM.shouldAssumeDSOLocal(&GV))
+          Imp = OutContext.lookupSymbol("__imp_" + Sym->getName());
+        if (!Imp && GV.hasDLLImportStorageClass() &&
+            TM.getTargetTriple().isOSBinFormatCOFF()) {
+          Imp = OutContext.getOrCreateSymbol("__imp_" + Sym->getName());
+          OutStreamer->emitSymbolAttribute(Imp, MCSA_Global);
+        }
+        if (Imp || !GV.hasDLLImportStorageClass())
+          OutStreamer->emitAddrsigSym(Imp ? Imp : Sym);
       }
     }
   }

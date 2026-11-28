@@ -14,22 +14,25 @@
 ; or NT-POSIX lists the functions and the import pointers whose address its
 ; relocations take, also where inline assembly or a declaration's use takes it. A function that is
 ; only called is not listed, also where it is called or tail-called through
-; its import pointer or through a register that only holds it.
+; its import pointer or through a register that only holds it. The address of
+; a declaration that is not dso_local is taken from its import pointer.
 
 ; CHECK-DAG: [{{ *}}[[#%d,ASM:]]]{{.*}} in_asm{{$}}
 ; CHECK-DAG: [{{ *}}[[#%d,DECL:]]]{{.*}} declared{{$}}
 ; CHECK-DAG: [{{ *}}[[#%d,IMP:]]]{{.*}} __imp_imported{{$}}
+; CHECK-DAG: [{{ *}}[[#%d,ANY:]]]{{.*}} __imp_anywhere{{$}}
 ; CHECK-DAG: (sec -1){{.*}}(scl 3) (nx 0) 0x00000800 @feat.00
 ; CHECK:      Hex dump of section '.gfids$y':
 ; CHECK-NEXT: 0x00000000 [[#%.2x,ASM]]000000 [[#%.2x,DECL]]000000 {{[^ ]+$}}
 ; CHECK-EMPTY:
 ; CHECK-NEXT: Hex dump of section '.giats$y':
-; CHECK-NEXT: 0x00000000 [[#%.2x,IMP]]000000 {{[^ ]+$}}
+; CHECK-NEXT: 0x00000000 [[#%.2x,IMP]]000000 [[#%.2x,ANY]]000000 {{[^ ]+$}}
 ; CHECK-EMPTY:
 
 module asm "ASM"
 
-declare void @declared()
+declare dso_local void @declared()
+declare void @anywhere()
 declare dllimport void @imported()
 declare dllimport void @imported_called()
 declare dllimport void @imported_jumped()
@@ -47,6 +50,7 @@ define void @user(ptr %q, ptr %r) {
   call void @imported_called()
   store ptr @declared, ptr %q
   store ptr @imported, ptr %r
+  store ptr @anywhere, ptr %q
   ret void
 }
 

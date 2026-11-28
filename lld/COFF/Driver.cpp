@@ -2858,6 +2858,13 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         symtab.addUndefined(symtab.mangle("__buildid"));
   });
 
+  auto loadImportPartners = [&] {
+    bool loaded = false;
+    ctx.forEachSymtab(
+        [&](SymbolTable &symtab) { loaded |= symtab.loadMinGWSymbols(); });
+    return loaded;
+  };
+
   // This code may add new undefined symbols to the link, which may enqueue more
   // symbol resolution tasks, so we need to continue executing tasks until we
   // converge.
@@ -2907,7 +2914,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
               symtab.addGCRoot(arg->getValue());
         }
       });
-    } while (run());
+      // Once the ordinary loads have settled, so that an import library
+      // offering __imp_X keeps precedence, an object for Windows Itanium or
+      // NT-POSIX loads the partners of its references to X and __imp_X.
+    } while (run() || (ctx.hasForkObject && loadImportPartners()));
   }
 
   // Handle /includeglob
@@ -3003,8 +3013,21 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     return;
 
   // If we generated native object files from bitcode files, this resolves
-  // references to the symbols we use from them.
+  // references to the symbols we use from them. A library call that LTO made
+  // may ask for a partner, whose member may ask for another.
   run();
+  if (ctx.hasForkObject)
+    while (loadImportPartners())
+      run();
+
+  // A definition that replaced an import's thunk, in whatever order the two
+  // were loaded, takes the import's pointer too.
+  for (ImportFile *file : ctx.importFileInstances)
+    if (file->yieldsToDefinition(file->impSym)) {
+      replaceSymbol<Undefined>(file->impSym, file->impSym->getName());
+      file->impSym = nullptr;
+      file->live = false;
+    }
 
   // Apply symbol renames for -wrap.
   ctx.forEachSymtab([](SymbolTable &symtab) {

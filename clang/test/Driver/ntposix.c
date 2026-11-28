@@ -35,6 +35,17 @@
 // USER-DAG: "-cfguard"
 // USER-DAG: "-pic-level" "2"
 
+// External data is reached through its import pointer, cc1's default for
+// position-independent code, unless the user asks for direct access, as on
+// ELF. MinGW's option, whose other half is its linker's, is not the target's.
+// RUN: %{x64} 2>&1 | FileCheck --check-prefix=CC1 %s --implicit-check-not=direct-access-external-data
+// RUN: %{a64} -fdirect-access-external-data 2>&1 | FileCheck --check-prefix=DIRECT %s
+// RUN: not %{x64} -fno-auto-import 2>&1 | FileCheck --check-prefix=AUTO %s
+// RUN: not %clang -### --target=x86_64-unknown-windows-itanium -fauto-import -c %s 2>&1 | \
+// RUN:   FileCheck --check-prefix=AUTO %s
+// DIRECT: "-fdirect-access-external-data"
+// AUTO:   error: unsupported option '-f{{(no-)?}}auto-import' for target 'x86_64-{{.*}}'
+
 // Separate sections and unwind tables are not optional.
 // RUN: %{a64} -ffreestanding -fno-data-sections -fno-unwind-tables 2>&1 | FileCheck --check-prefix=MANDATORY %s
 // MANDATORY:      warning: ignoring '-fno-data-sections' option as it is not currently supported for target 'aarch64-pc-windows-ntposix'

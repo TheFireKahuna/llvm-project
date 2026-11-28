@@ -173,7 +173,12 @@ void BitcodeCompiler::waitForLTOCleanup() {
     ltoObj->waitForCleanup();
 }
 
-static void undefine(Symbol *s) { replaceSymbol<Undefined>(s, s->getName()); }
+// The object that LTO generates refers to the symbol anew where it still
+// does, so the bitcode's references ask the link for nothing more.
+static void undefine(Symbol *s) {
+  replaceSymbol<Undefined>(s, s->getName());
+  s->forkReferenced = false;
+}
 
 // A PE image has no symbol preemption, so a reference is final when it
 // resolves to a definition in the image, other than an import, an absolute

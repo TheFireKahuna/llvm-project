@@ -2121,6 +2121,7 @@ void ItaniumCXXABI::emitVTableDefinitions(CodeGenVTables &CGVT,
 
   // Set the right visibility.
   CGM.setGVProperties(VTable, RD);
+  CGVT.setVTableDSOLocal(VTable, RD);
   // Code reaches a copy as it reaches the owner's vtable.
   if (CGVT.isVTableCopied(RD))
     VTable->setDSOLocal(false);
@@ -2280,6 +2281,7 @@ llvm::GlobalVariable *ItaniumCXXABI::getAddrOfVTable(const CXXRecordDecl *RD,
     setVTableSelectiveDLLImportExport(CGM, VTable, RD);
 
   CGM.setGVProperties(VTable, RD);
+  CGM.getVTables().setVTableDSOLocal(VTable, RD);
   return VTable;
 }
 
@@ -3602,47 +3604,51 @@ namespace {
 /// its non-unique type_info object on Windows Itanium and NT-POSIX, by which
 /// images that no link joins tell two layouts of one name apart: the scalars
 /// an object of the class holds, with its bases and the records it holds by
-/// value flattened in. An item is a byte whose low four bits are its kind and
-/// whose high four bits count the bits of padding ahead of it, or are 15 ahead
-/// of a ULEB128 count of them, then the kind's operands.
+/// value flattened in. The shape is a run of 4-bit codes, two to a byte, the
+/// first in the low half. An item is its kind and the kind's operands, a count
+/// being 3-bit digits, the lowest first, each with bit 3 set where another
+/// follows. Items are contiguous unless a gap of padding comes between them,
+/// and a shape ends with a gap that fills it to its size.
 class LayoutShapeBuilder final : CodeGenUtils::LayoutWalker {
   enum Kind : uint8_t {
     K_Int8, // Integers of 1, 2, 4, 8 and 16 bytes follow in order.
     K_Float32 = 5,
     K_Float64,
-    K_Float80,
     K_Pointer,
     K_VTablePointer,
-    K_MemberFunctionPointer,
     K_BitField, // Its width.
     K_Array,    // Its count, its element's items and K_End.
     K_Union,    // Its count of alternatives, each one's items and K_End.
+    K_Gap,      // Its width in bytes.
     K_End,
-    K_Extended, // An ExtendedKind in a byte of its own.
+    K_Extended, // An ExtendedKind follows.
+    K_MemberFunctionPointer,
   };
   enum ExtendedKind : uint8_t {
     X_Float16,
     X_BFloat16,
+    X_Float80,
     X_Float128,
     X_MemberDataPointer,
     X_Vector, // Its count, its element's items and K_End.
     X_BitInt, // Its width.
     X_Opaque, // Its size in bits.
+    X_BitGap, // Its width in bits, where that is not a whole byte.
   };
 
   struct Item {
     uint64_t Begin, End;
-    std::string Bytes;
+    std::string Codes;
   };
   SmallVector<Item, 8> Items;
   /// The types of the scalars whose kinds leave their types open, in the
   /// order of the walk.
   SmallVectorImpl<QualType> &OpenTypes;
 
-  static std::string counted(std::string Kind, uint64_t Count) {
-    llvm::raw_string_ostream OS(Kind);
-    llvm::encodeULEB128(Count, OS);
-    return Kind;
+  static std::string counted(std::string Codes, uint64_t Count) {
+    for (; Count > 7; Count >>= 3)
+      Codes += char(8 | (Count & 7));
+    return Codes += char(Count);
   }
   static std::string extended(ExtendedKind Kind) {
     return {char(K_Extended), char(Kind)};
@@ -3650,63 +3656,63 @@ class LayoutShapeBuilder final : CodeGenUtils::LayoutWalker {
   std::string nested(QualType T) {
     LayoutShapeBuilder Element(Ctx, OpenTypes);
     Element.walkType(T, 0);
-    return Element.encode() + char(K_End);
+    return Element.encode(Ctx.getTypeSize(T)) + char(K_End);
   }
-  void add(uint64_t Offset, uint64_t Width, std::string Bytes) {
-    Items.push_back({Offset, Offset + Width, std::move(Bytes)});
+  void add(uint64_t Offset, uint64_t Width, std::string Codes) {
+    Items.push_back({Offset, Offset + Width, std::move(Codes)});
   }
 
   void scalar(uint64_t Offset, ScalarKind Kind, QualType T) override {
     uint64_t Width = Ctx.getTypeSize(T);
-    std::string Bytes;
+    std::string Codes;
     switch (Kind) {
     case ScalarKind::Integer:
       if (T->isEnumeralType())
         OpenTypes.push_back(T);
       if (Width >= 8 && Width <= 128 && llvm::isPowerOf2_64(Width))
-        Bytes = char(K_Int8 + llvm::Log2_64(Width / 8));
+        Codes = char(K_Int8 + llvm::Log2_64(Width / 8));
       break;
     case ScalarKind::BitInt:
-      Bytes =
+      Codes =
           counted(extended(X_BitInt), T->castAs<BitIntType>()->getNumBits());
       break;
     case ScalarKind::Float: {
       const llvm::fltSemantics &S = Ctx.getFloatTypeSemantics(T);
       if (&S == &llvm::APFloat::IEEEsingle())
-        Bytes = char(K_Float32);
+        Codes = char(K_Float32);
       else if (&S == &llvm::APFloat::IEEEdouble())
-        Bytes = char(K_Float64);
+        Codes = char(K_Float64);
       else if (&S == &llvm::APFloat::x87DoubleExtended())
-        Bytes = char(K_Float80);
+        Codes = extended(X_Float80);
       else if (&S == &llvm::APFloat::IEEEhalf())
-        Bytes = extended(X_Float16);
+        Codes = extended(X_Float16);
       else if (&S == &llvm::APFloat::BFloat())
-        Bytes = extended(X_BFloat16);
+        Codes = extended(X_BFloat16);
       else if (&S == &llvm::APFloat::IEEEquad())
-        Bytes = extended(X_Float128);
+        Codes = extended(X_Float128);
       break;
     }
     case ScalarKind::Pointer:
       OpenTypes.push_back(T);
-      Bytes = char(K_Pointer);
+      Codes = char(K_Pointer);
       break;
     case ScalarKind::VTablePointer:
-      Bytes = char(K_VTablePointer);
+      Codes = char(K_VTablePointer);
       break;
     case ScalarKind::MemberFunctionPointer:
       OpenTypes.push_back(T);
-      Bytes = char(K_MemberFunctionPointer);
+      Codes = char(K_MemberFunctionPointer);
       break;
     case ScalarKind::MemberDataPointer:
       OpenTypes.push_back(T);
-      Bytes = extended(X_MemberDataPointer);
+      Codes = extended(X_MemberDataPointer);
       break;
     case ScalarKind::Opaque:
       break;
     }
-    if (Bytes.empty())
-      Bytes = counted(extended(X_Opaque), Width);
-    add(Offset, Width, std::move(Bytes));
+    if (Codes.empty())
+      Codes = counted(extended(X_Opaque), Width);
+    add(Offset, Width, std::move(Codes));
   }
 
   void bitField(uint64_t Offset, const FieldDecl *FD) override {
@@ -3714,10 +3720,12 @@ class LayoutShapeBuilder final : CodeGenUtils::LayoutWalker {
     add(Offset, Width, counted({char(K_BitField)}, Width));
   }
 
+  /// An array spans its elements, and a union its widest alternative, so that
+  /// the codes give the offset of what follows either.
   void array(uint64_t Offset, QualType T, uint64_t Count,
              QualType Element) override {
     if (Count != 0)
-      add(Offset, Ctx.getTypeSize(T),
+      add(Offset, Count * Ctx.getTypeSize(Element),
           counted(T->isVectorType() ? extended(X_Vector)
                                     : std::string{char(K_Array)},
                   Count) +
@@ -3727,44 +3735,47 @@ class LayoutShapeBuilder final : CodeGenUtils::LayoutWalker {
   void record(uint64_t Offset, const RecordDecl *RD) override {
     if (!RD->isUnion())
       return walkRecord(RD, Offset, /*IsCompleteObject=*/true);
-    std::string Bytes = counted(
+    std::string Codes = counted(
         {char(K_Union)}, std::distance(RD->field_begin(), RD->field_end()));
-    for (const FieldDecl *FD : RD->fields())
-      Bytes += nested(FD->getType());
-    add(Offset, Ctx.getTypeSize(Ctx.getCanonicalTagType(RD)), std::move(Bytes));
+    uint64_t Width = 0;
+    for (const FieldDecl *FD : RD->fields()) {
+      Codes += nested(FD->getType());
+      Width = std::max(Width, Ctx.getTypeSize(FD->getType()));
+    }
+    add(Offset, Width, std::move(Codes));
   }
 
   void base(uint64_t Offset, const CXXRecordDecl *Base, bool) override {
     walkRecord(Base, Offset, /*IsCompleteObject=*/false);
   }
 
-  /// Returns the items in the order of their offsets. A run of equal items
-  /// with no padding between them, as an array's elements are, is one array
-  /// item, so that one layout has one encoding.
-  std::string encode() {
+  /// Returns the items in the order of their offsets, then a gap to \p Size.
+  /// A run of equal contiguous items, as an array's elements are, is one
+  /// array item, so that one layout has one encoding.
+  std::string encode(uint64_t Size) {
     llvm::stable_sort(Items, [](const Item &A, const Item &B) {
       return std::tie(A.Begin, A.End) < std::tie(B.Begin, B.End);
     });
-    std::string Shape;
-    llvm::raw_string_ostream OS(Shape);
+    std::string Codes;
     uint64_t Previous = 0;
+    auto Pad = [&](uint64_t Begin) {
+      if (uint64_t Width = Begin > Previous ? Begin - Previous : 0)
+        Codes += Width % 8 ? counted(extended(X_BitGap), Width)
+                           : counted({char(K_Gap)}, Width / 8);
+    };
     for (size_t I = 0, J; I != Items.size(); I = J) {
       J = I + 1;
-      while (J != Items.size() && Items[J].Bytes == Items[I].Bytes &&
+      while (J != Items.size() && Items[J].Codes == Items[I].Codes &&
              Items[J].Begin == Items[J - 1].End)
         ++J;
-      std::string Bytes = Items[I].Bytes;
-      if (J - I > 1)
-        Bytes = counted({char(K_Array)}, J - I) + Bytes + char(K_End);
-      uint64_t Padding =
-          Items[I].Begin > Previous ? Items[I].Begin - Previous : 0;
-      OS << char(Bytes[0] | std::min<uint64_t>(Padding, 15) << 4);
-      if (Padding >= 15)
-        llvm::encodeULEB128(Padding, OS);
-      OS << StringRef(Bytes).drop_front();
+      Pad(Items[I].Begin);
+      Codes += J - I > 1 ? counted({char(K_Array)}, J - I) + Items[I].Codes +
+                               char(K_End)
+                         : Items[I].Codes;
       Previous = Items[J - 1].End;
     }
-    return Shape;
+    Pad(Size);
+    return Codes;
   }
 
   LayoutShapeBuilder(const ASTContext &Ctx,
@@ -3773,23 +3784,26 @@ class LayoutShapeBuilder final : CodeGenUtils::LayoutWalker {
 
 public:
   /// Returns the shape of the complete class \p Ty, whose mangled name is
-  /// \p Name: its size, the log2 of its alignment and its items. Where a
-  /// scalar's kind leaves its type open, as a pointer's or an enumeration's
-  /// does, K_End and the field-type signature follow: those types, mangled as
-  /// the parameters that follow the class in a function type, whose
+  /// \p Name: the log2 of its alignment and its items. Where a scalar's kind
+  /// leaves its type open, as a pointer's or an enumeration's does, K_End and,
+  /// from the next byte, the field-type signature follow: those types, mangled
+  /// as the parameters that follow the class in a function type, whose
   /// substitutions spell a repeated name once and may refer to the class's.
+  /// K_End also fills an odd last byte.
   static std::string get(const ASTContext &Ctx, MangleContext &Mangler,
                          QualType Ty, StringRef Name) {
-    const ASTRecordLayout &Layout =
-        Ctx.getASTRecordLayout(Ty->getAsRecordDecl());
     SmallVector<QualType, 8> OpenTypes = {Ty};
     LayoutShapeBuilder Builder(Ctx, OpenTypes);
     Builder.walkType(Ty, 0);
+    std::string Codes =
+        counted({}, llvm::Log2_64(Ctx.getTypeAlignInChars(Ty).getQuantity())) +
+        Builder.encode(Ctx.getTypeSize(Ty));
+    if (OpenTypes.size() > 1)
+      Codes += char(K_End);
     std::string Shape;
-    llvm::raw_string_ostream OS(Shape);
-    llvm::encodeULEB128(Layout.getSize().getQuantity(), OS);
-    OS << char(llvm::Log2_64(Layout.getAlignment().getQuantity()))
-       << Builder.encode();
+    for (size_t I = 0; I < Codes.size(); I += 2)
+      Shape +=
+          char(Codes[I] | (I + 1 < Codes.size() ? Codes[I + 1] : K_End) << 4);
     if (OpenTypes.size() > 1) {
       SmallString<64> Signature;
       llvm::raw_svector_ostream SignatureOS(Signature);
@@ -3797,10 +3811,9 @@ public:
           Ctx.getFunctionType(Ctx.VoidTy, OpenTypes,
                               FunctionProtoType::ExtProtoInfo()),
           SignatureOS);
-      OS << char(K_End)
-         << Signature.str()
-                .drop_front(strlen("_ZTSFv") + Name.size())
-                .drop_back();
+      Shape += Signature.str()
+                   .drop_front(strlen("_ZTSFv") + Name.size())
+                   .drop_back();
     }
     return Shape;
   }
@@ -3896,12 +3909,18 @@ llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
     Init = llvm::ConstantDataArray::getString(VMContext, DualEncodedName);
   } else if (HasLength) {
     // The name object of a complete class whose type_info object is not
-    // unique holds the class's layout shape after the name.
+    // unique holds the length of the class's layout shape after the name, then
+    // the shape, so that no name object that holds a shape starts another.
     std::string Object = TypeString.str() + '\0';
     if (RD && RD->isCompleteDefinition() &&
-        CXXABI.classifyRTTIUniqueness(Ty, Linkage) != ItaniumCXXABI::RUK_Unique)
-      Object +=
+        CXXABI.classifyRTTIUniqueness(Ty, Linkage) !=
+            ItaniumCXXABI::RUK_Unique) {
+      std::string Shape =
           LayoutShapeBuilder::get(CGM.getContext(), Mangler, Ty, TypeString);
+      llvm::raw_string_ostream OS(Object);
+      llvm::encodeULEB128(Shape.size(), OS);
+      OS << Shape;
+    }
     Init = llvm::ConstantDataArray::getString(VMContext, Object,
                                               /*AddNull=*/false);
   } else
@@ -3920,8 +3939,10 @@ llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
         llvm::GlobalValue::PrivateLinkage, Init, Name + ".length");
     Object->setAlignment(llvm::Align(8));
     bool IsWeak = llvm::GlobalValue::isWeakForLinker(Linkage);
-    if (IsWeak)
+    if (IsWeak) {
       Object->setComdat(M.getOrInsertComdat(Name));
+      Object->getComdat()->setSelectionKind(llvm::Comdat::ExactMatch);
+    }
     return llvm::GlobalAlias::create(
         CGM.Int8Ty, 0, IsWeak ? llvm::GlobalValue::ExternalLinkage : Linkage,
         Name,
@@ -3936,8 +3957,22 @@ llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
       Name, Init->getType(), Linkage, Align.getAsAlign());
 
   GV->setInitializer(Init);
+  // Every copy of a name object holds its class's layout, so a link whose
+  // inputs hold two layouts of one class fails.
+  if (HasLength && GV->hasComdat())
+    GV->getComdat()->setSelectionKind(llvm::Comdat::ExactMatch);
 
   return GV;
+}
+
+/// On Windows Itanium and NT-POSIX the link chooses the image that owns a
+/// type_info object or name of default visibility that this translation unit
+/// does not define strongly, which may be another image, so a reference to
+/// one is not DSO local.
+static void setRTTIOwnedByLink(CodeGenModule &CGM, llvm::GlobalValue *GV) {
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      GV->hasDefaultVisibility() && !GV->isStrongDefinitionForLinker())
+    GV->setDSOLocal(false);
 }
 
 llvm::Constant *
@@ -3960,6 +3995,7 @@ ItaniumRTTIBuilder::GetAddrOfExternalRTTIDescriptor(QualType Ty) {
         /*isConstant=*/true, llvm::GlobalValue::ExternalLinkage, nullptr, Name);
     const CXXRecordDecl *RD = Ty->getAsCXXRecordDecl();
     CGM.setGVProperties(GV, RD);
+    setRTTIOwnedByLink(CGM, GV);
     // Import the typeinfo symbol when all non-inline virtual methods are
     // imported.
     if (CGM.getTarget().hasPS4DLLImportExport()) {
@@ -4506,6 +4542,9 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
   if (IsPlaceholder)
     return llvm::GlobalAlias::create(
         GV->getValueType(), 0, llvm::GlobalValue::WeakAnyLinkage, Name, GV, &M);
+
+  setRTTIOwnedByLink(CGM, TypeName);
+  setRTTIOwnedByLink(CGM, GV);
 
   TypeName->setDLLStorageClass(DLLStorageClass);
   GV->setDLLStorageClass(TypeInfoDLLStorageClass);

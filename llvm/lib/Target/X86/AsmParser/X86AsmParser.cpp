@@ -4341,6 +4341,18 @@ void X86AsmParser::applyLVILoadHardeningMitigation(MCInst &Inst,
 
 void X86AsmParser::emitInstruction(MCInst &Inst, OperandVector &Operands,
                                    MCStreamer &Out) {
+  // On Windows Itanium and NT-POSIX, X's import pointer __imp_X is its GOT
+  // entry, which the linker binds and relaxes as an ELF linker does a GOT
+  // load, so X@GOTPCREL is __imp_X.
+  if (getSTI().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    for (MCOperand &Op : Inst)
+      if (const auto *E = dyn_cast_if_present<MCSymbolRefExpr>(
+              Op.isExpr() ? Op.getExpr() : nullptr);
+          E && E->getSpecifier() == X86::S_GOTPCREL)
+        Op.setExpr(MCSymbolRefExpr::create(
+            getContext().getOrCreateSymbol("__imp_" + E->getSymbol().getName()),
+            getContext(), E->getLoc()));
+
   if (CLOpts.experimental_lvi_inline_asm_hardening &&
       getSTI().hasFeature(X86::FeatureLVIControlFlowIntegrity))
     applyLVICFIMitigation(Inst, Out);

@@ -1,4 +1,6 @@
 // RUN: %clang_cc1 -emit-llvm -triple i686-windows-itanium -fdeclspec %s -o - | FileCheck %s --check-prefixes=CHECK,WI
+// RUN: %clang_cc1 -emit-llvm -triple x86_64-pc-windows-ntposix -fdeclspec %s -o - | FileCheck %s --check-prefixes=CHECK,WI
+// RUN: %clang_cc1 -emit-llvm -triple aarch64-pc-windows-ntposix -fdeclspec %s -o - | FileCheck %s --check-prefixes=CHECK,WI
 // RUN: %clang_cc1 -emit-llvm -triple x86_64-scei-ps4 -fdeclspec %s -o - | FileCheck %s --check-prefixes=CHECK,PS
 // RUN: %clang_cc1 -emit-llvm -triple x86_64-sie-ps5  -fdeclspec %s -o - | FileCheck %s --check-prefixes=CHECK,PS
 
@@ -6,6 +8,15 @@
 #define JOIN(x, y) JOIN2(x, y)
 #define UNIQ(name) JOIN(name, __LINE__)
 #define USEMEMFUNC(class, func) void (class::*UNIQ(use)())() { return &class::func; }
+
+/// A dllimport inline function is the DLL's, and so is its static local.
+__declspec(dllimport) inline int imp() {
+  static int x;
+  return ++x;
+}
+int useImp() { return imp(); }
+
+// CHECK: declare {{.*}}dllimport {{.*}} @_Z3impv()
 
 struct __declspec(dllexport) s {
   void f() {}
@@ -53,6 +64,6 @@ extern template class __declspec(dllimport) outer<char>;
 USEMEMFUNC(outer<char>, f)
 USEMEMFUNC(outer<char>::inner, f)
 
-// CHECK-DAG: declare dllimport {{.*}} @_ZN5outerIcE1fEv
+// CHECK-DAG: declare {{.*}}dllimport {{.*}} @_ZN5outerIcE1fEv
 // WI-DAG: define {{.*}} @_ZN5outerIcE5inner1fEv
 // PS-DAG: declare {{.*}} @_ZN5outerIcE5inner1fEv

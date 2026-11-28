@@ -421,7 +421,11 @@ AArch64Subtarget::ClassifyGlobalReference(const GlobalValue *GV,
   if (!TM.shouldAssumeDSOLocal(GV) ||
       ((useSmallAddressing() || TM.getCodeModel() == CodeModel::Tiny) &&
        GV->hasExternalWeakLinkage())) {
-    if (GV->hasDLLImportStorageClass()) {
+    // Windows Itanium and NT-POSIX have no stubs: the linker gives every
+    // symbol an import pointer, and makes the load of one the address where
+    // the symbol is in the image.
+    if (GV->hasDLLImportStorageClass() ||
+        getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
       return AArch64II::MO_GOT | AArch64II::MO_DLLIMPORT;
     }
     if (getTargetTriple().isOSWindowsOrUEFI())
@@ -461,6 +465,16 @@ unsigned AArch64Subtarget::classifyGlobalFunctionReference(
         return AArch64II::MO_ARM64EC_CALLMANGLE;
       }
     }
+
+    // On Windows Itanium and NT-POSIX a call binds through the linker's thunk,
+    // as through a PLT entry on ELF, unless the function is known to be
+    // imported, has no thunk to bind to, or the PLT is to be avoided.
+    if (auto *F = dyn_cast<Function>(GV);
+        getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        !GV->hasDLLImportStorageClass() && !GV->hasExternalWeakLinkage() &&
+        !(F && F->hasFnAttribute(Attribute::NonLazyBind)) &&
+        !GV->getParent()->getRtLibUseGOT())
+      return AArch64II::MO_NO_FLAG;
 
     // Use ClassifyGlobalReference for setting MO_DLLIMPORT/MO_COFFSTUB.
     return ClassifyGlobalReference(GV, TM);

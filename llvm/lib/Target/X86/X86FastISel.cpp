@@ -3719,6 +3719,10 @@ bool X86FastISel::fastLowerCall(CallLoweringInfo &CLI) {
     MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(CallOpc));
     if (NeedLoad)
       MIB.addReg(Is64Bit ? X86::RIP : X86::NoRegister).addImm(1).addReg(0);
+    // A symbol operand is emitted as it is, so name the import pointer.
+    if (Symbol && OpFlags == X86II::MO_DLLIMPORT)
+      Symbol = FuncInfo.MF->getContext().getOrCreateSymbol("__imp_" +
+                                                           Symbol->getName());
     if (Symbol)
       MIB.addSym(Symbol, OpFlags);
     else

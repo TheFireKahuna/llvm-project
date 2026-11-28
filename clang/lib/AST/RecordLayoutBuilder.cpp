@@ -3594,10 +3594,15 @@ bool ASTContext::shouldMapVisibilityToDLLExport(const NamedDecl *D) const {
           LV.isVisibilityExplicit());
 }
 
+bool ASTContext::mayVTableBeCopied(const CXXRecordDecl *RD) const {
+  // A unit that sees the class imported neither copies nor owns its vtable.
+  return getTargetInfo().getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+         RD->isExternallyVisible() && !RD->isEffectivelyFinal() &&
+         !RD->hasAttr<DLLImportAttr>();
+}
+
 bool ASTContext::isVTableOwnedElsewhereAndExtensible(const CXXRecordDecl *RD) {
-  if (!getTargetInfo().getTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
-      !RD->isExternallyVisible() || RD->isEffectivelyFinal() ||
-      RD->hasAttr<DLLImportAttr>())
+  if (!mayVTableBeCopied(RD))
     return false;
   if (shouldMapVisibilityToDLLExport(RD))
     return true;

@@ -693,6 +693,14 @@ X86DAGToDAGISel::IsProfitableToFold(SDValue N, SDNode *U, SDNode *Root) const {
   if (useNonTemporalLoad(cast<LoadSDNode>(N)))
     return false;
 
+  // Only a call folds the load of an import pointer the linker may relax.
+  SDValue Ptr = cast<LoadSDNode>(N)->getBasePtr();
+  if (Ptr.getOpcode() == X86ISD::WrapperRIP && U->getOpcode() != X86ISD::CALL &&
+      U->getOpcode() != X86ISD::TC_RETURN)
+    if (const auto *GA = dyn_cast<GlobalAddressSDNode>(Ptr.getOperand(0)))
+      if (isRelaxableImportReference(GA->getGlobal(), GA->getTargetFlags()))
+        return false;
+
   // If N is a load, do additional profitability checks.
   if (U == Root) {
     switch (U->getOpcode()) {

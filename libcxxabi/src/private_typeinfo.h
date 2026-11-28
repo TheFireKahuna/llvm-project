@@ -28,7 +28,9 @@ public:
 #if defined(_LIBCPP_TYPEINFO_NAME_HAS_LENGTH)
   // Whether x and y have one name. The length of a type's name covers what
   // follows the name too, which the type_info for a class holds only where the
-  // class is complete, so the shorter length holds a whole name and decides.
+  // class is complete: the length of its layout's description, then the
+  // description. One such blob never starts another, so where the shorter one
+  // starts the longer, it is the name of an incomplete class.
   __attribute__((__cold__)) _LIBCXXABI_HIDDEN static bool
   equal_names(const std::type_info* x, const std::type_info* y) {
     size_t nx = __impl::__length(static_cast<const __shim_type_info*>(x)->__type_name);

@@ -2080,12 +2080,45 @@ void TargetLoweringObjectFileCOFF::initialize(MCContext &Ctx,
 
   Used.clear();
   if (T.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // A catch-type entry reads its type_info's address from a pointer, the
+    // import address table's when another image owns the type_info, so an
+    // exception table holds no address the loader must write.
+    TTypeEncoding = dwarf::DW_EH_PE_indirect | dwarf::DW_EH_PE_pcrel |
+                    dwarf::DW_EH_PE_sdata4;
     SmallVector<GlobalValue *, 4> Vec;
     collectUsedGlobalVariables(M, Vec, false);
     for (GlobalValue *GV : Vec)
       if (auto *GO = dyn_cast<GlobalObject>(GV); GO && GO->hasLocalLinkage())
         Used.insert(GO);
   }
+}
+
+const MCExpr *TargetLoweringObjectFileCOFF::getTTypeGlobalReference(
+    const GlobalValue *GV, unsigned Encoding, const TargetMachine &TM,
+    MachineModuleInfo *MMI, MCStreamer &Streamer) const {
+  if (!(Encoding & DW_EH_PE_indirect))
+    return TargetLoweringObjectFile::getTTypeGlobalReference(GV, Encoding, TM,
+                                                             MMI, Streamer);
+  // The linker supplies __imp_X for every X it can name, in the image or
+  // imported. A local X has a pointer of this object's own, which needs a
+  // symbol the linker sees to key a section it can discard.
+  MCSymbol *SSym;
+  if (!GV->hasLocalLinkage()) {
+    SmallString<128> Name("__imp_");
+    TM.getNameWithPrefix(Name, GV, getMangler());
+    SSym = getContext().getOrCreateSymbol(Name);
+  } else {
+    SSym = TM.getDataSections()
+               ? getContext().getOrCreateSymbol(TM.getSymbol(GV)->getName() +
+                                                ".DW.stub")
+               : getSymbolWithGlobalValueBase(GV, ".DW.stub", TM);
+    MachineModuleInfoImpl::StubValueTy &Stub =
+        MMI->getObjFileInfo<MachineModuleInfoCOFF>().getGVStubEntry(SSym);
+    if (!Stub.getPointer())
+      Stub = MachineModuleInfoImpl::StubValueTy(TM.getSymbol(GV), false);
+  }
+  return getTTypeReference(MCSymbolRefExpr::create(SSym, getContext()),
+                           Encoding & ~DW_EH_PE_indirect, Streamer);
 }
 
 static MCSectionCOFF *getCOFFStaticStructorSection(MCContext &Ctx,

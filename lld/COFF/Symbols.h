@@ -107,9 +107,10 @@ protected:
   explicit Symbol(Kind k, StringRef n = "")
       : symbolKind(k), isExternal(true), isCOMDAT(false),
         writtenToSymtab(false), isUsedInRegularObj(false),
-        pendingArchiveLoad(false), isGCRoot(false), isRuntimePseudoReloc(false),
-        deferUndefined(false), canInline(true), isWeak(false), weakKind(Alias),
-        typePrefix(0), nameSize(n.size()),
+        forkReferenced(false), strongImport(false), pendingArchiveLoad(false),
+        isGCRoot(false), isRuntimePseudoReloc(false), deferUndefined(false),
+        canInline(true), isWeak(false), weakKind(Alias), typePrefix(0),
+        nameSize(n.size()),
         nameData(n.empty() ? nullptr : n.data()) {
     assert((!n.empty() || k <= LastDefinedCOFFKind) &&
            "If the name is empty, the Symbol must be a DefinedCOFF.");
@@ -128,6 +129,14 @@ public:
 
   // True if this symbol was referenced by a regular (non-bitcode) object.
   unsigned isUsedInRegularObj : 1;
+
+  // True if an object LLVM made for Windows Itanium or NT-POSIX refers to this
+  // symbol, which resolves the reference as such an object needs.
+  unsigned forkReferenced : 1;
+
+  // True if this is __imp_X and such an object that keeps no weak reference
+  // to X refers to it, which is a strong reference to X.
+  unsigned strongImport : 1;
 
   // True if we've seen both a lazy and an undefined symbol with this symbol
   // name, which means that we have enqueued an archive member load and should
@@ -550,9 +559,13 @@ void replaceSymbol(Symbol *s, ArgT &&... arg) {
          "Not a Symbol");
   bool canInline = s->canInline;
   bool isUsedInRegularObj = s->isUsedInRegularObj;
+  bool forkReferenced = s->forkReferenced;
+  bool strongImport = s->strongImport;
   new (s) T(std::forward<ArgT>(arg)...);
   s->canInline = canInline;
   s->isUsedInRegularObj = isUsedInRegularObj;
+  s->forkReferenced = forkReferenced;
+  s->strongImport = strongImport;
 }
 } // namespace coff
 

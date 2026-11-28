@@ -3517,10 +3517,12 @@ bool X86TargetLowering::shouldReduceLoadWidth(
 
   // "ELF Handling for Thread-Local Storage" specifies that R_X86_64_GOTTPOFF
   // relocation target a movq or addq instruction: don't let the load shrink.
+  // Nor does the load of an import pointer the linker may relax.
   SDValue BasePtr = cast<LoadSDNode>(Load)->getBasePtr();
   if (BasePtr.getOpcode() == X86ISD::WrapperRIP)
     if (const auto *GA = dyn_cast<GlobalAddressSDNode>(BasePtr.getOperand(0)))
-      return GA->getTargetFlags() != X86II::MO_GOTTPOFF;
+      return GA->getTargetFlags() != X86II::MO_GOTTPOFF &&
+             !isRelaxableImportReference(GA->getGlobal(), GA->getTargetFlags());
 
   // If this is a (1) 128-bit or wider vector load, and any use will be used by
   // a legal full width instruction, then the load can typically be memory

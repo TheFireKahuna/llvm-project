@@ -3013,6 +3013,11 @@ public:
   /// \p D.
   bool shouldMapVisibilityToDLLExport(const NamedDecl *D) const;
 
+  /// On Windows Itanium and NT-POSIX, whether some unit may copy the vtable of
+  /// \p RD: whether it does depends on that unit's options and marks, so the
+  /// owner of every such vtable puts it in the copies' COMDAT.
+  bool mayVTableBeCopied(const CXXRecordDecl *RD) const;
+
   /// On Windows Itanium and NT-POSIX, whether one image owns and exports the
   /// vtable of \p RD while a derived class may extend it. Another image, or
   /// another unit of the owner, then constructs the class through a discardable

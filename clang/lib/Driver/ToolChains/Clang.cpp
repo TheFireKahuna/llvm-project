@@ -6420,6 +6420,14 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Triple.isOSCygMing()) {
     Args.addOptOutFlag(CmdArgs, options::OPT_fauto_import,
                        options::OPT_fno_auto_import);
+  } else if (Arg *A = Args.getLastArg(options::OPT_fauto_import,
+                                      options::OPT_fno_auto_import);
+             A && Triple.isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // External data is reached as ELF reaches it, through
+    // -fdirect-access-external-data, and the linker has no run-time
+    // pseudo-relocations.
+    D.Diag(diag::err_drv_unsupported_opt_for_target)
+        << A->getSpelling() << TripleStr;
   }
 
   if (Args.hasFlag(options::OPT_fms_volatile, options::OPT_fno_ms_volatile,
@@ -6442,6 +6450,12 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
 
   if (Triple.isOSBinFormatELF() && (Triple.isAArch64() || Triple.isX86()))
     Args.addOptOutFlag(CmdArgs, options::OPT_fplt, options::OPT_fno_plt);
+  // On Windows Itanium and NT-POSIX the linker's thunk for an imported
+  // function is the PLT entry, which x86-64 avoids by default.
+  else if (Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
+           !Args.hasFlag(options::OPT_fplt, options::OPT_fno_plt,
+                         !Triple.isX86()))
+    CmdArgs.push_back("-fno-plt");
 
   // -fhosted is default.
   // TODO: Audit uses of KernelOrKext and see where it'd be more appropriate to

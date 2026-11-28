@@ -775,6 +775,7 @@ void ObjFile::initializeSymbols() {
   SmallVector<
       std::tuple<Symbol *, const coff_aux_weak_external *, Symbol::WeakKind>, 8>
       weakAliases;
+  SmallVector<Symbol *, 0> imps, weakRefs;
   std::vector<uint32_t> pendingIndexes;
   pendingIndexes.reserve(numSymbols);
 
@@ -788,6 +789,8 @@ void ObjFile::initializeSymbols() {
     bool prevailingComdat;
     if (coffSym.isUndefined()) {
       symbols[i] = createUndefined(coffSym, false);
+      if (symbols[i]->getName().starts_with("__imp_"))
+        imps.push_back(symbols[i]);
     } else if (coffSym.isWeakExternal() &&
                coffSym.getSectionNumber() == IMAGE_SYM_UNDEFINED) {
       auto aux = coffSym.getAux<coff_aux_weak_external>();
@@ -858,6 +861,8 @@ void ObjFile::initializeSymbols() {
       symbols[i] = createUndefined(coffSym, overrideLazy);
       if (sets)
         weakAliases.emplace_back(symbols[i], aux, kind);
+      if (kind == Symbol::NoLibrary || kind == Symbol::Library)
+        weakRefs.push_back(symbols[i]);
     } else if (std::optional<Symbol *> optSym =
                    createDefined(coffSym, comdatDefs, prevailingComdat)) {
       symbols[i] = *optSym;
@@ -896,6 +901,24 @@ void ObjFile::initializeSymbols() {
 
   for (auto [sym, aux, kind] : weakAliases)
     addWeakAlias(sym, symbols[aux->TagIndex], kind);
+
+  // Weakness belongs to the reference. An object for Windows Itanium or
+  // NT-POSIX reaches X through __imp_X, so one that keeps no weak reference
+  // to X refers to X strongly, which cancels a weak reference of another
+  // object in either order.
+  for (Symbol *x : weakRefs)
+    if (Symbol *imp = symtab.find(("__imp_" + x->getName()).str());
+        imp && imp->strongImport)
+      symtab.addStrongReference(x);
+  if (forkObject)
+    for (Symbol *imp : imps) {
+      Symbol *x = symtab.find(imp->getName().substr(strlen("__imp_")));
+      if (is_contained(weakRefs, x))
+        continue;
+      imp->strongImport = true;
+      if (x)
+        symtab.addStrongReference(x);
+    }
 
   // Free the memory used by sparseChunks now that symbol loading is finished.
   decltype(sparseChunks)().swap(sparseChunks);
@@ -1470,6 +1493,18 @@ ImportThunkChunk *ImportFile::makeImportThunk() {
   llvm_unreachable("unknown machine type");
 }
 
+// For a reference from an object for Windows Itanium or NT-POSIX, a
+// definition in the link beats an import library's pointer, as an
+// executable's definition beats a shared object's on ELF. Vague data keeps
+// the import, where a DLL's instance stands for the image's.
+bool ImportFile::yieldsToDefinition(Symbol *imp) const {
+  if (!imp || !imp->forkReferenced || symtab.isEC())
+    return false;
+  auto *d = dyn_cast_or_null<DefinedRegular>(
+      symtab.find(imp->getName().substr(strlen("__imp_"))));
+  return d && !(d->isCOMDAT && hdr->getType() != llvm::COFF::IMPORT_CODE);
+}
+
 void ImportFile::parse() {
   const auto *hdr =
       reinterpret_cast<const coff_import_header *>(mb.getBufferStart());
@@ -1515,6 +1550,14 @@ void ImportFile::parse() {
 
   this->hdr = hdr;
   externalName = extName;
+
+  // The reference that loaded the import binds to the definition instead.
+  if (Symbol *imp = symtab.find(impName); yieldsToDefinition(imp)) {
+    if (imp->isLazy())
+      replaceSymbol<Undefined>(imp, impName);
+    live = false;
+    return;
+  }
 
   bool isCode = hdr->getType() == llvm::COFF::IMPORT_CODE;
 

@@ -58,6 +58,9 @@ void writeDefFile(COFFLinkerContext &, StringRef name,
 // library offers too, so it leaves a symbol that an object or a loaded
 // archive member defines to that definition.
 //
+// A reference through an import pointer follows the wrap as a direct one
+// does: __imp_foo is the pointer to __wrap_foo, and __imp___real_foo is foo's.
+//
 // A wrap applies once something refers to the symbol; addWrappedSymbols
 // applies the wraps and binds the __real_ names that something refers to now,
 // and returns whether there were any.

@@ -129,6 +129,11 @@ public:
   /// EmitThunks - Emit the associated thunks for the given global decl.
   void EmitThunks(GlobalDecl GD);
 
+  /// On Windows Itanium and NT-POSIX, sets whether the declaration \p GV of
+  /// the vtable or VTT of \p RD is dso_local: another image may define it
+  /// only where the visibility mapping exports the class.
+  void setVTableDSOLocal(llvm::GlobalValue *GV, const CXXRecordDecl *RD) const;
+
   /// GenerateClassData - Generate all the class data required to be
   /// generated upon definition of a KeyFunction.  This includes the
   /// vtable, the RTTI data structure (if RTTI is enabled) and the VTT
@@ -143,8 +148,8 @@ public:
   /// stores a direct address.
   bool isVTableCopied(const CXXRecordDecl *RD);
 
-  /// Whether this unit owns a vtable that others copy. Its definition, VTT and
-  /// construction vtables join the copies' COMDATs, so that a copy linked
+  /// Whether this unit owns a vtable that others may copy. Its definition, VTT
+  /// and construction vtables join the copies' COMDATs, so that a copy linked
   /// beside them folds into them.
   bool hasVTableCopies(const CXXRecordDecl *RD);
 

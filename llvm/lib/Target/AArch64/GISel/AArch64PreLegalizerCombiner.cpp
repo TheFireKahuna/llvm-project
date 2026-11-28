@@ -107,6 +107,9 @@ bool matchFoldGlobalOffset(MachineInstr &MI, MachineRegisterInfo &MRI,
   assert(MI.getOpcode() == TargetOpcode::G_GLOBAL_VALUE);
   MachineFunction &MF = *MI.getMF();
   auto &GlobalOp = MI.getOperand(1);
+  // A library call's import pointer names a symbol, not a global.
+  if (!GlobalOp.isGlobal())
+    return false;
   auto *GV = GlobalOp.getGlobal();
   if (GV->isThreadLocal())
     return false;

@@ -18,10 +18,10 @@ declare void @__cxa_call_unexpected(ptr) noreturn nounwind
 declare i32 @__gxx_personality_seh0(...)
 declare ptr @llvm.eh.exceptionpointer.p0(token)
 @_ZTIi = external constant ptr
-@c1 = external constant i64
-@c2 = external constant i64
-@c3 = external constant i64
-@g = external global i64
+@c1 = external dso_local constant i64
+@c2 = external dso_local constant i64
+@c3 = external dso_local constant i64
+@g = external dso_local global i64
 
 ; A cleanup alone: the site names the cleanup's scope, and the LSDA's site
 ; has no pad. No nop keeps the call's return address ahead
@@ -144,8 +144,9 @@ ehcleanup:
 ; CHECK-NEXT:    .byte 2 # >> Action Record 2 <<
 ; CHECK-NEXT:          # Catch TypeInfo 2
 ; CHECK-NEXT:    .byte 125 # Continue to action 1
-; CHECK:         .quad _ZTIi # TypeInfo 2
-; CHECK-NEXT:    .quad 0 # TypeInfo 1
+; CHECK:       [[TI:.Ltmp[0-9]+]]: # TypeInfo 2
+; CHECK-NEXT:    .long __imp__ZTIi-[[TI]]
+; CHECK-NEXT:    .long 0 # TypeInfo 1
 ; CHECK:       [[CLEANUPB]]: # %cleanup.b
 ; CHECK:       [[CLEANUPA]]: # %cleanup.a
 define i32 @nested() personality ptr @__gxx_personality_seh0 {
@@ -198,7 +199,8 @@ outer.body:
 ; CHECK-NEXT:    .uleb128 [[PAD]]-.Lfunc_begin2
 ; CHECK:         .byte 127 # >> Action Record 1 <<
 ; CHECK-NEXT:          # Filter TypeInfo -1
-; CHECK:         .quad _ZTIi # TypeInfo 1
+; CHECK:       [[TI:.Ltmp[0-9]+]]: # TypeInfo 1
+; CHECK-NEXT:    .long __imp__ZTIi-[[TI]]
 ; CHECK-NEXT:  .Lttbase{{[0-9]+}}:
 ; CHECK-NEXT:          # >> Filter TypeInfos <<
 ; CHECK-NEXT:    .byte 1

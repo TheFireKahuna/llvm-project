@@ -1409,7 +1409,7 @@ void Writer::createMiscChunks() {
 
   createECChunks();
 
-  if (config->autoImport)
+  if (config->autoImport || ctx.hasForkObject)
     createRuntimePseudoRelocs();
 
   if (config->mingw) {

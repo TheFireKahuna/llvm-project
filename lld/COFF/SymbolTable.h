@@ -41,8 +41,9 @@ class Symbol;
 // This data structure is instantiated for each -wrap option.
 struct WrappedSymbol {
   Symbol *sym;
-  // __real_X, once something refers to it.
+  // __real_X and its import pointer, each once something refers to it.
   Symbol *real;
+  Symbol *realImp;
   Symbol *wrap;
   StringRef name;
   // Whether an object's .drectve asked for the wrap, which then yields to a
@@ -93,8 +94,10 @@ public:
   void addStartStopSymbols();
 
   // Load lazy objects that are needed for MinGW automatic import and for
-  // doing stdcall fixups.
-  void loadMinGWSymbols();
+  // doing stdcall fixups, and those that a reference to X or __imp_X from an
+  // object for Windows Itanium or NT-POSIX asks for. Returns whether it loaded
+  // any.
+  bool loadMinGWSymbols();
   bool handleMinGWAutomaticImport(Symbol *sym, StringRef name);
 
   // Returns a symbol for a given name. Returns a nullptr if not found.

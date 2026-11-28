@@ -121,6 +121,7 @@ CodeGenVTables::EmitVTTDefinition(llvm::GlobalVariable *VTT,
   // Set it again, now that we have a definition, as the implicit visibility can
   // apply differently to definitions.
   CGM.setGVProperties(VTT, RD);
+  setVTableDSOLocal(VTT, RD);
 }
 
 llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTT(const CXXRecordDecl *RD) {
@@ -150,6 +151,7 @@ llvm::GlobalVariable *CodeGenVTables::GetAddrOfVTT(const CXXRecordDecl *RD) {
   if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     GV->setDLLStorageClass(VTable->getDLLStorageClass());
   CGM.setGVProperties(GV, RD);
+  setVTableDSOLocal(GV, RD);
   return GV;
 }
 

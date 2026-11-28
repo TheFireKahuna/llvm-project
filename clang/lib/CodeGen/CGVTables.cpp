@@ -1294,6 +1294,18 @@ void CodeGenModule::EmitVTable(CXXRecordDecl *theClass) {
   EmittedVTables.insert(theClass);
 }
 
+void CodeGenVTables::setVTableDSOLocal(llvm::GlobalValue *GV,
+                                       const CXXRecordDecl *RD) const {
+  // The vtable of a class that the mapping exports is reached through its
+  // import pointer however other external data is, and that of any other
+  // class directly: only this image can define it. A vtable that is marked
+  // imported, or that is weakly referenced, is not this image's.
+  if (CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      GV->isDeclarationForLinker() && !GV->hasDLLImportStorageClass() &&
+      !GV->hasExternalWeakLinkage())
+    GV->setDSOLocal(!CGM.shouldMapVisibilityToDLLExport(RD));
+}
+
 void
 CodeGenVTables::GenerateClassData(const CXXRecordDecl *RD) {
   if (CGDebugInfo *DI = CGM.getModuleDebugInfo())
@@ -1357,8 +1369,7 @@ bool CodeGenVTables::isVTableCopied(const CXXRecordDecl *RD) {
 }
 
 bool CodeGenVTables::hasVTableCopies(const CXXRecordDecl *RD) {
-  return CGM.getContext().isVTableOwnedElsewhereAndExtensible(RD) &&
-         !isVTableExternal(RD);
+  return CGM.getContext().mayVTableBeCopied(RD) && !isVTableExternal(RD);
 }
 
 /// Given that we're currently at the end of the translation unit, and

@@ -1190,6 +1190,18 @@ void SectionChunk::getRuntimePseudoRelocs(
     // alive. Thus such dangling references in DWARF sections are expected.
     if (!target->getChunk())
       continue;
+    // An object for Windows Itanium or NT-POSIX never takes a runtime pseudo
+    // relocation, whatever -runtime-pseudo-reloc says.
+    if (file->forkObject) {
+      auto *imp = dyn_cast<DefinedImportData>(target);
+      Err(file->symtab.ctx)
+          << file << ": automatic import of " << target->getName() << " from "
+          << (imp ? imp->getDLLName().str() : toString(target->getFile()))
+          << " needs a runtime pseudo relocation; declare it dllimport, or "
+             "refer to __imp_"
+          << target->getName();
+      continue;
+    }
     int sizeInBits = getRuntimePseudoRelocSize(rel.Type, getArch());
     if (sizeInBits == 0) {
       error("unable to automatically import from " + target->getName() +

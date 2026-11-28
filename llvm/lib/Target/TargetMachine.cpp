@@ -287,6 +287,15 @@ bool TargetMachine::shouldAssumeDSOLocal(const GlobalValue *GV) const {
     if (GV->hasExternalWeakLinkage())
       return false;
 
+    // On Windows Itanium and NT-POSIX a DLL may define what the module only
+    // declares, or a variable that another definition may replace, as a
+    // shared object may on ELF. A thread-local variable is never imported,
+    // and a declaration marked dllexport is of what this image defines.
+    if (TT.isWindowsItaniumOrNTPOSIXEnvironment() && !GV->isThreadLocal() &&
+        ((GV->isDeclarationForLinker() && !GV->hasDLLExportStorageClass()) ||
+         (isa<GlobalVariable>(GV) && GV->isWeakForLinker())))
+      return false;
+
     // Every other GV is local on COFF.
     return true;
   }

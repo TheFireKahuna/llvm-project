@@ -2388,6 +2388,17 @@ static bool shouldAssumeDSOLocal(const CodeGenModule &CGM,
       return false;
   }
 
+  // On Windows Itanium and NT-POSIX a DLL may define a function or variable
+  // that the module only declares, as a shared object may on ELF, where the
+  // same option says whether a variable is reached directly. A native
+  // thread-local variable cannot be imported.
+  if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
+      GV->isDeclarationForLinker() &&
+      (isa<llvm::Function>(GV) ||
+       (isa<llvm::GlobalVariable>(GV) && !GV->isThreadLocal() &&
+        !CGOpts.DirectAccessExternalData)))
+    return false;
+
   // On COFF, don't mark 'extern_weak' symbols as DSO local. If these symbols
   // remain unresolved in the link, they can be resolved to zero, which is
   // outside the current DSO.
@@ -2506,6 +2517,12 @@ void CodeGenModule::setGVPropertiesAux(llvm::GlobalValue *GV,
                                        const NamedDecl *D) const {
   setGlobalVisibility(GV, D);
   setDSOLocal(GV);
+  // On Windows Itanium and NT-POSIX a function or variable that is declared
+  // dllexport is defined in this image.
+  if (isa_and_nonnull<DeclaratorDecl>(D) && D->hasAttr<DLLExportAttr>() &&
+      !GV->hasExternalWeakLinkage() &&
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    GV->setDSOLocal(true);
   GV->setPartition(CodeGenOpts.SymbolPartition);
 }
 
@@ -6173,6 +6190,10 @@ llvm::FunctionCallee CodeGenModule::CreateRuntimeFunction(
       F->setCallingConv(getRuntimeCC());
       setWindowsItaniumDLLImport(*this, Local, F, Name);
       setDSOLocal(F);
+      // Every image defines a local function for itself, where a function
+      // that is only declared may otherwise be another image's.
+      if (Local && getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+        F->setDSOLocal(true);
     }
   }
   return {ConvTy, C};
@@ -6199,6 +6220,10 @@ CodeGenModule::CreateRuntimeFunction(llvm::FunctionType *FTy, StringRef Name,
       F->setCallingConv(getRuntimeCC());
       setWindowsItaniumDLLImport(*this, Local, F, Name);
       setDSOLocal(F);
+      // Every image defines a local function for itself, where a function
+      // that is only declared may otherwise be another image's.
+      if (Local && getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+        F->setDSOLocal(true);
       // FIXME: We should use CodeGenModule::SetLLVMFunctionAttributes() instead
       // of trying to approximate the attributes using the LLVM function
       // signature.  The other overload of CreateRuntimeFunction does this; it

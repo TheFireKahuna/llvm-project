@@ -145,6 +145,17 @@ inline static bool isGlobalStubReference(unsigned char TargetFlag) {
   }
 }
 
+/// Return true if a reference to \p GV with \p TargetFlag names an import
+/// pointer that is the compiler's choice, not the declaration's storage class.
+/// The linker makes the load of such a pointer the symbol's address where the
+/// symbol is in the image, so the load stays a 64-bit instruction of its own,
+/// which only a call or a tail call takes as its operand.
+inline static bool isRelaxableImportReference(const GlobalValue *GV,
+                                              unsigned char TargetFlag) {
+  return TargetFlag == X86II::MO_DLLIMPORT && GV &&
+         !GV->hasDLLImportStorageClass();
+}
+
 /// isGlobalRelativeToPICBase - Return true if the specified global value
 /// reference is relative to a 32-bit PIC base (X86ISD::GlobalBaseReg).  If this
 /// is true, the addressing mode has the PIC base register added in (e.g. EBX).

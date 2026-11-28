@@ -215,18 +215,27 @@ static StringRef mangle(Twine sym, MachineTypes machine) {
 // This function instantiates wrapper symbols. At this point, they seem
 // like they are not being used at all, so we explicitly set some flags so
 // that LTO won't eliminate them.
-// Binds __real_X, which something refers to, to X. As with GNU ld, a strong
-// reference loads X if an archive or an import library offers it, and a weak
-// one, which loads no archive member elsewhere, does not.
-static void addWrappedReal(SymbolTable &symtab, WrappedSymbol &w,
-                           Symbol *real) {
-  w.real = real;
-  real->deferUndefined = true;
-  real->canInline = false;
-  real->isUsedInRegularObj = true;
-  auto *u = dyn_cast<Undefined>(real);
-  if (w.sym->isLazy() && !(u && u->weakAlias))
-    symtab.addUndefined(w.sym->getName());
+// Binds to X the names of the real X that something refers to now: __real_X,
+// and __imp___real_X, from which code that may import X reads its address. As
+// with GNU ld, a strong reference loads X if an archive or an import library
+// offers it, and a weak one, which loads no archive member elsewhere, does not.
+static bool addWrappedReal(SymbolTable &symtab, WrappedSymbol &w) {
+  StringRef name = mangle("__real_" + w.name, symtab.machine);
+  bool bound = false;
+  auto bind = [&](Symbol *&real, const Twine &realName) {
+    if (real || !(real = symtab.find(realName.str())))
+      return;
+    bound = true;
+    real->deferUndefined = true;
+    real->canInline = false;
+    real->isUsedInRegularObj = true;
+    auto *u = dyn_cast<Undefined>(real);
+    if (w.sym->isLazy() && !(u && u->weakAlias))
+      symtab.addUndefined(w.sym->getName());
+  };
+  bind(w.real, name);
+  bind(w.realImp, "__imp_" + name);
+  return bound;
 }
 
 bool lld::coff::addWrappedSymbols(SymbolTable &symtab,
@@ -234,12 +243,7 @@ bool lld::coff::addWrappedSymbols(SymbolTable &symtab,
   size_t numWrapped = symtab.wrapped.size();
   bool bound = false;
   for (WrappedSymbol &w : symtab.wrapped)
-    if (!w.real)
-      if (Symbol *real =
-              symtab.find(mangle("__real_" + w.name, symtab.machine))) {
-        addWrappedReal(symtab, w, real);
-        bound = true;
-      }
+    bound |= addWrappedReal(symtab, w);
   for (auto *arg : args.filtered(OPT_wrap))
     addWrappedSymbol(symtab, arg->getValue());
   for (StringRef name : symtab.directiveWraps)
@@ -251,30 +255,38 @@ bool lld::coff::addWrappedSymbols(SymbolTable &symtab,
 void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name,
                                  bool fromDirective) {
   Symbol *sym = symtab.findUnderscore(name);
-  if (!sym || llvm::any_of(symtab.wrapped, [&](const WrappedSymbol &w) {
-        return w.sym == sym;
-      }))
+  if (llvm::any_of(symtab.wrapped,
+                   [&](const WrappedSymbol &w) { return w.sym == sym; }))
     return;
   // The program's own X stands, and its wrapper is not loaded.
-  if (fromDirective && isa<DefinedCOFF>(sym))
+  if (fromDirective && isa_and_nonnull<DefinedCOFF>(sym))
     return;
 
   // As with GNU ld, a wrap renames references and loads nothing else, so it
-  // waits while nothing refers to X, __imp_X or __real_X. The LTO code
-  // generator may call a runtime library function that no bitcode symbol
-  // names, so with bitcode such a function counts as referenced.
-  auto isReferenced = [](Symbol *s) { return s && !s->isLazy(); };
-  Symbol *real = symtab.find(mangle("__real_" + name, symtab.machine));
-  if (!isReferenced(sym) && !isReferenced(real) &&
-      !isReferenced(symtab.find(("__imp_" + sym->getName()).str())) &&
-      (symtab.bitcodeFileInstances.empty() ||
-       RTLIB::RuntimeLibcallsInfo::lookupLibcallImplName(name).empty()))
+  // waits while nothing refers to X or __real_X, or to the import pointer of
+  // either, which names no X. The LTO code generator may call a runtime
+  // library function that no bitcode symbol names, so with bitcode such a
+  // function counts as referenced.
+  auto isReferenced = [&](const Twine &name) {
+    Symbol *s = symtab.find(name.str());
+    return s && !s->isLazy();
+  };
+  StringRef x = sym ? sym->getName() : mangle(name, symtab.machine);
+  StringRef real = mangle("__real_" + name, symtab.machine);
+  if (isReferenced(real) || isReferenced("__imp_" + x) ||
+      isReferenced("__imp_" + real)) {
+    if (!sym)
+      sym = symtab.addUndefined(x);
+  } else if (!sym || (sym->isLazy() &&
+                      (symtab.bitcodeFileInstances.empty() ||
+                       RTLIB::RuntimeLibcallsInfo::lookupLibcallImplName(name)
+                           .empty()))) {
     return;
+  }
 
   Symbol *wrap = symtab.addUndefined(mangle("__wrap_" + name, symtab.machine));
-  symtab.wrapped.push_back({sym, nullptr, wrap, name, fromDirective});
-  if (real)
-    addWrappedReal(symtab, symtab.wrapped.back(), real);
+  symtab.wrapped.push_back({sym, nullptr, nullptr, wrap, name, fromDirective});
+  addWrappedReal(symtab, symtab.wrapped.back());
 
   // These symbols may seem undefined initially, but don't bail out
   // at symtab.reportUnresolvable() due to them, but let wrapSymbols
@@ -299,15 +311,26 @@ void lld::coff::addWrappedSymbol(SymbolTable &symtab, StringRef name,
 void lld::coff::wrapSymbols(SymbolTable &symtab) {
   DenseMap<Symbol *, Symbol *> map;
   for (const WrappedSymbol &w : symtab.wrapped) {
+    // The pointer to the real X is X's own, which resolves as any other
+    // reference to it does: to X's import, or to a local pointer that binds to
+    // X. The code LTO generated may name it where the bitcode named __real_X.
+    Symbol *imp = symtab.find(("__imp_" + w.sym->getName()).str());
+    Symbol *realImp = symtab.find(
+        ("__imp_" + mangle("__real_" + w.name, symtab.machine)).str());
     // A weak __real_X keeps its default while nothing loaded X.
-    if (w.real && !w.sym->isLazy())
-      map[w.real] = w.sym;
+    if (!w.sym->isLazy()) {
+      if (w.real)
+        map[w.real] = w.sym;
+      if (realImp)
+        map[realImp] =
+            symtab.addUndefined(saver().save("__imp_" + w.sym->getName()),
+                                nullptr, /*overrideLazy=*/true);
+    }
     // A definition of X loaded since the wrap was added stands too.
     if (w.fromDirective && isa<DefinedCOFF>(w.sym))
       continue;
     map[w.sym] = w.wrap;
     if (Defined *d = dyn_cast<Defined>(w.wrap)) {
-      Symbol *imp = symtab.find(("__imp_" + w.sym->getName()).str());
       // Create a new defined local import for the wrap symbol. If
       // no imp prefixed symbol existed, there's no need for it.
       // (We can't easily distinguish whether any object file actually

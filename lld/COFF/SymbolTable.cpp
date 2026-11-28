@@ -249,7 +249,8 @@ void SymbolTable::reportUndefinedSymbol(const UndefinedDiag &undefDiag) {
   }
 }
 
-void SymbolTable::loadMinGWSymbols() {
+bool SymbolTable::loadMinGWSymbols() {
+  bool loaded = false;
   for (Symbol *sym : getSymbols()) {
     auto *undef = dyn_cast<Undefined>(sym);
     if (!undef)
@@ -291,9 +292,21 @@ void SymbolTable::loadMinGWSymbols() {
       }
     }
 
-    if (ctx.config.autoImport) {
-      if (name.starts_with("__imp_"))
+    // An undefined __imp_X that an object for Windows Itanium or NT-POSIX
+    // refers to, and that no input provides, asks for the archive member
+    // defining X, which binds to it through a local pointer.
+    if (name.starts_with("__imp_")) {
+      Symbol *l = sym->forkReferenced ? find(name.substr(6)) : nullptr;
+      if (!l || l->pendingArchiveLoad || !l->isLazy())
         continue;
+      Log(ctx) << "Loading lazy " << l->getName() << " from "
+               << l->getFile()->getName() << " for " << name;
+      forceLazy(l);
+      loaded = true;
+      continue;
+    }
+
+    if (ctx.config.autoImport || sym->forkReferenced) {
       // If we have an undefined symbol, but we have a lazy symbol we could
       // load, load it.
       Symbol *l = find(("__imp_" + name).str());
@@ -303,8 +316,10 @@ void SymbolTable::loadMinGWSymbols() {
       Log(ctx) << "Loading lazy " << l->getName() << " from "
                << l->getFile()->getName() << " for automatic import";
       forceLazy(l);
+      loaded = true;
     }
   }
+  return loaded;
 }
 
 Defined *SymbolTable::impSymbol(StringRef name) {
@@ -423,7 +438,7 @@ void SymbolTable::reportUnresolvable() {
     }
     if (name.contains("_PchSym_"))
       continue;
-    if (ctx.config.autoImport && impSymbol(name))
+    if ((ctx.config.autoImport || sym->forkReferenced) && impSymbol(name))
       continue;
     undefs.insert(sym);
   }
@@ -533,6 +548,12 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
             imp = findLocalSym(*mangledName);
         }
       }
+      // A strong reference never binds to the default of a weak one.
+      auto *x = dyn_cast_or_null<Undefined>(find(impName));
+      if (sym->strongImport && x &&
+          (x->weakKind == Symbol::NoLibrary ||
+           x->weakKind == Symbol::Library))
+        imp = nullptr;
       if (imp) {
         replaceSymbol<DefinedLocalImport>(sym, ctx, name, imp);
         localImports.push_back(cast<DefinedLocalImport>(sym));
@@ -545,7 +566,8 @@ void SymbolTable::resolveRemainingUndefines(std::vector<Undefined *> &aliases) {
     if (name.contains("_PchSym_"))
       continue;
 
-    if (ctx.config.autoImport && handleMinGWAutomaticImport(sym, name))
+    if ((ctx.config.autoImport || sym->forkReferenced) &&
+        handleMinGWAutomaticImport(sym, name))
       continue;
 
     undefs.insert(sym);
@@ -696,6 +718,8 @@ std::pair<Symbol *, bool> SymbolTable::insert(StringRef name) {
 
   Symbol *sym = reinterpret_cast<Symbol *>(make<SymbolUnion>());
   sym->isUsedInRegularObj = false;
+  sym->forkReferenced = false;
+  sym->strongImport = false;
   sym->pendingArchiveLoad = false;
   sym->canInline = true;
   symVector.push_back(sym);
@@ -960,6 +984,8 @@ void SymbolTable::initializeSameAddressThunks() {
 Symbol *SymbolTable::addUndefined(StringRef name, InputFile *f,
                                   bool overrideLazy) {
   auto [s, wasInserted] = insert(name, f);
+  if (f && f->forkObject)
+    s->forkReferenced = true;
   if (wasInserted || (s->isLazy() && overrideLazy)) {
     // A strong reference to a weak external still finds the archive symbol.
     if (auto *l = dyn_cast<LazyArchive>(s))
@@ -1785,8 +1811,26 @@ void SymbolTable::resolveAlternateNames() {
     StringRef from = pair.first;
     StringRef to = pair.second;
     Symbol *sym = find(from);
-    if (!sym)
-      continue;
+    // For an object for Windows Itanium or NT-POSIX, an undefined __imp_A
+    // binds as a reference to A would: to __imp_B when B is an import, and
+    // otherwise through a local pointer to A's alternate.
+    if (!sym) {
+      auto *imp = dyn_cast_or_null<Undefined>(find(("__imp_" + from).str()));
+      if (!imp || !imp->forkReferenced || imp->weakAlias)
+        continue;
+      Symbol *impTo = find(("__imp_" + to).str());
+      if (impTo && (impTo->isLazy() || isa<Defined>(impTo))) {
+        impTo->isUsedInRegularObj = true;
+        if (impTo->isLazy())
+          forceLazy(impTo);
+        imp->setWeakAlias(impTo);
+        continue;
+      }
+      Symbol *toSym = find(to);
+      if (!toSym || isa<Undefined>(toSym))
+        continue;
+      sym = addUndefined(from);
+    }
     if (auto *u = dyn_cast<Undefined>(sym)) {
       if (u->weakAlias) {
         // On ARM64EC, anti-dependency aliases are treated as undefined

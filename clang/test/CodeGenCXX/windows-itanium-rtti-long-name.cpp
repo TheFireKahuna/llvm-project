@@ -26,12 +26,12 @@ struct LONG {
   virtual void f() {}
 };
 
-// The length, 5 + 32768 + 1 = 32774 and a layout shape of 3 bytes, ahead of
-// the name. The name word's bits are 0xFFFF << 48. The RUN lines shorten the
+// The length, 5 + 32768 + 1 = 32774 and a layout shape of a byte after the
+// byte of its length, ahead of the name. The name word's bits are 0xFFFF << 48. The RUN lines shorten the
 // name for FileCheck.
-// CHECK: $_ZTS32768LONG = comdat any
-// CHECK: @_ZTI32768LONG = linkonce_odr dso_local constant { ptr, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTS32768LONG to i64), i64 -281474976710656) to ptr) }
-// CHECK: @_ZTS32768LONG.length = private constant <{ i64, [32777 x i8] }> <{ i64 32777, [32777 x i8] c"32768LONG\00\08\03\09" }>, comdat($_ZTS32768LONG), align 8
+// CHECK: $_ZTS32768LONG = comdat exactmatch
+// CHECK: @_ZTI32768LONG = linkonce_odr constant { ptr, ptr } { ptr {{.*}}, ptr inttoptr (i64 add (i64 ptrtoint (ptr @_ZTS32768LONG to i64), i64 -281474976710656) to ptr) }
+// CHECK: @_ZTS32768LONG.length = private constant <{ i64, [32776 x i8] }> <{ i64 32776, [32776 x i8] c"32768LONG\00\01\83" }>, comdat($_ZTS32768LONG), align 8
 // CHECK: @_ZTS32768LONG = dso_local alias i8, getelementptr inbounds (i8, ptr @_ZTS32768LONG.length, i64 8)
 
 const std::type_info &get() { return typeid(LONG); }
