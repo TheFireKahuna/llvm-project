@@ -1,55 +1,18 @@
 // RUN: rm -rf %t && split-file %s %t
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify %t/test.c
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify %t/test.c
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify -x c++ %t/test.c
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify -x c++ %t/test.c
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify -x c++ %t/test.c \
-// RUN:   -D_CRT_DECLARE_NONSTDC_NAMES=1
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify -x c++ %t/test.c \
-// RUN:   -D_CRT_DECLARE_NONSTDC_NAMES=1 -DCALLER_COMPLEX
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify %t/test.c \
-// RUN:   -D_CRT_STDIO_LEGACY_WIDE_SPECIFIERS
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify -x c++ %t/test.c \
-// RUN:   -DDELAYIMP_INSECURE_WRITABLE_HOOKS \
+// DEFINE: %{cc1} = %clang_cc1 -fms-extensions -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
+// DEFINE:   -internal-isystem %t %t/test.c
+// DEFINE: %{x64} = %{cc1} -triple x86_64-unknown-windows-itanium
+// DEFINE: %{a64} = %{cc1} -triple aarch64-unknown-windows-itanium
+// RUN: %{x64} -verify -emit-llvm -o - | FileCheck %t/test.c --implicit-check-not=@_aligned_
+// RUN: %{a64} -verify -emit-llvm -o - -D_CRT_STDIO_INLINE=__inline | FileCheck %t/test.c --check-prefix=INLINE
+// RUN: %{x64} -fsyntax-only -verify -x c++
+// RUN: %{x64} -fsyntax-only -verify -x c++ -D_CRT_DECLARE_NONSTDC_NAMES=1 -DCALLER_COMPLEX
+// RUN: %{a64} -fsyntax-only -verify -x c++ -DDELAYIMP_INSECURE_WRITABLE_HOOKS \
 // RUN:   -DDELAYIMP_WRITABLE_DLOAD_SECTION_PROTECTION_POLICY
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify=strict %t/test.c -std=c99
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify %t/test.c -std=c11 \
-// RUN:   -D_POSIX_C_SOURCE=200112L
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -emit-llvm -o - %t/test.c \
-// RUN:   | FileCheck %t/test.c --implicit-check-not=@_aligned_
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -emit-llvm -o - %t/test.c \
-// RUN:   -D_CRT_STDIO_INLINE=__inline | FileCheck %t/test.c --check-prefix=INLINE
-// RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify %t/test.c \
-// RUN:   -D_CRT_DECLARE_NONSTDC_NAMES=0
-// RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions \
-// RUN:   -D_DLL -internal-isystem %resource_dir/win32_itanium_wrappers \
-// RUN:   -internal-isystem %t -fsyntax-only -verify %t/test.c -std=c23
+// RUN: %{x64} -fsyntax-only -verify -D_CRT_STDIO_LEGACY_WIDE_SPECIFIERS -D_CRT_DECLARE_NONSTDC_NAMES=0
+// RUN: %{x64} -fsyntax-only -verify=strict -std=c99
+// RUN: %{a64} -fsyntax-only -verify -std=c11 -D_POSIX_C_SOURCE=200112L
+// RUN: %{a64} -fsyntax-only -verify -std=c23
 
 // Windows Itanium compiles against the Universal CRT and the Windows SDK
 // without Visual C++. The wrapper directory stands in for the Visual C++
@@ -399,6 +362,11 @@ HRESULT load_all(void) { return __HrLoadAllImportsForDll("a.dll"); }
 #ifdef __cplusplus
 #include <new.h>
 #include <vcruntime_new_debug.h>
+// eh.h declares the translator of structured exceptions, which the C++
+// runtime defines.
+#include <eh.h>
+void translate(unsigned code, _EXCEPTION_POINTERS *pointers);
+_se_translator_function previous = _set_se_translator(translate);
 #include <wrl/def.h>
 #ifdef _MSC_VER
 #error "_MSC_VER leaks out of wrl/def.h"

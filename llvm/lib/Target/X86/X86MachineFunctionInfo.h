@@ -74,6 +74,30 @@ class X86MachineFunctionInfo : public MachineFunctionInfo {
   /// in bytes.
   DenseMap<int, unsigned> WinEHXMMSlotInfo;
 
+  /// Where the function's cleanups are funclets its unwinder calls: for each
+  /// block, by number, the number of the entry block of the funclet it is in,
+  /// or -1 in the function's own code.
+  SmallVector<int, 0> CalledCleanupScopes;
+
+public:
+  /// The frame of a called cleanup funclet: the stack it allocates, and where
+  /// in that the spill slots of its own code begin.
+  struct CalledCleanupFrame {
+    unsigned Size = 0;
+    unsigned SlotBase = 0;
+  };
+
+private:
+  /// The frame of each called cleanup funclet, by the number of its entry.
+  DenseMap<int, CalledCleanupFrame> CalledCleanupFrames;
+
+  /// The spill slots of called cleanups' own code, by offset from SlotBase.
+  DenseMap<int, unsigned> CalledCleanupSlots;
+
+  /// The outgoing argument area of the calls that return to each called
+  /// cleanup funclet, by its entry.
+  DenseMap<const MachineBasicBlock *, unsigned> CalledCleanupCallFrames;
+
   /// CalleeSavedFrameSize - Size of the callee-saved register portion of the
   /// stack frame in bytes.
   unsigned CalleeSavedFrameSize = 0;
@@ -207,6 +231,26 @@ public:
   DenseMap<int, unsigned>& getWinEHXMMSlotInfo() { return WinEHXMMSlotInfo; }
   const DenseMap<int, unsigned>& getWinEHXMMSlotInfo() const {
     return WinEHXMMSlotInfo; }
+
+  SmallVectorImpl<int> &getCalledCleanupScopes() { return CalledCleanupScopes; }
+  bool isCalledCleanupBlock(const MachineBasicBlock &MBB) const {
+    unsigned N = MBB.getNumber();
+    return N < CalledCleanupScopes.size() && CalledCleanupScopes[N] >= 0;
+  }
+  DenseMap<int, CalledCleanupFrame> &getCalledCleanupFrames() {
+    return CalledCleanupFrames;
+  }
+  /// The frame of the called cleanup funclet that \p MBB is in.
+  CalledCleanupFrame getCalledCleanupFrame(const MachineBasicBlock &MBB) const {
+    return CalledCleanupFrames.lookup(CalledCleanupScopes[MBB.getNumber()]);
+  }
+  DenseMap<int, unsigned> &getCalledCleanupSlots() { return CalledCleanupSlots; }
+  DenseMap<const MachineBasicBlock *, unsigned> &getCalledCleanupCallFrames() {
+    return CalledCleanupCallFrames;
+  }
+  const DenseMap<int, unsigned> &getCalledCleanupSlots() const {
+    return CalledCleanupSlots;
+  }
 
   unsigned getCalleeSavedFrameSize() const { return CalleeSavedFrameSize; }
   void setCalleeSavedFrameSize(unsigned bytes) { CalleeSavedFrameSize = bytes; }

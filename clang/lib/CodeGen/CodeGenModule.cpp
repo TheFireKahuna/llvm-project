@@ -1857,7 +1857,8 @@ void CodeGenModule::Release() {
                                   llvm::DenormalMode::IEEE);
   }
 
-  if (LangOpts.EHAsynch)
+  // On Windows Itanium the mode is each function's, named by its personality.
+  if (LangOpts.EHAsynch && !getTriple().isWindowsItaniumEnvironment())
     getModule().addModuleFlag(llvm::Module::Warning, "eh-asynch", 1);
 
   // Emit Import Call section.

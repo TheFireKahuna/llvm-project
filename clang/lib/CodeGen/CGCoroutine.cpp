@@ -46,6 +46,10 @@ struct clang::CodeGen::CGCoroData {
   // A branch to this block after final.cleanup or final.ready
   llvm::BasicBlock *FinalExit = nullptr;
 
+  // The EH scopes inside this one are the coroutine frame's: a suspend leaves
+  // them without running a cleanup.
+  EHScopeStack::stable_iterator FrameScopeDepth;
+
   // The promise type's 'unhandled_exception' handler, if it defines one.
   Stmt *ExceptionHandler = nullptr;
 
@@ -222,6 +226,54 @@ namespace {
     RValue RV;
   };
 }
+
+// Where exception tables cover every instruction, a suspend ends the EH scopes
+// of the coroutine frame that are open across it, and a resume or a destroy
+// begins them again: it enters the coroutine past the markers that began them.
+// Emits the markers that end the scopes, or with a block to resume at, returns
+// a block that begins them and goes on to it.
+static llvm::BasicBlock *emitSehScopesAcrossSuspend(CodeGenFunction &CGF,
+                                                    CGCoroData &Coro,
+                                                    llvm::BasicBlock *Resumed) {
+  // The EH pad of each scope that has markers, innermost first, and whether
+  // the scope is a try block's.
+  SmallVector<std::pair<llvm::BasicBlock *, bool>, 8> Scopes;
+  if (getEHPersonality(CGF).isAsyncPersonality())
+    for (auto I = CGF.EHStack.getInnermostEHScope();
+         Coro.FrameScopeDepth.strictlyEncloses(I);) {
+      EHScope &S = *CGF.EHStack.find(I);
+      auto *Cleanup = dyn_cast<EHCleanupScope>(&S);
+      if (isa<EHCatchScope>(S) && S.getCachedEHDispatchBlock())
+        Scopes.push_back({S.getCachedEHDispatchBlock(), true});
+      else if (Cleanup && !Cleanup->isLifetimeMarker() &&
+               S.getCachedEHDispatchBlock())
+        Scopes.push_back({S.getCachedEHDispatchBlock(), false});
+      I = S.getEnclosingEHScope();
+    }
+  if (Scopes.empty())
+    return Resumed;
+
+  llvm::BasicBlock *Begins = nullptr;
+  if (Resumed) {
+    std::reverse(Scopes.begin(), Scopes.end());
+    Begins = CGF.createBasicBlock(Resumed->getName() + ".scopes");
+    CGF.EmitBlock(Begins);
+  }
+  for (auto [Pad, IsTry] : Scopes) {
+    llvm::Intrinsic::ID Marker =
+        Resumed ? (IsTry ? llvm::Intrinsic::seh_try_begin
+                         : llvm::Intrinsic::seh_scope_begin)
+                : (IsTry ? llvm::Intrinsic::seh_try_end
+                         : llvm::Intrinsic::seh_scope_end);
+    llvm::BasicBlock *Cont = CGF.createBasicBlock("invoke.cont");
+    CGF.Builder.CreateInvoke(CGF.CGM.getIntrinsic(Marker), Cont, Pad);
+    CGF.EmitBlock(Cont);
+  }
+  if (Resumed)
+    CGF.EmitBranch(Resumed);
+  return Begins;
+}
+
 static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Coro,
                                     CoroutineSuspendExpr const &S,
                                     AwaitKind Kind, AggValueSlot aggSlot,
@@ -319,6 +371,7 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
   }
 
   // Emit the suspend point.
+  emitSehScopesAcrossSuspend(CGF, Coro, /*Resumed=*/nullptr);
   const bool IsFinalSuspend = (Kind == AwaitKind::Final);
   llvm::Function *CoroSuspend =
       CGF.CGM.getIntrinsic(llvm::Intrinsic::coro_suspend);
@@ -327,8 +380,10 @@ static LValueOrRValue emitSuspendExpression(CodeGenFunction &CGF, CGCoroData &Co
 
   // Create a switch capturing three possible continuations.
   auto *Switch = Builder.CreateSwitch(SuspendResult, Coro.SuspendBB, 2);
-  Switch->addCase(Builder.getInt8(0), ReadyBlock);
-  Switch->addCase(Builder.getInt8(1), CleanupBlock);
+  Switch->addCase(Builder.getInt8(0),
+                  emitSehScopesAcrossSuspend(CGF, Coro, ReadyBlock));
+  Switch->addCase(Builder.getInt8(1),
+                  emitSehScopesAcrossSuspend(CGF, Coro, CleanupBlock));
 
   // Emit cleanup for this suspend point.
   CGF.EmitBlock(CleanupBlock);
@@ -974,6 +1029,7 @@ void CodeGenFunction::EmitCoroutineBody(const CoroutineBodyStmt &S) {
     CGDebugInfo *DI = getDebugInfo();
     ParamReferenceReplacerRAII ParamReplacer(LocalDeclMap);
     CodeGenFunction::RunCleanupsScope ResumeScope(*this);
+    CurCoro.Data->FrameScopeDepth = EHStack.stable_begin();
     EHStack.pushCleanup<CallCoroDelete>(NormalAndEHCleanup, S.getDeallocate());
 
     // Create mapping between parameters and copy-params for coroutine function.

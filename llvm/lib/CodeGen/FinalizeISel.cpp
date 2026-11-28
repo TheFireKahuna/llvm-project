@@ -15,13 +15,19 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/FinalizeISel.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/IR/EHPersonalities.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/MC/MCContext.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "finalize-isel"
@@ -40,6 +46,64 @@ namespace {
     }
   };
 } // end anonymous namespace
+
+/// Where a function's exception tables cover every instruction of an EH
+/// scope (usesAsyncEHTables), a block in a scope follows an invoke of
+/// llvm.seh.scope.begin that unwinds to the scope's EH pad. Makes each run of
+/// such a block's instructions a range of the pad, as an invoke makes its call
+/// one. Selection is over, so no run is split, and a later pass adds only
+/// what raises nothing after a run: copies and terminators.
+static bool addAsyncEHRanges(MachineFunction &MF) {
+  const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
+  // An invoke's own range stays as it is.
+  SmallPtrSet<const MCSymbol *, 16> InvokeBegins, InvokeEnds;
+  for (const LandingPadInfo &LP : MF.getLandingPads()) {
+    InvokeBegins.insert_range(LP.BeginLabels);
+    InvokeEnds.insert_range(LP.EndLabels);
+  }
+
+  bool Changed = false;
+  for (MachineBasicBlock &MBB : MF) {
+    const BasicBlock *BB = MBB.getBasicBlock();
+    const BasicBlock *Pred = BB ? BB->getSinglePredecessor() : nullptr;
+    const auto *II =
+        Pred ? dyn_cast<InvokeInst>(Pred->getTerminator()) : nullptr;
+    if (!II || II->getIntrinsicID() != Intrinsic::seh_scope_begin ||
+        II->getNormalDest() != BB)
+      continue;
+    unsigned Scope = MF.getEHScopeNumber(II->getUnwindDest());
+    if (!Scope)
+      continue;
+    MachineBasicBlock::iterator Begin = MBB.end();
+    auto EndRun = [&](MachineBasicBlock::iterator End) {
+      if (Begin == MBB.end())
+        return;
+      MCSymbol *BeginLabel = MF.getContext().createTempSymbol();
+      MCSymbol *EndLabel = MF.getContext().createTempSymbol();
+      BuildMI(MBB, Begin, DebugLoc(), TII.get(TargetOpcode::EH_LABEL))
+          .addSym(BeginLabel);
+      BuildMI(MBB, End, DebugLoc(), TII.get(TargetOpcode::EH_LABEL))
+          .addSym(EndLabel);
+      MF.addEHScopeInvoke(Scope, BeginLabel, EndLabel);
+      Begin = MBB.end();
+      Changed = true;
+    };
+    bool InInvoke = false;
+    for (auto I = MBB.getFirstNonPHI(), E = MBB.getFirstTerminator(); I != E;
+         ++I) {
+      if (I->isEHLabel()) {
+        EndRun(I);
+        const MCSymbol *Label = I->getOperand(0).getMCSymbol();
+        InInvoke = (InInvoke || InvokeBegins.contains(Label)) &&
+                   !InvokeEnds.contains(Label);
+      } else if (Begin == MBB.end() && !InInvoke && !I->isMetaInstruction()) {
+        Begin = I;
+      }
+    }
+    EndRun(MBB.getFirstTerminator());
+  }
+  return Changed;
+}
 
 static std::pair<bool, bool> runImpl(MachineFunction &MF) {
   bool Changed = false;
@@ -78,6 +142,9 @@ static std::pair<bool, bool> runImpl(MachineFunction &MF) {
       }
     }
   }
+
+  if (usesAsyncEHTables(MF.getFunction()))
+    Changed |= addAsyncEHRanges(MF);
   return {Changed, PreserveCFG};
 }
 

@@ -427,13 +427,15 @@ LLVM_ABI void SplitLandingPadPredecessors(
     DomTreeUpdater *DTU = nullptr, LoopInfo *LI = nullptr,
     MemorySSAUpdater *MSSAU = nullptr, bool PreserveLCSSA = false);
 
-/// This method duplicates the specified return instruction into a predecessor
-/// which ends in an unconditional branch. If the return instruction returns a
-/// value defined by a PHI, propagate the right value into the return. It
-/// returns the new return instruction in the predecessor.
-LLVM_ABI ReturnInst *FoldReturnIntoUncondBranch(ReturnInst *RI, BasicBlock *BB,
-                                                BasicBlock *Pred,
-                                                DomTreeUpdater *DTU = nullptr);
+/// This method duplicates the specified return instruction, a ret or the
+/// cleanupret of a funclet, into a predecessor which ends in an unconditional
+/// branch. If the return instruction returns a value defined by a PHI,
+/// propagate the right value into the return. It returns the new return
+/// instruction in the predecessor.
+LLVM_ABI Instruction *FoldReturnIntoUncondBranch(Instruction *RI,
+                                                 BasicBlock *BB,
+                                                 BasicBlock *Pred,
+                                                 DomTreeUpdater *DTU = nullptr);
 
 /// Split the containing block at the specified instruction - everything before
 /// SplitBefore stays in the old basic block, and the rest of the instructions

@@ -251,7 +251,8 @@ void MachineFunction::init() {
   JumpTableInfo = nullptr;
 
   if (isFuncletEHPersonality(classifyEHPersonality(
-          F.hasPersonalityFn() ? F.getPersonalityFn() : nullptr))) {
+          F.hasPersonalityFn() ? F.getPersonalityFn() : nullptr)) ||
+      usesCalledCleanups(F)) {
     WinEHInfo = new (Allocator) WinEHFuncInfo();
   }
 
@@ -945,6 +946,37 @@ void MachineFunction::addInvoke(MachineBasicBlock *LandingPad,
   LandingPadInfo &LP = getOrCreateLandingPadInfo(LandingPad);
   LP.BeginLabels.push_back(BeginLabel);
   LP.EndLabels.push_back(EndLabel);
+}
+
+unsigned MachineFunction::addEHScope(const BasicBlock *Pad, EHScopeInfo Scope) {
+  assert(Scope.Outer <= EHScopes.size() && "scope around is not yet a scope");
+  EHScopes.push_back(std::move(Scope));
+  return EHScopeNumbers[Pad] = EHScopes.size();
+}
+
+void MachineFunction::addEHScopeInvoke(unsigned Scope, MCSymbol *BeginLabel,
+                                       MCSymbol *EndLabel) {
+  // The ranges of a scope are those of one pad to the exception table: the
+  // scope's cleanup, or the first handler of its catchswitch.
+  const EHScopeInfo &Info = EHScopes[Scope - 1];
+  LandingPadInfo &LP = getOrCreateLandingPadInfo(
+      Info.Cleanup ? Info.Cleanup : Info.Handlers.front().second);
+  LP.BeginLabels.push_back(BeginLabel);
+  LP.EndLabels.push_back(EndLabel);
+  if (LP.Scope)
+    return;
+  LP.Scope = Scope;
+  // The personality routine reads the types that the handlers of the scopes
+  // around a range name, innermost first, as it reads a landingpad's
+  // clauses, and needs a pad that is not null to look at them. The unwinder
+  // takes the pad from the scopes.
+  for (unsigned S = Scope; S; S = EHScopes[S - 1].Outer)
+    for (auto [Selector, Handler] : EHScopes[S - 1].Handlers) {
+      LP.TypeIds.push_back(Selector);
+      if (!LP.LandingPadLabel)
+        LP.LandingPadLabel = Handler->getSymbol();
+    }
+  std::reverse(LP.TypeIds.begin(), LP.TypeIds.end());
 }
 
 MCSymbol *MachineFunction::addLandingPad(MachineBasicBlock *LandingPad) {

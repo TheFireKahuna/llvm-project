@@ -142,8 +142,10 @@ void WinException::endFunction(const MachineFunction *MF) {
     llvm::append_range(EHContTargets, MF->getEHContTargets());
   }
 
-  // endFunclet will emit the necessary .xdata tables for table-based SEH.
-  if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets())
+  // endFunclet will emit the necessary .xdata tables for table-based SEH, and
+  // the exception table of a Windows Itanium function with funclets.
+  if ((Per == EHPersonality::MSVC_TableSEH || !isFuncletEHPersonality(Per)) &&
+      MF->hasEHFunclets())
     return;
 
   if (shouldEmitPersonality || shouldEmitLSDA) {
@@ -208,12 +210,29 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
     Asm->OutStreamer->endCOFFSymbolDef();
 
     // We want our funclet's entry point to be aligned such that no nops will be
-    // present after the label.
-    Asm->emitAlignment(
-        std::max(Asm->MF->getPreferredAlignment(), MBB.getAlignment()), &F);
+    // present after the label. A cleanup that Windows Itanium's unwinder calls
+    // runs once, during an unwind, and takes no more than an instruction
+    // needs.
+    if (usesCalledCleanups(F))
+      Asm->emitAlignment(Asm->MF->getSubtarget()
+                             .getTargetLowering()
+                             ->getMinFunctionAlignment());
+    else
+      Asm->emitAlignment(
+          std::max(Asm->MF->getPreferredAlignment(), MBB.getAlignment()), &F);
 
     // Now that we've emitted the alignment directive, point at our funclet.
     Asm->OutStreamer->emitLabel(Sym);
+  }
+
+  // A called cleanup whose prologue sets up nothing is a leaf, which Windows
+  // unwinds by its return address alone: it has no unwind record, and
+  // whatever unwinds out of it reaches the unwinder that called it.
+  if (usesCalledCleanups(F) && none_of(MBB, [](const MachineInstr &MI) {
+        return MI.getFlag(MachineInstr::FrameSetup);
+      })) {
+    CurrentFuncletEntry = nullptr;
+    return;
   }
 
   // Mark 'Sym' as starting our funclet.
@@ -237,6 +256,8 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
     // Clang doesn't produce EH constructs inside cleanup funclets and LLVM's
     // inliner doesn't allow inlining them, this isn't a major problem in
     // practice.
+    // A cleanup that Windows Itanium's unwinder calls has no handler: a
+    // search that leaves it ends at the unwinder's routine that called it.
     if (!CurrentFuncletEntry->isCleanupFuncletEntry())
       Asm->OutStreamer->emitWinEHHandler(PersHandlerSym, true, true);
   }
@@ -282,12 +303,17 @@ void WinException::endFuncletImpl() {
       // If this is the parent function in Win64 SEH, emit the LSDA immediately
       // following .seh_handlerdata.
       emitCSpecificHandlerTable(MF);
-    } else if (shouldEmitPersonality || shouldEmitLSDA) {
+    } else if ((shouldEmitPersonality || shouldEmitLSDA) &&
+               !(CurrentFuncletEntry->isEHFuncletEntry() &&
+                 usesCalledCleanups(F))) {
       // Emit an UNWIND_INFO struct describing the prologue.
       Asm->OutStreamer->emitWinEHHandlerData();
       // In these cases, no further info is written to the .xdata section
       // right here, but is written by e.g. emitExceptionTable in endFunction()
-      // above.
+      // above. A Windows Itanium function's exception table is its handler
+      // data, so it goes ahead of the funclets' UNWIND_INFOs, which have none.
+      if (!isFuncletEHPersonality(Per) && MF->hasEHFunclets())
+        emitExceptionTable();
     } else {
       // No need to emit the EH handler data right here if nothing needs
       // writing to the .xdata section; it will be emitted for all
@@ -758,7 +784,7 @@ void WinException::emitCXXFrameHandler3Table(const MachineFunction *MF) {
   OS.emitInt32(0);
 
   AddComment("EHFlags");
-  if (MMI->getModule()->getModuleFlag("eh-asynch")) {
+  if (isAsynchEH(MF->getFunction())) {
     OS.emitInt32(0);
   } else {
     OS.emitInt32(1);

@@ -111,7 +111,9 @@ public:
   void emitPrologue();
 
   ~AArch64PrologueEmitter() {
-    MF.setHasWinCFI(HasWinCFI);
+    // A funclet that is a leaf has no unwind record of its own.
+    if (HasWinCFI || !IsFunclet)
+      MF.setHasWinCFI(HasWinCFI);
 #ifndef NDEBUG
     verifyPrologueClobbers();
 #endif
@@ -147,6 +149,8 @@ private:
   void emitCalleeSavedSVELocations(MachineBasicBlock::iterator MBBI) const;
 
   void determineLocalsStackSize(uint64_t StackSize, uint64_t PrologueSaveSize);
+
+  void emitCalledCleanupPrologue();
 
   const Function &F;
 
@@ -184,6 +188,8 @@ private:
   /// A helper for moving the SP to a negative offset from the FP, without
   /// deallocating any stack in the range FP to FP + Offset.
   void moveSPBelowFP(MachineBasicBlock::iterator MBBI, StackOffset Offset);
+
+  void emitCalledCleanupEpilogue();
 
   void emitSwiftAsyncContextFramePointer(MachineBasicBlock::iterator MBBI,
                                          const DebugLoc &DL) const;

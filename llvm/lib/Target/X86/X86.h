@@ -188,6 +188,17 @@ public:
 
 FunctionPass *createX86FlagsCopyLoweringLegacyPass();
 
+/// Return a pass that has the cleanup funclets an unwinder calls address
+/// their function's frame from the establisher frame they are passed.
+class X86CalledCleanupsPass
+    : public OptionalPassInfoMixin<X86CalledCleanupsPass> {
+public:
+  PreservedAnalyses run(MachineFunction &MF,
+                        MachineFunctionAnalysisManager &MFAM);
+};
+
+FunctionPass *createX86CalledCleanupsLegacyPass();
+
 /// Return a pass that expands DynAlloca pseudo-instructions.
 class X86DynAllocaExpanderPass
     : public OptionalPassInfoMixin<X86DynAllocaExpanderPass> {
@@ -513,6 +524,7 @@ void initializeX86CallFrameOptimizationLegacyPass(PassRegistry &);
 void initializeX86CmovConversionLegacyPass(PassRegistry &);
 void initializeX86DAGToDAGISelLegacyPass(PassRegistry &);
 void initializeX86DomainReassignmentLegacyPass(PassRegistry &);
+void initializeX86CalledCleanupsLegacyPass(PassRegistry &);
 void initializeX86DynAllocaExpanderLegacyPass(PassRegistry &);
 void initializeX86ExecutionDomainFixPass(PassRegistry &);
 void initializeX86ExpandPseudoLegacyPass(PassRegistry &);

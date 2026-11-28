@@ -1397,6 +1397,13 @@ private:
                 SmallPtrSet<const MachineBasicBlock *, 16> &Visited,
                 FuncValueTable &OutLocs, ValueTable &InLocs);
 
+  /// Returns true if \p MBB begins a cleanup funclet that Windows Itanium's
+  /// unwinder calls, and location \p L has none of the
+  /// values there that the function's code left in it: a register that the
+  /// funclet's entry does not preserve, or where the function keeps no frame
+  /// pointer, a stack slot, since the funclet has a stack pointer of its own.
+  bool isLostAtFuncletEntry(const MachineBasicBlock &MBB, LocIdx L) const;
+
   /// Produce a set of blocks that are in the current lexical scope. This means
   /// those blocks that contain instructions "in" the scope, blocks where
   /// assignments to variables in scope occur, and artificial blocks that are

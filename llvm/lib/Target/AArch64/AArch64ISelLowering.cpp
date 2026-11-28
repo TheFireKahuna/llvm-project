@@ -66,6 +66,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/GlobalValue.h"
@@ -10103,6 +10104,17 @@ bool AArch64TargetLowering::isEligibleForTailCallOptimization(
       CallAttrs.caller().isNewZT0())
     return false;
 
+  // A cleanup that Windows Itanium's unwinder calls returns nothing, and its
+  // frame has no argument of its own for a callee to take its place in.
+  if (CLI.CB && isInCalledCleanup(*CLI.CB)) {
+    SmallVector<CCValAssign, 16> ArgLocs;
+    CCState CCInfo(CalleeCC, IsVarArg, MF, ArgLocs, *DAG.getContext());
+    analyzeCallOperands(*this, Subtarget, CLI, CCInfo);
+    return !IsVarArg && all_of(ArgLocs, [](const CCValAssign &VA) {
+      return VA.isRegLoc() && VA.getLocInfo() != CCValAssign::Indirect;
+    });
+  }
+
   // Functions using the C or Fast calling convention that have an SVE signature
   // preserve more registers and should assume the SVE_VectorCall CC.
   // The check for matching callee-saved regs will determine whether it is
@@ -11144,7 +11156,10 @@ AArch64TargetLowering::LowerCall(CallLoweringInfo &CLI,
   // If we're doing a tall call, use a TC_RETURN here rather than an
   // actual call instruction.
   if (IsTailCall) {
-    MF.getFrameInfo().setHasTailCall();
+    // A tail call out of a called cleanup passes its arguments in registers
+    // and so writes none of the function's incoming argument slots.
+    if (!CLI.CB || !isInCalledCleanup(*CLI.CB))
+      MF.getFrameInfo().setHasTailCall();
     SDValue Ret = DAG.getNode(Opc, DL, MVT::Other, Ops);
     if (IsCFICall)
       Ret->setCFIType(CLI.CFIType->getZExtValue());
@@ -32549,7 +32564,7 @@ bool AArch64TargetLowering::isUsedByReturnOnly(SDNode *N,
 // return instructions to help enable tail call optimizations for this
 // instruction.
 bool AArch64TargetLowering::mayBeEmittedAsTailCall(const CallInst *CI) const {
-  return CI->isTailCall();
+  return CI->isTailCall() || isInCalledCleanup(*CI);
 }
 
 bool AArch64TargetLowering::isIndexingLegal(MachineInstr &MI, Register Base,

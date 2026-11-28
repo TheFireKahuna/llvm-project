@@ -27,6 +27,7 @@
 #include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Verifier.h"
 #include "llvm/InitializePasses.h"
@@ -104,6 +105,10 @@ static bool isMalformedCatchpad(const CatchPadInst *CPI,
       return true;
 
     return false;
+  case EHPersonality::Itanium_SEH:
+    // The type the handler takes, null for every type, or the array of the
+    // types an exception specification allows.
+    return CPI->arg_size() != 1 || !isa<Constant>(CPI->getArgOperand(0));
   default:
     llvm_unreachable("Unsupported Personality for WinEH");
   }
@@ -124,6 +129,8 @@ private:
   void replaceUseWithLoad(Value *V, Use &U, AllocaInst *&SpillSlot,
                           DenseMap<BasicBlock *, Value *> &Loads, Function &F);
   bool prepareExplicitEH(Function &F);
+  void prepareCalledCleanups(Function &F);
+  void prepareAsyncEHScopes(Function &F);
   void colorFunclets(Function &F);
 
   bool demotePHIsOnFunclets(Function &F, bool DemoteCatchSwitchPHIOnly);
@@ -135,6 +142,12 @@ private:
 
   // True for Wasm C++ personalities.
   bool DemoteCatchSwitchPHIOnly = false;
+
+  // True where the function's cleanups are funclets its unwinder calls.
+  bool CalledCleanups = false;
+
+  // True where the function's exception tables cover every instruction.
+  bool AsyncTables = false;
 
   // All fields are reset by runOnFunction.
   EHPersonality Personality = EHPersonality::Unknown;
@@ -183,14 +196,20 @@ bool WinEHPrepareImpl::runOnFunction(Function &Fn) {
   // Do nothing if this is not a scope-based personality.
   if (!isScopedEHPersonality(Personality))
     return false;
+  CalledCleanups = Personality == EHPersonality::Itanium_SEH;
+  AsyncTables = usesAsyncEHTables(Fn);
 
   // Funclet personalities outline catch/cleanup bodies, so every funclet PHI
   // must be demoted. A scoped-but-non-funclet personality (Wasm) keeps its pads
   // inline and only needs the catchswitch dispatch PHIs demoted.
-  DemoteCatchSwitchPHIOnly = !isFuncletEHPersonality(Personality);
+  DemoteCatchSwitchPHIOnly =
+      !isFuncletEHPersonality(Personality) && !CalledCleanups;
 
   DL = &Fn.getDataLayout();
-  return prepareExplicitEH(Fn);
+  bool Changed = prepareExplicitEH(Fn);
+  if (CalledCleanups)
+    prepareCalledCleanups(Fn);
+  return Changed || CalledCleanups;
 }
 
 static int addUnwindMapEntry(WinEHFuncInfo &FuncInfo, int ToState,
@@ -663,7 +682,7 @@ void llvm::calculateSEHStateNumbers(const Function *Fn,
 
   calculateStateNumbersForInvokes(Fn, FuncInfo);
 
-  bool IsEHa = Fn->getParent()->getModuleFlag("eh-asynch");
+  bool IsEHa = isAsynchEH(*Fn);
   if (IsEHa) {
     const BasicBlock *EntryBB = &(Fn->getEntryBlock());
     calculateSEHStateForAsynchEH(EntryBB, -1, FuncInfo);
@@ -687,7 +706,7 @@ void llvm::calculateWinCXXEHStateNumbers(const Function *Fn,
 
   calculateStateNumbersForInvokes(Fn, FuncInfo);
 
-  bool IsEHa = Fn->getParent()->getModuleFlag("eh-asynch");
+  bool IsEHa = isAsynchEH(*Fn);
   if (IsEHa) {
     const BasicBlock *EntryBB = &(Fn->getEntryBlock());
     calculateCXXStateForAsynchEH(EntryBB, -1, FuncInfo);
@@ -1006,6 +1025,7 @@ bool WinEHPrepareImpl::removeMalformedCatchswitch(Value *FuncletToken) {
       case EHPersonality::MSVC_TableSEH:
       case EHPersonality::Wasm_CXX:
       case EHPersonality::Wasm_D:
+      case EHPersonality::Itanium_SEH:
         args = {nullPtr};
         break;
       case EHPersonality::CoreCLR:
@@ -1299,11 +1319,12 @@ bool WinEHPrepareImpl::removeImplausibleInstructions(Function &F) {
         Changed = true;
         changeToUnreachable(TI);
       } else if (isa<InvokeInst>(TI)) {
-        if (Personality == EHPersonality::MSVC_CXX && CleanupPad) {
+        if ((Personality == EHPersonality::MSVC_CXX || CalledCleanups) &&
+            CleanupPad) {
           Changed = true;
-          // Invokes within a cleanuppad for the MSVC++ personality never
-          // transfer control to their unwind edge: the personality will
-          // terminate the program.
+          // Invokes within a cleanuppad for the MSVC++ personality, and
+          // within a called cleanup, never transfer control to their unwind
+          // edge: the personality or the unwinder will terminate the program.
           removeUnwindEdge(BB);
         }
       }
@@ -1374,6 +1395,208 @@ bool WinEHPrepareImpl::prepareExplicitEH(Function &F) {
   LLVM_DEBUG(verifyPreparedFunclets(F));
 
   return Changed;
+}
+
+/// Returns the EH pad whose scope the llvm.seh.* marker that ends \p BB opens
+/// or closes, if one does.
+static BasicBlock *getScopeMarker(const BasicBlock &BB, bool &Opens) {
+  const auto *II = dyn_cast<InvokeInst>(BB.getTerminator());
+  if (!II)
+    return nullptr;
+  switch (II->getIntrinsicID()) {
+  case Intrinsic::seh_try_begin:
+  case Intrinsic::seh_scope_begin:
+    Opens = true;
+    return II->getUnwindDest();
+  case Intrinsic::seh_try_end:
+  case Intrinsic::seh_scope_end:
+    Opens = false;
+    return II->getUnwindDest();
+  default:
+    return nullptr;
+  }
+}
+
+// Where the exception tables cover every instruction (usesAsyncEHTables), a
+// front end brackets each EH scope with llvm.seh.* markers that unwind to the
+// scope's EH pad, and an exception that an instruction raises goes where one
+// from a call in the instruction's place would. A scope is open in the blocks
+// its opening markers reach before a closing one; it may be opened on one
+// path to a block and not on another, or once for each turn of a loop, and
+// then its cleanup tests what there is to clean up. The scope an instruction
+// is in is the innermost of those open in its block: this gives each block
+// with instructions an invoke of llvm.seh.scope.begin of its own, ahead of
+// them, that unwinds to that scope's pad, and removes the front end's markers.
+// The edge keeps what the pad reads alive in the block, and instruction
+// selection covers the block's instructions with a range of the pad. The PHIs
+// of EH pads and the values that funclets read are in memory by now, so the
+// new edges carry no value.
+void WinEHPrepareImpl::prepareAsyncEHScopes(Function &F) {
+  struct Scope {
+    SmallVector<BasicBlock *, 1> Opens;
+    BasicBlock *Outer = nullptr;
+    int Depth = -1;
+  };
+  MapVector<BasicBlock *, Scope> Scopes;
+  SmallVector<InvokeInst *, 16> Markers;
+  for (BasicBlock &BB : F) {
+    bool Opens;
+    BasicBlock *Pad = getScopeMarker(BB, Opens);
+    if (!Pad)
+      continue;
+    Markers.push_back(cast<InvokeInst>(BB.getTerminator()));
+    if (Opens)
+      Scopes[Pad].Opens.push_back(&BB);
+  }
+
+  // The scopes open in each block. A try block's handlers are in the scopes
+  // around the try block; any other EH pad is in none. What the code of its
+  // own handlers reaches before the try block begins again is behind the try
+  // block, whichever handler's code got there.
+  DenseMap<BasicBlock *, SmallVector<BasicBlock *, 2>> Open;
+  for (auto &[Pad, S] : Scopes) {
+    SmallPtrSet<BasicBlock *, 16> Seen;
+    SmallVector<BasicBlock *, 16> Worklist;
+    auto Walk = [&, Pad = Pad](bool Behind) {
+      while (!Worklist.empty()) {
+        BasicBlock *BB = Worklist.pop_back_val();
+        bool Opens = false;
+        BasicBlock *Marked = getScopeMarker(*BB, Opens);
+        bool Reopens = Marked == Pad && Opens;
+        if ((Reopens && !Behind) || !Seen.insert(BB).second)
+          continue;
+        if (!Behind)
+          Open[BB].push_back(Pad);
+        else if (Reopens)
+          continue;
+        bool Switch = isa<CatchSwitchInst>(BB->getFirstNonPHIIt());
+        for (BasicBlock *Succ : successors(BB)) {
+          BasicBlock::iterator SuccPad = Succ->getFirstNonPHIIt();
+          if (Succ->isEHPad()
+                  ? (Switch ? isa<CatchPadInst>(SuccPad)
+                            : !Behind && Marked == Succ && Opens &&
+                                  isa<CatchSwitchInst>(SuccPad))
+                  : Behind || Marked != Pad)
+            Worklist.push_back(Succ);
+        }
+      }
+    };
+    if (isa<CatchSwitchInst>(Pad->getFirstNonPHIIt())) {
+      Worklist.push_back(Pad);
+      Walk(/*Behind=*/true);
+    }
+    for (BasicBlock *BB : S.Opens)
+      Worklist.push_back(
+          cast<InvokeInst>(BB->getTerminator())->getNormalDest());
+    Walk(/*Behind=*/false);
+  }
+
+  // A scope is inside the scope its pad unwinds to. One whose pad unwinds to
+  // the caller is inside the innermost of those open where it begins. Returns the pad of the innermost scope open in BB, or BB
+  // itself where two of them are not one inside the other.
+  auto GetInnermost = [&](auto &&Self, BasicBlock *BB) -> BasicBlock * {
+    auto GetDepth = [&](auto &&GetDepth, BasicBlock *Pad) -> int {
+      Scope &S = Scopes[Pad];
+      if (S.Depth >= 0)
+        return S.Depth;
+      S.Depth = 0;
+      BasicBlock *Outer = Pad;
+      do {
+        BasicBlock::iterator First = Outer->getFirstNonPHIIt();
+        if (auto *CPI = dyn_cast<CleanupPadInst>(First))
+          Outer = getCleanupRetUnwindDest(CPI);
+        else
+          Outer = cast<CatchSwitchInst>(First)->getUnwindDest();
+      } while (Outer && !Scopes.count(Outer));
+      if (!Outer || !Scopes.count(Outer)) {
+        Outer = Self(Self, S.Opens.front());
+        if (Outer == S.Opens.front())
+          Outer = nullptr;
+      }
+      if ((S.Outer = Outer))
+        S.Depth = GetDepth(GetDepth, Outer) + 1;
+      return S.Depth;
+    };
+    BasicBlock *Innermost = nullptr;
+    auto It = Open.find(BB);
+    if (It == Open.end())
+      return Innermost;
+    for (BasicBlock *Pad : It->second)
+      if (!Innermost || GetDepth(GetDepth, Pad) > GetDepth(GetDepth, Innermost))
+        Innermost = Pad;
+    // Every other scope open in the block has to be around the innermost.
+    unsigned Around = 0;
+    for (BasicBlock *Pad = Scopes[Innermost].Outer; Pad;
+         Pad = Scopes[Pad].Outer)
+      Around += is_contained(It->second, Pad);
+    return Around + 1 == It->second.size() ? Innermost : BB;
+  };
+
+  Function *Begin = Intrinsic::getOrInsertDeclaration(
+      F.getParent(), Intrinsic::seh_scope_begin);
+  for (BasicBlock &BB : make_early_inc_range(F)) {
+    // A catchswitch has no instruction of its own, and a catchpad's block
+    // none that raises: it takes the exception and leaves.
+    if (!Open.count(&BB) || BB.isEHPad())
+      continue;
+    BasicBlock::iterator First = BB.getFirstInsertionPt();
+    if (First->isTerminator())
+      continue;
+    BasicBlock *Pad = GetInnermost(GetInnermost, &BB);
+    if (Pad == &BB) {
+      F.getContext().emitError("in function '" + F.getName() + "': block '" +
+                               BB.getName() +
+                               "' is in two exception handling scopes, neither "
+                               "inside the other");
+      continue;
+    }
+    BasicBlock *Body = BB.splitBasicBlock(First);
+    BB.getTerminator()->eraseFromParent();
+    InvokeInst::Create(Begin, Body, Pad, {}, "", &BB);
+  }
+  for (InvokeInst *II : Markers) {
+    II->getUnwindDest()->removePredecessor(II->getParent());
+    UncondBrInst::Create(II->getNormalDest(), II->getIterator());
+    II->eraseFromParent();
+  }
+}
+
+// A funclet that the unwinder calls hands on no value in a register: one that
+// its code computes and code outside it uses goes through memory. It runs
+// between the call that the unwind passes and the handler, which the machine
+// graph does not show, so it marks no object's lifetime.
+void WinEHPrepareImpl::prepareCalledCleanups(Function &F) {
+  BlockColors = colorEHFunclets(F);
+  // A landed catchpad is code of the function.
+  auto GetFunclet = [&](BasicBlock *BB) {
+    BasicBlock *Funclet = BlockColors[BB].front();
+    return isa<CatchPadInst>(Funclet->getFirstNonPHIIt()) ? &F.getEntryBlock()
+                                                          : Funclet;
+  };
+  SmallVector<Instruction *, 8> Escaping, Lifetimes;
+  for (BasicBlock &BB : F) {
+    BasicBlock *Funclet = GetFunclet(&BB);
+    if (Funclet == &F.getEntryBlock())
+      continue;
+    for (Instruction &I : BB)
+      if (I.isLifetimeStartOrEnd())
+        Lifetimes.push_back(&I);
+      else if (!I.getType()->isTokenTy() && !isa<AllocaInst>(I) &&
+               any_of(I.users(), [&](User *U) {
+                 return GetFunclet(cast<Instruction>(U)->getParent()) !=
+                        Funclet;
+               }))
+        Escaping.push_back(&I);
+  }
+  for (Instruction *I : Lifetimes)
+    I->eraseFromParent();
+  for (Instruction *I : Escaping)
+    DemoteRegToStack(*I);
+  if (AsyncTables) {
+    prepareAsyncEHScopes(F);
+    removeUnreachableBlocks(F);
+  }
+  assert(!verifyFunction(F, &dbgs()));
 }
 
 // TODO: Share loads when one use dominates another, or when a catchpad exit

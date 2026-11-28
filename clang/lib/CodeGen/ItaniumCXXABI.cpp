@@ -2929,10 +2929,11 @@ void ItaniumCXXABI::EmitGuardedInit(CodeGenFunction &CGF,
     Builder.CreateCondBr(Builder.CreateIsNotNull(V, "tobool"),
                          InitBlock, EndBlock);
 
-    // Call __cxa_guard_abort along the exceptional edge.
-    CGF.EHStack.pushCleanup<CallGuardAbort>(EHCleanup, guard);
-
     CGF.EmitBlock(InitBlock);
+
+    // Call __cxa_guard_abort along the exceptional edge. The cleanup's scope
+    // begins in the block that initializes.
+    CGF.EHStack.pushCleanup<CallGuardAbort>(EHCleanup, guard);
   } else if (!D.isLocalVarDecl()) {
     // For non-local variables, store 1 into the first byte of the guard
     // variable before the object initialization begins so that references
@@ -4968,6 +4969,18 @@ namespace {
       CGF.EmitRuntimeCallOrInvoke(getEndCatchFn(CGF.CGM));
     }
   };
+
+  /// Ends the exception that a handler has not begun to catch, where an
+  /// unwind passes the handler's frame.
+  struct EndUncaughtException final : EHScopeStack::Cleanup {
+    EndUncaughtException(llvm::Value *Exn) : Exn(Exn) {}
+    llvm::Value *Exn;
+
+    void Emit(CodeGenFunction &CGF, Flags flags) override {
+      CGF.EmitNounwindRuntimeCall(getBeginCatchFn(CGF.CGM), Exn);
+      CGF.EmitNounwindRuntimeCall(getEndCatchFn(CGF.CGM));
+    }
+  };
 }
 
 /// Emits a call to __cxa_begin_catch and enters a cleanup to call
@@ -5146,6 +5159,12 @@ static void InitCatchParam(CodeGenFunction &CGF,
     opaque(CGF, OpaqueValueExpr::findInCopyConstruct(copyExpr),
            CGF.MakeAddrLValue(adjustedExn, CatchParam.getType()));
 
+  // An asynchronous exception that the copy raises passes the terminate
+  // scope by and unwinds this frame, which ends the exception being caught.
+  bool IsAsync = getEHPersonality(CGF).isAsyncPersonality();
+  if (IsAsync)
+    CGF.EHStack.pushCleanup<EndUncaughtException>(EHCleanup, Exn);
+
   // Call the copy ctor in a terminate scope.
   CGF.EHStack.pushTerminate();
 
@@ -5159,6 +5178,8 @@ static void InitCatchParam(CodeGenFunction &CGF,
 
   // Leave the terminate scope.
   CGF.EHStack.popTerminate();
+  if (IsAsync)
+    CGF.PopCleanupBlock();
 
   // Undo the opaque value mapping.
   opaque.pop();

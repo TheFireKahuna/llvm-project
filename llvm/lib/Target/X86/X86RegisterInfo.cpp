@@ -27,6 +27,7 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TileShapeInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Type.h"
 #include "llvm/MC/MCContext.h"
@@ -774,8 +775,12 @@ void X86RegisterInfo::adjustStackMapLiveOutMask(uint32_t *Mask) const {
 // Stack Frame Processing methods
 //===----------------------------------------------------------------------===//
 
-static bool CantUseSP(const MachineFrameInfo &MFI) {
-  return MFI.hasVarSizedObjects() || MFI.hasOpaqueSPAdjustment();
+// A cleanup funclet that Windows Itanium's unwinder calls has a stack pointer
+// of its own.
+static bool CantUseSP(const MachineFunction &MF) {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  return MFI.hasVarSizedObjects() || MFI.hasOpaqueSPAdjustment() ||
+         (MF.hasEHFunclets() && usesCalledCleanups(MF.getFunction()));
 }
 
 bool X86RegisterInfo::hasBasePointer(const MachineFunction &MF) const {
@@ -788,8 +793,6 @@ bool X86RegisterInfo::hasBasePointer(const MachineFunction &MF) const {
   if (X86FI->hasPreallocatedCall())
     return true;
 
-  const MachineFrameInfo &MFI = MF.getFrameInfo();
-
   if (!MF.getSubtarget<X86Subtarget>().getCLOpts().use_base_pointer)
     return false;
 
@@ -799,14 +802,13 @@ bool X86RegisterInfo::hasBasePointer(const MachineFunction &MF) const {
   // reference locals while also adjusting the stack pointer.  When we can't
   // use both the SP and the FP, we need a separate base pointer register.
   bool CantUseFP = hasStackRealignment(MF);
-  return CantUseFP && CantUseSP(MFI);
+  return CantUseFP && CantUseSP(MF);
 }
 
 bool X86RegisterInfo::canRealignStack(const MachineFunction &MF) const {
   if (!TargetRegisterInfo::canRealignStack(MF))
     return false;
 
-  const MachineFrameInfo &MFI = MF.getFrameInfo();
   const MachineRegisterInfo *MRI = &MF.getRegInfo();
 
   // Stack realignment requires a frame pointer.  If we already started
@@ -816,7 +818,7 @@ bool X86RegisterInfo::canRealignStack(const MachineFunction &MF) const {
 
   // If a base pointer is necessary.  Check that it isn't too late to reserve
   // it.
-  if (CantUseSP(MFI))
+  if (CantUseSP(MF))
     return MRI->canReserveReg(BasePtr);
   return true;
 }
@@ -933,6 +935,29 @@ X86RegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
     FIOffset = TFI->getWin64EHFrameIndexRef(MF, FrameIndex, BasePtr);
   } else {
     FIOffset = TFI->getFrameIndexReference(MF, FrameIndex, BasePtr).getFixed();
+  }
+
+  // A cleanup funclet that addresses its function's frame from the establisher
+  // has that in the index register, or, in a reload of a value of the
+  // function's where the funclet begins, in RDX: the stack pointer that the
+  // function's prologue leaves. A spill slot of its own code is in its own
+  // frame.
+  const X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
+  if (X86FI->isCalledCleanupBlock(MBB) &&
+      TFI->addressesFrameFromEstablisher(MF)) {
+    if (auto It = X86FI->getCalledCleanupSlots().find(FrameIndex);
+        It != X86FI->getCalledCleanupSlots().end()) {
+      BasePtr = StackPtr;
+      FIOffset = X86FI->getCalledCleanupFrame(MBB).SlotBase + It->second;
+    } else {
+      MachineOperand &Index = MI.getOperand(FIOperandNum + X86::AddrIndexReg);
+      BasePtr = Index.getReg() ? Index.getReg() : Register(X86::RDX);
+      Index.setReg(Register());
+      Register SP;
+      FIOffset = TFI->getFrameIndexReferenceSP(MF, FrameIndex, SP,
+                                               MF.getFrameInfo().getStackSize())
+                     .getFixed();
+    }
   }
 
   // LOCAL_ESCAPE uses a single offset, with no register. It only works in the

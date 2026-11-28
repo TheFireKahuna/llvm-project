@@ -173,6 +173,15 @@ extern "C" _LIBCXXABI_FUNC_VIS __cxa_eh_globals * __cxa_get_globals_fast ();
 extern "C" _LIBCXXABI_FUNC_VIS void * __cxa_allocate_dependent_exception ();
 extern "C" _LIBCXXABI_FUNC_VIS void __cxa_free_dependent_exception (void * dependent_exception);
 
+#if defined(_WIN32_ITANIUM)
+// Exceptions that are not this runtime's own: cxa_seh_translator.cpp.
+_LIBCXXABI_HIDDEN bool __seh_is_structured(const _Unwind_Exception*);
+_LIBCXXABI_HIDDEN bool __seh_is_offered(const _Unwind_Exception*);
+_LIBCXXABI_HIDDEN _Unwind_Exception* __seh_translate(_Unwind_Exception*);
+_LIBCXXABI_HIDDEN _Unwind_Exception* __seh_search_result(_Unwind_Exception*, bool taken);
+_LIBCXXABI_HIDDEN void __seh_rethrow(const __cxa_exception*);
+#endif
+
 }  // namespace __cxxabiv1
 
 #endif // _CXA_EXCEPTION_H

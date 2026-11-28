@@ -336,6 +336,65 @@ i8 addrspace(N)* @llvm.eh.padparam.pNi8(token %catchpad)
 This intrinsic retrieves a pointer to the exception caught by the given
 `catchpad`.
 
+### Windows Itanium
+
+Under an Itanium-style personality on Windows Itanium
+(`__gxx_personality_seh0`, `__gxx_personality_seha0`, `__gcc_personality_seh0`)
+a function uses the funclet instructions. A `cleanuppad` is a funclet that only
+the unwinder calls, with the function's frame, and nothing unwinds out of it. A
+`catchpad` is landed: the unwinder restores the function's frame and continues
+at the pad, which takes the exception object's address from
+`llvm.eh.exceptionpointer` and leaves at once by a `catchret`, as an `__except`
+block's does, so the handler's code is the function's. A `catchpad`'s argument
+is the type its handler takes, null for every type, or a constant array of the
+types a dynamic exception specification allows. The unwinder chooses the
+handler: a call site's innermost scope leads, through the scopes around it, to
+the cleanups it runs and the handlers it may land in, and the exception table
+names each `try` block's pads by the selector that the personality routine
+gives. A `landingpad` is an error.
+
+### Asynchronous exceptions under an Itanium-style personality
+
+A function that names the personality routine `__gxx_personality_seha0`
+(Windows Itanium's `-fasync-exceptions`) takes the exceptions that any of its
+instructions raises, such as an access violation, and not only those its calls
+throw: its exception table covers every instruction of an EH scope. The mode is
+the function's own; no module flag carries it, and a function is inlined only
+into one of the same mode.
+
+The front end brackets each EH scope, a cleanup's or a `try` block's, with
+invokes of `llvm.seh.scope.begin` or `llvm.seh.try.begin` and of
+`llvm.seh.scope.end` or `llvm.seh.try.end` that unwind to the scope's EH pad.
+A scope is open in the blocks that its opening markers reach before a closing
+one. It may be opened on one path to a block and not on another, as a
+conditional expression's temporary is, or once for each turn of a loop; its
+cleanup then tests what there is to clean up. An instruction is in the
+innermost of the scopes open in its block, and it is an error for two of them
+to be neither inside the other. Every call in a scope is an `invoke`, whatever
+its callee throws, so that the scopes of an inlined callee lie inside it. A
+coroutine's front end closes the scopes that are open across a suspend ahead of
+`llvm.coro.suspend` and opens them again on the ways on from a resume and a
+destroy, which enter the coroutine past the markers that opened them.
+
+`WinEHPrepare` gives each block in a scope an invoke of `llvm.seh.scope.begin`
+of its own that unwinds to the scope's pad, so that what the pad reads is live
+throughout the scope, and instruction selection makes the block's instructions
+a range of the pad in the exception table, to the byte. Code in no scope has
+an entry with no landing pad. A table is searched with the address before a
+frame's own, which lies in the call for a return address. AArch64's system
+unwinder says whether the address it gives is one, and the address of an
+instruction that raised is searched as it is. That of x86-64 does not, so
+there the call sites of such a table are written one byte early, and the one
+search finds the instruction at either kind of address: a `nop` follows a call
+that is the last instruction of the ranges of its EH pad, which keeps the
+return address among them, and a `nop` begins a function whose first
+instruction is in a range.
+
+A `noexcept` function keeps its terminate scope, as a `catchpad` whose list of
+allowed types is empty, which no C++ exception passes. The personality routine
+does not offer an asynchronous exception to such a pad, so one leaves the
+function with its cleanups run.
+
 
 ### SJLJ Intrinsics
 

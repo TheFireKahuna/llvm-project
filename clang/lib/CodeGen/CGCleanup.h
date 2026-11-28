@@ -106,6 +106,10 @@ protected:
     LLVM_PREFERRED_TYPE(bool)
     unsigned IsStackRestore : 1;
 
+    /// Whether the normal cleanup is only the end of the cleanup's EH scope.
+    LLVM_PREFERRED_TYPE(bool)
+    unsigned IsNormalScopeEndOnly : 1;
+
     /// The amount of extra storage needed by the Cleanup.
     /// Always a multiple of the scope-stack alignment.
     unsigned CleanupSize : 12;
@@ -366,6 +370,7 @@ public:
     CleanupBits.IsFakeUse = false;
     CleanupBits.IsSEHFinallyCleanup = false;
     CleanupBits.IsStackRestore = false;
+    CleanupBits.IsNormalScopeEndOnly = false;
     CleanupBits.TestFlagInNormalCleanup = false;
     CleanupBits.TestFlagInEHCleanup = false;
     CleanupBits.CleanupSize = cleanupSize;
@@ -410,6 +415,9 @@ public:
 
   bool isSEHFinallyCleanup() const { return CleanupBits.IsSEHFinallyCleanup; }
   void setSEHFinallyCleanup() { CleanupBits.IsSEHFinallyCleanup = true; }
+
+  bool isNormalScopeEndOnly() const { return CleanupBits.IsNormalScopeEndOnly; }
+  void setNormalScopeEndOnly() { CleanupBits.IsNormalScopeEndOnly = true; }
 
   bool hasActiveFlag() const { return ActiveFlag.isValid(); }
   Address getActiveFlag() const {

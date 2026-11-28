@@ -16,9 +16,11 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetLowering.h"
+#include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -652,12 +654,25 @@ bool llvm::canDescribeGlobalAddressInLocationList(const MachineFunction &MF) {
 /// a return and there's nothing that needs to be scheduled
 /// between it and the return.
 ///
+bool llvm::isInCalledCleanup(const CallBase &Call) {
+  std::optional<OperandBundleUse> Funclet =
+      Call.getOperandBundle(LLVMContext::OB_funclet);
+  return Funclet && isa<CleanupPadInst>(Funclet->Inputs.front()) &&
+         usesCalledCleanups(*Call.getFunction());
+}
+
 /// This function only tests target-independent requirements.
 bool llvm::isInTailCallPosition(const CallBase &Call, const TargetMachine &TM,
                                 bool ReturnsFirstArg) {
   const BasicBlock *ExitBB = Call.getParent();
   const Instruction *Term = ExitBB->getTerminator();
   const ReturnInst *Ret = dyn_cast<ReturnInst>(Term);
+
+  // A cleanup that Windows Itanium's unwinder calls returns to it, whatever
+  // pad its cleanupret names, and nothing of its own frame outlives it: the
+  // cleanupret is a void return.
+  if (isa<CleanupReturnInst>(Term) && !usesCalledCleanups(*ExitBB->getParent()))
+    return false;
 
   // The block must end in a return statement or unreachable.
   //
@@ -667,10 +682,11 @@ bool llvm::isInTailCallPosition(const CallBase &Call, const TargetMachine &TM,
   // not profitable. Also, if the callee is a special function (e.g.
   // longjmp on x86), it can end up causing miscompilation that has not
   // been fully understood.
-  if (!Ret && ((!TM.Options.GuaranteedTailCallOpt &&
-                Call.getCallingConv() != CallingConv::Tail &&
-                Call.getCallingConv() != CallingConv::SwiftTail) ||
-               !isa<UnreachableInst>(Term)))
+  if (!Ret && !isa<CleanupReturnInst>(Term) &&
+      ((!TM.Options.GuaranteedTailCallOpt &&
+        Call.getCallingConv() != CallingConv::Tail &&
+        Call.getCallingConv() != CallingConv::SwiftTail) ||
+       !isa<UnreachableInst>(Term)))
     return false;
 
   // If I will have a chain, make sure no other instruction that will have a
@@ -878,7 +894,7 @@ llvm::getEHScopeMembership(const MachineFunction &MF) {
     return EHScopeMembership;
 
   int EntryBBNumber = MF.front().getNumber();
-  bool IsSEH = isAsynchronousEHPersonality(
+  bool IsSEH = hasLandedCatchPads(
       classifyEHPersonality(MF.getFunction().getPersonalityFn()));
 
   const TargetInstrInfo *TII = MF.getSubtarget().getInstrInfo();
@@ -939,4 +955,33 @@ llvm::getEHScopeMembership(const MachineFunction &MF) {
       collectEHScopeMembers(EHScopeMembership, EntryBBNumber, &MBB);
 
   return EHScopeMembership;
+}
+
+SmallVector<int, 0> llvm::getEHFunclets(const MachineFunction &MF) {
+  SmallVector<int, 0> Funclets(MF.getNumBlockIDs(), -1);
+  for (auto [MBB, Scope] : getEHScopeMembership(MF))
+    if (Scope != MF.front().getNumber())
+      Funclets[MBB->getNumber()] = Scope;
+  return Funclets;
+}
+
+void llvm::resetFuncletOnlyCalleeSaves(const MachineFunction &MF,
+                                       ArrayRef<int> Funclets,
+                                       BitVector &SavedRegs) {
+  const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
+  BitVector OwnClobbers(TRI->getNumRegs());
+  for (const MachineBasicBlock &MBB : MF) {
+    if (Funclets[MBB.getNumber()] >= 0)
+      continue;
+    for (const MachineInstr &MI : MBB)
+      for (const MachineOperand &MO : MI.operands()) {
+        if (MO.isRegMask())
+          OwnClobbers.setBitsNotInMask(MO.getRegMask());
+        else if (MO.isReg() && MO.isDef() && MO.getReg().isPhysical())
+          for (MCRegAliasIterator AI(MO.getReg(), TRI, true); AI.isValid();
+               ++AI)
+            OwnClobbers.set(*AI);
+      }
+  }
+  SavedRegs &= OwnClobbers;
 }

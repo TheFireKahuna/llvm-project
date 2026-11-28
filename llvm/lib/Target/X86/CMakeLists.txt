@@ -58,6 +58,7 @@ set(sources
   X86FixupInstTuning.cpp
   X86FixupVectorConstants.cpp
   X86AvoidStoreForwardingBlocks.cpp
+  X86CalledCleanups.cpp
   X86DynAllocaExpander.cpp
   X86FixupSetCC.cpp
   X86FlagsCopyLowering.cpp

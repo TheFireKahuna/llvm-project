@@ -1,6 +1,4 @@
-; RUN: llc -mtriple=x86_64-unknown-windows-itanium -O0 < %s | FileCheck %s
 ; RUN: llc -mtriple=x86_64-w64-windows-gnu < %s | FileCheck %s
-; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-itanium -O0 < %s | FileCheck %s %}
 ; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-w64-windows-gnu < %s | FileCheck %s %}
 
 ; Under Windows EH the unwinder enters a landing pad by restoring a context

@@ -2113,7 +2113,7 @@ void SelectionDAGBuilder::visitCatchPad(const CatchPadInst &I) {
   auto Pers = classifyEHPersonality(FuncInfo.Fn->getPersonalityFn());
   bool IsMSVCCXX = Pers == EHPersonality::MSVC_CXX;
   bool IsCoreCLR = Pers == EHPersonality::CoreCLR;
-  bool IsSEH = isAsynchronousEHPersonality(Pers);
+  bool IsSEH = hasLandedCatchPads(Pers);
   MachineBasicBlock *CatchPadMBB = FuncInfo.MBB;
   if (IsSEH) {
     // For SEH, EHCont Guard needs to know that this catchpad is a target.
@@ -2132,7 +2132,7 @@ void SelectionDAGBuilder::visitCatchRet(const CatchReturnInst &I) {
   FuncInfo.MBB->addSuccessor(TargetMBB);
 
   auto Pers = classifyEHPersonality(FuncInfo.Fn->getPersonalityFn());
-  bool IsSEH = isAsynchronousEHPersonality(Pers);
+  bool IsSEH = hasLandedCatchPads(Pers);
   if (IsSEH) {
     // If this is not a fall-through branch or optimizations are switched off,
     // emit the branch.
@@ -2198,7 +2198,7 @@ static void findUnwindDestinations(
   bool IsCoreCLR = Personality == EHPersonality::CoreCLR;
   bool IsWasmCXX = Personality == EHPersonality::Wasm_CXX;
   bool IsWasmD = Personality == EHPersonality::Wasm_D;
-  bool IsSEH = isAsynchronousEHPersonality(Personality);
+  bool IsSEH = hasLandedCatchPads(Personality);
 
   while (EHPadBB) {
     BasicBlock::const_iterator Pad = EHPadBB->getFirstNonPHIIt();
@@ -2216,7 +2216,14 @@ static void findUnwindDestinations(
       // In Wasm, EH scopes are not funclets
       if (!IsWasmCXX && !IsWasmD)
         UnwindDests.back().first->setIsEHFuncletEntry();
-      break;
+      // Windows Itanium's unwinder calls each cleanup from the frame as it is
+      // at the call site, and lands in a handler beyond them with that frame's
+      // registers: every pad of the call's scopes is a destination of it.
+      if (Personality != EHPersonality::Itanium_SEH)
+        break;
+      for (const User *U : cast<CleanupPadInst>(Pad)->users())
+        if (const auto *CRI = dyn_cast<CleanupReturnInst>(U))
+          NewEHPadBB = CRI->getUnwindDest();
     } else if (const auto *CatchSwitch = dyn_cast<CatchSwitchInst>(Pad)) {
       // Add the catchpad handlers to the possible destinations.
       for (const BasicBlock *CatchPadBB : CatchSwitch->handlers()) {
@@ -2240,9 +2247,14 @@ static void findUnwindDestinations(
 }
 
 void SelectionDAGBuilder::visitCleanupRet(const CleanupReturnInst &I) {
-  // Update successor info.
+  // Update successor info. A cleanup that Windows Itanium's unwinder calls
+  // returns to it: the call that the unwind passes leads to the pads beyond.
   SmallVector<std::pair<MachineBasicBlock *, BranchProbability>, 1> UnwindDests;
-  auto UnwindDest = I.getUnwindDest();
+  auto UnwindDest =
+      classifyEHPersonality(FuncInfo.Fn->getPersonalityFn()) ==
+              EHPersonality::Itanium_SEH
+          ? nullptr
+          : I.getUnwindDest();
   BranchProbabilityInfo *BPI = FuncInfo.BPI;
   BranchProbability UnwindDestProb =
       (BPI && UnwindDest)
@@ -9338,6 +9350,9 @@ SDValue SelectionDAGBuilder::lowerEndEH(SDValue Chain, const InvokeInst *II,
     assert(II && "II should've been set");
     WinEHFuncInfo *EHInfo = MF.getWinEHFuncInfo();
     EHInfo->addIPToStateRange(II, BeginLabel, EndLabel);
+  } else if (Pers == EHPersonality::Itanium_SEH) {
+    assert(EHPadBB);
+    MF.addEHScopeInvoke(MF.getEHScopeNumber(EHPadBB), BeginLabel, EndLabel);
   } else if (!isScopedEHPersonality(Pers)) {
     assert(EHPadBB);
     MF.addInvoke(FuncInfo.getMBB(EHPadBB), BeginLabel, EndLabel);
@@ -9423,7 +9438,7 @@ void SelectionDAGBuilder::LowerCallTo(const CallBase &CB, SDValue Callee,
   const Value *SwiftErrorVal = nullptr;
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
 
-  if (isTailCall)
+  if (isTailCall || isInCalledCleanup(CB))
     isTailCall = canTailCall(CB);
 
   for (auto I = CB.arg_begin(), E = CB.arg_end(); I != E; ++I) {

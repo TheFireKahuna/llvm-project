@@ -165,10 +165,20 @@ void *EHScopeStack::pushCleanup(CleanupKind Kind, size_t Size) {
   // Per C++ [except.terminate], it is implementation-defined whether none,
   // some, or all cleanups are called before std::terminate. Thus, when
   // terminate is the current EH scope, we may skip adding any EH cleanup
-  // scopes.
+  // scopes. An asynchronous exception passes the Itanium personality's
+  // terminate scope by and runs the cleanups inside it.
   if (InnermostEHScope != stable_end() &&
-      find(InnermostEHScope)->getKind() == EHScope::Terminate)
+      find(InnermostEHScope)->getKind() == EHScope::Terminate &&
+      !getEHPersonality(*CGF).isAsyncPersonality())
     IsEHCleanup = false;
+
+  // The Itanium personality of asynchronous exceptions has each way out of an
+  // EH cleanup end its scope. A cleanup that runs for an exception only is a
+  // normal cleanup there too, one that ends the scope and runs nothing, so
+  // that a jump out of the scope is threaded through its end.
+  bool IsNormalScopeEndOnly = IsEHCleanup && !IsNormalCleanup &&
+                              getEHPersonality(*CGF).isAsyncPersonality();
+  IsNormalCleanup |= IsNormalScopeEndOnly;
 
   EHCleanupScope *Scope =
     new (Buffer) EHCleanupScope(IsNormalCleanup,
@@ -189,6 +199,8 @@ void *EHScopeStack::pushCleanup(CleanupKind Kind, size_t Size) {
     Scope->setSEHFinallyCleanup();
   if (IsStackRestore)
     Scope->setStackRestore();
+  if (IsNormalScopeEndOnly)
+    Scope->setNormalScopeEndOnly();
 
   // With Windows -EHa, Invoke llvm.seh.scope.begin() for EHCleanup
   // If exceptions are disabled/ignored and SEH is not in use, then there is no
@@ -197,7 +209,9 @@ void *EHScopeStack::pushCleanup(CleanupKind Kind, size_t Size) {
   // consistent with MSVC's behavior, except in the presence of -EHa.
   // Check getInvokeDest() to generate llvm.seh.scope.begin() as needed.
   if (CGF->getLangOpts().EHAsynch && IsEHCleanup && !IsLifetimeMarker &&
-      !IsSEHFinallyCleanup && CGF->getTarget().getCXXABI().isMicrosoft() &&
+      !IsSEHFinallyCleanup &&
+      (CGF->getTarget().getCXXABI().isMicrosoft() ||
+       getEHPersonality(*CGF).isAsyncPersonality()) &&
       CGF->getInvokeDest())
     CGF->EmitSehCppScopeBegin();
 
@@ -279,17 +293,26 @@ void EHScopeStack::popNullFixups() {
     BranchFixups.pop_back();
 }
 
+/// Returns true if a cleanup's flag is written with volatile stores. An
+/// asynchronous exception may ask at any instruction whether there is
+/// something to clean up, so the Itanium personality that takes them has the
+/// flag in memory, written where its value changes.
+static bool hasVolatileCleanupFlags(CodeGenFunction &CGF) {
+  return getEHPersonality(CGF).isAsyncPersonality();
+}
+
 RawAddress CodeGenFunction::createCleanupActiveFlag() {
   // Create a variable to decide whether the cleanup needs to be run.
   RawAddress active = CreateTempAllocaWithoutCast(
       Builder.getInt1Ty(), CharUnits::One(), "cleanup.cond");
+  bool IsVolatile = hasVolatileCleanupFlags(*this);
 
   // Initialize it to false at a site that's guaranteed to be run
   // before each evaluation.
-  setBeforeOutermostConditional(Builder.getFalse(), active, *this);
+  setBeforeOutermostConditional(Builder.getFalse(), active, *this, IsVolatile);
 
   // Initialize it to true at the current location.
-  Builder.CreateStore(Builder.getTrue(), active);
+  Builder.CreateStore(Builder.getTrue(), active, IsVolatile);
 
   return active;
 }
@@ -306,11 +329,13 @@ void CodeGenFunction::initFullExprCleanupWithFlag(RawAddress ActiveFlag) {
 
 void EHScopeStack::Cleanup::anchor() {}
 
-static void createStoreInstBefore(llvm::Value *value, Address addr,
-                                  llvm::BasicBlock::iterator beforeInst,
-                                  CodeGenFunction &CGF) {
+static llvm::StoreInst *
+createStoreInstBefore(llvm::Value *value, Address addr,
+                      llvm::BasicBlock::iterator beforeInst,
+                      CodeGenFunction &CGF) {
   auto store = new llvm::StoreInst(value, addr.emitRawPointer(CGF), beforeInst);
   store->setAlignment(addr.getAlignment().getAsAlign());
+  return store;
 }
 
 static llvm::LoadInst *
@@ -695,8 +720,10 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
 
   // - whether there's a fallthrough
   llvm::BasicBlock *FallthroughSource = Builder.GetInsertBlock();
+  // The end of an EH scope is on the way on from an inactive cleanup too.
   bool HasFallthrough =
-      FallthroughSource != nullptr && (IsActive || HasExistingBranches);
+      FallthroughSource != nullptr &&
+      (IsActive || HasExistingBranches || Scope.isNormalScopeEndOnly());
 
   // Branch-through fall-throughs leave the insertion point set to the
   // end of the last cleanup, which points to the current scope.  The
@@ -784,14 +811,31 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
   }
 
   EHScopeStack::Cleanup::Flags cleanupFlags;
-  if (Scope.isNormalCleanup())
+  bool IsNormalScopeEndOnly = Scope.isNormalScopeEndOnly();
+  if (Scope.isNormalCleanup() && !IsNormalScopeEndOnly)
     cleanupFlags.setIsNormalCleanupKind();
   if (Scope.isEHCleanup())
     cleanupFlags.setIsEHCleanupKind();
 
-  // Under -EHa, invoke seh.scope.end() to mark scope end before dtor
-  bool IsEHa = getLangOpts().EHAsynch && !Scope.isLifetimeMarker();
+  // Under -EHa, invoke seh.scope.end() to mark scope end before dtor. The
+  // Itanium personality pairs each end with a begin, which an EH cleanup has.
+  bool IsEHa =
+      getLangOpts().EHAsynch && !Scope.isLifetimeMarker() &&
+      (Scope.isEHCleanup() || !getEHPersonality(*this).isAsyncPersonality());
   bool IsSEHFinallyCleanup = Scope.isSEHFinallyCleanup();
+  // The way on that does not go through the normal cleanup, which is inactive
+  // or being deactivated, ends the scope too, which the Itanium personality
+  // opened with a marker to the cleanup's EH pad.
+  auto EmitScopeEndPastCleanup = [&] {
+    llvm::BasicBlock *BB = Builder.GetInsertBlock();
+    if (!IsEHa || !EHEntry || !BB || BB->hasTerminator() ||
+        !getEHPersonality(*this).isAsyncPersonality())
+      return;
+    llvm::BasicBlock *Cont = createBasicBlock("invoke.cont");
+    Builder.CreateInvoke(CGM.getIntrinsic(llvm::Intrinsic::seh_scope_end), Cont,
+                         EHEntry);
+    EmitBlock(Cont);
+  };
   if (!RequiresNormalCleanup) {
     // Mark CPP scope end for passed-by-value Arg temp
     //   per Windows ABI which is "normally" Cleanup in callee
@@ -827,7 +871,8 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
       Scope.MarkEmitted();
       EHStack.popCleanup();
 
-      EmitCleanup(*this, Fn, cleanupFlags, NormalActiveFlag);
+      if (!IsNormalScopeEndOnly)
+        EmitCleanup(*this, Fn, cleanupFlags, NormalActiveFlag);
 
     // Otherwise, the best approach is to thread everything through
     // the cleanup block and then try to clean up after ourselves.
@@ -964,7 +1009,8 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
       EHStack.popCleanup();
       assert(EHStack.hasNormalCleanups() == HasEnclosingCleanups);
 
-      EmitCleanup(*this, Fn, cleanupFlags, NormalActiveFlag);
+      if (!IsNormalScopeEndOnly)
+        EmitCleanup(*this, Fn, cleanupFlags, NormalActiveFlag);
 
       // Append the prepared cleanup prologue from above.
       llvm::BasicBlock *NormalExit = Builder.GetInsertBlock();
@@ -996,6 +1042,7 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
         // Either way, all we need to do is restore the IP we cleared before.
         assert(!IsActive);
         Builder.restoreIP(savedInactiveFallthroughIP);
+        EmitScopeEndPastCleanup();
 
       // Case 2: a fallthrough source exists and should branch to the
       // cleanup, but we're not supposed to branch through to the next
@@ -1030,8 +1077,11 @@ void CodeGenFunction::PopCleanupBlock(bool FallthroughIsBranchThrough,
     }
   }
 
-  if (NormalDeactivateOrigIP.isValid())
+  if (NormalDeactivateOrigIP.isValid()) {
     Builder.restoreIP(NormalDeactivateOrigIP);
+    if (RequiresNormalCleanup)
+      EmitScopeEndPastCleanup();
+  }
   assert(EHStack.hasNormalCleanups() || EHStack.getNumBranchFixups() == 0);
 
   // Emit the EH cleanup if required.
@@ -1275,13 +1325,16 @@ static void SetupCleanupBlockActivation(CodeGenFunction &CGF,
     // If we're in a conditional block, ignore the dominating IP and
     // use the outermost conditional branch.
     if (CGF.isInConditionalBranch()) {
-      CGF.setBeforeOutermostConditional(value, var, CGF);
+      CGF.setBeforeOutermostConditional(value, var, CGF,
+                                        hasVolatileCleanupFlags(CGF));
     } else {
-      createStoreInstBefore(value, var, dominatingIP->getIterator(), CGF);
+      createStoreInstBefore(value, var, dominatingIP->getIterator(), CGF)
+          ->setVolatile(hasVolatileCleanupFlags(CGF));
     }
   }
 
-  CGF.Builder.CreateStore(CGF.Builder.getInt1(kind == ForActivation), var);
+  CGF.Builder.CreateStore(CGF.Builder.getInt1(kind == ForActivation), var,
+                          hasVolatileCleanupFlags(CGF));
 }
 
 /// Activate a cleanup that was created in an inactivated state.

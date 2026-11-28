@@ -19,6 +19,7 @@
 #include "X86Subtarget.h"
 #include "X86TargetMachine.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -28,6 +29,7 @@
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
@@ -99,6 +101,11 @@ bool X86FrameLowering::hasReservedCallFrame(const MachineFunction &MF) const {
 /// Use a more nuanced condition.
 bool X86FrameLowering::canSimplifyCallFramePseudos(
     const MachineFunction &MF) const {
+  // The pseudos of a cleanup funclet that an unwinder calls go once the
+  // funclets' blocks are known: its prologue allocates the frame of its calls.
+  if (!hasReservedCallFrame(MF) && MF.hasEHFunclets() &&
+      usesCalledCleanups(MF.getFunction()))
+    return false;
   return hasReservedCallFrame(MF) ||
          MF.getInfo<X86MachineFunctionInfo>()->hasPreallocatedCall() ||
          (hasFP(MF) && !TRI->hasStackRealignment(MF)) ||
@@ -118,6 +125,22 @@ bool X86FrameLowering::needsFrameIndexResolution(
          MF.getInfo<X86MachineFunctionInfo>()->getHasPushSequences();
 }
 
+/// Returns true if the EH funclets of \p MF can address its frame from the
+/// establisher frame they are passed: the cleanups that Windows Itanium's
+/// unwinder calls. Unoptimized code keeps the frame pointer for them:
+/// the fast register allocator has a funclet reload the establisher frame
+/// for each use, and a debugger could be told no place to find the frame at.
+static bool canAddressFromEstablisher(const MachineFunction &MF) {
+  return usesCalledCleanups(MF.getFunction()) &&
+         MF.getTarget().getOptLevel() != CodeGenOptLevel::None;
+}
+
+bool X86FrameLowering::addressesFrameFromEstablisher(
+    const MachineFunction &MF) const {
+  return MF.hasEHFunclets() && usesCalledCleanups(MF.getFunction()) &&
+         !hasFP(MF);
+}
+
 /// hasFPImpl - Return true if the specified function should have a dedicated
 /// frame pointer register.  This is true if the function has variable sized
 /// allocas or if frame pointer elimination is disabled.
@@ -128,7 +151,8 @@ bool X86FrameLowering::hasFPImpl(const MachineFunction &MF) const {
           MFI.hasOpaqueSPAdjustment() ||
           MF.getInfo<X86MachineFunctionInfo>()->getForceFramePointer() ||
           MF.getInfo<X86MachineFunctionInfo>()->hasPreallocatedCall() ||
-          MF.callsUnwindInit() || MF.hasEHFunclets() || MF.callsEHReturn() ||
+          MF.callsUnwindInit() || MF.callsEHReturn() ||
+          (MF.hasEHFunclets() && !canAddressFromEstablisher(MF)) ||
           MFI.hasStackMap() || MFI.hasPatchPoint() ||
           (MFI.hasCopyImplyingStackAdjustment() && MF.usesWindowsUnwindInfo()));
 }
@@ -1742,7 +1766,12 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   bool FnHasClrFunclet =
       MF.hasEHFunclets() && Personality == EHPersonality::CoreCLR;
   bool IsClrFunclet = IsFunclet && FnHasClrFunclet;
-  bool HasFP = hasFP(MF);
+  // A cleanup funclet that Windows Itanium's unwinder calls keeps no frame
+  // pointer where it addresses the frame from the establisher.
+  bool IsCalledCleanup = IsFunclet && usesCalledCleanups(Fn);
+  // A called cleanup is entered with its function's frame pointer, and sets
+  // its own only where the function realigns its stack.
+  bool HasFP = hasFP(MF) && !(IsCalledCleanup && !TRI->hasStackRealignment(MF));
   bool IsWin64Prologue = MF.usesWindowsUnwindInfo();
   bool NeedsWin64CFI = IsWin64Prologue && Fn.needsUnwindTableEntry();
   // FIXME: Emit FPO data for EH funclets.
@@ -1935,12 +1964,13 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
 
   if (IsWin64Prologue && IsFunclet && !IsClrFunclet) {
     // Immediately spill establisher into the home slot.
-    // The runtime cares about this.
+    // The runtime cares about this. An Itanium unwinder does not.
     // MOV64mr %rdx, 16(%rsp)
     unsigned MOVmr = Uses64BitFramePtr ? X86::MOV64mr : X86::MOV32mr;
-    addRegOffset(BuildMI(MBB, MBBI, DL, TII.get(MOVmr)), StackPtr, true, 16)
-        .addReg(Establisher)
-        .setMIFlag(MachineInstr::FrameSetup);
+    if (!IsCalledCleanup)
+      addRegOffset(BuildMI(MBB, MBBI, DL, TII.get(MOVmr)), StackPtr, true, 16)
+          .addReg(Establisher)
+          .setMIFlag(MachineInstr::FrameSetup);
     MBB.addLiveIn(Establisher);
   }
 
@@ -2104,7 +2134,8 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
       }
     }
   } else {
-    assert(!IsFunclet && "funclets without FPs not yet implemented");
+    assert((!IsFunclet || IsCalledCleanup) &&
+           "funclets without FPs not yet implemented");
     NumBytes =
         StackSize - (X86FI->getCalleeSavedFrameSize() + TailCallArgReserveSize);
   }
@@ -2122,7 +2153,7 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
   // NumBytes value that we would've used for the parent frame.
   unsigned ParentFrameNumBytes = NumBytes;
   if (IsFunclet)
-    NumBytes = getWinEHFuncletFrameSize(MF);
+    NumBytes = getWinEHFuncletFrameSize(MF, IsCalledCleanup ? &MBB : nullptr);
 
   // Skip the callee-saved push instructions.
   bool PushedRegs = false;
@@ -2407,6 +2438,11 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
     ++MBBI;
   }
 
+  // A funclet's prologue has unwind codes where that of its function, which
+  // needs no frame, has none, and the epilogues of both are marked; a called
+  // cleanup that allocates nothing is a leaf, with no unwind record.
+  HasWinCFI |= NeedsWin64CFI && MF.hasEHFunclets() &&
+               !(IsCalledCleanup && !HasFP && !NumBytes);
   if (NeedsWinCFI && HasWinCFI) {
     BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_EndPrologue))
         .setMIFlag(MachineInstr::FrameSetup);
@@ -2544,8 +2580,10 @@ void X86FrameLowering::emitPrologue(MachineFunction &MF,
     }
   }
 
-  // At this point we know if the function has WinCFI or not.
-  MF.setHasWinCFI(HasWinCFI);
+  // At this point we know if the function has WinCFI or not; a funclet that
+  // is a leaf has none of its own.
+  if (HasWinCFI || !IsFunclet)
+    MF.setHasWinCFI(HasWinCFI);
 }
 
 bool X86FrameLowering::canUseLEAForSPInEpilogue(
@@ -2594,15 +2632,19 @@ X86FrameLowering::getPSPSlotOffsetFromSP(const MachineFunction &MF) const {
   return static_cast<unsigned>(Offset);
 }
 
-unsigned
-X86FrameLowering::getWinEHFuncletFrameSize(const MachineFunction &MF) const {
+unsigned X86FrameLowering::getWinEHFuncletFrameSize(
+    const MachineFunction &MF, const MachineBasicBlock *CalledCleanup) const {
   const X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
+  if (CalledCleanup)
+    return X86FI->getCalledCleanupFrame(*CalledCleanup).Size;
   // This is the size of the pushed CSRs.
   unsigned CSSize = X86FI->getCalleeSavedFrameSize();
   // This is the size of callee saved XMMs.
-  const auto &WinEHXMMSlotInfo = X86FI->getWinEHXMMSlotInfo();
-  unsigned XMMSize =
-      WinEHXMMSlotInfo.size() * TRI->getSpillSize(X86::VR128RegClass);
+  unsigned XMMSize = 0;
+  for (auto [FI, Offset] : X86FI->getWinEHXMMSlotInfo())
+    XMMSize = std::max<unsigned>(XMMSize,
+                                 Offset + MF.getFrameInfo().getObjectSize(FI));
+  XMMSize = alignTo(XMMSize, getStackAlign());
   // This is the amount of stack a funclet needs to allocate.
   unsigned UsedSize;
   EHPersonality Personality =
@@ -2616,13 +2658,15 @@ X86FrameLowering::getWinEHFuncletFrameSize(const MachineFunction &MF) const {
     // Other funclets just need enough stack for outgoing call arguments.
     UsedSize = MF.getFrameInfo().getMaxCallFrameSize();
   }
-  // RBP is not included in the callee saved register block. After pushing RBP,
-  // everything is 16 byte aligned. Everything we allocate before an outgoing
-  // call must also be 16 byte aligned.
-  unsigned FrameSizeMinusRBP = alignTo(CSSize + UsedSize, getStackAlign());
-  // Subtract out the size of the callee saved registers. This is how much stack
-  // each funclet will allocate.
-  return FrameSizeMinusRBP + XMMSize - CSSize;
+  // The slots follow the outgoing call arguments, 16 byte aligned.
+  if (XMMSize)
+    UsedSize = alignTo(UsedSize, getStackAlign()) + XMMSize;
+  // RBP is not included in the callee saved register block. After the return
+  // address, RBP and the callee saved registers, everything we allocate before
+  // an outgoing call must leave the stack 16 byte aligned. This is how much
+  // stack each funclet will allocate.
+  unsigned Pushed = CSSize + SlotSize * 2;
+  return alignTo(UsedSize + Pushed, getStackAlign()) - Pushed;
 }
 
 static bool isTailCallOpcode(unsigned Opc) {
@@ -2656,13 +2700,17 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   bool IsWin64UnwindV3 =
       NeedsWin64CFI && MF.hasWinCFI() && requireWinX64UnwindV3(MF);
   bool IsFunclet = MBBI == MBB.end() ? false : isFuncletReturnInstr(*MBBI);
+  // A tail call out of a called cleanup returns from the funclet.
+  IsFunclet |= X86FI->isCalledCleanupBlock(MBB);
 
   // Get the number of bytes to allocate from the FrameInfo.
   uint64_t StackSize = MFI.getStackSize();
   uint64_t MaxAlign = calculateMaxStackAlign(MF);
   unsigned CSSize = X86FI->getCalleeSavedFrameSize();
   unsigned TailCallArgReserveSize = -X86FI->getTCReturnAddrDelta();
-  bool HasFP = hasFP(MF);
+  bool IsCalledCleanup = IsFunclet && usesCalledCleanups(MF.getFunction());
+  bool HasFP =
+      hasFP(MF) && !(IsCalledCleanup && !TRI->hasStackRealignment(MF));
   uint64_t NumBytes = 0;
 
   bool NeedsDwarfCFI = (!MF.getTarget().getTargetTriple().isOSDarwin() &&
@@ -2699,8 +2747,9 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   }
 
   if (IsFunclet) {
-    assert(HasFP && "EH funclets without FP not yet implemented");
-    NumBytes = getWinEHFuncletFrameSize(MF);
+    assert((HasFP || IsCalledCleanup) &&
+           "EH funclets without FP not yet implemented");
+    NumBytes = getWinEHFuncletFrameSize(MF, IsCalledCleanup ? &MBB : nullptr);
   } else if (HasFP) {
     // Calculate required stack adjustment.
     uint64_t FrameSize = StackSize - SlotSize;
@@ -2714,6 +2763,9 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
     NumBytes = StackSize - CSSize - TailCallArgReserveSize;
   }
   uint64_t SEHStackAllocAmt = NumBytes;
+  // A called cleanup that allocates nothing is a leaf, with no unwind record.
+  bool MarksEpilogue = NeedsWin64CFI && MF.hasWinCFI() &&
+                       !(IsCalledCleanup && !HasFP && !NumBytes);
 
   unsigned SEHFrameOffset = 0;
   if (IsWin64Prologue && HasFP)
@@ -2806,7 +2858,7 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   if (NumBytes || MFI.hasVarSizedObjects())
     NumBytes = mergeSPAdd(MBB, MBBI, NumBytes, true);
 
-  if (IsWin64UnwindV3 && NeedsWin64CFI && MF.hasWinCFI()) {
+  if (IsWin64UnwindV3 && MarksEpilogue) {
     // Find the XMM restores that were tagged with FrameDestroy, now that we
     // know the offset we can emit the SEH pseudos for them.
     auto EpilogStart = MBBI;
@@ -2820,9 +2872,11 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
           Register Reg = PI->getOperand(0).getReg();
           if (X86::FR64RegClass.contains(Reg)) {
             Register IgnoredFrameReg;
-            int Offset =
-                getFrameIndexReference(MF, FI, IgnoredFrameReg).getFixed() +
-                SEHFrameOffset;
+            int Offset = IsFunclet
+                             ? getWin64EHFrameIndexRef(MF, FI, IgnoredFrameReg)
+                             : getFrameIndexReference(MF, FI, IgnoredFrameReg)
+                                       .getFixed() +
+                                   SEHFrameOffset;
             BuildMI(MBB, PI, DL, TII.get(X86::SEH_SaveXMM))
                 .addImm(Reg)
                 .addImm(Offset)
@@ -2907,7 +2961,7 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
   }
 
   // For V1/V2, emit SEH_BeginEpilogue after stack restore code.
-  if (!IsWin64UnwindV3 && NeedsWin64CFI && MF.hasWinCFI())
+  if (!IsWin64UnwindV3 && MarksEpilogue)
     BuildMI(MBB, MBBI, DL, TII.get(X86::SEH_BeginEpilogue))
         .setMIFlag(MachineInstr::FrameDestroy);
 
@@ -2951,11 +3005,18 @@ void X86FrameLowering::emitEpilogue(MachineFunction &MF,
     }
   }
 
-  // Emit tilerelease for AMX kernel.
-  if (X86FI->getAMXProgModel() == AMXProgModelEnum::ManagedRA)
-    BuildMI(MBB, Terminator, DL, TII.get(X86::TILERELEASE));
+  // Emit tilerelease for AMX kernel, ahead of an epilogue that Windows'
+  // unwinder knows by its code.
+  if (X86FI->getAMXProgModel() == AMXProgModelEnum::ManagedRA) {
+    MachineBasicBlock::iterator I = Terminator;
+    while (MarksEpilogue && I != MBB.begin() &&
+           (std::prev(I)->getFlag(MachineInstr::FrameDestroy) ||
+            std::prev(I)->isDebugInstr()))
+      --I;
+    BuildMI(MBB, I, DL, TII.get(X86::TILERELEASE));
+  }
 
-  if (NeedsWin64CFI && MF.hasWinCFI())
+  if (MarksEpilogue)
     BuildMI(MBB, Terminator, DL, TII.get(X86::SEH_EndEpilogue))
         .setMIFlag(MachineInstr::FrameDestroy);
 }
@@ -3009,7 +3070,7 @@ StackOffset X86FrameLowering::getFrameIndexReference(const MachineFunction &MF,
 
     uint64_t SEHFrameOffset = calculateSetFPREG(NumBytes);
     if (FI && FI == X86FI->getFAIndex())
-      return StackOffset::getFixed(-SEHFrameOffset);
+      return StackOffset::getFixed(hasFP(MF) ? -SEHFrameOffset : 0);
 
     // FPDelta is the offset from the "traditional" FP location of the old base
     // pointer followed by return address and the location required by the
@@ -3054,8 +3115,7 @@ int X86FrameLowering::getWin64EHFrameIndexRef(const MachineFunction &MF, int FI,
     return getFrameIndexReference(MF, FI, FrameReg).getFixed();
 
   FrameReg = TRI->getStackRegister();
-  return alignDown(MFI.getMaxCallFrameSize(), getStackAlign().value()) +
-         it->second;
+  return alignTo(MFI.getMaxCallFrameSize(), getStackAlign()) + it->second;
 }
 
 StackOffset
@@ -3316,6 +3376,9 @@ bool X86FrameLowering::spillCalleeSavedRegisters(
 
   // Push GPRs. It increases frame size.
   const MachineFunction &MF = *MBB.getParent();
+  // The prologue of a cleanup funclet that an unwinder calls saves its own.
+  if (MBB.isEHFuncletEntry() && usesCalledCleanups(MF.getFunction()))
+    return true;
   const X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
 
   // Update LiveIn of the basic block and decide whether we can add a kill flag
@@ -3420,6 +3483,12 @@ bool X86FrameLowering::restoreCalleeSavedRegisters(
   if (CSI.empty())
     return false;
 
+  // A cleanup funclet that an unwinder calls restores none, whether it
+  // returns or tail-calls. Matches spillCalleeSavedRegisters.
+  if (MBB.getParent()->getInfo<X86MachineFunctionInfo>()->isCalledCleanupBlock(
+          MBB))
+    return true;
+
   if (MI != MBB.end() && isFuncletReturnInstr(*MI) && STI.isOSWindows()) {
     // Don't restore CSRs in 32-bit EH funclets. Matches
     // spillCalleeSavedRegisters.
@@ -3500,6 +3569,16 @@ void X86FrameLowering::determineCalleeSaves(MachineFunction &MF,
                                             BitVector &SavedRegs,
                                             RegScavenger *RS) const {
   TargetFrameLowering::determineCalleeSaves(MF, SavedRegs, RS);
+
+  // A cleanup funclet that an unwinder calls saves no register: the function
+  // saves only those its own code modifies.
+  X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
+  if (MF.hasEHFunclets() && usesCalledCleanups(MF.getFunction())) {
+    X86FI->getCalledCleanupScopes() = getEHFunclets(MF);
+    if (!MF.callsUnwindInit())
+      resetFuncletOnlyCalleeSaves(MF, X86FI->getCalledCleanupScopes(),
+                                  SavedRegs);
+  }
 
   // Spill the BasePtr if it's used.
   if (TRI->hasBasePointer(MF)) {
@@ -4098,7 +4177,11 @@ bool X86FrameLowering::adjustStackWithPops(MachineBasicBlock &MBB,
 MachineBasicBlock::iterator X86FrameLowering::eliminateCallFramePseudoInstr(
     MachineFunction &MF, MachineBasicBlock &MBB,
     MachineBasicBlock::iterator I) const {
-  bool reserveCallFrame = hasReservedCallFrame(MF);
+  // The prologue of a cleanup funclet that an unwinder calls allocates the
+  // frame of the funclet's calls, so that its unwind record holds throughout.
+  bool reserveCallFrame =
+      hasReservedCallFrame(MF) ||
+      MF.getInfo<X86MachineFunctionInfo>()->isCalledCleanupBlock(MBB);
   unsigned Opcode = I->getOpcode();
   bool isDestroy = Opcode == TII.getCallFrameDestroyOpcode();
   DebugLoc DL = I->getDebugLoc(); // copy DebugLoc as I will be erased.
@@ -4534,12 +4617,78 @@ void X86FrameLowering::processFunctionBeforeFrameFinalized(
   if (MF.usesWindowsUnwindInfo())
     MF.getFrameInfo().ensureMaxAlignment(Align(SlotSize));
 
+  if (MF.hasEHFunclets() && usesCalledCleanups(MF.getFunction()))
+    layOutCalledCleanupFrames(MF);
+
   // If this function isn't doing Win64-style C++ EH, we don't need to do
   // anything.
   if (STI.is64Bit() && MF.hasEHFunclets() &&
       classifyEHPersonality(MF.getFunction().getPersonalityFn()) ==
           EHPersonality::MSVC_CXX) {
     adjustFrameForMsvcCxxEh(MF);
+  }
+}
+
+// Each cleanup funclet that Windows Itanium's unwinder calls allocates what its
+// own code needs: the outgoing arguments of the calls that return to it, which
+// X86CalledCleanups recorded, and,
+// where it addresses its function's frame from the establisher, the slots the
+// register allocator spilled to in its code alone. One that needs neither
+// allocates nothing.
+void X86FrameLowering::layOutCalledCleanupFrames(MachineFunction &MF) const {
+  const MachineFrameInfo &MFI = MF.getFrameInfo();
+  X86MachineFunctionInfo *X86FI = MF.getInfo<X86MachineFunctionInfo>();
+  ArrayRef<int> Scopes = X86FI->getCalledCleanupScopes();
+  bool OwnSlots = addressesFrameFromEstablisher(MF);
+  BitVector Function(MFI.getObjectIndexEnd());
+  for (const MachineBasicBlock &MBB : MF)
+    if (!X86FI->isCalledCleanupBlock(MBB))
+      for (const MachineInstr &MI : MBB)
+        for (const MachineOperand &MO : MI.operands())
+          if (MO.isFI() && MO.getIndex() >= 0)
+            Function.set(MO.getIndex());
+
+  auto &Frames = X86FI->getCalledCleanupFrames();
+  auto &Slots = X86FI->getCalledCleanupSlots();
+  DenseMap<int, std::pair<unsigned, unsigned>> Needs; // Call frame, slots.
+  for (const MachineBasicBlock &MBB : MF) {
+    if (!X86FI->isCalledCleanupBlock(MBB))
+      continue;
+    int Scope = Scopes[MBB.getNumber()];
+    auto &[CallFrame, OwnSize] = Needs[Scope];
+    CallFrame = X86FI->getCalledCleanupCallFrames().lookup(
+        MF.getBlockNumbered(Scope));
+    for (const MachineInstr &MI : MBB) {
+      if (!OwnSlots || MI.isDebugInstr())
+        continue;
+      for (unsigned I = 0, E = MI.getNumOperands(); I != E; ++I) {
+        const MachineOperand &MO = MI.getOperand(I);
+        if (!MO.isFI() || MO.getIndex() < 0 ||
+            !MFI.isSpillSlotObjectIndex(MO.getIndex()) ||
+            Function.test(MO.getIndex()) ||
+            MI.getOperand(I + X86::AddrIndexReg).getReg() ||
+            Slots.count(MO.getIndex()))
+          continue;
+        OwnSize = alignTo(OwnSize, std::min(MFI.getObjectAlign(MO.getIndex()),
+                                            getStackAlign()));
+        Slots[MO.getIndex()] = OwnSize;
+        OwnSize += MFI.getObjectSize(MO.getIndex());
+      }
+    }
+  }
+
+  // After the return address, and RBP where the funclet sets it, everything
+  // allocated before an outgoing call leaves the stack 16 byte aligned.
+  unsigned Pushed =
+      SlotSize * (hasFP(MF) && TRI->hasStackRealignment(MF) ? 2 : 1);
+  for (auto [Scope, Need] : Needs) {
+    auto [CallFrame, OwnSize] = Need;
+    unsigned SlotBase = alignTo(CallFrame, getStackAlign());
+    unsigned Used = OwnSize ? SlotBase + OwnSize : CallFrame;
+    Frames[Scope] = {Used ? unsigned(alignTo(Used + Pushed, getStackAlign()) -
+                                     Pushed)
+                          : 0,
+                     SlotBase};
   }
 }
 
@@ -4599,6 +4748,40 @@ void X86FrameLowering::processFunctionBeforeFrameIndicesReplaced(
   if (MachineInstr *MI = X86FI->getStackPtrSaveMI()) {
     MI->eraseFromParent();
     X86FI->setStackPtrSaveMI(nullptr);
+  }
+
+  // A variable in a stack slot is at one offset from the frame register in all
+  // of its function. A cleanup funclet that addresses the frame from the
+  // establisher has that in no register of the function's, so the variable is
+  // described behind the function's prologue, from the stack pointer, and
+  // where each funclet begins, from the establisher in RDX; where the funclet
+  // keeps it from there on is followed as any value's is.
+  if (addressesFrameFromEstablisher(MF)) {
+    const MachineFrameInfo &MFI = MF.getFrameInfo();
+    const MCInstrDesc &DbgValue = TII.get(TargetOpcode::DBG_VALUE);
+    for (const MachineFunction::VariableDbgInfo &VI :
+         MF.getInStackSlotVariableDbgInfo()) {
+      if (!VI.Var)
+        continue;
+      Register SP;
+      int64_t Offset = getFrameIndexReferenceSP(MF, VI.getStackSlot(), SP,
+                                                MFI.getStackSize())
+                           .getFixed();
+      const DIExpression *Expr =
+          DIExpression::prepend(VI.Expr, DIExpression::ApplyOffset, Offset);
+      for (MachineBasicBlock &MBB : MF) {
+        if (&MBB != &MF.front() && !MBB.isEHFuncletEntry())
+          continue;
+        MachineBasicBlock::iterator At = MBB.begin();
+        while (!MBB.isEHFuncletEntry() && At != MBB.end() &&
+               (At->getFlag(MachineInstr::FrameSetup) || At->isDebugInstr()))
+          ++At;
+        BuildMI(MBB, At, VI.Loc, DbgValue, /*IsIndirect=*/true,
+                MBB.isEHFuncletEntry() ? Register(X86::RDX) : SP, VI.Var, Expr);
+      }
+    }
+    erase_if(MF.getVariableDbgInfo(),
+             [](const auto &VI) { return VI.inStackSlot() && VI.Var; });
   }
 }
 

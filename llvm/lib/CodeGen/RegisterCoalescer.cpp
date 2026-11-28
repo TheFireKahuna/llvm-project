@@ -20,6 +20,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CalcSpillWeights.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveIntervals.h"
@@ -43,6 +44,7 @@
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/LaneBitmask.h"
 #include "llvm/MC/MCInstrDesc.h"
@@ -174,6 +176,10 @@ class RegisterCoalescer : private LiveRangeEdit::Delegate {
   /// True if the coalescer should aggressively coalesce fall-thru
   /// blocks exclusively containing copies.
   bool JoinSplitEdges = false;
+
+  /// The funclet of each block, by number, where the function's cleanups are
+  /// funclets that Windows Itanium's unwinder calls (getEHFunclets).
+  SmallVector<int, 0> CalledCleanupFunclets;
 
   /// Copy instructions yet to be coalesced.
   SmallVector<MachineInstr *, 8> WorkList;
@@ -2098,6 +2104,23 @@ RegisterCoalescer::JoinResult RegisterCoalescer::joinCopy(
     LLVM_DEBUG(dbgs() << "\tNot coalescable.\n");
     return JoinResult::Rejected;
   }
+
+  // The unwinder calls a cleanup before it lands in the handler beyond, but no
+  // path leads from the cleanup's blocks to the handler. A register of another
+  // scope looks dead behind its last use in the cleanup while the handler
+  // reads it, from its spill slot, so the cleanup must not define it.
+  auto FuncletOf = [&](const MachineInstr &MI) {
+    return CalledCleanupFunclets[MI.getParent()->getNumber()];
+  };
+  if (!CalledCleanupFunclets.empty() && FuncletOf(*CopyMI) >= 0)
+    for (Register Reg : {CP.getSrcReg(), CP.getDstReg()})
+      if (Reg.isVirtual() &&
+          any_of(MRI->reg_nodbg_instructions(Reg), [&](MachineInstr &MI) {
+            return FuncletOf(MI) != FuncletOf(*CopyMI);
+          })) {
+        LLVM_DEBUG(dbgs() << "\tRegister of another EH scope.\n");
+        return JoinResult::Rejected;
+      }
 
   if (CP.getNewRC()) {
     if (RegClassInfo->getNumAllocatableRegs(CP.getNewRC()) == 0) {
@@ -4419,6 +4442,10 @@ bool RegisterCoalescer::run(MachineFunction &fn) {
   // either be enabled unconditionally or replaced by a more general live range
   // splitting optimization.
   JoinSplitEdges = EnableJoinSplits;
+
+  CalledCleanupFunclets.clear();
+  if (usesCalledCleanups(fn.getFunction()))
+    CalledCleanupFunclets = getEHFunclets(fn);
 
   if (VerifyCoalescing)
     MF->verify(LIS, SI, "Before register coalescing", &errs());

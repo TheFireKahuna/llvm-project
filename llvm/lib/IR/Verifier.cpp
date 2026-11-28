@@ -5202,6 +5202,10 @@ void Verifier::visitLandingPadInst(LandingPadInst &LPI) {
   Function *F = LPI.getParent()->getParent();
   Check(F->hasPersonalityFn(),
         "LandingPadInst needs to be in a function with a personality.", &LPI);
+  // Windows Itanium's unwinder lands only in catchpads.
+  Check(classifyEHPersonality(F->getPersonalityFn()) !=
+            EHPersonality::Itanium_SEH,
+        "LandingPadInst not allowed under a Windows Itanium personality", &LPI);
 
   // The landingpad instruction must be the first non-PHI instruction in the
   // block.

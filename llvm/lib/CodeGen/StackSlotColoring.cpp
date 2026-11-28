@@ -14,6 +14,7 @@
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/LiveDebugVariables.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveIntervalUnion.h"
@@ -34,6 +35,7 @@
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
@@ -214,8 +216,18 @@ struct IntervalSorter {
 void StackSlotColoring::ScanForSpillSlotRefs(MachineFunction &MF) {
   SSRefs.resize(MFI->getObjectIndexEnd());
 
+  // A cleanup funclet that Windows Itanium's unwinder calls runs while the
+  // values that are live across the call the unwind passes are in their slots,
+  // and before the handler that reads them. The machine graph has no path from
+  // its blocks to the handler, so a slot of its code is live throughout.
+  SmallVector<int, 0> Funclets;
+  if (usesCalledCleanups(MF.getFunction()))
+    Funclets = getEHFunclets(MF);
+
   // FIXME: Need the equivalent of MachineRegisterInfo for frameindex operands.
   for (MachineBasicBlock &MBB : MF) {
+    bool InCalledCleanup =
+        !Funclets.empty() && Funclets[MBB.getNumber()] >= 0;
     for (MachineInstr &MI : MBB) {
       for (const MachineOperand &MO : MI.operands()) {
         if (!MO.isFI())
@@ -229,6 +241,10 @@ void StackSlotColoring::ScanForSpillSlotRefs(MachineFunction &MF) {
         if (!MI.isDebugInstr())
           li.incrementWeight(
               LiveIntervals::getSpillWeight(false, true, MBFI, MI));
+        if (InCalledCleanup)
+          li.addSegment(LiveRange::Segment(Indexes->getZeroIndex(),
+                                           Indexes->getLastIndex(),
+                                           li.getValNumInfo(0)));
       }
       for (MachineMemOperand *MMO : MI.memoperands()) {
         if (const FixedStackPseudoSourceValue *FSV =

@@ -2874,8 +2874,12 @@ static bool isIntrinsicOrLFToBeTailCalled(const TargetLibraryInfo *TLInfo,
 /// @endcode
 bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
                                                 ModifyDT &ModifiedDT) {
-  ReturnInst *RetI = dyn_cast<ReturnInst>(BB->getTerminator());
-  if (!RetI)
+  // A cleanupret of a funclet that Windows Itanium's unwinder calls is a void
+  // return.
+  Instruction *RetI = BB->getTerminator();
+  if (!isa<ReturnInst>(RetI) &&
+      !(isa<CleanupReturnInst>(RetI) && usesCalledCleanups(*BB->getParent()) &&
+        !LI->getLoopFor(BB)))
     return false;
 
   assert(LI->getLoopFor(BB) == nullptr && "A return block cannot be in a loop");
@@ -2883,7 +2887,8 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
   PHINode *PN = nullptr;
   ExtractValueInst *EVI = nullptr;
   BitCastInst *BCI = nullptr;
-  Value *V = RetI->getReturnValue();
+  Value *V = isa<ReturnInst>(RetI) ? cast<ReturnInst>(RetI)->getReturnValue()
+                                    : nullptr;
   if (V) {
     BCI = dyn_cast<BitCastInst>(V);
     if (BCI)
@@ -2947,7 +2952,9 @@ bool CodeGenPrepare::dupRetToEnableTailCallOpts(BasicBlock *BB,
   // call.
   auto MayBePermittedAsTailCall = [&](const auto *CI) {
     return TLI->mayBeEmittedAsTailCall(CI) &&
-           attributesPermitTailCall(BB->getParent(), CI, RetI, *TLI);
+           (!isa<ReturnInst>(RetI) ||
+            attributesPermitTailCall(BB->getParent(), CI,
+                                     cast<ReturnInst>(RetI), *TLI));
   };
 
   SmallVector<BasicBlock *, 4> TailCallBBs;

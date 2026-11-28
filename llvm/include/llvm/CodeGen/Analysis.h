@@ -14,6 +14,7 @@
 #define LLVM_CODEGEN_ANALYSIS_H
 
 #include "llvm/ADT/ArrayRef.h"
+#include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/IR/Instructions.h"
@@ -148,6 +149,12 @@ getDescribableGlobalAddress(const Constant *C, int64_t &Offset,
 /// it cannot, a register holding the address is the more robust description.
 LLVM_ABI bool canDescribeGlobalAddressInLocationList(const MachineFunction &MF);
 
+/// Returns true if \p Call is in a cleanup funclet that Windows Itanium's
+/// unwinder calls. Such a call may be a tail call, though the IR cannot mark
+/// it one: its arguments reach the function's frame, which outlives the
+/// funclet.
+LLVM_ABI bool isInCalledCleanup(const CallBase &Call);
+
 /// Test if the given instruction is in a position to be optimized
 /// with a tail-call. This roughly means that it's in a block with
 /// a return and there's nothing that needs to be scheduled
@@ -184,6 +191,18 @@ LLVM_ABI bool funcReturnsFirstArgOfCall(const CallInst &CI);
 
 LLVM_ABI DenseMap<const MachineBasicBlock *, int>
 getEHScopeMembership(const MachineFunction &MF);
+
+/// Returns, by block number, the number of the entry block of the EH funclet
+/// each block of \p MF is in, or -1 for the function's own code.
+LLVM_ABI SmallVector<int, 0> getEHFunclets(const MachineFunction &MF);
+
+/// Resets in \p SavedRegs the registers that only the funclets of \p MF
+/// modify, where its cleanups are funclets that Windows Itanium's unwinder
+/// calls (usesCalledCleanups): such a funclet saves no register, since the
+/// unwinder's routine restores its own. \p Funclets is getEHFunclets(MF).
+LLVM_ABI void resetFuncletOnlyCalleeSaves(const MachineFunction &MF,
+                                          ArrayRef<int> Funclets,
+                                          BitVector &SavedRegs);
 
 } // End llvm namespace
 

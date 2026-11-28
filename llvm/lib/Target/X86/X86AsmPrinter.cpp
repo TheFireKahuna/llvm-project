@@ -32,6 +32,7 @@
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/CodeGenTypes/MachineValueType.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Mangler.h"
@@ -85,6 +86,7 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   Subtarget = &MF.getSubtarget<X86Subtarget>();
 
   SMShadowTracker.startFunction(MF);
+  AsyncEHRanges.clear();
   CodeEmitter.reset(TM.getTarget().createMCCodeEmitter(
       *Subtarget->getInstrInfo(), MF.getContext()));
 
@@ -127,6 +129,19 @@ void X86AsmPrinter::emitFunctionBodyStart() {
         CurrentFnSym,
         MF->getInfo<X86MachineFunctionInfo>()->getArgumentStackSize());
   }
+
+  // An exception table that covers every instruction has each call site a
+  // byte early, for a search by the address before the frame's own. A site
+  // that begins the function has a NOP ahead of it to be that byte: one with
+  // no instruction ahead of it but a pseudo, which may emit nothing.
+  if (usesAsyncEHTables(MF->getFunction()))
+    for (const MachineBasicBlock &MBB : *MF)
+      for (const MachineInstr &MI : MBB) {
+        if (MI.isEHLabel())
+          EmitAndCountInstruction(MCInstBuilder(X86::NOOP));
+        if (MI.isEHLabel() || !MI.isPseudo())
+          return;
+      }
 }
 
 void X86AsmPrinter::emitFunctionBodyEnd() {

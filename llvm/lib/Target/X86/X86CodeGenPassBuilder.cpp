@@ -201,6 +201,8 @@ void X86CodeGenPassBuilder::addPreRegAlloc(PassManagerWrapper &PMW) {
     addMachineFunctionPass(X86PreTileConfigPass(), PMW);
   else
     addMachineFunctionPass(X86FastPreTileConfigPass(), PMW);
+
+  addMachineFunctionPass(X86CalledCleanupsPass(), PMW);
 }
 
 void X86CodeGenPassBuilder::addPostRegAlloc(PassManagerWrapper &PMW) {

@@ -6337,8 +6337,11 @@ RValue CodeGenFunction::EmitCall(const CGFunctionInfo &CallInfo,
 
   // Decide whether to use a call or an invoke.
   bool CannotThrow;
-  if (currentFunctionUsesSEHTry()) {
-    // SEH cares about asynchronous exceptions, so everything can "throw."
+  if (currentFunctionUsesSEHTry() ||
+      getEHPersonality(*this).isAsyncPersonality()) {
+    // SEH cares about asynchronous exceptions, so everything can "throw." So
+    // does the Itanium personality that takes them: an invoke names the scope
+    // a call is in, which an inlined callee's scopes are then inside.
     CannotThrow = false;
   } else if (isCleanupPadScope() &&
              getEHPersonality(*this).isMSVCXXPersonality()) {

@@ -272,12 +272,26 @@ private:
 };
 
 /// This structure is used to retain landing pad info for the current function.
+/// An EH scope of a function whose unwinder calls its cleanups and lands in
+/// its catchpads (EHPersonality::Itanium_SEH): a cleanup, or a catchswitch
+/// with the selector and the block of each handler.
+struct EHScopeInfo {
+  /// The number of the scope around this one, counted from one, which is
+  /// lower than its own; zero for none.
+  unsigned Outer = 0;
+  MachineBasicBlock *Cleanup = nullptr;
+  SmallVector<std::pair<int, MachineBasicBlock *>, 1> Handlers;
+};
+
 struct LandingPadInfo {
   MachineBasicBlock *LandingPadBlock;      // Landing pad block.
   SmallVector<MCSymbol *, 1> BeginLabels;  // Labels prior to invoke.
   SmallVector<MCSymbol *, 1> EndLabels;    // Labels after invoke.
   MCSymbol *LandingPadLabel = nullptr;     // Label at beginning of landing pad.
   std::vector<int> TypeIds;                // List of type ids (filters negative).
+  /// The number of the EH scope the invokes are in, counted from one, where
+  /// the function has EH scopes (EHScopeInfo).
+  unsigned Scope = 0;
 
   explicit LandingPadInfo(MachineBasicBlock *MBB)
       : LandingPadBlock(MBB) {}
@@ -385,6 +399,11 @@ class LLVM_ABI MachineFunction {
 
   /// List of LandingPadInfo describing the landing pad information.
   std::vector<LandingPadInfo> LandingPads;
+
+  /// The function's EH scopes, and the number of each EH pad's, counted from
+  /// one.
+  std::vector<EHScopeInfo> EHScopes;
+  DenseMap<const BasicBlock *, unsigned> EHScopeNumbers;
 
   /// Map a landing pad's EH symbol to the call site indexes.
   DenseMap<MCSymbol*, SmallVector<unsigned, 4>> LPadToCallSiteMap;
@@ -1348,6 +1367,22 @@ public:
   /// with a try landing pad block.
   void addInvoke(MachineBasicBlock *LandingPad,
                  MCSymbol *BeginLabel, MCSymbol *EndLabel);
+
+  /// Makes \p Pad, a cleanuppad's or a catchswitch's block, the EH scope
+  /// \p Scope and returns its number.
+  unsigned addEHScope(const BasicBlock *Pad, EHScopeInfo Scope);
+
+  /// Returns the number of the EH scope of \p Pad, or zero for none.
+  unsigned getEHScopeNumber(const BasicBlock *Pad) const {
+    return EHScopeNumbers.lookup(Pad);
+  }
+
+  ArrayRef<EHScopeInfo> getEHScopes() const { return EHScopes; }
+
+  /// Provide the begin and end labels of a range of instructions in the EH
+  /// scope \p Scope.
+  void addEHScopeInvoke(unsigned Scope, MCSymbol *BeginLabel,
+                        MCSymbol *EndLabel);
 
   /// Add a new panding pad, and extract the exception handling information from
   /// the landingpad instruction. Returns the label ID for the landing pad

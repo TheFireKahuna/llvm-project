@@ -586,6 +586,10 @@ private:
                                                     &_dispContext.HandlerData,
                                                     &_dispContext.EstablisherFrame,
                                                     NULL);
+#if defined(_LIBUNWIND_TARGET_AARCH64)
+    // The frame this leaves for is at a return address.
+    _dispContext.ControlPcIsUnwound = true;
+#endif
     // Update some fields of the unwind info now, since we have them.
     _info.lsda = reinterpret_cast<unw_word_t>(_dispContext.HandlerData);
     if (_dispContext.LanguageHandler) {
@@ -955,7 +959,13 @@ const char *UnwindCursor<A, R>::getRegisterName(int regNum) {
 }
 
 template <typename A, typename R> bool UnwindCursor<A, R>::isSignalFrame() {
+#if defined(_LIBUNWIND_TARGET_AARCH64)
+  // The dispatcher says whether the frame's address is a return address or
+  // that of an instruction.
+  return !_dispContext.ControlPcIsUnwound;
+#else
   return false;
+#endif
 }
 
 #else  // !defined(_LIBUNWIND_SUPPORT_SEH_UNWIND) || !defined(_WIN32)

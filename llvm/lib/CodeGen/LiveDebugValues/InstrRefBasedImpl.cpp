@@ -104,6 +104,7 @@
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/Casting.h"
@@ -2461,6 +2462,19 @@ void InstrRefBasedLDV::produceMLocTransferFunction(
   }
 }
 
+bool InstrRefBasedLDV::isLostAtFuncletEntry(const MachineBasicBlock &MBB,
+                                            LocIdx L) const {
+  if (!MBB.isEHFuncletEntry() ||
+      !usesCalledCleanups(MBB.getParent()->getFunction()))
+    return false;
+  // Where the function keeps no frame pointer the funclet has a stack pointer
+  // of its own, and the stack slots are other memory.
+  unsigned ID = MTracker->LocIdxToLocID[L];
+  if (ID >= TRI->getNumRegs() || MTracker->SPAliases.count(ID))
+    return !TFI->hasFP(*MBB.getParent());
+  return MachineOperand::clobbersPhysReg(MBB.getBeginClobberMask(TRI), ID);
+}
+
 bool InstrRefBasedLDV::mlocJoin(
     MachineBasicBlock &MBB, SmallPtrSet<const MachineBasicBlock *, 16> &Visited,
     FuncValueTable &OutLocs, ValueTable &InLocs) {
@@ -2495,6 +2509,15 @@ bool InstrRefBasedLDV::mlocJoin(
   // whether we can eliminate redundant PHIs.
   for (auto Location : MTracker->locations()) {
     LocIdx Idx = Location.Idx;
+
+    // A location that has none of its predecessors' values keeps the value
+    // that is the block's own.
+    if (isLostAtFuncletEntry(MBB, Idx)) {
+      ValueIDNum Own(MBB.getNumber(), 0, Idx);
+      Changed |= InLocs[Idx.asU64()] != Own;
+      InLocs[Idx.asU64()] = Own;
+      continue;
+    }
 
     // Pick out the first predecessors live-out value for this location. It's
     // guaranteed to not be a backedge, as we order by RPO.
@@ -2979,6 +3002,8 @@ std::optional<ValueIDNum> InstrRefBasedLDV::pickOperandPHILoc(
                           LocVec.begin(), LocVec.end(), std::inserter(NewCandidates, NewCandidates.begin()));
     CandidateLocs = std::move(NewCandidates);
   }
+  erase_if(CandidateLocs,
+           [&](LocIdx L) { return isLostAtFuncletEntry(MBB, L); });
   if (CandidateLocs.empty())
     return std::nullopt;
 

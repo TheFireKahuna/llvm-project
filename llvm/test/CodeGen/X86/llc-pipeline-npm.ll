@@ -49,6 +49,7 @@
 ; O0-NEXT:     x86-flags-copy-lowering
 ; O0-NEXT:     x86-dyn-alloca-expander
 ; O0-NEXT:     x86-fast-pre-tile-config
+; O0-NEXT:     x86-called-cleanups
 ; O0-NEXT:     phi-node-elimination
 ; O0-NEXT:     regallocfast
 ; O0-NEXT:     x86-fast-tile-config
@@ -153,6 +154,7 @@
 ; O2-NEXT:     x86-flags-copy-lowering
 ; O2-NEXT:     x86-dyn-alloca-expander
 ; O2-NEXT:     x86-pre-tile-config
+; O2-NEXT:     x86-called-cleanups
 ; O2-NEXT:     detect-dead-lanes
 ; O2-NEXT:     init-undef
 ; O2-NEXT:     process-implicit-defs
@@ -257,6 +259,7 @@
 ; O0-WINDOWS-NEXT:     x86-flags-copy-lowering
 ; O0-WINDOWS-NEXT:     x86-dyn-alloca-expander
 ; O0-WINDOWS-NEXT:     x86-fast-pre-tile-config
+; O0-WINDOWS-NEXT:     x86-called-cleanups
 ; O0-WINDOWS-NEXT:     phi-node-elimination
 ; O0-WINDOWS-NEXT:     regallocfast
 ; O0-WINDOWS-NEXT:     x86-fast-tile-config
@@ -366,6 +369,7 @@
 ; O3-WINDOWS-NEXT:     x86-flags-copy-lowering
 ; O3-WINDOWS-NEXT:     x86-dyn-alloca-expander
 ; O3-WINDOWS-NEXT:     x86-pre-tile-config
+; O3-WINDOWS-NEXT:     x86-called-cleanups
 ; O3-WINDOWS-NEXT:     detect-dead-lanes
 ; O3-WINDOWS-NEXT:     init-undef
 ; O3-WINDOWS-NEXT:     process-implicit-defs

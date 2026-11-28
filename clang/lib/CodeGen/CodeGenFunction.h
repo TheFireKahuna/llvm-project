@@ -1425,11 +1425,12 @@ public:
   bool isInConditionalBranch() const { return OutermostConditional != nullptr; }
 
   void setBeforeOutermostConditional(llvm::Value *value, Address addr,
-                                     CodeGenFunction &CGF) {
+                                     CodeGenFunction &CGF,
+                                     bool isVolatile = false) {
     assert(isInConditionalBranch());
     llvm::BasicBlock *block = OutermostConditional->getStartingBlock();
     auto store = new llvm::StoreInst(value, addr.emitRawPointer(CGF),
-                                     block->back().getIterator());
+                                     isVolatile, block->back().getIterator());
     store->setAlignment(addr.getAlignment().getAsAlign());
   }
 
@@ -2714,6 +2715,11 @@ public:
   /// getTerminateLandingPad - Return a cleanup funclet that just calls
   /// terminate.
   llvm::BasicBlock *getTerminateFunclet();
+
+  /// Leaves the catchpad \p CPI, in which the unwinder lands, for a block
+  /// named \p Name, which becomes the insertion point. Returns the address
+  /// of the exception object.
+  llvm::Value *EmitLandedCatchPad(llvm::CatchPadInst *CPI, const Twine &Name);
 
   /// getTerminateHandler - Return a handler (not a landing pad, just
   /// a catch handler) that just calls terminate.  This is used when

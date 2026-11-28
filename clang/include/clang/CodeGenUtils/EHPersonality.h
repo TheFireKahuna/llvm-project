@@ -44,6 +44,9 @@ struct EHPersonality {
   static const EHPersonality GNU_CPlusPlus;
   static const EHPersonality GNU_CPlusPlus_SJLJ;
   static const EHPersonality GNU_CPlusPlus_SEH;
+  static const EHPersonality GNU_CPlusPlus_SEHA;
+  static const EHPersonality WinItanium_C;
+  static const EHPersonality WinItanium_CPlusPlus;
   static const EHPersonality MSVC_except_handler;
   static const EHPersonality MSVC_C_specific_handler;
   static const EHPersonality MSVC_CxxFrameHandler3;
@@ -54,7 +57,16 @@ struct EHPersonality {
   /// Does this personality use landingpads or the family of pad instructions
   /// designed to form funclets?
   bool usesFuncletPads() const {
-    return isMSVCPersonality() || isWasmPersonality();
+    return isMSVCPersonality() || isWasmPersonality() || usesLandedCatchPads();
+  }
+
+  /// Is this an Itanium personality of Windows Itanium, whose unwinder calls
+  /// a function's cleanuppads and lands in its catchpads? A catchpad is then
+  /// code of the function and no funclet: it takes the exception object's
+  /// address and leaves at once by a catchret, as an __except block's does.
+  bool usesLandedCatchPads() const {
+    return this == &WinItanium_C || this == &WinItanium_CPlusPlus ||
+           this == &GNU_CPlusPlus_SEHA;
   }
 
   bool isMSVCPersonality() const {
@@ -65,6 +77,11 @@ struct EHPersonality {
   bool isWasmPersonality() const { return this == &GNU_Wasm_CPlusPlus; }
 
   bool isMSVCXXPersonality() const { return this == &MSVC_CxxFrameHandler3; }
+
+  /// Is this the Itanium personality of a function compiled for asynchronous
+  /// exceptions, whose exception tables cover every instruction of an EH
+  /// scope?
+  bool isAsyncPersonality() const { return this == &GNU_CPlusPlus_SEHA; }
 };
 
 /// Selects the personality function to use for \p FD, or for the translation

@@ -13,6 +13,7 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -69,6 +70,7 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Transforms/Utils/AssumeBundleBuilder.h"
+#include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
 #include "llvm/Transforms/Utils/Local.h"
 #include "llvm/Transforms/Utils/ValueMapper.h"
@@ -566,7 +568,14 @@ static BasicBlock *HandleCallsInBlockInlinedThroughInvoke(
     // instructions require no special handling.
     CallInst *CI = dyn_cast<CallInst>(&I);
 
-    if (!CI || CI->doesNotThrow())
+    // Where exception tables cover every instruction, a call that does not
+    // throw is in the EH scope of the invoke too, as an asynchronous exception
+    // and the scopes of a callee inlined later are. Nothing unwinds out of a
+    // funclet.
+    if (!CI ||
+        (CI->doesNotThrow() && (isa<IntrinsicInst>(CI) || CI->isInlineAsm() ||
+                                CI->getOperandBundle(LLVMContext::OB_funclet) ||
+                                !usesAsyncEHTables(*BB->getParent()))))
       continue;
 
     // We do not need to (and in fact, cannot) convert possibly throwing calls
@@ -2596,6 +2605,34 @@ llvm::InlineFunction(CallBase &CB, InlineFunctionInfo &IFI,
   return Ret;
 }
 
+/// Returns the block that ends terminate scope handler \p Handler by calling
+/// __clang_call_terminate, or null if \p Handler does more.
+static const BasicBlock *getTerminateBody(const BasicBlock &Handler) {
+  const BasicBlock *Body = &Handler;
+  if (const auto *Ret = dyn_cast<CatchReturnInst>(Handler.getTerminator()))
+    Body = Ret->getSuccessor();
+  const auto *Call =
+      dyn_cast_or_null<CallInst>(Body->getTerminator()->getPrevNode());
+  return isa<UnreachableInst>(Body->getTerminator()) && Call &&
+                 Call->getCalledFunction() &&
+                 Call->getCalledFunction()->getName() ==
+                     "__clang_call_terminate"
+             ? Body
+             : nullptr;
+}
+
+/// Returns true if \p BB is a pad of a terminate scope: a catchswitch whose
+/// every handler calls __clang_call_terminate with the exception and does
+/// nothing more, or one of those handlers.
+static bool isTerminateScope(const BasicBlock &BB) {
+  const Instruction &Pad = *BB.getFirstNonPHIIt();
+  if (const auto *CatchSwitch = dyn_cast<CatchSwitchInst>(&Pad))
+    return all_of(CatchSwitch->handlers(), [](const BasicBlock *Handler) {
+      return getTerminateBody(*Handler);
+    });
+  return isa<CatchPadInst>(Pad) && getTerminateBody(BB);
+}
+
 llvm::InlineResult llvm::CanInlineCallSite(const CallBase &CB,
                                            InlineFunctionInfo &IFI) {
   assert(CB.getParent() && CB.getFunction() && "Instruction not in function!");
@@ -2724,6 +2761,15 @@ llvm::InlineResult llvm::CanInlineCallSite(const CallBase &CB,
                 return InlineResult::failure("catch in cleanup funclet");
             }
           }
+        } else if (Personality == EHPersonality::Itanium_SEH) {
+          // A cleanup that Windows Itanium's unwinder calls holds no pad: an
+          // unwind out of it ends in its own table, which terminates. A
+          // callee's terminate scopes do the same, and are dropped where it
+          // is inlined into one.
+          if (isa<CleanupPadInst>(IFI.CallSiteEHPad))
+            for (const BasicBlock &CalledBB : *CalledFunc)
+              if (CalledBB.isEHPad() && !isTerminateScope(CalledBB))
+                return InlineResult::failure("pad in called cleanup");
         } else if (isAsynchronousEHPersonality(Personality)) {
           // SEH is even less tolerant, there may not be any sort of exceptional
           // funclet in the callee.
@@ -3225,6 +3271,25 @@ void llvm::InlineFunctionImpl(CallBase &CB, InlineFunctionInfo &IFI,
     } else {
       HandleInlinedEHPad(II, &*FirstNewBlock, InlinedFunctionInfo);
     }
+  }
+
+  // A called cleanup holds no pad; the terminate scopes of a callee inlined into
+  // one go, and the calls they covered unwind out of the cleanup.
+  if (isa_and_nonnull<CleanupPadInst>(IFI.CallSiteEHPad) &&
+      classifyEHPersonality(Caller->getPersonalityFn()) ==
+          EHPersonality::Itanium_SEH) {
+    SmallSetVector<BasicBlock *, 8> Scopes;
+    SmallVector<InvokeInst *, 4> Invokes;
+    for (BasicBlock &BB :
+         make_range(FirstNewBlock->getIterator(), Caller->end())) {
+      if (auto *II = dyn_cast<InvokeInst>(BB.getTerminator()))
+        Invokes.push_back(II);
+      if (isa<CatchSwitchInst>(BB.getFirstNonPHIIt()))
+        Scopes.insert_range(depth_first(&BB));
+    }
+    for (InvokeInst *II : Invokes)
+      changeToCall(II);
+    DeleteDeadBlocks(Scopes.getArrayRef());
   }
 
   // Update the lexical scopes of the new funclets and callsites.

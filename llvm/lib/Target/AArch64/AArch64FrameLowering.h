@@ -125,6 +125,18 @@ public:
 
   unsigned getWinEHFuncletFrameSize(const MachineFunction &MF) const;
 
+  /// Returns true if \p MBB is in a cleanup funclet that Windows Itanium's
+  /// unwinder calls. Such a funclet saves no callee-saved register: the
+  /// unwinder's routine restores its own, and the funclet's prologue saves
+  /// the link register where its code modifies it.
+  static bool isCalledCleanupBlock(const MachineBasicBlock &MBB);
+
+  /// Returns the outgoing argument area that the called cleanup funclet
+  /// \p MBB is in allocates under the link register it saves, or std::nullopt
+  /// if it modifies no link register and so saves nothing.
+  std::optional<unsigned>
+  getCalledCleanupCallFrame(const MachineBasicBlock &MBB) const;
+
   StackOffset
   getFrameIndexReferencePreferSP(const MachineFunction &MF, int FI,
                                  Register &FrameReg,

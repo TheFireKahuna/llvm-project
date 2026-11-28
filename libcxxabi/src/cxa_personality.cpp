@@ -655,6 +655,14 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
     results.landingPad = 0;
     results.adjustedPtr = 0;
     results.reason = _URC_FATAL_PHASE1_ERROR;
+    // On Windows Itanium the unwinder asks about a structured exception with an
+    // object that stands for it. The frame's catch handlers are matched against
+    // a C++ exception made for it, and it passes an exception specification by,
+    // as it passes code that no C++ exception gets to.
+    bool structured = false;
+#if defined(_WIN32_ITANIUM)
+    structured = __seh_is_structured(unwind_exception);
+#endif
     // Check for consistent actions
     if (actions & _UA_SEARCH_PHASE)
     {
@@ -701,7 +709,15 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
 #endif
     // Get the current instruction pointer and offset it before next
     // instruction in the current frame which threw the exception.
+#if defined(_WIN32_ITANIUM)
+    // AArch64's unwinder says whether the address is an instruction's or a
+    // return address. A table that covers every instruction on x86-64, whose
+    // unwinder does not, has its call sites a byte early.
+    int ipBeforeInsn = 0;
+    uintptr_t ip = _Unwind_GetIPInfo(context, &ipBeforeInsn) - !ipBeforeInsn;
+#else
     uintptr_t ip = _Unwind_GetIP(context) - 1;
+#endif
     // Get beginning current frame's code (as defined by the
     // emitted dwarf code)
     uintptr_t funcStart = _Unwind_GetRegionStart(context);
@@ -793,6 +809,13 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
                 int64_t ttypeIndex = readSLEB128(&action);
                 if (ttypeIndex > 0)
                 {
+#if defined(_WIN32_ITANIUM)
+                    if (structured && !native_exception)
+                    {
+                        unwind_exception = __seh_translate(unwind_exception);
+                        native_exception = true;
+                    }
+#endif
                     // Found a catch, does it actually catch?
                     // First check for catch (...)
                     const __shim_type_info* catchType =
@@ -845,7 +868,7 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
                 else if (ttypeIndex < 0)
                 {
                     // Found an exception specification.
-                    if (actions & _UA_FORCE_UNWIND) {
+                    if ((actions & _UA_FORCE_UNWIND) || structured) {
                         // Skip if forced unwinding.
                     } else if (native_exception) {
                         // Does the exception spec catch this native exception?
@@ -907,11 +930,18 @@ static void scan_eh_tab(scan_results &results, _Unwind_Action actions,
             // There is no call site for this ip
             // Something bad has happened.  We should never get here.
             // Possible stack corruption.
+            if (structured)
+                break;
             call_terminate(native_exception, unwind_exception);
         }
 #endif // !__USING_SJLJ_EXCEPTIONS__ && !__WASM_EXCEPTIONS__
     }  // there might be some tricky cases which break out of this loop
 
+    if (structured)
+    {
+        results.reason = _URC_CONTINUE_UNWIND;
+        return;
+    }
     // It is possible that no eh table entry specify how to handle
     // this exception. By spec, terminate it immediately.
     call_terminate(native_exception, unwind_exception);
@@ -1017,7 +1047,11 @@ static inline void get_landing_pad(__cxa_catch_temp_type &dest,
 #endif
 }
 
-#if (defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)) || defined(__WASM_EXCEPTIONS__)
+#if defined(_WIN32_ITANIUM)
+// The personality routine of a function compiled for asynchronous exceptions,
+// whose handlers are offered structured exceptions.
+static _Unwind_Reason_Code __gxx_personality_async_imp
+#elif (defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)) || defined(__WASM_EXCEPTIONS__)
 static _Unwind_Reason_Code __gxx_personality_imp
 #else
 _LIBCXXABI_FUNC_VIS _Unwind_Reason_Code
@@ -1064,8 +1098,23 @@ __gxx_personality_v0
         return _URC_INSTALL_CONTEXT;
     }
 
+#if defined(_WIN32_ITANIUM)
+    // The unwinder asks about an exception that is not its own.
+    bool asked = exceptionClass == _UNWIND_SEH_EXCEPTION_CLASS;
+    if (asked && !__seh_is_offered(unwind_exception))
+        return _URC_CONTINUE_UNWIND;
+#endif
+
     // In other cases we need to scan LSDA.
     scan_eh_tab(results, actions, native_exception, unwind_exception, context);
+#if defined(_WIN32_ITANIUM)
+    // The frame's landing pad receives the object made for the exception.
+    if (asked)
+    {
+        unwind_exception = __seh_search_result(unwind_exception, results.reason == _URC_HANDLER_FOUND);
+        native_exception = unwind_exception && __isOurExceptionClass(unwind_exception);
+    }
+#endif
     if (results.reason == _URC_CONTINUE_UNWIND ||
         results.reason == _URC_FATAL_PHASE1_ERROR)
         return results.reason;
@@ -1108,6 +1157,21 @@ __gxx_personality_v0
     return _URC_INSTALL_CONTEXT;
 }
 
+#if defined(_WIN32_ITANIUM)
+// Any other function takes C++ exceptions alone: a structured exception is
+// none to it, as a signal is none elsewhere.
+static _Unwind_Reason_Code __gxx_personality_imp(
+    int version,
+    _Unwind_Action actions,
+    uint64_t exceptionClass,
+    _Unwind_Exception* unwind_exception,
+    _Unwind_Context* context) {
+  if (exceptionClass == _UNWIND_SEH_EXCEPTION_CLASS && __seh_is_structured(unwind_exception))
+    return _URC_CONTINUE_UNWIND;
+  return __gxx_personality_async_imp(version, actions, exceptionClass, unwind_exception, context);
+}
+#endif
+
 #if defined(__SEH__) && !defined(__USING_SJLJ_EXCEPTIONS__)
 extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION _LIBCXXABI_SEH_HANDLER_CC
 __gxx_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
@@ -1116,6 +1180,15 @@ __gxx_personality_seh0(PEXCEPTION_RECORD ms_exc, void *this_frame,
   return _GCC_specific_handler(ms_exc, this_frame, ms_orig_context, ms_disp,
                                __gxx_personality_imp);
 }
+
+#if defined(_WIN32_ITANIUM)
+extern "C" _LIBCXXABI_FUNC_VIS EXCEPTION_DISPOSITION
+__gxx_personality_seha0(PEXCEPTION_RECORD ms_exc, void *this_frame,
+                        PCONTEXT ms_orig_context, PDISPATCHER_CONTEXT ms_disp)
+{
+  return _GCC_specific_handler(ms_exc, this_frame, ms_orig_context, ms_disp, __gxx_personality_async_imp);
+}
+#endif
 #endif
 
 #ifdef __WASM_EXCEPTIONS__

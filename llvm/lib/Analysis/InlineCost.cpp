@@ -34,6 +34,7 @@
 #include "llvm/IR/AssemblyAnnotationWriter.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
 #include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/InlineAsm.h"
@@ -2978,6 +2979,17 @@ InlineResult CallAnalyzer::analyze() {
   BBSetVector BBWorklist;
   BBWorklist.insert(&F.getEntryBlock());
 
+  // Inlined into a cleanup that Windows Itanium's unwinder calls, an invoke
+  // keeps no unwind edge (InlineFunction drops the callee's terminate scopes).
+  std::optional<OperandBundleUse> Funclet =
+      CandidateCall.getOperandBundle(LLVMContext::OB_funclet);
+  const Function &CallerFn = *CandidateCall.getCaller();
+  bool DropsUnwindEdges =
+      Funclet && isa<CleanupPadInst>(Funclet->Inputs.front()) &&
+      CallerFn.hasPersonalityFn() &&
+      classifyEHPersonality(CallerFn.getPersonalityFn()) ==
+          EHPersonality::Itanium_SEH;
+
   // Note that we *must not* cache the size, this loop grows the worklist.
   for (unsigned Idx = 0; Idx != BBWorklist.size(); ++Idx) {
     if (shouldStop())
@@ -3028,6 +3040,12 @@ InlineResult CallAnalyzer::analyze() {
         findDeadBlocks(BB, NextBB);
         continue;
       }
+    } else if (auto *II = dyn_cast<InvokeInst>(TI); II && DropsUnwindEdges) {
+      BasicBlock *NextBB = II->getNormalDest();
+      BBWorklist.insert(NextBB);
+      KnownSuccessors[BB] = NextBB;
+      findDeadBlocks(BB, NextBB);
+      continue;
     }
 
     // If we're unable to select a particular successor, just count all of

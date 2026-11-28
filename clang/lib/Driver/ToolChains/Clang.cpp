@@ -130,6 +130,14 @@ shouldUseExceptionTablesForObjCExceptions(const ObjCRuntime &runtime,
            Triple.getArch() == llvm::Triple::arm));
 }
 
+/// Returns true if \p Triple implements asynchronous exceptions: MSVC's
+/// targets, and Windows Itanium's whose exception tables can cover every
+/// instruction.
+static bool supportsAsyncExceptions(const llvm::Triple &Triple) {
+  return Triple.isWindowsMSVCEnvironment() ||
+         (Triple.isWindowsItaniumEnvironment() && Triple.isArch64Bit());
+}
+
 /// Adds exception related arguments to the driver command arguments. There's a
 /// main flag, -fexceptions and also language specific flags to enable/disable
 /// C++ and Objective-C exceptions. This makes it possible to for example
@@ -159,8 +167,7 @@ static bool addExceptionArgs(const ArgList &Args, types::ID InputType,
   bool EH = Args.hasFlag(options::OPT_fexceptions, options::OPT_fno_exceptions,
                          false);
 
-  // Async exceptions are Windows MSVC only.
-  if (Triple.isWindowsMSVCEnvironment()) {
+  if (supportsAsyncExceptions(Triple)) {
     bool EHa = Args.hasFlag(options::OPT_fasync_exceptions,
                             options::OPT_fno_async_exceptions, false);
     if (EHa) {
@@ -8905,9 +8912,8 @@ static EHFlags parseClangCLEHFlags(const Driver &D, const ArgList &Args,
       case 'a':
         EH.Asynch = maybeConsumeDash(EHVal, I);
         if (EH.Asynch) {
-          // Async exceptions are Windows MSVC only, and an error where
-          // -fasync-exceptions is one.
-          if (!Triple.isWindowsMSVCEnvironment()) {
+          // Async exceptions are an error where -fasync-exceptions is one.
+          if (!supportsAsyncExceptions(Triple)) {
             EH.Asynch = false;
             if (Triple.isWindowsItaniumOrNTPOSIXEnvironment())
               D.Diag(clang::diag::err_drv_unsupported_opt_for_target)

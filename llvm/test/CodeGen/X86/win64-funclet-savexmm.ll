@@ -82,23 +82,23 @@ try.cont:                                         ; preds = %catchret.dest, %inv
 ; CHECK: .seh_pushreg %rbp
 ; CHECK: pushq   %rbx
 ; CHECK: .seh_pushreg %rbx
-; CHECK: subq    $88, %rsp
-; CHECK: .seh_stackalloc 88
+; CHECK: subq    $104, %rsp
+; CHECK: .seh_stackalloc 104
 ; CHECK: leaq    112(%rdx), %rbp
-; CHECK: vmovaps %xmm8, 32(%rsp)
-; CHECK: .seh_savexmm %xmm8, 32
-; CHECK: vmovaps %xmm7, 48(%rsp)
-; CHECK: .seh_savexmm %xmm7, 48
-; CHECK: vmovaps %xmm6, 64(%rsp)
-; CHECK: .seh_savexmm %xmm6, 64
+; CHECK: vmovaps %xmm8, 48(%rsp)
+; CHECK: .seh_savexmm %xmm8, 48
+; CHECK: vmovaps %xmm7, 64(%rsp)
+; CHECK: .seh_savexmm %xmm7, 64
+; CHECK: vmovaps %xmm6, 80(%rsp)
+; CHECK: .seh_savexmm %xmm6, 80
 ; CHECK: .seh_endprologue
 ; CHECK: movl   -{{[0-9]+}}(%rbp), %ecx
-; CHECK: vmovaps 64(%rsp), %xmm6
-; CHECK: vmovaps 48(%rsp), %xmm7
-; CHECK: vmovaps 32(%rsp), %xmm8
+; CHECK: vmovaps 80(%rsp), %xmm6
+; CHECK: vmovaps 64(%rsp), %xmm7
+; CHECK: vmovaps 48(%rsp), %xmm8
 ; CHECK: leaq    .LBB0_1(%rip), %rax
 ; CHECK: .seh_startepilogue
-; CHECK: addq    $88, %rsp
+; CHECK: addq    $104, %rsp
 ; CHECK: popq    %rbx
 ; CHECK: popq    %rbp
 ; CHECK: .seh_endepilogue
@@ -112,6 +112,6 @@ try.cont:                                         ; preds = %catchret.dest, %inv
 ; Sum of:
 ;   16 RDX store offset
 ;   16 two pushes
-;   72 stack alloc
-; CHECK-NEXT: .long   120                     # ParentFrameOffset
+;   104 stack alloc
+; CHECK-NEXT: .long   136                     # ParentFrameOffset
 

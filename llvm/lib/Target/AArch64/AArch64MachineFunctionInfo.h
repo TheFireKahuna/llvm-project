@@ -563,6 +563,11 @@ public:
   int getCalleeSaveBaseToFrameRecordOffset() const {
     return CalleeSaveBaseToFrameRecordOffset;
   }
+
+  /// Where the function's cleanups are funclets its unwinder calls: for each
+  /// block, by number, the number of the entry block of the funclet it is in,
+  /// or -1 in the function's own code.
+  SmallVector<int, 0> CalledCleanupScopes;
   void setCalleeSaveBaseToFrameRecordOffset(int Offset) {
     CalleeSaveBaseToFrameRecordOffset = Offset;
   }

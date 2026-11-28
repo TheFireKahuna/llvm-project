@@ -95,6 +95,7 @@ extern "C" LLVM_C_ABI void LLVMInitializeX86Target() {
   initializeX86AsmPrinterPass(PR);
   initializeX86FixupInstTuningLegacyPass(PR);
   initializeX86FixupVectorConstantsLegacyPass(PR);
+  initializeX86CalledCleanupsLegacyPass(PR);
   initializeX86DynAllocaExpanderLegacyPass(PR);
   initializeX86SuppressAPXForRelocationLegacyPass(PR);
   initializeX86WinEHUnwindV2LegacyPass(PR);
@@ -524,6 +525,8 @@ void X86PassConfig::addPreRegAlloc() {
     addPass(createX86PreTileConfigLegacyPass());
   else
     addPass(createX86FastPreTileConfigLegacyPass());
+
+  addPass(createX86CalledCleanupsLegacyPass());
 }
 
 bool X86PassConfig::addRegAssignAndRewriteFast() {

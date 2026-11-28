@@ -264,8 +264,15 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
           reportFatalUsageError("funclet pad in function '" + Fn->getName() +
                                 "' under a landing-pad personality");
         MF->setHasEHScopes(true);
-        MF->setHasEHFunclets(true);
-        MF->getFrameInfo().setHasOpaqueSPAdjustment(true);
+        // A cleanup that an unwinder calls returns to its caller, and leaves
+        // the stack pointer of its function alone. A catchpad that is landed
+        // in is no funclet.
+        if (!usesCalledCleanups(*Fn)) {
+          MF->setHasEHFunclets(true);
+          MF->getFrameInfo().setHasOpaqueSPAdjustment(true);
+        } else if (isa<CleanupPadInst>(PadInst)) {
+          MF->setHasEHFunclets(true);
+        }
       }
       if (isa<CatchSwitchInst>(PadInst)) {
         assert(BB.begin() == PadInst &&
@@ -341,6 +348,49 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
       UME.Handler = getMBB(cast<const BasicBlock *>(UME.Handler));
     for (ClrEHUnwindMapEntry &CME : EHInfo.ClrEHUnwindMap)
       CME.Handler = getMBB(cast<const BasicBlock *>(CME.Handler));
+  } else if (MF->hasEHScopes() && usesCalledCleanups(*Fn)) {
+    // Number the EH scopes, each after the one around it.
+    auto AddScope = [&](auto &&Self, const BasicBlock *PadBB) -> unsigned {
+      if (!PadBB)
+        return 0;
+      if (unsigned Number = MF->getEHScopeNumber(PadBB))
+        return Number;
+      EHScopeInfo Scope;
+      BasicBlock::const_iterator Pad = PadBB->getFirstNonPHIIt();
+      if (const auto *CSI = dyn_cast<CatchSwitchInst>(Pad)) {
+        Scope.Outer = Self(Self, CSI->getUnwindDest());
+        for (const BasicBlock *Handler : CSI->handlers()) {
+          // A handler names the type it takes, null for every type, or the
+          // list of types an exception specification allows.
+          const auto *CPI = cast<CatchPadInst>(Handler->getFirstNonPHIIt());
+          const Value *Type = CPI->getArgOperand(0)->stripPointerCasts();
+          int Selector;
+          if (Type->getType()->isArrayTy()) {
+            SmallVector<unsigned, 4> Allowed;
+            for (const Use &U : cast<Constant>(Type)->operands())
+              Allowed.push_back(MF->getTypeIDFor(
+                  cast<GlobalValue>(U->stripPointerCasts())));
+            Selector = MF->getFilterIDFor(Allowed);
+          } else {
+            Selector = MF->getTypeIDFor(dyn_cast<GlobalValue>(Type));
+          }
+          Scope.Handlers.push_back({Selector, getMBB(Handler)});
+        }
+      } else {
+        const BasicBlock *Outer = nullptr;
+        for (const User *U : cast<CleanupPadInst>(Pad)->users())
+          if (const auto *CRI = dyn_cast<CleanupReturnInst>(U))
+            Outer = CRI->getUnwindDest();
+        Scope.Outer = Self(Self, Outer);
+        Scope.Cleanup = getMBB(PadBB);
+      }
+      return MF->addEHScope(PadBB, std::move(Scope));
+    };
+    for (const BasicBlock &BB : *Fn) {
+      BasicBlock::const_iterator Pad = BB.getFirstNonPHIIt();
+      if (isa<CatchSwitchInst>(Pad) || isa<CleanupPadInst>(Pad))
+        AddScope(AddScope, &BB);
+    }
   }
 }
 

@@ -21,6 +21,7 @@
 #include "X86TargetMachine.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/ObjCARCUtil.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
@@ -1318,7 +1319,7 @@ static bool shouldGuaranteeTCO(CallingConv::ID CC, bool GuaranteedTailCallOpt) {
 }
 
 bool X86TargetLowering::mayBeEmittedAsTailCall(const CallInst *CI) const {
-  if (!CI->isTailCall())
+  if (!CI->isTailCall() && !isInCalledCleanup(*CI))
     return false;
 
   CallingConv::ID CalleeCC = CI->getCallingConv();
@@ -2730,7 +2731,10 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     // This isn't right, although it's probably harmless on x86; liveouts
     // should be computed from returns not tail calls.  Consider a void
     // function making a tail call to a function returning int.
-    MF.getFrameInfo().setHasTailCall();
+    // A tail call out of a called cleanup passes its arguments in registers
+    // and so writes none of the function's incoming argument slots.
+    if (!CLI.CB || !isInCalledCleanup(*CLI.CB))
+      MF.getFrameInfo().setHasTailCall();
     auto Opcode =
         IsCFGuardCall ? X86ISD::TC_RETURN_GLOBALADDR : X86ISD::TC_RETURN;
     SDValue Ret = DAG.getNode(Opcode, dl, MVT::Other, Ops);
@@ -3013,6 +3017,16 @@ bool X86TargetLowering::isEligibleForSiblingCallOpt(
   MachineFunction &MF = DAG.getMachineFunction();
   X86MachineFunctionInfo *FuncInfo = MF.getInfo<X86MachineFunctionInfo>();
   const Function &CallerF = MF.getFunction();
+
+  // A cleanup that Windows Itanium's unwinder calls returns nothing, under the
+  // Win64 convention, and its frame has no argument of its own for a callee to
+  // take its place in.
+  if (CLI.CB && isInCalledCleanup(*CLI.CB))
+    return Subtarget.isCallingConvWin64(CalleeCC) && !isVarArg &&
+           !Subtarget.getRegisterInfo()->hasStackRealignment(MF) &&
+           all_of(ArgLocs, [](const CCValAssign &VA) {
+             return VA.isRegLoc() && VA.getLocInfo() != CCValAssign::Indirect;
+           });
 
   // If the function return type is x86_fp80 and the callee return type is not,
   // then the FP_EXTEND of the call result is not a nop. It's not safe to

@@ -12,6 +12,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Instructions.h"
+#include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Module.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -32,6 +33,15 @@ EHPersonality llvm::classifyEHPersonality(const Value *Pers) {
     // Demangle them by skipping this prefix.
     Name.consume_front("#");
   }
+
+  // The Itanium-style personality routines over Windows' unwinder. Windows
+  // Itanium's have called cleanups and landed catchpads; MinGW's take landing
+  // pads.
+  if (F->getParent()->getTargetTriple().isWindowsItaniumEnvironment() &&
+      F->getParent()->getTargetTriple().isArch64Bit() &&
+      (Name == "__gxx_personality_seh0" || Name == "__gxx_personality_seha0" ||
+       Name == "__gcc_personality_seh0"))
+    return EHPersonality::Itanium_SEH;
 
   return StringSwitch<EHPersonality>(Name)
       .Case("__gnat_eh_personality", EHPersonality::GNU_Ada)
@@ -81,6 +91,8 @@ StringRef llvm::getEHPersonalityName(EHPersonality Pers) {
   case EHPersonality::Rust:
     llvm_unreachable(
         "Cannot get personality name of Rust personality, since it is mangled");
+  case EHPersonality::Itanium_SEH:
+    return "__gxx_personality_seh0";
   case EHPersonality::Wasm_CXX:
     return "__gxx_wasm_personality_v0";
   case EHPersonality::XL_CXX:
@@ -112,7 +124,33 @@ bool llvm::canSimplifyInvokeNoUnwind(const Function *F) {
   // Cannot simplify CXX Personality under AsynchEH
   const llvm::Module *M = (const llvm::Module *)F->getParent();
   bool EHa = M->getModuleFlag("eh-asynch");
-  return !EHa && !isAsynchronousEHPersonality(Personality);
+  return !EHa && !isAsynchronousEHPersonality(Personality) &&
+         !usesAsyncEHTables(*F);
+}
+
+bool llvm::usesAsyncEHTables(const Function &F) {
+  const auto *Pers =
+      F.hasPersonalityFn()
+          ? dyn_cast<GlobalValue>(F.getPersonalityFn()->stripPointerCasts())
+          : nullptr;
+  return Pers && Pers->getName() == "__gxx_personality_seha0";
+}
+
+bool llvm::isAsynchEH(const Function &F) {
+  const Module *M = F.getParent();
+  if (M->getModuleFlag("eh-asynch"))
+    return true;
+  const Function *TryBegin =
+      Intrinsic::getDeclarationIfExists(M, Intrinsic::seh_try_begin);
+  return TryBegin && any_of(TryBegin->users(), [&](const User *U) {
+           return cast<Instruction>(U)->getFunction() == &F;
+         });
+}
+
+bool llvm::usesCalledCleanups(const Function &F) {
+  return F.hasPersonalityFn() &&
+         classifyEHPersonality(F.getPersonalityFn()) ==
+             EHPersonality::Itanium_SEH;
 }
 
 DenseMap<BasicBlock *, ColorVector> llvm::colorEHFunclets(Function &F) {

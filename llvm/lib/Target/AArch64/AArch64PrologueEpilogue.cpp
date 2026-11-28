@@ -637,7 +637,58 @@ void AArch64PrologueEmitter::allocateStackSpace(
     AFI->setStackRealigned(true);
 }
 
+// A cleanup funclet that Windows Itanium's unwinder calls is entered with its
+// function's frame pointer among the frame's callee-saved registers, and
+// saves none of them. Where its code modifies the link register it saves that,
+// under the outgoing arguments of its calls; otherwise it has no prologue.
+void AArch64PrologueEmitter::emitCalledCleanupPrologue() {
+  MachineBasicBlock::iterator I = MBB.begin();
+  DebugLoc DL;
+  if (std::optional<unsigned> CallFrame = AFL.getCalledCleanupCallFrame(MBB)) {
+    MBB.addLiveIn(AArch64::LR);
+    MachineInstrBuilder MIB = BuildMI(MBB, I, DL, TII->get(AArch64::STRXpre))
+                                  .addReg(AArch64::SP, RegState::Define)
+                                  .addReg(AArch64::LR)
+                                  .addReg(AArch64::SP)
+                                  .addImm(-16)
+                                  .setMIFlag(MachineInstr::FrameSetup);
+    if (NeedsWinCFI) {
+      AFL.insertSEH(MIB, *TII, MachineInstr::FrameSetup);
+      HasWinCFI = true;
+    }
+    if (*CallFrame)
+      emitFrameOffset(MBB, I, DL, AArch64::SP, AArch64::SP,
+                      StackOffset::getFixed(-int64_t(alignTo(*CallFrame, 16))),
+                      TII, MachineInstr::FrameSetup, false, NeedsWinCFI,
+                      &HasWinCFI);
+    if (HasWinCFI)
+      BuildMI(MBB, I, DL, TII->get(AArch64::SEH_PrologEnd))
+          .setMIFlag(MachineInstr::FrameSetup);
+  }
+  // The base register, the stack pointer that the function's prologue leaves,
+  // comes from the frame pointer as that prologue has it: below the frame's
+  // fixed size and the scalable objects under the frame record. That sets up
+  // no frame of the funclet's, so it has no unwind code.
+  if (RegInfo.hasBasePointer(MF)) {
+    Register BaseReg = RegInfo.getBaseRegister();
+    StackOffset SVEBelowFP = AFL.getSVEStackSize(MF);
+    if (SVELayout == SVEStackLayout::CalleeSavesAboveFrameRecord)
+      SVEBelowFP -= StackOffset::getScalable(AFI->getSVECalleeSavedStackSize());
+    emitFrameOffset(
+        MBB, I, DL, BaseReg, AArch64::FP,
+        AFL.getFPOffset(MF, 0) - AFL.getStackOffset(MF, 0) - SVEBelowFP, TII);
+    if (RegInfo.hasStackRealignment(MF))
+      BuildMI(MBB, I, DL, TII->get(AArch64::ANDXri), BaseReg)
+          .addReg(BaseReg, RegState::Kill)
+          .addImm(AArch64_AM::encodeLogicalImmediate(
+              ~(MFI.getMaxAlign().value() - 1), 64));
+  }
+}
+
 void AArch64PrologueEmitter::emitPrologue() {
+  if (IsFunclet && AFL.isCalledCleanupBlock(MBB))
+    return emitCalledCleanupPrologue();
+
   const MachineBasicBlock::iterator PrologueBeginI = MBB.begin();
   const MachineBasicBlock::iterator EndI = MBB.end();
 
@@ -1364,7 +1415,39 @@ void AArch64EpilogueEmitter::moveSPBelowFP(MachineBasicBlock::iterator MBBI,
                   MachineInstr::FrameDestroy);
 }
 
+// Undoes emitCalledCleanupPrologue before the funclet returns or tail-calls.
+// finalizeEpilogue closes the unwind codes, or drops them where the funclet
+// saved nothing.
+void AArch64EpilogueEmitter::emitCalledCleanupEpilogue() {
+  MachineBasicBlock::iterator I = MBB.getFirstTerminator();
+  if (I != MBB.end())
+    DL = I->getDebugLoc();
+  if (NeedsWinCFI)
+    SEHEpilogueStartI = BuildMI(MBB, I, DL, TII->get(AArch64::SEH_EpilogStart))
+                            .setMIFlag(MachineInstr::FrameDestroy);
+  std::optional<unsigned> CallFrame = AFL.getCalledCleanupCallFrame(MBB);
+  if (!CallFrame)
+    return;
+  if (*CallFrame)
+    emitFrameOffset(MBB, I, DL, AArch64::SP, AArch64::SP,
+                    StackOffset::getFixed(alignTo(*CallFrame, 16)), TII,
+                    MachineInstr::FrameDestroy, false, NeedsWinCFI, &HasWinCFI);
+  MachineInstrBuilder MIB = BuildMI(MBB, I, DL, TII->get(AArch64::LDRXpost))
+                                .addReg(AArch64::SP, RegState::Define)
+                                .addReg(AArch64::LR, RegState::Define)
+                                .addReg(AArch64::SP)
+                                .addImm(16)
+                                .setMIFlag(MachineInstr::FrameDestroy);
+  if (NeedsWinCFI) {
+    AFL.insertSEH(MIB, *TII, MachineInstr::FrameDestroy);
+    HasWinCFI = true;
+  }
+}
+
 void AArch64EpilogueEmitter::emitEpilogue() {
+  if (AFL.isCalledCleanupBlock(MBB))
+    return emitCalledCleanupEpilogue();
+
   MachineBasicBlock::iterator EpilogueEndI = MBB.getLastNonDebugInstr();
   if (MBB.end() != EpilogueEndI) {
     DL = EpilogueEndI->getDebugLoc();

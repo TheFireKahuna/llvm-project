@@ -156,6 +156,11 @@ private:
   void emitCallInstruction(const llvm::MCInst &MCI);
   void maybeEmitNopAfterCallForWindowsEH(const MachineInstr *MI);
 
+  // The EH pad of the range that each EH label of the current function begins
+  // (true) or ends, where its exception tables cover every instruction.
+  DenseMap<const MCSymbol *, std::pair<const MachineBasicBlock *, bool>>
+      AsyncEHRanges;
+
   // Emits a label to mark the next instruction as being relevant to Import Call
   // Optimization.
   void emitLabelAndRecordForImportCallOptimization(ImportCallKind Kind);

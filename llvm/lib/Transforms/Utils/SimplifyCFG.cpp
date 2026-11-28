@@ -42,6 +42,7 @@
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -5818,6 +5819,22 @@ static bool removeEmptyCleanup(CleanupReturnInst *RI, DomTreeUpdater *DTU) {
   if (!isCleanupBlockEmpty(
           make_range<Instruction *>(CPInst->getNextNode(), RI)))
     return false;
+
+  // Where exception tables cover every instruction, the llvm.seh.scope.*
+  // markers of a cleanup's scope unwind to its cleanuppad. A scope with
+  // nothing to clean up goes with them.
+  if (usesAsyncEHTables(*BB->getParent()))
+    for (BasicBlock *Pred : make_early_inc_range(predecessors(BB))) {
+      auto *II = dyn_cast<InvokeInst>(Pred->getTerminator());
+      if (!II || (II->getIntrinsicID() != Intrinsic::seh_scope_begin &&
+                  II->getIntrinsicID() != Intrinsic::seh_scope_end))
+        continue;
+      BB->removePredecessor(Pred);
+      UncondBrInst::Create(II->getNormalDest(), II->getIterator());
+      II->eraseFromParent();
+      if (DTU)
+        DTU->applyUpdates({{DominatorTree::Delete, Pred, BB}});
+    }
 
   // If the cleanup return we are simplifying unwinds to the caller, this will
   // set UnwindDest to nullptr.

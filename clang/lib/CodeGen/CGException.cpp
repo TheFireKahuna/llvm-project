@@ -384,12 +384,40 @@ void CodeGenFunction::EmitStartEHSpec(const Decl *D) {
     }
   } else if (Proto->canThrow() == CT_Cannot) {
     // noexcept functions are simple terminate scopes.
-    if (!getLangOpts().EHAsynch) // -EHa: HW exception still can occur
+    // -EHa: HW exception still can occur. The Itanium personality passes one
+    // by a terminate scope, which a C++ exception does not leave.
+    if (!getLangOpts().EHAsynch || getEHPersonality(*this).isAsyncPersonality())
       EHStack.pushTerminate();
   }
 }
 
 /// Emit the dispatch block for a filter scope if necessary.
+/// Emits a catchswitch of one catchpad that names \p Type, which unwinds to
+/// \p UnwindBB, for a personality whose catchpads are landed, and leaves the
+/// pad for the code that follows. Returns the exception object's address.
+static llvm::Value *emitLandedCatchSwitch(CodeGenFunction &CGF,
+                                          llvm::Constant *Type,
+                                          llvm::BasicBlock *UnwindBB,
+                                          const Twine &Name) {
+  llvm::CatchSwitchInst *CatchSwitch = CGF.Builder.CreateCatchSwitch(
+      llvm::ConstantTokenNone::get(CGF.getLLVMContext()), UnwindBB, 1);
+  llvm::BasicBlock *Pad = CGF.createBasicBlock(Name, CGF.CurFn);
+  CatchSwitch->addHandler(Pad);
+  CGF.Builder.SetInsertPoint(Pad);
+  return CGF.EmitLandedCatchPad(CGF.Builder.CreateCatchPad(CatchSwitch, {Type}),
+                                Name + ".body");
+}
+
+llvm::Value *CodeGenFunction::EmitLandedCatchPad(llvm::CatchPadInst *CPI,
+                                                 const Twine &Name) {
+  llvm::Value *Exn = Builder.CreateCall(
+      CGM.getIntrinsic(llvm::Intrinsic::eh_exceptionpointer, Int8PtrTy), CPI);
+  llvm::BasicBlock *Body = createBasicBlock(Name, CurFn);
+  Builder.CreateCatchRet(CPI, Body);
+  Builder.SetInsertPoint(Body);
+  return Exn;
+}
+
 static void emitFilterDispatchBlock(CodeGenFunction &CGF,
                                     EHFilterScope &filterScope) {
   llvm::BasicBlock *dispatchBlock = filterScope.getCachedEHDispatchBlock();
@@ -400,6 +428,24 @@ static void emitFilterDispatchBlock(CodeGenFunction &CGF,
   }
 
   CGF.EmitBlockAfterUses(dispatchBlock);
+
+  // Where the unwinder chooses the pad it lands in, the specification is a
+  // pad that names the list of types allowed, and is landed in only for an
+  // exception that is none of them.
+  if (getEHPersonality(CGF).usesLandedCatchPads()) {
+    SmallVector<llvm::Constant *, 4> Allowed;
+    for (unsigned I = 0, E = filterScope.getNumFilters(); I != E; ++I)
+      Allowed.push_back(cast<llvm::Constant>(filterScope.getFilter(I)));
+    llvm::Value *Exn = emitLandedCatchSwitch(
+        CGF,
+        llvm::ConstantArray::get(
+            llvm::ArrayType::get(CGF.Int8PtrTy, Allowed.size()), Allowed),
+        CGF.getEHDispatchBlock(filterScope.getEnclosingEHScope()),
+        "ehspec.unexpected");
+    CGF.EmitRuntimeCall(getUnexpectedFn(CGF.CGM), Exn)->setDoesNotReturn();
+    CGF.Builder.CreateUnreachable();
+    return;
+  }
 
   // If this isn't a catch-all filter, we need to check whether we got
   // here because the filter triggered.
@@ -482,6 +528,12 @@ void CodeGenFunction::EmitCXXTryStmt(const CXXTryStmt &S) {
     ExitCXXTryStmt(S);
 }
 
+namespace {
+struct SehTryScopeEnd final : EHScopeStack::Cleanup {
+  void Emit(CodeGenFunction &CGF, Flags) override { CGF.EmitSehTryScopeEnd(); }
+};
+} // namespace
+
 void CodeGenFunction::EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
   // HIPStdPar device compilation emits unannotated host functions and removes
   // the ones that are not reachable from an accelerator kernel in the middle
@@ -528,9 +580,18 @@ void CodeGenFunction::EnterCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
       CatchScope->setHandler(I, CGM.getCXXABI().getCatchAllTypeInfo(), Handler);
       // Under async exceptions, catch(...) need to catch HW exception too
       // Mark scope with SehTryBegin as a SEH __try scope
-      if (getLangOpts().EHAsynch)
+      if (getLangOpts().EHAsynch &&
+          !getEHPersonality(*this).isAsyncPersonality())
         EmitSehTryScopeBegin();
     }
+  }
+
+  // The Itanium personality offers an asynchronous exception to every try
+  // block, whose typed handlers can take what a translator makes of it, and
+  // has each way out of the block end the scope.
+  if (getEHPersonality(*this).isAsyncPersonality() && getInvokeDest()) {
+    EmitSehTryScopeBegin();
+    EHStack.pushCleanup<SehTryScopeEnd>(NormalCleanup);
   }
 }
 
@@ -595,11 +656,11 @@ CodeGenFunction::getFuncletEHDispatchBlock(EHScopeStack::stable_iterator SI) {
   if (DispatchBlock)
     return DispatchBlock;
 
-  if (EHS.getKind() == EHScope::Terminate)
+  bool Landed = getEHPersonality(*this).usesLandedCatchPads();
+  if (EHS.getKind() == EHScope::Terminate && !Landed)
     DispatchBlock = getTerminateFunclet();
   else
     DispatchBlock = createBasicBlock();
-  CGBuilderTy Builder(CGM, DispatchBlock);
 
   switch (EHS.getKind()) {
   case EHScope::Catch:
@@ -611,10 +672,35 @@ CodeGenFunction::getFuncletEHDispatchBlock(EHScopeStack::stable_iterator SI) {
     break;
 
   case EHScope::Filter:
-    llvm_unreachable("exception specifications not handled yet!");
+    if (!Landed)
+      llvm_unreachable("exception specifications not handled yet!");
+    DispatchBlock->setName("filter.dispatch");
+    break;
 
   case EHScope::Terminate:
     DispatchBlock->setName("terminate");
+    if (Landed) {
+      // A terminate scope is a pad of its own. A function compiled for
+      // asynchronous exceptions has one that takes every exception pass it by,
+      // as it passes an exception specification: an empty one, which no C++
+      // exception passes. Any other function's takes every exception.
+      llvm::BasicBlock *UnwindBB =
+          getEHDispatchBlock(EHS.getEnclosingEHScope());
+      CGBuilderTy::InsertPoint SavedIP = Builder.saveAndClearIP();
+      DispatchBlock->insertInto(CurFn);
+      Builder.SetInsertPoint(DispatchBlock);
+      llvm::Constant *Type = llvm::Constant::getNullValue(Int8PtrTy);
+      if (getEHPersonality(*this).isAsyncPersonality())
+        Type = llvm::ConstantAggregateZero::get(
+            llvm::ArrayType::get(Int8PtrTy, 0));
+      llvm::Value *Exn =
+          emitLandedCatchSwitch(*this, Type, UnwindBB, "terminate.handler");
+      CGM.getCXXABI()
+          .emitTerminateForUnexpectedException(*this, Exn)
+          ->setDoesNotReturn();
+      Builder.CreateUnreachable();
+      Builder.restoreIP(SavedIP);
+    }
     break;
   }
   EHS.setCachedEHDispatchBlock(DispatchBlock);
@@ -655,6 +741,10 @@ llvm::BasicBlock *CodeGenFunction::getInvokeDestImpl() {
 
   // CUDA device code doesn't have exceptions.
   if (LO.CUDA && LO.CUDAIsDevice)
+    return nullptr;
+
+  // Nothing unwinds out of a cleanup that the unwinder calls.
+  if (CurrentFuncletPad && getEHPersonality(*this).usesLandedCatchPads())
     return nullptr;
 
   // Check the innermost scope for a cached landing pad.  If this is
@@ -1088,6 +1178,10 @@ void CodeGenFunction::WasmEmitFallthroughRethrow(
 }
 
 void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
+  // End the scope EnterCXXTryStmt began for asynchronous exceptions.
+  if (isa<EHCleanupScope>(*EHStack.begin()))
+    PopCleanupBlock();
+
   unsigned NumHandlers = S.getNumHandlers();
   EHCatchScope &CatchScope = cast<EHCatchScope>(*EHStack.begin());
   assert(CatchScope.getNumHandlers() == NumHandlers);
@@ -1152,6 +1246,15 @@ void CodeGenFunction::ExitCXXTryStmt(const CXXTryStmt &S, bool IsFnTryBlock) {
     HasCatchAll |= Handlers[I - 1].isCatchAll();
     llvm::BasicBlock *CatchBlock = Handlers[I-1].Block;
     EmitBlockAfterUses(CatchBlock);
+
+    // A handler the unwinder lands in leaves its pad at once, with the
+    // exception object's address where the handler's code reads it.
+    if (getEHPersonality(*this).usesLandedCatchPads())
+      Builder.CreateStore(
+          EmitLandedCatchPad(
+              cast<llvm::CatchPadInst>(CatchBlock->getFirstNonPHIIt()),
+              "catch.body"),
+          getExceptionSlot());
 
     // Catch the exception if this isn't a catch-all.
     const CXXCatchStmt *C = S.getHandler(I-1);

@@ -27,6 +27,12 @@ const EHPersonality EHPersonality::GNU_CPlusPlus_SJLJ = {
     "__gxx_personality_sj0", nullptr};
 const EHPersonality EHPersonality::GNU_CPlusPlus_SEH = {
     "__gxx_personality_seh0", nullptr};
+const EHPersonality EHPersonality::GNU_CPlusPlus_SEHA = {
+    "__gxx_personality_seha0", nullptr};
+const EHPersonality EHPersonality::WinItanium_C = {"__gcc_personality_seh0",
+                                                       nullptr};
+const EHPersonality EHPersonality::WinItanium_CPlusPlus = {
+    "__gxx_personality_seh0", nullptr};
 const EHPersonality EHPersonality::GNU_ObjC = {"__gnu_objc_personality_v0",
                                                "objc_exception_throw"};
 const EHPersonality EHPersonality::GNU_ObjC_SJLJ = {
@@ -60,7 +66,9 @@ static const EHPersonality &getCPersonality(const TargetInfo &Target,
   if (CGOpts.hasDWARFExceptions())
     return EHPersonality::GNU_C;
   if (CGOpts.hasSEHExceptions())
-    return EHPersonality::GNU_C_SEH;
+    return T.isWindowsItaniumEnvironment() && T.isArch64Bit()
+               ? EHPersonality::WinItanium_C
+               : EHPersonality::GNU_C_SEH;
   return EHPersonality::GNU_C;
 }
 
@@ -109,7 +117,9 @@ const EHPersonality &getCXXEHPersonality(const TargetInfo &Target,
   if (CGOpts.hasDWARFExceptions())
     return EHPersonality::GNU_CPlusPlus;
   if (CGOpts.hasSEHExceptions())
-    return EHPersonality::GNU_CPlusPlus_SEH;
+    return T.isWindowsItaniumEnvironment() && T.isArch64Bit()
+               ? EHPersonality::WinItanium_CPlusPlus
+               : EHPersonality::GNU_CPlusPlus_SEH;
   if (CGOpts.hasWasmExceptions())
     return EHPersonality::GNU_Wasm_CPlusPlus;
   if (T.isOSzOS())
@@ -173,6 +183,11 @@ const EHPersonality &getEHPersonality(const TargetInfo &Target,
   if (LangOpts.ObjC)
     return LangOpts.CPlusPlus ? getObjCXXPersonality(Target, CGOpts, LangOpts)
                               : getObjCPersonality(Target, CGOpts, LangOpts);
+  // A function compiled for asynchronous exceptions names the personality
+  // routine that reads its exception tables as covering every instruction.
+  if (LangOpts.CPlusPlus && LangOpts.EHAsynch && CGOpts.hasSEHExceptions() &&
+      Target.getTriple().isWindowsItaniumEnvironment())
+    return EHPersonality::GNU_CPlusPlus_SEHA;
   return LangOpts.CPlusPlus ? getCXXEHPersonality(Target, CGOpts)
                             : getCPersonality(Target, CGOpts);
 }

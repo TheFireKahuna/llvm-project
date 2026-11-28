@@ -35,6 +35,7 @@
 #include "llvm/CodeGen/StackMaps.h"
 #include "llvm/CodeGen/WinEHFuncInfo.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -2806,7 +2807,18 @@ void X86AsmPrinter::maybeEmitNopAfterCallForWindowsEH(const MachineInstr *MI) {
     return;
   }
 
-  bool HasEHPersonality = MF->getWinEHFuncInfo() != nullptr;
+  // An LSDA is searched with the return address less one, so a function whose
+  // cleanups are funclets that Windows Itanium's unwinder calls needs no NOP
+  // to keep that address inside the call's range. One whose tables cover every
+  // instruction has its ranges a byte early, so the search finds the
+  // instruction at an address, a return address too: it needs the NOP where the
+  // instruction after the CALL is not in a range of the EH pad that the CALL's
+  // range has.
+  bool HasAsyncEHTables = usesAsyncEHTables(MF->getFunction());
+  bool HasEHPersonality =
+      MF->getWinEHFuncInfo() != nullptr &&
+      (!usesCalledCleanups(MF->getFunction()) || HasAsyncEHTables);
+  const MCSymbol *FirstLabel = nullptr, *LastLabel = nullptr;
 
   // Set up MBB iterator, initially positioned on the same MBB as MI.
   MachineFunction::const_iterator MFI(MI->getParent());
@@ -2828,6 +2840,12 @@ void X86AsmPrinter::maybeEmitNopAfterCallForWindowsEH(const MachineInstr *MI) {
       // transition after this CALL. This is exactly the situation which
       // requires NOP padding.
       if (NextMI.isEHLabel()) {
+        if (HasAsyncEHTables) {
+          LastLabel = NextMI.getOperand(0).getMCSymbol();
+          if (!FirstLabel)
+            FirstLabel = LastLabel;
+          continue;
+        }
         if (HasEHPersonality) {
           EmitAndCountInstruction(MCInstBuilder(X86::NOOP));
           return;
@@ -2858,7 +2876,22 @@ void X86AsmPrinter::maybeEmitNopAfterCallForWindowsEH(const MachineInstr *MI) {
         // point to this instruction. Since this instruction has the same EH
         // state as the call itself (because there is no intervening EH_LABEL),
         // the IP2State table will be accurate; there is no need to insert a
-        // NOP.
+        // NOP. Nor is there where the labels end a range of an EH pad and
+        // begin another of the same one.
+        if (FirstLabel) {
+          if (AsyncEHRanges.empty())
+            for (const LandingPadInfo &LP : MF->getLandingPads()) {
+              for (const MCSymbol *Begin : LP.BeginLabels)
+                AsyncEHRanges[Begin] = {LP.LandingPadBlock, true};
+              for (const MCSymbol *End : LP.EndLabels)
+                AsyncEHRanges[End] = {LP.LandingPadBlock, false};
+            }
+          auto Ended = AsyncEHRanges.lookup(FirstLabel);
+          auto Begun = AsyncEHRanges.lookup(LastLabel);
+          if (!Ended.first || Ended.second || Ended.first != Begun.first ||
+              !Begun.second)
+            EmitAndCountInstruction(MCInstBuilder(X86::NOOP));
+        }
         return;
       }
 

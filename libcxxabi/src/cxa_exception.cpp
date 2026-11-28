@@ -632,6 +632,10 @@ void __cxa_rethrow() {
     bool native_exception = __isOurExceptionClass(&exception_header->unwindHeader);
     if (native_exception)
     {
+#if defined(_WIN32_ITANIUM)
+        // An object that stands for a structured exception raises it again.
+        __seh_rethrow(exception_header);
+#endif
         //  Mark the exception as being rethrown (reverse the effects of __cxa_begin_catch)
         exception_header->handlerCount = -exception_header->handlerCount;
         globals->uncaughtExceptions += 1;
@@ -760,6 +764,10 @@ __cxa_rethrow_primary_exception(void* thrown_object)
         // thrown_object guaranteed to be native because
         //   __cxa_current_primary_exception returns NULL for foreign exceptions
         __cxa_exception* exception_header = cxa_exception_from_thrown_object(thrown_object);
+#if defined(_WIN32_ITANIUM)
+        // An object that stands for a structured exception raises it again.
+        __seh_rethrow(exception_header);
+#endif
         __cxa_dependent_exception* dep_exception_header =
             static_cast<__cxa_dependent_exception*>(__cxa_allocate_dependent_exception());
         dep_exception_header->primaryException = thrown_object;

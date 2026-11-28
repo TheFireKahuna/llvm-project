@@ -107,6 +107,11 @@ public:
 
   bool hasReservedCallFrame(const MachineFunction &MF) const override;
   bool canSimplifyCallFramePseudos(const MachineFunction &MF) const override;
+
+  /// Returns true if the cleanup funclets that Windows Itanium's unwinder
+  /// calls address \p MF's frame from the establisher frame they are passed:
+  /// the function keeps no frame pointer.
+  bool addressesFrameFromEstablisher(const MachineFunction &MF) const;
   bool needsFrameIndexResolution(const MachineFunction &MF) const override;
 
   StackOffset getFrameIndexReference(const MachineFunction &MF, int FI,
@@ -283,6 +288,8 @@ private:
 
   void adjustFrameForMsvcCxxEh(MachineFunction &MF) const;
 
+  void layOutCalledCleanupFrames(MachineFunction &MF) const;
+
   /// Aligns the stack pointer by ANDing it with -MaxAlign.
   void BuildStackAlignAND(MachineBasicBlock &MBB,
                           MachineBasicBlock::iterator MBBI, const DebugLoc &DL,
@@ -301,7 +308,9 @@ private:
 
   unsigned getPSPSlotOffsetFromSP(const MachineFunction &MF) const;
 
-  unsigned getWinEHFuncletFrameSize(const MachineFunction &MF) const;
+  unsigned getWinEHFuncletFrameSize(
+      const MachineFunction &MF,
+      const MachineBasicBlock *CalledCleanup = nullptr) const;
 
   /// Materialize the catchret target MBB in RAX.
   void emitCatchRetReturnValue(MachineBasicBlock &MBB,

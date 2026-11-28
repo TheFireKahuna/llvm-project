@@ -225,6 +225,7 @@
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Analysis/ValueTracking.h"
+#include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/CFIInstBuilder.h"
 #include "llvm/CodeGen/LivePhysRegs.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -245,6 +246,7 @@
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugLoc.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
@@ -475,7 +477,7 @@ AArch64FrameLowering::getFixedObjectSize(const MachineFunction &MF,
     // Var args are stored here in the primary function.
     FixedObjectSize += AFI->getVarArgsGPRSize();
 
-    if (MF.hasEHFunclets()) {
+    if (MF.hasEHFunclets() && !usesCalledCleanups(MF.getFunction())) {
       // Catch objects are stored here in the primary function.
       const MachineFrameInfo &MFI = MF.getFrameInfo();
       const WinEHFuncInfo &EHInfo = *MF.getWinEHFuncInfo();
@@ -1191,12 +1193,14 @@ void AArch64FrameLowering::emitPacRetPlusLeafHardening(
 
 void AArch64FrameLowering::emitPrologue(MachineFunction &MF,
                                         MachineBasicBlock &MBB) const {
+
   AArch64PrologueEmitter PrologueEmitter(MF, MBB, *this);
   PrologueEmitter.emitPrologue();
 }
 
 void AArch64FrameLowering::emitEpilogue(MachineFunction &MF,
                                         MachineBasicBlock &MBB) const {
+
   AArch64EpilogueEmitter EpilogueEmitter(MF, MBB, *this);
   EpilogueEmitter.emitEpilogue();
 }
@@ -2054,6 +2058,8 @@ void computeCalleeSaveRegisterGroups(const AArch64FrameLowering &AFL,
 bool AArch64FrameLowering::spillCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MI,
     ArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  if (isCalledCleanupBlock(MBB))
+    return true;
   MachineFunction &MF = *MBB.getParent();
   const AArch64Subtarget &Subtarget = MF.getSubtarget<AArch64Subtarget>();
   auto &TLI = *Subtarget.getTargetLowering();
@@ -2256,6 +2262,8 @@ bool AArch64FrameLowering::spillCalleeSavedRegisters(
 bool AArch64FrameLowering::restoreCalleeSavedRegisters(
     MachineBasicBlock &MBB, MachineBasicBlock::iterator MBBI,
     MutableArrayRef<CalleeSavedInfo> CSI, const TargetRegisterInfo *TRI) const {
+  if (isCalledCleanupBlock(MBB))
+    return true;
   MachineFunction &MF = *MBB.getParent();
   const AArch64InstrInfo &TII =
       *MF.getSubtarget<AArch64Subtarget>().getInstrInfo();
@@ -2586,6 +2594,14 @@ void AArch64FrameLowering::determineCalleeSaves(MachineFunction &MF,
   TargetFrameLowering::determineCalleeSaves(MF, SavedRegs, RS);
   const AArch64RegisterInfo *RegInfo = Subtarget.getRegisterInfo();
   AArch64FunctionInfo *AFI = MF.getInfo<AArch64FunctionInfo>();
+  // A cleanup funclet that an unwinder calls saves no register but its frame
+  // record: the function saves only those its own code modifies.
+  AFI->CalledCleanupScopes.clear();
+  if (MF.hasEHFunclets() && usesCalledCleanups(MF.getFunction()) &&
+      !MF.callsUnwindInit()) {
+    AFI->CalledCleanupScopes = getEHFunclets(MF);
+    resetFuncletOnlyCalleeSaves(MF, AFI->CalledCleanupScopes, SavedRegs);
+  }
   Register UnspilledCSGPR;
   Register UnspilledCSGPRPaired;
 
@@ -3194,8 +3210,8 @@ void AArch64FrameLowering::processFunctionBeforeFrameFinalized(
   (void)determineSVEStackSizes(MF, AssignObjectOffsets::Yes);
 
   // If this function isn't doing Win64-style C++ EH, we don't need to do
-  // anything.
-  if (!MF.hasEHFunclets())
+  // anything: only MSVC's frame handlers read an UnwindHelp object.
+  if (!MF.hasEHFunclets() || usesCalledCleanups(MF.getFunction()))
     return;
 
   MachineFrameInfo &MFI = MF.getFrameInfo();
@@ -3762,6 +3778,26 @@ StackOffset AArch64FrameLowering::getFrameIndexReferencePreferSP(
 unsigned AArch64FrameLowering::getWinEHParentFrameOffset(
     const MachineFunction &MF) const {
   return 0;
+}
+
+bool AArch64FrameLowering::isCalledCleanupBlock(const MachineBasicBlock &MBB) {
+  const AArch64FunctionInfo *AFI =
+      MBB.getParent()->getInfo<AArch64FunctionInfo>();
+  return !AFI->CalledCleanupScopes.empty() &&
+         AFI->CalledCleanupScopes[MBB.getNumber()] >= 0;
+}
+
+std::optional<unsigned> AArch64FrameLowering::getCalledCleanupCallFrame(
+    const MachineBasicBlock &MBB) const {
+  const MachineFunction &MF = *MBB.getParent();
+  ArrayRef<int> Scopes = MF.getInfo<AArch64FunctionInfo>()->CalledCleanupScopes;
+  int Scope = Scopes[MBB.getNumber()];
+  for (const MachineBasicBlock &Block : MF)
+    if (Scopes[Block.getNumber()] == Scope)
+      for (const MachineInstr &MI : Block)
+        if (MI.modifiesRegister(AArch64::LR, /*TRI=*/nullptr))
+          return MF.getFrameInfo().getMaxCallFrameSize();
+  return std::nullopt;
 }
 
 /// Funclets only need to account for space for the callee saved registers,

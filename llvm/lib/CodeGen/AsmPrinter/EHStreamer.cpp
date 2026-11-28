@@ -18,14 +18,17 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineOperand.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Function.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
+#include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
+#include "llvm/Target/TargetMachine.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdint>
@@ -253,15 +256,32 @@ void EHStreamer::computeCallSiteTable(
 
   bool IsSJLJ = Asm->getModuleExceptionModel() == ExceptionHandling::SjLj;
 
+  // Where the table covers every instruction of an EH scope, an instruction
+  // outside every range is in no scope and keeps the ranges on either side of
+  // it apart. A terminator or a register move raises nothing.
+  bool IsAsync = usesAsyncEHTables(Asm->MF->getFunction());
+
+  // Funclets follow the function's own code and nothing unwinds into them, so
+  // the table ends where the first begins.
+  const MachineBasicBlock *FirstFunclet = nullptr;
+  for (const auto &MBB : *Asm->MF)
+    if (MBB.isEHFuncletEntry()) {
+      FirstFunclet = &MBB;
+      break;
+    }
+
   // Visit all instructions in order of address.
   for (const auto &MBB : *Asm->MF) {
+    if (&MBB == FirstFunclet)
+      break;
     if (&MBB == &Asm->MF->front() || MBB.isBeginSection()) {
       // We start a call-site range upon function entry and at the beginning of
       // every basic block section.
       auto &Range = Asm->MBBSectionRanges[MBB.getSectionID()];
-      CallSiteRanges.push_back({Range.BeginLabel, Range.EndLabel,
-                                Asm->getMBBExceptionSym(MBB),
-                                CallSites.size()});
+      CallSiteRanges.push_back(
+          {Range.BeginLabel,
+           FirstFunclet ? FirstFunclet->getSymbol() : Range.EndLabel,
+           Asm->getMBBExceptionSym(MBB), CallSites.size()});
       PreviousIsInvoke = false;
       SawPotentiallyThrowing = false;
       LastLabel = nullptr;
@@ -272,7 +292,10 @@ void EHStreamer::computeCallSiteTable(
 
     for (const auto &MI : MBB) {
       if (!MI.isEHLabel()) {
-        if (MI.isCall())
+        if (IsAsync)
+          SawPotentiallyThrowing |=
+              !MI.isMetaInstruction() && !MI.isTerminator() && !MI.isMoveReg();
+        else if (MI.isCall())
           SawPotentiallyThrowing |= !callToNoUnwindFunction(&MI);
         else if (MI.isInlineAsm()) {
           // An inline asm call may unwind iff it contains the `unwind` keyword.
@@ -313,7 +336,7 @@ void EHStreamer::computeCallSiteTable(
       LastLabel = LandingPad->EndLabels[P.RangeIndex];
       assert(BeginLabel && LastLabel && "Invalid landing pad!");
 
-      if (!LandingPad->LandingPadLabel) {
+      if (!LandingPad->LandingPadLabel && !LandingPad->Scope) {
         // Create a gap.
         PreviousIsInvoke = false;
       } else {
@@ -352,7 +375,7 @@ void EHStreamer::computeCallSiteTable(
 
     // We end the call-site range upon function exit and at the end of every
     // basic block section.
-    if (&MBB == &Asm->MF->back() || MBB.isEndSection()) {
+    if (MBB.getNextNode() == FirstFunclet || MBB.isEndSection()) {
       // If some instruction between the previous try-range and the end of the
       // function may throw, create a call-site entry with no landing pad for
       // the region following the try-range.
@@ -482,6 +505,62 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   if (LSDASection)
     Asm->OutStreamer->switchSection(LSDASection);
   Asm->emitAlignment(Align(4));
+
+  // A call site is found by the address before the frame's own, which is in
+  // the call for a return address. x86-64's unwinder does not say whether a
+  // frame's address is one or that of an instruction that raised, so where the
+  // table covers every instruction its call sites are written a byte early,
+  // and the same search finds either.
+  MCSymbol *SiteBase = nullptr;
+  if (usesAsyncEHTables(MF->getFunction()) &&
+      Asm->TM.getTargetTriple().getArch() == Triple::x86_64) {
+    MCContext &Ctx = Asm->OutContext;
+    SiteBase = Asm->createTempSymbol("eh_sites");
+    Asm->OutStreamer->emitAssignment(
+        SiteBase, MCBinaryExpr::createAdd(
+                      MCSymbolRefExpr::create(
+                          CallSiteRanges.front().FragmentBeginLabel, Ctx),
+                      MCConstantExpr::create(1, Ctx), Ctx));
+  }
+
+  // Windows Itanium's unwinder calls a function's cleanups and chooses the
+  // handler it lands in, from a table that leads the LSDA: a version, the
+  // table's size, the number of EH scopes, the scopes and the call sites. A
+  // scope gives the number of the scope around it, zero for none, the number
+  // of its handlers and, for a cleanup, which has none, the cleanup, or for
+  // each handler its selector and its pad. A call site gives its start and
+  // its scope. Offsets are from the function's start.
+  if (usesCalledCleanups(MF->getFunction())) {
+    MCSymbol *FuncBegin = CallSiteRanges.front().FragmentBeginLabel;
+    MCSymbol *ScopesBegin = Asm->createTempSymbol("scopes_begin");
+    MCSymbol *ScopesEnd = Asm->createTempSymbol("scopes_end");
+    Asm->OutStreamer->AddComment("Scope table version");
+    Asm->emitInt8(2);
+    Asm->OutStreamer->AddComment("Scope table size");
+    Asm->emitLabelDifferenceAsULEB128(ScopesEnd, ScopesBegin);
+    Asm->OutStreamer->emitLabel(ScopesBegin);
+    Asm->OutStreamer->AddComment("Scopes");
+    Asm->emitULEB128(MF->getEHScopes().size());
+    for (const EHScopeInfo &Scope : MF->getEHScopes()) {
+      Asm->emitULEB128(Scope.Outer);
+      Asm->emitULEB128(Scope.Handlers.size());
+      if (Scope.Cleanup)
+        Asm->emitLabelDifferenceAsULEB128(Scope.Cleanup->getSymbol(),
+                                          FuncBegin);
+      for (auto [Selector, Handler] : Scope.Handlers) {
+        Asm->emitSLEB128(Selector);
+        Asm->emitLabelDifferenceAsULEB128(Handler->getSymbol(), FuncBegin);
+      }
+    }
+    for (const CallSiteEntry &S : CallSites) {
+      if (!S.LPad || !S.LPad->Scope)
+        continue;
+      Asm->emitLabelDifferenceAsULEB128(S.BeginLabel,
+                                        SiteBase ? SiteBase : FuncBegin);
+      Asm->emitULEB128(S.LPad->Scope);
+    }
+    Asm->OutStreamer->emitLabel(ScopesEnd);
+  }
 
   // Emit the LSDA.
   MCSymbol *GCCETSym =
@@ -721,7 +800,8 @@ MCSymbol *EHStreamer::emitExceptionTable() {
            CallSiteIdx != CSRange.CallSiteEndIdx; ++CallSiteIdx) {
         const CallSiteEntry &S = CallSites[CallSiteIdx];
 
-        MCSymbol *EHFuncBeginSym = CSRange.FragmentBeginLabel;
+        MCSymbol *EHFuncBeginSym =
+            SiteBase ? SiteBase : CSRange.FragmentBeginLabel;
         MCSymbol *EHFuncEndSym = CSRange.FragmentEndLabel;
 
         MCSymbol *BeginLabel = S.BeginLabel;
@@ -744,7 +824,7 @@ MCSymbol *EHStreamer::emitExceptionTable() {
 
         // Offset of the landing pad relative to the start of the landing pad
         // fragment.
-        if (!S.LPad) {
+        if (!S.LPad || !S.LPad->LandingPadLabel) {
           if (VerboseAsm)
             Asm->OutStreamer->AddComment("    has no landing pad");
           Asm->emitCallSiteValue(0, CallSiteEncoding);

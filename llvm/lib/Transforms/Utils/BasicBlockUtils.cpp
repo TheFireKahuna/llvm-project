@@ -1529,9 +1529,9 @@ void llvm::SplitLandingPadPredecessors(BasicBlock *OrigBB,
                                          PreserveLCSSA);
 }
 
-ReturnInst *llvm::FoldReturnIntoUncondBranch(ReturnInst *RI, BasicBlock *BB,
-                                             BasicBlock *Pred,
-                                             DomTreeUpdater *DTU) {
+Instruction *llvm::FoldReturnIntoUncondBranch(Instruction *RI, BasicBlock *BB,
+                                              BasicBlock *Pred,
+                                              DomTreeUpdater *DTU) {
   Instruction *UncondBranch = Pred->getTerminator();
   // Clone the return and add it to the end of the predecessor.
   Instruction *NewRet = RI->clone();
@@ -1581,10 +1581,15 @@ ReturnInst *llvm::FoldReturnIntoUncondBranch(ReturnInst *RI, BasicBlock *BB,
   BB->removePredecessor(Pred);
   UncondBranch->eraseFromParent();
 
-  if (DTU)
-    DTU->applyUpdates({{DominatorTree::Delete, Pred, BB}});
+  if (DTU) {
+    SmallVector<DominatorTree::UpdateType, 2> Updates = {
+        {DominatorTree::Delete, Pred, BB}};
+    for (BasicBlock *Succ : successors(NewRet))
+      Updates.push_back({DominatorTree::Insert, Pred, Succ});
+    DTU->applyUpdates(Updates);
+  }
 
-  return cast<ReturnInst>(NewRet);
+  return NewRet;
 }
 
 Instruction *llvm::SplitBlockAndInsertIfThen(Value *Cond,

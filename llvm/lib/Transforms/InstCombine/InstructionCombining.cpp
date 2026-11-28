@@ -4913,6 +4913,7 @@ static bool isCatchAll(EHPersonality Personality, Constant *TypeInfo) {
   case EHPersonality::GNU_CXX:
   case EHPersonality::GNU_CXX_SjLj:
   case EHPersonality::GNU_ObjC:
+  case EHPersonality::Itanium_SEH:
   case EHPersonality::MSVC_X86SEH:
   case EHPersonality::MSVC_TableSEH:
   case EHPersonality::MSVC_CXX:

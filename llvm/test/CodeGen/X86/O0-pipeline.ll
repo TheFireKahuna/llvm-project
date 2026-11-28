@@ -48,6 +48,7 @@
 ; CHECK-NEXT:       X86 EFLAGS copy lowering
 ; CHECK-NEXT:       X86 DynAlloca Expander
 ; CHECK-NEXT:       Fast Tile Register Preconfigure
+; CHECK-NEXT:       X86 called cleanup frame access
 ; CHECK-NEXT:       Eliminate PHI nodes for register allocation
 ; CHECK-NEXT:       Fast Register Allocator
 ; CHECK-NEXT:       Fast Tile Register Configure

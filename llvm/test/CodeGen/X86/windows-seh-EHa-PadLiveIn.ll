@@ -39,6 +39,3 @@ done:
 declare i32 @__C_specific_handler(...)
 declare void @llvm.seh.try.begin()
 declare void @llvm.seh.try.end()
-
-!llvm.module.flags = !{!0}
-!0 = !{i32 2, !"eh-asynch", i32 1}

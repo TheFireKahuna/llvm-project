@@ -29,6 +29,7 @@
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/Config/llvm-config.h"
 #include "llvm/IR/BasicBlock.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/IRPrintingPasses.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ModuleSlotTracker.h"
@@ -1806,14 +1807,25 @@ MachineBasicBlock::computeRegisterLiveness(const TargetRegisterInfo *TRI,
 
 const uint32_t *
 MachineBasicBlock::getBeginClobberMask(const TargetRegisterInfo *TRI) const {
-  // EH funclet entry does not preserve any registers.
+  // A pad of Windows Itanium's is entered with the callee-saved registers of
+  // its function as they are at the call the unwind passes, but in a function
+  // whose exception tables cover every instruction, which a fault may leave
+  // between any two: only memory holds a value there. Other EH funclet entries
+  // preserve no registers.
+  const MachineFunction &MF = *getParent();
+  if (isEHPad() && usesCalledCleanups(MF.getFunction())) {
+    if (usesAsyncEHTables(MF.getFunction()))
+      return TRI->getNoPreservedMask();
+    return isEHFuncletEntry() ? TRI->getCallPreservedMask(
+                                    MF, MF.getFunction().getCallingConv())
+                              : nullptr;
+  }
   if (isEHFuncletEntry())
     return TRI->getNoPreservedMask();
   // Under asynchronous EH any instruction of a region may fault to its pad,
   // and the unwind to the pad restores only the callee-saved registers.
-  const Function &F = getParent()->getFunction();
-  return isEHPad() && F.getParent()->getModuleFlag("eh-asynch")
-             ? TRI->getCallPreservedMask(*getParent(), F.getCallingConv())
+  return isEHPad() && isAsynchEH(MF.getFunction())
+             ? TRI->getCallPreservedMask(MF, MF.getFunction().getCallingConv())
              : nullptr;
 }
 

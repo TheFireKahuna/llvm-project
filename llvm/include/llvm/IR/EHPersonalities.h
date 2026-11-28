@@ -35,7 +35,8 @@ enum class EHPersonality {
   Wasm_CXX,
   XL_CXX,
   ZOS_CXX,
-  Wasm_D
+  Wasm_D,
+  Itanium_SEH
 };
 
 /// See if the given exception handling personality function is one
@@ -77,6 +78,14 @@ inline bool isFuncletEHPersonality(EHPersonality Pers) {
   llvm_unreachable("invalid enum");
 }
 
+/// Returns true if this personality's catchpads are landed: its unwinder
+/// restores the function's frame and continues at the pad, which is code of
+/// the function and no funclet, and whose catchret is a branch.
+inline bool hasLandedCatchPads(EHPersonality Pers) {
+  return isAsynchronousEHPersonality(Pers) ||
+         Pers == EHPersonality::Itanium_SEH;
+}
+
 /// Returns true if this personality uses scope-style EH IR instructions:
 /// catchswitch, catchpad/ret, and cleanuppad/ret.
 inline bool isScopedEHPersonality(EHPersonality Pers) {
@@ -87,6 +96,7 @@ inline bool isScopedEHPersonality(EHPersonality Pers) {
   case EHPersonality::CoreCLR:
   case EHPersonality::Wasm_CXX:
   case EHPersonality::Wasm_D:
+  case EHPersonality::Itanium_SEH:
     return true;
   default:
     return false;
@@ -108,6 +118,29 @@ inline bool isNoOpWithoutInvoke(EHPersonality Pers) {
 }
 
 LLVM_ABI bool canSimplifyInvokeNoUnwind(const Function *F);
+
+/// Returns true if \p F names an Itanium-style personality routine on Windows
+/// Itanium (EHPersonality::Itanium_SEH). Its cleanuppads are funclets that the
+/// unwinder calls and nothing else enters. Its catchpads are landed: the
+/// unwinder restores the function's frame and continues at the pad, which is
+/// code of the function and no funclet, and whose catchret is a branch. The
+/// argument of a catchpad is the type its handler takes, null for every type,
+/// or a constant array of the types an exception specification allows.
+LLVM_ABI bool usesCalledCleanups(const Function &F);
+
+/// Returns true if \p F's exception tables cover every instruction of an EH
+/// scope and not only its calls, so that an exception any instruction raises
+/// reaches the scope's EH pad: \p F names the personality routine of
+/// asynchronous exceptions on Windows Itanium. Invokes of llvm.seh.scope.begin
+/// and llvm.seh.try.begin then open the scope of their unwind destination, and
+/// invokes of llvm.seh.scope.end and llvm.seh.try.end close it.
+LLVM_ABI bool usesAsyncEHTables(const Function &F);
+
+/// Returns true if \p F's MSVC exception states cover every instruction of a
+/// __try block or an object's lifetime and not only its calls (-EHa): its
+/// module is compiled for asynchronous exceptions, or \p F opens a __try block
+/// with llvm.seh.try.begin, which a front end emits only for them.
+LLVM_ABI bool isAsynchEH(const Function &F);
 
 typedef TinyPtrVector<BasicBlock *> ColorVector;
 

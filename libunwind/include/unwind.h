@@ -202,6 +202,15 @@ extern EXCEPTION_DISPOSITION _GCC_specific_handler(EXCEPTION_RECORD *exc,
                                                    void *frame, CONTEXT *ctx,
                                                    DISPATCHER_CONTEXT *disp,
                                                    _Unwind_Personality_Fn pers);
+#if defined(_WIN32_ITANIUM)
+// The class of the object with which _GCC_specific_handler asks a personality
+// routine, in the search phase, about an exception that is not this unwinder's
+// own: another C++ runtime's or the system's. private_[0] holds the
+// EXCEPTION_RECORD and private_[1] the CONTEXT it was raised in. A routine
+// that returns _URC_HANDLER_FOUND has stored the exception object for its
+// landing pad in private_[2].
+#define _UNWIND_SEH_EXCEPTION_CLASS 0x4C4C564D53454800ULL // "LLVMSEH\0"
+#endif
 #endif
 
 #ifdef __cplusplus

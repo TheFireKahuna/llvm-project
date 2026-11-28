@@ -1444,8 +1444,8 @@ bool SelectionDAGISel::PrepareEHLandingPad() {
   auto Pers = classifyEHPersonality(PersonalityFn);
 
   // Catchpads have one live-in register, which typically holds the exception
-  // pointer or code.
-  if (isFuncletEHPersonality(Pers)) {
+  // pointer or code. Nothing else is live into a pad of Windows Itanium's.
+  if (isFuncletEHPersonality(Pers) || Pers == EHPersonality::Itanium_SEH) {
     if (const auto *CPI = dyn_cast<CatchPadInst>(LLVMBB->getFirstNonPHIIt())) {
       if (hasExceptionPointerOrCodeUser(CPI)) {
         // Get or create the virtual register to hold the pointer or code.  Mark
@@ -1956,7 +1956,7 @@ void SelectionDAGISel::SelectAllBasicBlocks(const Function &Fn) {
   }
 
   // AsynchEH: Report Block State under -AsynchEH
-  if (Fn.getParent()->getModuleFlag("eh-asynch"))
+  if (isAsynchEH(Fn))
     reportIPToStateForBlocks(MF);
 
   SP->copyToMachineFrameInfo(MF->getFrameInfo());
