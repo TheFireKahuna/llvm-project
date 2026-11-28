@@ -11,7 +11,9 @@
 // adrp is resizable with the instruction after it, which the linker may fold
 // with it where it is an add, or a load of a word, signed word or doubleword
 // into an integer register, of the address into the adrp's register, its
-// field the low bits of the adrp's addend, and not alone.
+// field the low bits of the adrp's addend, and not alone. So is the add of a
+// thread-local's high part with an add, or an access, after it based on its
+// register whose scaled field holds the high part's.
 
 // X64: Section ({{[0-9]+}}) .text$jump {
 // X64-NEXT:   0x5 IMAGE_REL_AMD64_SREL32 $L
@@ -198,6 +200,25 @@
 // A64-NEXT:   0x0 IMAGE_REL_ARM64_PAGEBASE_REL21 ext
 // A64-NEXT:   0x4 IMAGE_REL_ARM64_PAGEOFFSET_12L ext
 // A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$hiadd {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_SECREL_HIGH12A tv
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_SECREL_LOW12A tv
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$histr {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_SECREL_HIGH12A tv
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_SECREL_LOW12L tv
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$hiq {
+// A64-NEXT:   0x0 IMAGE_REL_LLVM_TPOFF_HIGH12A tv
+// A64-NEXT:   0x4 IMAGE_REL_LLVM_TPOFF_LOW12L_NC tv
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$hireg {
+// A64-NEXT:   0x0 IMAGE_REL_ARM64_SECREL_HIGH12A tv
+// A64-NEXT:   0x4 IMAGE_REL_ARM64_SECREL_LOW12L tv
+// A64-NEXT: }
 // A64:      Kind: Sections
 // A64-NEXT: ResizableSection: .text$add (
 // A64-NEXT: ResizableSection: .text$ldr (
@@ -210,6 +231,9 @@
 // A64-NEXT: ResizableSection: .text$test (
 // A64-NEXT: ResizableSection: .text$base (
 // A64-NEXT: ResizableSection: .text$fjump (
+// A64-NEXT: ResizableSection: .text$hiadd (
+// A64-NEXT: ResizableSection: .text$histr (
+// A64-NEXT: ResizableSection: .text$hiq (
 // A64-NEXT: }
 
 .ifdef X64
@@ -322,5 +346,19 @@
   pair ldrd, ext, ldr d0, [x0, :lo12:ext]
   pair prfm, ext, prfm pldl1keep, [x0, :lo12:ext]
   pair other, ext, ldr x1, [x0, :lo12:ext]
+
+// The add of a thread-local's high part and the instruction after it.
+.macro high name, hi, low:vararg
+  .section .text$\name,"xr"
+.L\name:
+  add x0, x9, \hi
+  \low
+  adr x2, .L\name
+.endm
+
+  high hiadd, :secrel_hi12:tv+8, add x1, x0, :secrel_lo12:tv+8
+  high histr, :secrel_hi12:tv+8, str w1, [x0, :secrel_lo12:tv+8]
+  high hiq, :tprel_hi12:tv+16, ldr q0, [x0, :tprel_lo12_nc:tv+16]
+  high hireg, :secrel_hi12:tv, ldr w1, [x1, :secrel_lo12:tv]
 
 .endif

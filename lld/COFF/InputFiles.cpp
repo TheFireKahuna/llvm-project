@@ -777,10 +777,11 @@ void ObjFile::parse() {
     return;
   }
   fusedChecked = forkObject && (flags & LinkRecordsFusedChecked);
-  // What a load states of itself rests on no fused type.
+  // What a load or an add states of itself rests on no fused type.
   if (!fusedChecked)
     llvm::erase_if(siteFactsRead, [&](const RelocFact &f) {
-      return !forkObject || f.fact != SiteFactValueOnly;
+      return !forkObject ||
+             (f.fact != SiteFactValueOnly && f.fact != SiteFactOnlyNextReads);
     });
   llvm::stable_sort(siteFactsRead, [](const RelocFact &a, const RelocFact &b) {
     return a.chunk != b.chunk ? std::less<>()(a.chunk, b.chunk)

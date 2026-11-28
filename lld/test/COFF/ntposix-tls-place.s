@@ -10,12 +10,15 @@
 ## .rdata, unless its template holds a word that the fill writes, which it
 ## then registers again through the word.
 ##
-## __imp_X$tpoff, and __imp_X$guard$tpoff of X's guard, are words of .sealed
-## that the fill writes with the offset of X, and of its guard, from the
-## thread pointer: the place that the record which __imp_X$tls points at
-## names, plus the record's word, and hold 0xF1F1F1F1F1F1F1F1 until then. The
-## list names each by that pointer, an import's entry or a pointer to the
-## image's own record, with kind 5, and by the record's word, 8 or 12.
+## x@gottpoff, ELF's initial-exec, reads a word of .sealed that the link makes
+## and the fill writes with the offset of x from the thread pointer: the place
+## that the record x$tls names plus the record's offset, holding
+## 0xF1F1F1F1F1F1F1F1 until then. The list names it by the record's pointer,
+## an import's entry or a pointer to the image's own record, with kind 5, and
+## by the record's word, 8. No object names the word. Where the link knows
+## the image's place, it writes the offset into the code instead, as ELF
+## relaxes initial-exec to local-exec. An image whose form is direct and which
+## exports a record exports __tp_unit at its place word.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 
@@ -37,12 +40,23 @@
 # DEFINE:   %{dump} d.dll | FileCheck --check-prefix=DLL %s && \
 # DEFINE:   %{dll} use.obj d.lib -out:u.dll && \
 # DEFINE:   %{dump} u.dll | FileCheck --check-prefix=USE %s && \
-# DEFINE:   %{exe} main.obj tls.obj use.obj -export:x$tls,data -out:e.exe && \
-# DEFINE:   %{dump} e.exe | FileCheck --check-prefix=EXE %s && \
+# DEFINE:   %{dll} tls.obj use.obj -export:x$tls,data -out:o.dll && \
+# DEFINE:   %{dump} o.dll | FileCheck --check-prefix=OWN %s && \
+# DEFINE:   %{exe} main.obj tls.obj use.obj -out:e.exe && \
+# DEFINE:   llvm-objdump -d --no-show-raw-insn e.exe | \
+# DEFINE:     FileCheck --check-prefix=LE-%{a} %s && \
 # DEFINE:   %{exe} main.obj tls.obj word.obj imp.lib -out:w.exe && \
 # DEFINE:   %{dump} w.exe | FileCheck --check-prefix=WORD %s && \
 # DEFINE:   not lld-link -machine:%{a} -dll -noentry fill.obj tls.obj \
-# DEFINE:     -export:x$tls,data -out:none.dll 2>&1 | FileCheck --check-prefix=NONE %s
+# DEFINE:     -export:x$tls,data -out:none.dll 2>&1 | FileCheck --check-prefix=NONE %s && \
+# DEFINE:   lld-link -machine:%{a} -def:wide.def -out:wide.lib && \
+# DEFINE:   not %{dll} use.obj wide.lib -out:wide.dll 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=WIDE %s && \
+# DEFINE:   %{mc} own-%{t}.s -o own.obj && \
+# DEFINE:   not %{dll} own.obj -out:own.dll 2>&1 | FileCheck --check-prefix=NOREC %s && \
+# DEFINE:   %{mc} named.s -o named.obj && \
+# DEFINE:   not %{dll} named.obj d.lib -out:named.dll 2>&1 | \
+# DEFINE:     FileCheck --check-prefix=NAMED %s
 
 # RUN: %{run}
 # REDEFINE: %{a} = arm64
@@ -53,41 +67,56 @@
 ## entry at 0x2000, kind 2; the record of x names the place, then x's
 ## offset, 4, and its guard's, 12; .sealed's done word, the place, which
 ## holds 0xF1F1F1F1F1F1F1F1 until the fill writes it, the form, 0, direct, and
-## the key, 0.
+## the key, 0. __tp_unit is exported at 0x3008.
 # DLL:      Contents of section .rdata:
-# DLL-NEXT: 180002000 c8200000 00000000 00000000 00000000
+# DLL-NEXT: 180002000 e0200000 00000000 00000000 00000000
 # DLL-NEXT: 180002010 00000000 00000000 01000000 00000000
 # DLL-NEXT: 180002020 00300000 20000000 00000000 00000000
 # DLL-NEXT: 180002030 08300000 02200000 00000000 00000000
 # DLL-NEXT: 180002040 08300080 01000000 04000000 0c000000
+# DLL-NEXT: 180002050 00000000 00000000 00000000 78200000
+# DLL-NEXT: 180002060 01000000 02000000 02000000 7e200000
+# DLL-NEXT: 180002070 86200000 8e200000 642e646c 6c000830
+# DLL-NEXT: 180002080 00004020 00009220 00009c20 00000000
+# DLL-NEXT: 180002090 01005f5f 74705f75 6e697400 7824746c
 # DLL:      Contents of section .sealed:
 # DLL-NEXT: 180003000 00000000 00000000 f1f1f1f1 f1f1f1f1
 # DLL-NEXT: 180003010 00000000 00000000 00000000 00000000
 
-## The importer: its guard's offset at 0x3008 and x's at 0x3010, each from
-## the entry of x$tls at 0x2000, kind 5, and the record's word, 12 or 8;
-## each holds 0xF1F1F1F1F1F1F1F1 until the fill writes it.
+## The importer: x's offset at 0x3010, from the entry of x$tls at 0x2000,
+## kind 5, and the record's word, 8; it holds 0xF1F1F1F1F1F1F1F1 until the
+## fill writes it.
 # USE:      Contents of section .rdata:
-# USE-NEXT: 180002000 88200000 00000000 00000000 00000000
-# USE-NEXT: 180002010 00000000 00000000 02000000 00000000
+# USE-NEXT: 180002000 78200000 00000000 00000000 00000000
+# USE-NEXT: 180002010 00000000 00000000 01000000 00000000
 # USE-NEXT: 180002020 00300000 18000000 00000000 00000000
-# USE-NEXT: 180002030 08300000 05200000 0c000000 00000000
-# USE-NEXT: 180002040 10300000 05200000 08000000 00000000
+# USE-NEXT: 180002030 10300000 05200000 08000000 00000000
 # USE:      Contents of section .sealed:
-# USE-NEXT: 180003000 00000000 00000000 f1f1f1f1 f1f1f1f1
-# USE-NEXT: 180003010 f1f1f1f1 f1f1f1f1{{ }}
+# USE-NEXT: 180003000 00000000 00000000 00000000 00000000
+# USE-NEXT: 180003010 f1f1f1f1 f1f1f1f1 ........
 
-## The executable: its words are computed from the pointer at 0x2040 to its
-## record, which names its place, 0x140 past the wide area, its form and its
-## key, constants of .rdata.
-# EXE:      Contents of section .rdata:
-# EXE-NEXT: 140002000 00000000 00000000 02000000 00000000
-# EXE-NEXT: 140002010 00300000 18000000 00000000 00000000
-# EXE-NEXT: 140002020 08300000 45200000 0c000000 00000000
-# EXE-NEXT: 140002030 10300000 45200000 08000000 00000000
-# EXE-NEXT: 140002040 48200040 01000000 58200040 01000000
-# EXE-NEXT: 140002050 04000000 0c000000 40010000 00000000
-# EXE-NEXT: 140002060 00000000 00000000 00000000 00000000
+## A DLL that reads its own x: the word at 0x3020 is computed from the pointer
+## at 0x2050 to x's record at 0x2058, which names the place word at 0x3008.
+# OWN:      Contents of section .rdata:
+# OWN-NEXT: 180002000 f8200000 00000000 00000000 00000000
+# OWN-NEXT: 180002010 00000000 00000000 02000000 00000000
+# OWN-NEXT: 180002020 00300000 28000000 00000000 00000000
+# OWN-NEXT: 180002030 08300000 02200000 00000000 00000000
+# OWN-NEXT: 180002040 20300000 55200000 08000000 00000000
+# OWN-NEXT: 180002050 58200080 01000000 08300080 01000000
+# OWN-NEXT: 180002060 04000000 0c000000 00000000 00000000
+# OWN:      Contents of section .sealed:
+# OWN-NEXT: 180003000 00000000 00000000 f1f1f1f1 f1f1f1f1
+# OWN-NEXT: 180003010 00000000 00000000 00000000 00000000
+# OWN-NEXT: 180003020 f1f1f1f1 f1f1f1f1 ........
+
+## The executable knows its place, 0x140, and writes x's offset, 0x144, into
+## the code: a mov of an immediate, or a movz and a movk.
+# LE-x64:        movq $0x144, %rax
+# LE-x64-NEXT:   movl (%r14,%rax), %eax
+# LE-arm64:      movz x8, #0x0, lsl #16
+# LE-arm64-NEXT: movk x8, #0x144
+# LE-arm64-NEXT: ldr w0, [x28, x8]
 
 ## An executable whose template holds a word that the fill writes registers
 ## again: its place, first in .sealed, holds 0x140 from the start, and the
@@ -100,6 +129,10 @@
 # WORD:      Contents of section .sealed:
 # WORD-NEXT: 140003000 00000000 00000000 40010000 00000000
 # WORD-NEXT: 140003010 00000000 00000000 00000000 00000000
+
+# WIDE:  error: GOTTPOFF relocation against x, a thread-local of w.dll, whose thread-locals are at no fixed offset from the thread pointer; reach it through its record x$tls
+# NOREC: error: GOTTPOFF relocation against z, a thread-local of the image, whose place the link does not know and which has no record
+# NAMED: error: undefined symbol: __declspec(dllimport) x$tpoff
 
 # NONE: error: the image's thread-locals need its place, __imp___tp_register$init, which ntposix.dll's __tp_register gives; link ntposix.lib
 
@@ -150,18 +183,43 @@ main:
         .text
         .globl  use
 use:
-        movq    __imp_x$tpoff(%rip), %rax
+        movq    x@gottpoff(%rip), %rax
         movl    (%r14,%rax), %eax
-        movq    __imp_x$guard$tpoff(%rip), %rcx
         retq
 
 #--- use-aarch64.s
         .text
         .globl  use
 use:
-        adrp    x8, __imp_x$tpoff
-        ldr     x8, [x8, :lo12:__imp_x$tpoff]
+        adrp    x8, :gottprel:x
+        ldr     x8, [x8, :gottprel_lo12:x]
         ldr     w0, [x28, x8]
-        adrp    x9, __imp_x$guard$tpoff
-        ldr     x9, [x9, :lo12:__imp_x$guard$tpoff]
         ret
+
+#--- wide.def
+LIBRARY w.dll
+EXPORTS
+x$tls DATA
+
+#--- own-x86_64.s
+        .section .tls$,"dw"
+z:      .long   1
+        .text
+        .globl  own
+own:
+        movq    z@gottpoff(%rip), %rax
+        retq
+
+#--- own-aarch64.s
+        .section .tls$,"dw"
+z:      .long   1
+        .text
+        .globl  own
+own:
+        adrp    x8, :gottprel:z
+        ldr     x8, [x8, :gottprel_lo12:z]
+        ret
+
+#--- named.s
+        .data
+        .quad   __imp_x$tpoff

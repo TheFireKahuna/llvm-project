@@ -152,12 +152,6 @@ public:
                           ArrayRef<uint8_t> from, bool fromSecond,
                           llvm::SmallVectorImpl<char> &out);
 
-  // Encodes the index at the start of code, which reads the first of its two
-  // registers or with second the second, into out with the thread pointer,
-  // r14, in the other's place.
-  bool encodeOnThreadPointer(ArrayRef<uint8_t> code, bool second,
-                             llvm::SmallVectorImpl<char> &out);
-
   // Decodes the instruction at the start of code as a site that reads
   // memory relative to rip.
   bool decodeRead(ArrayRef<uint8_t> code, ReadInsn &insn);

@@ -464,29 +464,6 @@ bool X86Decoder::encodeOnRegisterOf(ArrayRef<uint8_t> code, bool second,
 #endif
 }
 
-bool X86Decoder::encodeOnThreadPointer(ArrayRef<uint8_t> code, bool second,
-                                       SmallVectorImpl<char> &out) {
-#if LLVM_HAS_X86_TARGET
-  Impl &m = *impl;
-  Insn decoded;
-  unsigned regOp;
-  if (!decode(code, 0, decoded))
-    return false;
-  MCInst &inst = m.inst;
-  if (X86::getFusedUse(inst, m.mii->get(inst.getOpcode()), regOp) !=
-      FusedUse::Index)
-    return false;
-  if (!second)
-    regOp = getFusedIndexOperand(inst, regOp);
-  inst.getOperand(regOp).setReg(X86::R14);
-  SmallVector<MCFixup, 1> fixups;
-  m.emitter->encodeInstruction(inst, out, fixups, *m.sti);
-  return fixups.empty();
-#else
-  return false;
-#endif
-}
-
 X86Decoder *X86Decoder::get() {
   static thread_local std::unique_ptr<X86Decoder> decoder = create();
   return decoder.get();

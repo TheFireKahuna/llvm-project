@@ -80,12 +80,16 @@ define i32 @image() "thread-pointer-argument" {
 
 ; An access at a constant offset below 4096 carries it in both parts, the
 ; low part in its own immediate; a register-indexed access adds both parts,
-; and an access in another block folds the low part as well.
+; and an access in another block folds the low part as well. Each part's add
+; directly precedes the one instruction that reads it, and states fact 15
+; where nothing after that reads what it wrote.
 ; CHECK-LABEL: field$tp:
-; CHECK-DAG:   add x[[F:[0-9]+]], x{{[0-9]+}}, :secrel_hi12:arr+12
-; CHECK-DAG:   ldr w{{[0-9]+}}, [x[[F]], :secrel_lo12:arr+12]
-; NTP-DAG:     add x[[L:[0-9]+]], x28, :tprel_hi12:le2+4
-; NTP-DAG:     str w{{[0-9]+}}, [x[[L]], :tprel_lo12_nc:le2+4]
+; CHECK:       .site_fact 15, 0
+; CHECK-NEXT:  add x[[F:[0-9]+]], x{{[0-9]+}}, :secrel_hi12:arr+12
+; CHECK-NEXT:  ldr w[[V:[0-9]+]], [x[[F]], :secrel_lo12:arr+12]
+; NTP-NEXT:    .site_fact 15, 0
+; NTP-NEXT:    add x[[L:[0-9]+]], x28, :tprel_hi12:le2+4
+; NTP-NEXT:    str w[[V]], [x[[L]], :tprel_lo12_nc:le2+4]
 define void @field() "thread-pointer-argument" {
   %p = call ptr @llvm.threadlocal.address.p0(ptr @arr)
   %f = getelementptr inbounds i8, ptr %p, i64 12
@@ -97,7 +101,9 @@ define void @field() "thread-pointer-argument" {
 }
 
 ; CHECK-LABEL: indexed$tp:
-; CHECK:       add x[[I:[0-9]+]], x{{[0-9]+}}, :secrel_hi12:arr+4
+; CHECK:       .site_fact 15, 0
+; CHECK-NEXT:  add x[[I:[0-9]+]], x{{[0-9]+}}, :secrel_hi12:arr+4
+; CHECK-NEXT:  .site_fact 15, 0
 ; CHECK-NEXT:  add x[[I]], x[[I]], :secrel_lo12:arr+4
 ; CHECK-NEXT:  ldr w0, [x[[I]], x0, lsl #2]
 define i32 @indexed(i64 %i) "thread-pointer-argument" {
@@ -109,6 +115,7 @@ define i32 @indexed(i64 %i) "thread-pointer-argument" {
 }
 
 ; NTP-LABEL: blocks$tp:
+; NTP-NOT:     .site_fact 15
 ; NTP:         add x[[B:[0-9]+]], x{{[0-9]+}}, :secrel_hi12:own
 ; NTP-NEXT:    ldr w{{[0-9]+}}, [x[[B]], :secrel_lo12:own]
 ; NTP:         str wzr, [x[[B]], :secrel_lo12:own]

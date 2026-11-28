@@ -237,7 +237,8 @@
 # X64-BAD-NOT:  error:
 
 ## On ARM64 the link-time place is one add and a wide executable's word one
-## load, and a direct DLL's place a literal load where in reach.
+## load, and a direct DLL's place a literal load where in reach. A TPOFF's
+## high part that is zero goes, the low part's add taking its base.
 # RUN: %{exe} -machine:arm64 a64.obj a64-site.obj small-a64.obj end-a64.obj \
 # RUN:   -out:block-a64.exe
 # RUN: llvm-readobj --sections block-a64.exe | FileCheck --check-prefix=HEADER %s
@@ -256,8 +257,7 @@
 # RUN: %{dis} far.dll | FileCheck --check-prefix=A64-FAR %s
 
 # A64:            <.text>:
-# A64-BLOCK-NEXT:   add x0, x28, #0x0, lsl #12
-# A64-BLOCK-NEXT:   add x0, x0, #0x150
+# A64-BLOCK-NEXT:   add x0, x28, #0x150
 # A64-BLOCK-NEXT:   ldr w1, [x28, #0x148]
 # A64-PLANE-NEXT:   add x0, x28, #0xc, lsl #12
 # A64-PLANE-NEXT:   add x0, x0, #0x330
