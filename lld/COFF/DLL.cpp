@@ -1567,9 +1567,13 @@ void selectFill(COFFLinkerContext &ctx,
   ctx.config.noEntry = false;
   // The loader runs an image's TLS callbacks before its entry, so where the
   // image has any, the fill runs as the first of them, after only a -static
-  // runtime's founding.
+  // runtime's founding. An executable with a TLS directory always runs it
+  // there: its callbacks run once every DLL the process starts with is
+  // initialized, and before any thread those DLLs start runs.
   SmallVector<Symbol *, 2> roots = {fill};
-  if (llvm::any_of(ctx.objFileInstances, [](ObjFile *f) {
+  if ((!ctx.config.dll &&
+       isa_and_nonnull<Defined>(ctx.symtab.findUnderscore("_tls_used"))) ||
+      llvm::any_of(ctx.objFileInstances, [](ObjFile *f) {
         return llvm::any_of(f->getChunks(), [](Chunk *c) {
           auto *sc = dyn_cast<SectionChunk>(c);
           return sc && sc->live && !sc->getRelocs().empty() &&

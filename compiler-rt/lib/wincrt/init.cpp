@@ -80,9 +80,16 @@ bool raisedByUnwinder(const EXCEPTION_RECORD *Record) {
   if (__unw_seh_raise_functions && (Function == __unw_seh_raise_functions[0] ||
                                     Function == __unw_seh_raise_functions[1]))
     return true;
+  // A caller that passes its thread pointer runs X$tp, which is X's body only
+  // where X never reads it.
+  static const char *const Names[] = {
+      "_Unwind_RaiseException", "_Unwind_RaiseException$tp",
+      "_Unwind_Resume_or_Rethrow", "_Unwind_Resume_or_Rethrow$tp"};
   auto Module = reinterpret_cast<HMODULE>(Base);
-  return Function == GetProcAddress(Module, "_Unwind_RaiseException") ||
-         Function == GetProcAddress(Module, "_Unwind_Resume_or_Rethrow");
+  for (const char *Name : Names)
+    if (Function == GetProcAddress(Module, Name))
+      return true;
+  return false;
 }
 
 // Start-up is single-threaded: a DLL's runs under the loader lock, and an

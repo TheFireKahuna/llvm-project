@@ -1,4 +1,4 @@
-//===- ThreadPointer.cpp - Pass and derive the thread pointer ------===//
+//===- ThreadPointer.cpp - Pass and derive the thread pointer -------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -73,8 +73,7 @@ using namespace llvm;
 
 // A block holds 64 slots, of which the entry's low six bits are the one.
 static constexpr uint64_t SlotBits = 63;
-static constexpr unsigned ChunkShift =
-    TP_CHUNK_SHIFT - TP_BLOCK_SHIFT - 6;
+static constexpr unsigned ChunkShift = TP_CHUNK_SHIFT - TP_BLOCK_SHIFT - 6;
 
 // A word of the image's own that its fill writes from the runtime's export.
 static GlobalVariable *getSealedValue(Module &M, const char *Name) {
@@ -131,38 +130,36 @@ static Value *derive(Function &F, Instruction *At, bool Reports) {
   Module &M = *F.getParent();
   LLVMContext &C = F.getContext();
   Type *I32 = Type::getInt32Ty(C), *I64 = Type::getInt64Ty(C);
-  PointerType *Ptr = PointerType::getUnqual(C);
   GlobalVariable *MapWord = getSealedValue(M, COFF::TP::MapImport);
   GlobalVariable *BaseWord = getSealedValue(M, COFF::TP::BaseImport);
   BasicBlock *Home = At->getParent();
   MDNode *Unlikely = MDBuilder(C).createUnlikelyBranchWeights();
   IRBuilder<> B(At);
   B.SetCurrentDebugLocation(getLoc(F, At));
-
-  // A negative answer of the cold arm, which no block's address is, is the
-  // function's result; B continues in Rest.
-  auto Refuse = [&](Value *Answer, BasicBlock *Rest) {
+  // The cold arm, ending in a branch to Rest: a negative answer, which no
+  // block's address is, is the function's result.
+  auto Cold = [&](BasicBlock *Rest) -> Value * {
+    Value *Tp =
+        callRuntime(B, M, Reports ? COFF::TP::Try : COFF::TP::Slow, {MapWord});
+    if (!Reports)
+      return Rest ? B.CreateBr(Rest), Tp : Tp;
     BasicBlock *Refused = BasicBlock::Create(C, "tp.refused", &F, Rest);
-    Value *Int = B.CreatePtrToInt(Answer, I64);
+    Value *Int = B.CreatePtrToInt(Tp, I64);
     B.CreateCondBr(B.CreateICmpSLT(Int, B.getInt64(0)), Refused, Rest,
                    Unlikely);
     B.SetInsertPoint(Refused);
     B.CreateRet(B.CreateSExtOrTrunc(Int, F.getReturnType()));
+    return Tp;
   };
 
   // A probe's landing needs a landing-pad personality; under a funclet one
   // the cold arm answers every case.
   if (F.hasPersonalityFn() &&
       isFuncletEHPersonality(classifyEHPersonality(F.getPersonalityFn()))) {
-    Value *Tp = callRuntime(
-        B, M, Reports ? COFF::TP::Try : COFF::TP::Slow, {MapWord});
-    if (Reports) {
-      BasicBlock *Rest = Home->splitBasicBlock(At, "tp");
-      Home->getTerminator()->eraseFromParent();
-      B.SetInsertPoint(Home);
-      Refuse(Tp, Rest);
-    }
-    return Tp;
+    BasicBlock *Rest = Reports ? Home->splitBasicBlock(At, "tp") : nullptr;
+    if (Rest)
+      Home->getTerminator()->eraseFromParent(), B.SetInsertPoint(Home);
+    return Cold(Rest);
   }
 
   Value *Teb = M.getTargetTriple().isAArch64()
@@ -171,34 +168,33 @@ static Value *derive(Function &F, Instruction *At, bool Reports) {
                              Intrinsic::read_register, I64,
                              MetadataAsValue::get(
                                  C, MDNode::get(C, MDString::get(C, "x18")))),
-                         Ptr)
+                         B.getPtrTy())
                    : ConstantPointerNull::get(B.getPtrTy(256));
-  Value *Tid = B.CreateLoad(
-      I32, B.CreateConstGEP1_64(B.getInt8Ty(), Teb, TP_CLIENT_ID));
+  Value *Tid =
+      B.CreateLoad(I32, B.CreateConstGEP1_64(B.getInt8Ty(), Teb, TP_CLIENT_ID));
   LoadInst *Map = B.CreateAlignedLoad(I64, MapWord, Align(8));
   Map->setAtomic(AtomicOrdering::Acquire);
   LoadInst *Base = B.CreateAlignedLoad(I64, BaseWord, Align(8));
   Base->setMetadata(LLVMContext::MD_invariant_load, MDNode::get(C, {}));
 
+  // The map's word, then the entry by a fault-probing load and its slot test,
+  // each to the cold arm.
   BasicBlock *Probe = Home->splitBasicBlock(At, "tp.probe");
   BasicBlock *Join = Probe->splitBasicBlock(Probe->begin(), "tp");
   BasicBlock *Fast = BasicBlock::Create(C, "tp.fast", &F, Join);
-  BasicBlock *Cold = BasicBlock::Create(C, "tp.cold", &F, Join);
+  BasicBlock *ColdBB = BasicBlock::Create(C, "tp.cold", &F, Join);
   Home->getTerminator()->eraseFromParent();
-  B.SetInsertPoint(Home);
-  B.CreateCondBr(B.CreateICmpEQ(Map, B.getInt64(0)), Cold, Probe, Unlikely);
-
-  // The entry, by a fault-probing load, then the slot test.
   Probe->getTerminator()->eraseFromParent();
+  B.SetInsertPoint(Home);
+  B.CreateCondBr(B.CreateICmpEQ(Map, B.getInt64(0)), ColdBB, Probe, Unlikely);
   B.SetInsertPoint(Probe);
   LoadInst *E = B.CreateAlignedLoad(
       I32,
       B.CreateIntToPtr(B.CreateAdd(Map, B.CreateZExt(Tid, I64)),
                        B.getPtrTy(COFF::TP::FaultProbeAddrSpace)),
       Align(4), /*isVolatile=*/true);
-  B.CreateCondBr(
-      B.CreateICmpEQ(B.CreateAnd(E, TP_SLOT_TEST), B.getInt32(0)), Cold,
-      Fast, Unlikely);
+  B.CreateCondBr(B.CreateICmpEQ(B.CreateAnd(E, TP_SLOT_TEST), B.getInt32(0)),
+                 ColdBB, Fast, Unlikely);
 
   B.SetInsertPoint(Fast);
   Value *Entry = B.CreateZExt(E, I64);
@@ -206,38 +202,32 @@ static Value *derive(Function &F, Instruction *At, bool Reports) {
       B.CreateAnd(Entry, SlotBits),
       B.CreateShl(B.CreateAnd(Entry, TP_MASK & ~SlotBits), ChunkShift));
   Value *TpFast = B.CreateIntToPtr(
-      B.CreateAdd(Base, B.CreateShl(Blocks, TP_BLOCK_SHIFT)), Ptr);
+      B.CreateAdd(Base, B.CreateShl(Blocks, TP_BLOCK_SHIFT)), B.getPtrTy());
   B.CreateBr(Join);
-
-  B.SetInsertPoint(Cold);
-  Value *TpCold = callRuntime(
-      B, M, Reports ? COFF::TP::Try : COFF::TP::Slow, {MapWord});
-  if (Reports)
-    Refuse(TpCold, Join);
-  else
-    B.CreateBr(Join);
-
+  B.SetInsertPoint(ColdBB);
+  Value *TpCold = Cold(Join);
   B.SetInsertPoint(&*Join->getFirstInsertionPt());
-  PHINode *Tp = B.CreatePHI(Ptr, 2, "tp");
+  PHINode *Tp = B.CreatePHI(B.getPtrTy(), 2, "tp");
   Tp->addIncoming(TpFast, Fast);
-  Tp->addIncoming(TpCold, Cold);
+  Tp->addIncoming(TpCold, ColdBB);
 
   // The probe's landing is a landing pad of the function's exception table,
-  // so the function has a personality: the module's, or the C one.
+  // so the function has a personality. On Windows Itanium it is the runtime's,
+  // which only lets a search pass; on NT-POSIX the module's, or the C one.
   if (!F.hasPersonalityFn()) {
-    Constant *Personality = nullptr;
-    for (Function &G : M)
-      if (G.hasPersonalityFn() && !isFuncletEHPersonality(classifyEHPersonality(
-                                      G.getPersonalityFn()))) {
-        Personality = G.getPersonalityFn();
-        break;
-      }
-    if (!Personality)
-      Personality =
-          cast<Constant>(M.getOrInsertFunction("__gcc_personality_seh0",
-                                               FunctionType::get(I32, true))
-                             .getCallee());
-    F.setPersonalityFn(Personality);
+    bool Itanium = M.getTargetTriple().isWindowsItaniumEnvironment();
+    auto Own = Itanium ? M.end() : find_if(M, [](Function &G) {
+      return G.hasPersonalityFn() &&
+             !isFuncletEHPersonality(
+                 classifyEHPersonality(G.getPersonalityFn()));
+    });
+    F.setPersonalityFn(
+        Own != M.end() ? Own->getPersonalityFn()
+                       : cast<Constant>(M.getOrInsertFunction(
+                                             Itanium ? COFF::TP::Personality
+                                                     : "__gcc_personality_seh0",
+                                             FunctionType::get(I32, true))
+                                            .getCallee()));
   }
   return Tp;
 }
@@ -258,8 +248,7 @@ static Value *getRecordAddress(IRBuilder<> &B, Module &M, const GlobalValue *GV,
       M.getOrInsertGlobal((GV->getName() + "$tls").str(), RecordTy));
   Record->setConstant(true);
   Record->setDLLStorageClass(GlobalValue::DLLImportStorageClass);
-  auto *KeyGV =
-      cast<GlobalVariable>(M.getOrInsertGlobal(COFF::TP::Key, I64));
+  auto *KeyGV = cast<GlobalVariable>(M.getOrInsertGlobal(COFF::TP::Key, I64));
   KeyGV->setConstant(true);
   KeyGV->setDLLStorageClass(GlobalValue::DLLImportStorageClass);
   MDNode *Invariant = MDNode::get(C, {});
@@ -274,16 +263,15 @@ static Value *getRecordAddress(IRBuilder<> &B, Module &M, const GlobalValue *GV,
   Value *Direct =
       B.CreateGEP(B.getInt8Ty(), Tp, Load(I64, PlaceWord, TP_PLACE_AT));
   Value *WideWord = Load(I64, Direct, 0);
-  Value *Wide = B.CreateIntToPtr(
-      B.CreateXor(
-          B.CreateIntrinsic(Intrinsic::fshr, I64,
-                            {WideWord, WideWord, B.getInt64(TP_ROTATE)}),
-          Load(I64, KeyGV, 0)),
-      Ptr);
-  Value *Base =
-      B.CreateSelect(B.CreateICmpNE(Load(I64, PlaceWord, TP_FORM_AT),
-                                    B.getInt64(TP_FORM_DIRECT)),
-                     Wide, Direct);
+  Value *Wide =
+      B.CreateIntToPtr(B.CreateXor(B.CreateIntrinsic(Intrinsic::fshr, I64,
+                                                     {WideWord, WideWord,
+                                                      B.getInt64(TP_ROTATE)}),
+                                   Load(I64, KeyGV, 0)),
+                       Ptr);
+  Value *Base = B.CreateSelect(B.CreateICmpNE(Load(I64, PlaceWord, TP_FORM_AT),
+                                              B.getInt64(TP_FORM_DIRECT)),
+                               Wide, Direct);
   return B.CreateGEP(B.getInt8Ty(), Base,
                      B.CreateZExt(Load(I32, Record, Word), I64));
 }
@@ -474,8 +462,9 @@ static bool prepareModule(Module &M) {
     for (Use &U : make_early_inc_range(GV.uses())) {
       auto *I = dyn_cast<Instruction>(U.getUser());
       auto *II = dyn_cast_or_null<IntrinsicInst>(I);
-      if (!I || (II && (II->getIntrinsicID() == Intrinsic::threadlocal_address ||
-                        II->getIntrinsicID() == Intrinsic::threadlocal_offset)))
+      if (!I ||
+          (II && (II->getIntrinsicID() == Intrinsic::threadlocal_address ||
+                  II->getIntrinsicID() == Intrinsic::threadlocal_offset)))
         continue;
       auto *Phi = dyn_cast<PHINode>(I);
       IRBuilder<> B(Phi ? Phi->getIncomingBlock(U)->getTerminator() : I);
@@ -493,7 +482,7 @@ static bool prepareModule(Module &M) {
 }
 
 PreservedAnalyses ThreadPointerPass::run(Module &M,
-                                                ModuleAnalysisManager &MAM) {
+                                         ModuleAnalysisManager &MAM) {
   prepareModule(M);
   FunctionAnalysisManager &FAM =
       MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();

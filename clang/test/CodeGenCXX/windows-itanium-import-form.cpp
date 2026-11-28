@@ -9,7 +9,7 @@
 // RUN: %{cc} -triple x86_64-pc-windows-ntposix -pic-level 2 \
 // RUN:   | FileCheck %s --check-prefixes=DATA,IMPORT,OWNED
 // RUN: %{cc} -triple aarch64-unknown-windows-itanium -pic-level 2 \
-// RUN:   | FileCheck %s --check-prefixes=DATA,IMPORT,RECORD
+// RUN:   | FileCheck %s --check-prefixes=DATA,IMPORT,OWNED
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium -pic-level 2 \
 // RUN:   -fdirect-access-external-data | FileCheck %s --check-prefixes=DATA,DIRECT
 // RUN: %{cc} -triple x86_64-unknown-windows-itanium \
@@ -53,7 +53,6 @@ struct Unmarked {
 // DATA-DAG:   @hidden_data = external hidden global i32
 // DATA-DAG:   @imported_data = external dllimport global i32
 // DATA-DAG:   @exported_data = external dso_local global i32
-// RECORD-DAG: @"local_to_thread$tls" = external dllimport constant { ptr, i32, i32 }
 // OWNED-DAG:  @local_to_thread = external thread_local global i32
 // DIRECT-DAG: @local_to_thread = external dso_local thread_local global i32
 // DATA-DAG:   @_ZTV8Unmarked = external dso_local constant

@@ -843,10 +843,11 @@ void MCWinCOFFStreamer::finishImpl() {
     // symbol that only a linker which reads them defines.
     switchSection(getContext().getObjectFileInfo()->getDrectveSection());
     emitBytes(" /INCLUDE:__llvm_link_records_v1");
-    // NT-POSIX's objects state the owned thread-local model, which an image
-    // has one revision of.
-    if (getContext().getTargetTriple().isWindowsNTPOSIXEnvironment())
-      emitBytes(" /FAILIFMISMATCH:_TLS_MODEL=ntposix.1");
+    // It states the owned thread-local model, by its runtime and the
+    // revision of its constants, of which an image has one.
+    emitBytes(getContext().getTargetTriple().isWindowsNTPOSIXEnvironment()
+                  ? " /FAILIFMISMATCH:_TLS_MODEL=ntposix.1"
+                  : " /FAILIFMISMATCH:_TLS_MODEL=wincrt.1");
     switchSection(Asm.getContext().getCOFFSection(".llvm_link_records",
                                                   COFF::IMAGE_SCN_LNK_INFO));
     // Register the tables of address-taken functions and import pointers,

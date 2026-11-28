@@ -206,7 +206,7 @@ define void @addresses() {
 ; record of it that its image has.
 define i32 @tls_read() {
 ; X64-LABEL: tls_read:
-; X64:            movq __imp_tls$tls@FUSED(%rip), %rax
+; X64:            movq __imp_tls$tls@FUSED(%rip), %r{{[a-z0-9]+}}
 ; A64-LABEL: tls_read:
 ; A64:            ldr x8, [x8, :fused_lo12:__imp_tls$tls]
   %v = load i32, ptr @tls

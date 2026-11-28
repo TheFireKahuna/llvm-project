@@ -8,6 +8,12 @@
 // RUN: %clang -### -target aarch64-linux-gnu -mtls-size=48 %s 2>&1 \
 // RUN: | FileCheck -check-prefix=CHECK-48 %s
 
+// Windows Itanium and NT-POSIX, whose owned thread-local model is ELF's
+// RUN: %clang -### -target aarch64-windows-ntposix -mtls-size=12 %s 2>&1 \
+// RUN: | FileCheck -check-prefix=CHECK-12 %s
+// RUN: %clang -### -target aarch64-windows-itanium -mtls-size=12 %s 2>&1 \
+// RUN: | FileCheck -check-prefix=CHECK-12 %s
+
 // Unsupported target
 // RUN: not %clang -target aarch64-unknown-windows-msvc -mtls-size=24 %s 2>&1 \
 // RUN: | FileCheck -check-prefix=UNSUPPORTED-TARGET %s

@@ -368,7 +368,7 @@ bool X86Decoder::decodeRead(ArrayRef<uint8_t> code, ReadInsn &insn) {
 
 bool X86Decoder::decodeFused(ArrayRef<uint8_t> code, FusedInsn &insn,
                              SmallVectorImpl<char> *direct, unsigned *field,
-                             bool second) {
+                             bool second, int on) {
 #if LLVM_HAS_X86_TARGET
   Impl &m = *impl;
   Insn decoded;
@@ -415,6 +415,17 @@ bool X86Decoder::decodeFused(ArrayRef<uint8_t> code, FusedInsn &insn,
     return true;
   if (lock)
     direct->push_back(char(0xf0));
+  // An index onto a register takes it in the place of the register it does
+  // not read: the first of GR64 with its encoding, which rip after rbp shares.
+  if (insn.use == FusedUse::Index && on >= 0) {
+    for (MCPhysReg r : m.mri->getRegClass(X86::GR64RegClassID))
+      if (m.mri->getEncodingValue(r) == on) {
+        inst.getOperand(second ? mem : mem + X86::AddrIndexReg).setReg(r);
+        break;
+      }
+    m.emitter->encodeInstruction(inst, *direct, fixups, *m.sti);
+    return true;
+  }
   // The register that an index keeps is the base of its direct form.
   if (insn.use == FusedUse::Index) {
     MCOperand &index = inst.getOperand(mem + X86::AddrIndexReg);
@@ -428,37 +439,6 @@ bool X86Decoder::decodeFused(ArrayRef<uint8_t> code, FusedInsn &insn,
   m.emitter->encodeInstruction(inst, *direct, fixups, *m.sti);
   *field = fixups.back().getOffset() + lock;
   return true;
-#else
-  return false;
-#endif
-}
-
-bool X86Decoder::encodeOnRegisterOf(ArrayRef<uint8_t> code, bool second,
-                                    ArrayRef<uint8_t> from, bool fromSecond,
-                                    SmallVectorImpl<char> &out) {
-#if LLVM_HAS_X86_TARGET
-  Impl &m = *impl;
-  Insn decoded;
-  unsigned regOp;
-  // The operand of an index that the register it reads is added to.
-  auto other = [&](bool second) -> MCOperand * {
-    MCInst &inst = m.inst;
-    if (X86::getFusedUse(inst, m.mii->get(inst.getOpcode()), regOp) !=
-        FusedUse::Index)
-      return nullptr;
-    return &inst.getOperand(second ? regOp
-                                   : COFF::getFusedIndexOperand(inst, regOp));
-  };
-  MCOperand *op;
-  if (!decode(from, 0, decoded) || !(op = other(fromSecond)))
-    return false;
-  MCRegister reg = op->getReg();
-  if (!decode(code, 0, decoded) || !(op = other(second)))
-    return false;
-  op->setReg(reg);
-  SmallVector<MCFixup, 1> fixups;
-  m.emitter->encodeInstruction(m.inst, out, fixups, *m.sti);
-  return fixups.empty();
 #else
   return false;
 #endif

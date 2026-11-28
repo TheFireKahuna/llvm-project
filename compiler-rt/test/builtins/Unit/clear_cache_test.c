@@ -19,8 +19,15 @@ extern void __clear_cache(void* start, void* end);
 typedef int (*pfunc)(void);
 
 // Make these static to avoid ILT jumps for incremental linking on Windows.
-static int func1() { return 1; }
-static int func2() { return 2; }
+// Where a function is passed its thread pointer, its address is an entry that
+// derives the thread pointer for it, so these take none.
+#if __has_attribute(thread_pointer)
+#define NO_THREAD_POINTER __attribute__((thread_pointer("none")))
+#else
+#define NO_THREAD_POINTER
+#endif
+static NO_THREAD_POINTER int func1() { return 1; }
+static NO_THREAD_POINTER int func2() { return 2; }
 
 void __attribute__((noinline))
 memcpy_f(void *dst, const void *src, size_t n) {

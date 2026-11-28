@@ -96,18 +96,21 @@
 // PROTECTED:      read-only before 1
 // NARROW-NEXT:    whole section 0
 // WHOLE-NEXT:     whole section 1
-// HOOK:           hook start twice
-// HOOK-NEXT:      hook pre-load twice
-// HOOK-NEXT:      hook pre-getproc twice
-// HOOK-NEXT:      hook end twice
+// HOOK:           hook start twice$tp
+// HOOK-NEXT:      hook pre-load twice$tp
+// HOOK-NEXT:      hook pre-getproc twice$tp
+// HOOK-NEXT:      hook end twice$tp
 // CHECK:          twice(21) = 42
-// HOOK-NEXT:      hook start add
-// HOOK-NEXT:      hook pre-getproc add
-// HOOK-NEXT:      hook end add
+// HOOK-NEXT:      hook start add$tp
+// HOOK-NEXT:      hook pre-getproc add$tp
+// HOOK-NEXT:      hook end add$tp
 // CHECK:          add(1, 2) = 3
 // HOOK-NEXT:      hook start missing
 // HOOK-NEXT:      hook pre-getproc missing
 // HOOK-NEXT:      hook end missing
+// HOOK-NEXT:      hook start twice
+// HOOK-NEXT:      hook pre-getproc twice
+// HOOK-NEXT:      hook end twice
 // CHECK-NEXT:     load all 0
 // CHECK-NEXT:     load all of another not found
 // PROTECTED-NEXT: read-only after 1
@@ -379,6 +382,12 @@ static void call(const char *Name, int (*Function)(int)) {
   }
 }
 
+// Each call reads the import's address anew, since a function reads an
+// address-table word once.
+__attribute__((noinline)) static void callMissing(void) {
+  call("missing", missing);
+}
+
 int main(int argc, char **argv) {
   const char *Mode = argv[1], *Dll = argv[2];
   if (!strcmp(Mode, "calls")) {
@@ -400,8 +409,8 @@ int main(int argc, char **argv) {
   if (!strcmp(Mode, "missing")) {
     call("twice", twice);
     call("twice", twice);
-    call("missing", missing);
-    call("missing", missing);
+    callMissing();
+    callMissing();
   }
   if (!strcmp(Mode, "load-all")) {
     __try {

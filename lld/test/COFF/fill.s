@@ -295,11 +295,11 @@
 # RUN: FileCheck --check-prefix=NOREF %s < noref.map
 # NOREF: 00000008H .CRT$XLAF
 
-## A link that collects no garbage holds only the callback the link selects.
-# RUN: lld-link -machine:x64 -entry:f -subsystem:console -opt:noref val64.lib \
-# RUN:   ntdll64.lib rt64.lib tlsdir.obj -out:tlsdir.exe -map:noref.map
-# RUN: FileCheck --check-prefix=NOREF %s < noref.map
-# NOREF: 00000008H .CRT$XLAF
+## A value that a native object reads is no unresolved symbol in a link with
+## bitcode, before LTO generates its code.
+# RUN: llvm-as lto.ll -o lto.bc
+# RUN: lld-link -machine:x64 -dll -noentry val64.lib ntdll64.lib rt64.lib \
+# RUN:   callback.obj lto.bc -out:lto.dll
 
 ## The value of a word the image defines, as the runtime's words are under
 ## -static, is that word, which code reads with nothing for the fill to write.
@@ -324,7 +324,8 @@
 # RUN: llvm-objdump -d --no-show-raw-insn member.dll >> member.txt
 # RUN: FileCheck --check-prefix=OWN %s < member.txt
 
-# RUN: %{mc} bad.s -o bad.obj
+# RUN: %{mc} bad.s -o bad-own.obj
+# RUN: llvm-objcopy --remove-section=.drectve bad-own.obj bad.obj
 # RUN: not %{link} -dll -noentry data.obj bad.obj -merge:.rgrp=.text \
 # RUN:   -merge:.sealed=.rdata -section:.sealed,rw -align:512 -out:bad.dll \
 # RUN:   2>&1 | FileCheck --check-prefix=BAD %s
@@ -456,6 +457,14 @@ _tls_used:
   .zero 40
 .section .drectve,"yn"
   .ascii " -include:f -include:_tls_used"
+
+#--- lto.ll
+target datalayout = "e-m:w-p270:32:32-p271:32:32-p272:64:64-i64:64-i128:128-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-unknown-windows-itanium"
+
+define void @h() {
+  ret void
+}
 
 #--- own.s
 .data

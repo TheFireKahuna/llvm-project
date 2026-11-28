@@ -24,6 +24,11 @@ WINCRT_WRAP_UCRT
 extern "C" [[gnu::used, gnu::retain]] wincrt::ExitState __wincrt_exit_state = {
     wincrt::ExitStateVersion, sizeof(wincrt::ExitState)};
 
+// The TLS directory, through whose callbacks the executable's fill runs
+// before any thread that a DLL starts as the process starts can run the
+// executable's code.
+#pragma comment(linker, "/include:_tls_used")
+
 namespace wincrt {
 
 // The nCmdShow argument of WinMain: what the process's creator asked for.

@@ -6533,7 +6533,8 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
     StringRef Value = A->getValue();
     unsigned TLSSize = 0;
     Value.getAsInteger(10, TLSSize);
-    if (!Triple.isAArch64() || !Triple.isOSBinFormatELF())
+    if (!Triple.isAArch64() || (!Triple.isOSBinFormatELF() &&
+                                !Triple.isWindowsItaniumOrNTPOSIXEnvironment()))
       D.Diag(diag::err_drv_unsupported_opt_for_target)
           << A->getOption().getName() << TripleStr;
     if (TLSSize != 12 && TLSSize != 24 && TLSSize != 32 && TLSSize != 48)

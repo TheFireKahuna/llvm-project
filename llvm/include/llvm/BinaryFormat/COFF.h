@@ -697,7 +697,9 @@ enum : uint64_t {
 /// the add, with LSL #12, of a thread-local's high part and the instruction
 /// after it, the add deleted where the part is zero: an add or an
 /// unsigned-offset load or store whose base is the add's register and whose
-/// field, scaled, holds the add's, the low 12 bits of the addend. A load of
+/// field, scaled, holds the add's, the low 12 bits of the addend; and the
+/// add of a checked low part, which has no high part, and an add or a load
+/// or store with that base. A load of
 /// any other symbol keeps its size, and the linker resizes
 /// code at no other relocation. The assembler resolves no distance across such
 /// code where the linker moves it; in an AMD64 section that it only compacts,
@@ -723,16 +725,23 @@ inline bool relocationMayResizeCode(uint16_t Machine, uint16_t Type,
            ((Type != IMAGE_REL_ARM64_PAGEOFFSET_12L && Op == 0x91000000) ||
             (Type != IMAGE_REL_ARM64_PAGEOFFSET_12A && Load));
   }
-  if (!AMD64 && (Type == IMAGE_REL_ARM64_SECREL_HIGH12A ||
+  bool Lone = Type == IMAGE_REL_LLVM_DTPOFF_LOW12A ||
+              Type == IMAGE_REL_LLVM_TPOFF_LOW12A;
+  if (!AMD64 && (Lone || Type == IMAGE_REL_ARM64_SECREL_HIGH12A ||
                  Type == IMAGE_REL_LLVM_TPOFF_HIGH12A)) {
-    // add Xd, Xn, #a, lsl #12; add Xm, Xd, #a or ld/st [Xd, #a].
+    // add Xd, Xn, #a, lsl #12; add Xm, Xd, #a or ld/st [Xd, #a]. A lone
+    // low part: add Xd, Xn, #a; add Xm, Xd, #b, ld/st [Xd, #b] or [Xd, Rm].
     uint32_t Hi = Pair, Low = Pair >> 32, Reg = Hi & 31;
     bool Add = (Low & 0xffc003e0) == (0x91000000 | Reg << 5);
     bool Access = (Low & 0x3b0003e0) == (0x39000000 | Reg << 5);
+    bool Index = (Low & 0x3b200fe0) == (0x38200800 | Reg << 5);
     uint32_t Scale =
         Access ? Low >> 30 | ((Low & 0x4800000) == 0x4800000) << 2 : 0;
-    return (Hi & 0xffc00000) == 0x91400000 && Reg != 31 && (Add || Access) &&
-           (Low >> 10 & 0xfff) << Scale == (Hi >> 10 & 0xfff);
+    return (Hi & 0xffc00000) == (Lone ? 0x91000000 : 0x91400000) &&
+           Reg != 31 &&
+           (Lone ? Add || Access || Index
+                 : (Add || Access) &&
+                       (Low >> 10 & 0xfff) << Scale == (Hi >> 10 & 0xfff));
   }
   if (!AMD64 && Type == IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL)
     return isTlsRecordPointerName(Symbol) ||

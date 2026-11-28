@@ -28,8 +28,10 @@
 // a DLL the load initializes starts, and one started later; for an
 // executable, the main thread and one that a DLL starts as the process
 // starts. A replaced overridable default held in a thread-local is the
-// replacement in every thread. A thread that the load cannot reach fails the
-// load, and a thread that impersonates loads the DLL and impersonates still.
+// replacement in every thread. A thread whose rights deny every caller takes
+// the load as any thread does, the runtime writing its block without opening
+// the thread, and a thread that impersonates loads the DLL and impersonates
+// still.
 // A DLL with no such word writes no other thread.
 
 // CHECK:      loading: right 9, own store 1
@@ -37,7 +39,7 @@
 // CHECK-NEXT: running: right 9
 // CHECK-NEXT: during: right 9
 // CHECK-NEXT: after: right 9
-// CHECK-NEXT: unreachable: 1114
+// CHECK-NEXT: unreachable: 0
 // CHECK-NEXT: impersonating: loaded 1, still 1, right 1
 
 // STATIC:      main: right 9, exe 1, own store 1
@@ -129,6 +131,8 @@ static void NTAPI callback(void *, DWORD reason, void *) {
 }
 __attribute__((used, section(".CRT$XLB"))) static const PIMAGE_TLS_CALLBACK
     attach = callback;
+// The directory that names the callbacks, as under MSVC.
+#pragma comment(linker, "/include:_tls_used")
 #elif defined(PLAIN)
 extern "C" int table[8];
 extern "C" __declspec(dllexport) const int *plain_word = &table[3];

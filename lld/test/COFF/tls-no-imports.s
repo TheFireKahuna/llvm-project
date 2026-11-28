@@ -3,8 +3,8 @@
 ## The loader reads the TLS directory only when binding imports, so an image
 ## with thread-local data and no import states one zero word as its IAT.
 
-# RUN: llvm-mc -triple=x86_64-windows-itanium -filetype=obj %s -o %t.obj
-# RUN: llvm-mc -triple=x86_64-windows-itanium -filetype=obj \
+# RUN: llvm-mc -triple=x86_64-windows-msvc -filetype=obj %s -o %t.obj
+# RUN: llvm-mc -triple=x86_64-windows-msvc -filetype=obj \
 # RUN:   %S/Inputs/tls-support.s -o %t.tls.obj
 # RUN: lld-link -dll -noentry %t.obj %t.tls.obj -out:%t.dll
 # RUN: llvm-readobj --file-headers %t.dll | FileCheck %s --check-prefix=GATE

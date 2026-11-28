@@ -1,6 +1,8 @@
 ; RUN: llc -mtriple=aarch64-windows-ntposix < %s | FileCheck %s --check-prefixes=CHECK,NTP
 ; RUN: opt -mtriple=aarch64-windows-itanium -passes=thread-pointer %s \
 ; RUN:   | llc | FileCheck %s
+; RUN: llc -mtriple=aarch64-windows-ntposix -tls-size=12 < %s | \
+; RUN:   FileCheck %s --check-prefix=SMALL
 
 ; The owned thread-local model on AArch64: the derivation, the base site and
 ; the record form, as X86/thread-pointer.ll pins them on x86-64.
@@ -69,6 +71,18 @@ done:
 ; CHECK-DAG:   ldr w{{[0-9]+}}, [x[[T]], :secrel_lo12:own]
 ; NTP-DAG:     add x[[L:[0-9]+]], x28, :tprel_hi12:le
 ; NTP-DAG:     ldr w{{[0-9]+}}, [x[[L]], :tprel_lo12_nc:le]
+; Under -mtls-size=12 an offset has no high part: the access takes the low
+; part, checked to fit, as ELF's local-exec does, and an indexed access adds
+; it once, in an add that states fact 15 as each part's add does.
+; SMALL-LABEL: image$tp:
+; SMALL-NOT:   hi12
+; SMALL-DAG:   ldr w{{[0-9]+}}, [x28, :tprel_lo12:le]
+; SMALL-DAG:   ldr w{{[0-9]+}}, [x{{[0-9]+}}, :dtprel_lo12:own]
+; SMALL-LABEL: indexed$tp:
+; SMALL-NOT:   hi12
+; SMALL:       .site_fact 15, 0
+; SMALL-NEXT:  add x[[I:[0-9]+]], x{{[0-9]+}}, :dtprel_lo12:arr+4
+; SMALL-NEXT:  ldr w0, [x[[I]], x0, lsl #2]
 define i32 @image() "thread-pointer-argument" {
   %p = call ptr @llvm.threadlocal.address.p0(ptr @own)
   %v = load i32, ptr %p

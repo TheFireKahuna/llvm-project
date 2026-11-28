@@ -1,6 +1,6 @@
 // RUN: %clang -shared -DOTHER %s -o %t-other.dll
 // RUN: %clang -shared -DDLL %s %t-other.dll.lib -o %t.dll
-// RUN: %clang -shared -DDLL -DPLAIN %s %t-other.dll.lib -o %t-plain.dll
+// RUN: %clang -O2 -shared -DDLL -DPLAIN %s %t-other.dll.lib -o %t-plain.dll
 // RUN: %clang %s %t-other.dll.lib -o %t.exe
 // RUN: %run %t.exe %t.dll %t-plain.dll | FileCheck %s
 
@@ -10,8 +10,9 @@
 // after. The loader reaches the fill through the image's entry point, which
 // passes every notification on to the DLL's own entry; for the reason 'FILL'
 // it runs the fill again, which finds every word written and changes none.
-// An image with no such constant has no sealed section, and an executable
-// has its constant written before main. The section begins with a word that
+// An image with no such constant, and no code that derives its thread
+// pointer from the sealed values the fill writes, has no sealed section, and
+// an executable has its constant written before main. The section begins with a word that
 // the fill sets once it has written.
 //
 // The fill also writes an image's sealed values: __imp_X$val with the word

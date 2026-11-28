@@ -6759,20 +6759,24 @@ SDValue AArch64TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   case Intrinsic::threadlocal_offset: {
     // A COFF variable's offset in its image's template, or from the thread
     // pointer where it is local-exec, added to zero as a base's access adds
-    // it (performAddThreadLocalOffsetCombine).
+    // it (performAddThreadLocalOffsetCombine). Under -mtls-size=12 it is the
+    // low part alone, checked to fit, as ELF's local-exec.
     const GlobalValue *GV =
         cast<GlobalAddressSDNode>(Op.getOperand(1))->getGlobal();
-    SDValue Hi = DAG.getTargetGlobalAddress(
-        GV, DL, MVT::i64, 0, AArch64II::MO_TLS | AArch64II::MO_HI12);
-    SDValue Lo = DAG.getTargetGlobalAddress(
-        GV, DL, MVT::i64, 0,
-        AArch64II::MO_TLS | AArch64II::MO_PAGEOFF | AArch64II::MO_NC);
-    SDValue Add =
-        SDValue(DAG.getMachineNode(AArch64::ADDXri, DL, MVT::i64,
-                                   DAG.getConstant(0, DL, MVT::i64), Hi,
-                                   DAG.getTargetConstant(0, DL, MVT::i32)),
-                0);
-    return DAG.getNode(AArch64ISD::ADDlow, DL, MVT::i64, Add, Lo);
+    bool Small = DAG.getTarget().Options.TLSSize == 12;
+    auto Part = [&](unsigned Flags) {
+      return DAG.getTargetGlobalAddress(GV, DL, MVT::i64, 0,
+                                        AArch64II::MO_TLS | Flags);
+    };
+    SDValue Add = DAG.getConstant(0, DL, MVT::i64);
+    if (!Small)
+      Add = SDValue(DAG.getMachineNode(AArch64::ADDXri, DL, MVT::i64, Add,
+                                       Part(AArch64II::MO_HI12),
+                                       DAG.getTargetConstant(0, DL, MVT::i32)),
+                    0);
+    return DAG.getNode(
+        AArch64ISD::ADDlow, DL, MVT::i64, Add,
+        Part(AArch64II::MO_PAGEOFF | (Small ? 0 : AArch64II::MO_NC)));
   }
   case Intrinsic::threadlocal_base:
     return SDValue(DAG.getMachineNode(AArch64::TLS_BASE, DL, MVT::i64, MVT::i64,
@@ -25009,7 +25013,8 @@ static SDValue performConditionalSubCombine(SDNode *N, SelectionDAG &DAG) {
 // base x where b is zero, as ADDlow(ADDXri(x, hi), lo); a constant x joins
 // both parts' offset, which COFF's high part carries below 4096 only, also
 // past the add(ADDlow, y) of an indexed access that reassociation leaves
-// between them. An access then folds the low part.
+// between them. Under -mtls-size=12 b is the ADDlow's own operand. An
+// access then folds the low part.
 static SDValue
 performAddThreadLocalOffsetCombine(SDNode *N,
                                    TargetLowering::DAGCombinerInfo &DCI) {
@@ -25018,17 +25023,18 @@ performAddThreadLocalOffsetCombine(SDNode *N,
   SelectionDAG &DAG = DCI.DAG;
   SDLoc DL(N);
   auto Fold = [&](SDValue Low, SDValue X, bool Join) {
-    if (Low.getOpcode() != AArch64ISD::ADDlow || !Low.hasOneUse())
-      return SDValue();
-    SDValue Hi = Low.getOperand(0);
-    auto *GA = Hi.isMachineOpcode() &&
-                       Hi.getMachineOpcode() == AArch64::ADDXri &&
-                       Hi.hasOneUse()
-                   ? dyn_cast<GlobalAddressSDNode>(Hi.getOperand(1))
+    auto *GA = Low.getOpcode() == AArch64ISD::ADDlow && Low.hasOneUse()
+                   ? dyn_cast<GlobalAddressSDNode>(Low.getOperand(1))
                    : nullptr;
     if (!GA || !(GA->getTargetFlags() & AArch64II::MO_TLS))
       return SDValue();
-    SDValue Base = Hi.getOperand(0);
+    SDValue Hi = Low.getOperand(0);
+    bool HasHi = Hi.isMachineOpcode() &&
+                 Hi.getMachineOpcode() == AArch64::ADDXri &&
+                 isa<GlobalAddressSDNode>(Hi.getOperand(1));
+    if (HasHi && !Hi.hasOneUse())
+      return SDValue();
+    SDValue Base = HasHi ? Hi.getOperand(0) : Hi;
     int64_t Offset = GA->getOffset();
     auto *C = dyn_cast<ConstantSDNode>(X);
     if (C && isUInt<12>(Offset + C->getSExtValue()))
@@ -25042,11 +25048,12 @@ performAddThreadLocalOffsetCombine(SDNode *N,
           GA->getGlobal(), DL, MVT::i64, Offset,
           cast<GlobalAddressSDNode>(Op)->getTargetFlags());
     };
-    SDValue NewHi =
-        SDValue(DAG.getMachineNode(AArch64::ADDXri, DL, MVT::i64, Base,
-                                   Part(Hi.getOperand(1)), Hi.getOperand(2)),
-                0);
-    return DAG.getNode(AArch64ISD::ADDlow, DL, MVT::i64, NewHi,
+    if (HasHi)
+      Base =
+          SDValue(DAG.getMachineNode(AArch64::ADDXri, DL, MVT::i64, Base,
+                                     Part(Hi.getOperand(1)), Hi.getOperand(2)),
+                  0);
+    return DAG.getNode(AArch64ISD::ADDlow, DL, MVT::i64, Base,
                        Part(Low.getOperand(1)));
   };
   for (unsigned I = 0; I != 2; ++I) {

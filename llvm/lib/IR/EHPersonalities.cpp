@@ -8,6 +8,7 @@
 
 #include "llvm/IR/EHPersonalities.h"
 #include "llvm/ADT/StringSwitch.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/IR/CFG.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Function.h"
@@ -37,11 +38,11 @@ EHPersonality llvm::classifyEHPersonality(const Value *Pers) {
 
   // The Itanium-style personality routines over Windows' unwinder. Windows
   // Itanium's have called cleanups and landed catchpads; MinGW's take landing
-  // pads.
+  // pads. The thread-local runtime's has a fault probe's table alone.
   if (F->getParent()->getTargetTriple().isWindowsItaniumEnvironment() &&
       F->getParent()->getTargetTriple().isArch64Bit() &&
       (Name == "__gxx_personality_seh0" || Name == "__gxx_personality_seha0" ||
-       Name == "__gcc_personality_seh0"))
+       Name == "__gcc_personality_seh0" || Name == COFF::TP::Personality))
     return EHPersonality::Itanium_SEH;
 
   return StringSwitch<EHPersonality>(Name)

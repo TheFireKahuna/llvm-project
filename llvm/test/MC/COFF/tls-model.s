@@ -1,8 +1,10 @@
-## An object for NT-POSIX states the owned thread-local model in a
-## /FAILIFMISMATCH key, and one for Windows Itanium states none. In one, @TPOFF in a 32-bit absolute field is
-## TPOFF32; on AArch64 :tprel_hi12: is TPOFF_HIGH12A, and :tprel_lo12: and
-## :tprel_lo12_nc: are TPOFF_LOW12A on an add and TPOFF_LOW12L on a load or a
-## store. @GOTTPOFF in a field relative to rip at the end of its instruction
+## An object for Windows Itanium or NT-POSIX states the owned thread-local
+## model, by its runtime, in a /FAILIFMISMATCH key. In one, @TPOFF in a 32-bit
+## absolute field is TPOFF32; on AArch64 :tprel_hi12: is TPOFF_HIGH12A, and
+## :tprel_lo12: is TPOFF_LOW12A on an add and TPOFF_LOW12L on a load or a
+## store, checked to fit as ELF's, :tprel_lo12_nc: TPOFF_LOW12A_NC and
+## TPOFF_LOW12L_NC, and :dtprel_lo12:, the checked offset from the image's
+## base that :secrel_lo12: gives unchecked, DTPOFF_LOW12A and DTPOFF_LOW12L. @GOTTPOFF in a field relative to rip at the end of its instruction
 ## is GOTTPOFF32, its addend in the field, and on AArch64 :gottprel: on an adrp
 ## and :gottprel_lo12: on a 64-bit load are GOTTPOFF_PAGE21 and
 ## GOTTPOFF_LOW12L, each a relocation against the thread-local whose offset the
@@ -39,7 +41,7 @@
 # X64-NEXT: 0x35 IMAGE_REL_LLVM_GOTTPOFF32 tv
 # X64-NEXT: 0x3C IMAGE_REL_LLVM_GOTTPOFF32 tv
 # NTPOSIX: /INCLUDE:__llvm_link_records_v1 /FAILIFMISMATCH:_TLS_MODEL=ntposix.1{{$}}
-# ITANIUM: /INCLUDE:__llvm_link_records_v1{{$}}
+# ITANIUM: /INCLUDE:__llvm_link_records_v1 /FAILIFMISMATCH:_TLS_MODEL=wincrt.1{{$}}
 
 # X64-ASM:      movq tv@GOTTPOFF(%rip), %rax
 # X64-ASM-NEXT: movl (%r14,%rax), %eax
@@ -50,19 +52,22 @@
 # A64-ASM-NEXT: ldr w1, [x28, x11]
 
 # A64:      0x0 IMAGE_REL_LLVM_TPOFF_HIGH12A tv
-# A64-NEXT: 0x4 IMAGE_REL_LLVM_TPOFF_LOW12A tv
+# A64-NEXT: 0x4 IMAGE_REL_LLVM_TPOFF_LOW12A_NC tv
 # A64-NEXT: 0x8 IMAGE_REL_LLVM_TPOFF_LOW12A tv
 # A64-NEXT: 0xC IMAGE_REL_LLVM_TPOFF_LOW12L tv
-# A64-NEXT: 0x10 IMAGE_REL_LLVM_TPOFF_LOW12L tv
-# A64-NEXT: 0x14 IMAGE_REL_ARM64_PAGEBASE_REL21 place
-# A64-NEXT: 0x14 IMAGE_REL_LLVM_TLS_BASE - (0)
-# A64-NEXT: 0x18 IMAGE_REL_ARM64_PAGEOFFSET_12L place
-# A64-NEXT: 0x24 IMAGE_REL_LLVM_GOTTPOFF_PAGE21 tv
-# A64-NEXT: 0x28 IMAGE_REL_LLVM_GOTTPOFF_LOW12L tv
+# A64-NEXT: 0x10 IMAGE_REL_LLVM_TPOFF_LOW12L_NC tv
+# A64-NEXT: 0x14 IMAGE_REL_LLVM_DTPOFF_LOW12A tv
+# A64-NEXT: 0x18 IMAGE_REL_LLVM_DTPOFF_LOW12L tv
+# A64-NEXT: 0x1C IMAGE_REL_ARM64_PAGEBASE_REL21 place
+# A64-NEXT: 0x1C IMAGE_REL_LLVM_TLS_BASE - (0)
+# A64-NEXT: 0x20 IMAGE_REL_ARM64_PAGEOFFSET_12L place
+# A64-NEXT: 0x2C IMAGE_REL_LLVM_GOTTPOFF_PAGE21 tv
+# A64-NEXT: 0x30 IMAGE_REL_LLVM_GOTTPOFF_LOW12L tv
 
 # ERR-COUNT-2: error: @TPOFF is not a 32-bit absolute field
 # ERR-COUNT-2: error: @GOTTPOFF is not a field relative to rip at the end of its instruction
 # A64-ERR:     error: relocation specifier :tprel_g0: unsupported on COFF targets
+# A64-ERR:     error: relocation specifier :dtprel_hi12: unsupported on COFF targets
 # A64-ERR:     error: relocation specifier :gottprel_lo12: unsupported on COFF targets
 # A64-ERR:     error: relocation specifier :gottprel: unsupported on COFF targets
 
@@ -97,6 +102,8 @@ f:
   add x0, x28, :tprel_lo12:tv
   ldr w1, [x28, :tprel_lo12:tv]
   str x1, [x28, :tprel_lo12_nc:tv+8]
+  add x0, x9, :dtprel_lo12:tv
+  ldrh w1, [x9, :dtprel_lo12:tv+2]
   .reloc ., IMAGE_REL_LLVM_TLS_BASE
   adrp x9, place
   ldr x9, [x9, :lo12:place]
@@ -107,6 +114,7 @@ f:
   ldr w1, [x28, x11]
 .ifdef ERR
   movz x0, #:tprel_g0:tv
+  add x0, x0, :dtprel_hi12:tv
   ldr w0, [x0, :gottprel_lo12:tv]
   ldr x0, :gottprel:tv
 .endif

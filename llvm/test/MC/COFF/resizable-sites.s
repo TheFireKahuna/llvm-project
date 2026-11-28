@@ -13,7 +13,9 @@
 // into an integer register, of the address into the adrp's register, its
 // field the low bits of the adrp's addend, and not alone. So is the add of a
 // thread-local's high part with an add, or an access, after it based on its
-// register whose scaled field holds the high part's.
+// register whose scaled field holds the high part's, and the add of a checked
+// low part, which has no high part, with an add or an access based on its
+// register.
 
 // X64: Section ({{[0-9]+}}) .text$jump {
 // X64-NEXT:   0x5 IMAGE_REL_AMD64_SREL32 $L
@@ -219,6 +221,17 @@
 // A64-NEXT:   0x0 IMAGE_REL_ARM64_SECREL_HIGH12A tv
 // A64-NEXT:   0x4 IMAGE_REL_ARM64_SECREL_LOW12L tv
 // A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$loidx {
+// A64-NEXT:   0x0 IMAGE_REL_LLVM_DTPOFF_LOW12A tv
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$loadd {
+// A64-NEXT:   0x0 IMAGE_REL_LLVM_TPOFF_LOW12A tv
+// A64-NEXT:   0x8 IMAGE_REL_ARM64_REL21 $L
+// A64-NEXT: }
+// A64-NEXT: Section ({{[0-9]+}}) .text$loreg {
+// A64-NEXT:   0x0 IMAGE_REL_LLVM_DTPOFF_LOW12A tv
+// A64-NEXT: }
 // A64:      Kind: Sections
 // A64-NEXT: ResizableSection: .text$add (
 // A64-NEXT: ResizableSection: .text$ldr (
@@ -234,6 +247,8 @@
 // A64-NEXT: ResizableSection: .text$hiadd (
 // A64-NEXT: ResizableSection: .text$histr (
 // A64-NEXT: ResizableSection: .text$hiq (
+// A64-NEXT: ResizableSection: .text$loidx (
+// A64-NEXT: ResizableSection: .text$loadd (
 // A64-NEXT: }
 
 .ifdef X64
@@ -347,7 +362,8 @@
   pair prfm, ext, prfm pldl1keep, [x0, :lo12:ext]
   pair other, ext, ldr x1, [x0, :lo12:ext]
 
-// The add of a thread-local's high part and the instruction after it.
+// The add of a thread-local's high part, or of a low part that has none, and
+// the instruction after it.
 .macro high name, hi, low:vararg
   .section .text$\name,"xr"
 .L\name:
@@ -360,5 +376,8 @@
   high histr, :secrel_hi12:tv+8, str w1, [x0, :secrel_lo12:tv+8]
   high hiq, :tprel_hi12:tv+16, ldr q0, [x0, :tprel_lo12_nc:tv+16]
   high hireg, :secrel_hi12:tv, ldr w1, [x1, :secrel_lo12:tv]
+  high loidx, :dtprel_lo12:tv, ldr w1, [x0, x2, lsl #2]
+  high loadd, :tprel_lo12:tv, add x1, x0, #4
+  high loreg, :dtprel_lo12:tv, ldr w1, [x1, x2, lsl #2]
 
 .endif

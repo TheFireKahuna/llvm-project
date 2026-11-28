@@ -949,10 +949,16 @@ _Unwind_RaiseException(_Unwind_Exception *exception_object) {
 /// The functions that raise an exception's search, for the start-up library's
 /// unhandled-exception filter, which resumes a raise by either so that the
 /// thrower calls std::terminate(). It finds them here when libunwind is linked
-/// into the executable, which exports neither.
+/// into the executable, which exports neither. The raise runs in the entry a
+/// caller passing its thread pointer reaches, X$tp, which is X's body only
+/// where X never reads it.
+extern "C" _Unwind_Reason_Code
+__unw_raise_body(_Unwind_Exception *) __asm__("_Unwind_RaiseException$tp");
+extern "C" _Unwind_Reason_Code
+__unw_rethrow_body(_Unwind_Exception *) __asm__("_Unwind_Resume_or_Rethrow$tp");
 extern "C" _LIBUNWIND_HIDDEN const void *const __unw_seh_raise_functions[2] = {
-    reinterpret_cast<const void *>(&_Unwind_RaiseException),
-    reinterpret_cast<const void *>(&_Unwind_Resume_or_Rethrow)};
+    reinterpret_cast<const void *>(&__unw_raise_body),
+    reinterpret_cast<const void *>(&__unw_rethrow_body)};
 #endif
 
 /// When \c _Unwind_RaiseException() is in phase2, it hands control

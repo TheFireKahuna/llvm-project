@@ -3,11 +3,11 @@
 // RUN: %clang_cc1 -triple x86_64-unknown-windows-itanium -fms-extensions -emit-llvm -o - %s | FileCheck --check-prefix=ITANIUM %s
 // RUN: %clang_cc1 -triple aarch64-unknown-windows-itanium -fms-extensions -emit-llvm -o - %s | FileCheck --check-prefix=ITANIUM %s
 
-// On NT-POSIX a function of the C convention is passed its thread pointer;
-// code generation gives it the plain entry that code passing none calls.
-// Windows Itanium marks nothing.
-// ITANIUM-NOT: "thread-pointer
-// ITANIUM-NOT: "no-thread-pointer
+// On Windows Itanium and NT-POSIX a function of the C convention is passed
+// its thread pointer; code generation gives it the plain entry that code
+// passing none calls. On Windows Itanium, where Microsoft's convention is the
+// C one, a definition that spells it is one of them, and a declaration that
+// does is foreign (windows-itanium-foreign.c).
 
 int ext(int);
 int vext(const char *, ...);
@@ -33,6 +33,9 @@ int variadic(const char *fmt, ...) { return vext(fmt, 1); }
 // and has no plain entry.
 // CHECK: define dso_local win64cc i32 @windows(i32 noundef %x) #[[NONE:[0-9]+]]
 // CHECK: define dso_local win64cc i32 @windows_too(i32 noundef %x) #[[NONE]]
+// ITANIUM: define dso_local i32 @windows(i32 noundef %x) #[[IARG:[0-9]+]]
+// ITANIUM: define dso_local i32 @windows_too(i32 noundef %x) #[[IARG]]
+// ITANIUM: attributes #[[IARG]] = {{{.*}} "thread-pointer-argument" }
 __attribute__((ms_abi)) int windows(int x) { return ext(x); }
 int __stdcall windows_too(int x) { return ext(x); }
 

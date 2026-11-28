@@ -37,6 +37,10 @@ TP_EXPORT(None, __tp_none, "")
 TP_EXPORT(Slow, __tp_slow, "")
 TP_EXPORT(Try, __tp_try, "")
 TP_EXPORT(Probe, __tp_probe, "")
+/* Windows Itanium's runtime only: the personality of a function whose only
+ * landing pads are its probes', which answers "continue search", since the
+ * runtime's vectored handler recovers a probe. */
+TP_EXPORT(Personality, __tp_personality, "")
 #undef TP_EXPORT
 
 /* The link's: the absolute symbol that states an image's own place, and the

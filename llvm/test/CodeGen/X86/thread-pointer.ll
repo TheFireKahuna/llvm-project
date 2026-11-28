@@ -18,8 +18,11 @@ declare ptr @llvm.threadlocal.address.p0(ptr)
 ; The derivation is raised out of the loop, its cold arm __tp_slow given the
 ; image's map word; a callee that never reads the thread pointer is passed
 ; none and is called at its plain entry, which leaves the register as it is.
+; The probe's table is the function's own, under the C personality on
+; NT-POSIX and on Windows Itanium the runtime's, which lets a search pass.
 ; CHECK-LABEL: entry:
-; CHECK:       .seh_handler __gcc_personality_seh0, @unwind, @except
+; SYSV:        .seh_handler __gcc_personality_seh0, @unwind, @except
+; WIN64:       .seh_handler __tp_personality, @unwind, @except
 ; CHECK:       movl %gs:72, %e[[TID:[a-z]+]]
 ; CHECK:       movq __imp___tp_map$val(%rip), %r[[MAP:[a-z]+]]
 ; CHECK-NEXT:  testq %r[[MAP]], %r[[MAP]]

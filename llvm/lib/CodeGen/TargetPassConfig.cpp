@@ -837,8 +837,9 @@ void TargetPassConfig::addISelPrepare() {
   addPass(createSafeStackPass());
   addPass(createStackProtectorPass());
 
-  // NT-POSIX's functions are passed their thread pointer, or derive it.
-  if (TM->getTargetTriple().isWindowsNTPOSIXEnvironment())
+  // Windows Itanium's and NT-POSIX's functions are passed their thread
+  // pointer, or derive it.
+  if (TM->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     addPass(createThreadPointerPass());
 
   if (Opts.print_isel_input)

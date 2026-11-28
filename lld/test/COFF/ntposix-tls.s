@@ -32,9 +32,11 @@
 # RUN: %{a64} more.s -o plane-a64.obj --defsym SIZE=800
 # RUN: %{a64} more.s -o wide-a64.obj --defsym SIZE=3000
 # RUN: %{a64} end.s -o end-a64.obj
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium x64-site.s -o site-pe.obj \
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium x64-site.s -o site-wi.obj \
 # RUN:   --defsym FIXED=1
-# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium place.s -o place-pe.obj
+# RUN: llvm-mc -filetype=obj -triple=x86_64-windows-itanium place.s -o place-wi.obj
+# RUN: llvm-objcopy --remove-section=.drectve site-wi.obj site-pe.obj
+# RUN: llvm-objcopy --remove-section=.drectve place-wi.obj place-pe.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc rev.s -o rev.obj
 # RUN: llvm-objcopy --redefine-sym @comp.id=@comp.xx x64-site.obj foreign.obj
 # RUN: llvm-mc -filetype=obj -triple=x86_64-windows-msvc pw.s -o pw.obj
@@ -204,7 +206,8 @@
 # FOREIGN-NOT:     error:
 
 ## An unknown revision of the model, /merge of .tls or into it, and in an
-## image where no object states the model __tp_place and a site.
+## image where no object states the model, as a stale one does not,
+## __tp_place and a site.
 # RUN: not lld-link -dll -noentry rev.obj -out:rev.dll 2>&1 | \
 # RUN:   FileCheck --check-prefix=REV %s
 # RUN: not %{exe} -merge:.tls=.rdata \
@@ -348,6 +351,24 @@
 # A64-BAD-NEXT: error: a64-bad.obj: IMAGE_REL_LLVM_TPOFF_LOW12L relocation against tv needs an image whose thread-local place the link knows
 # A64-BAD-NOT:  error:
 
+## :tprel_lo12: and :dtprel_lo12:, which -mtls-size=12 writes, are checked to
+## fit, the offset from the thread pointer or from the image's base plus the
+## field's addend, as ELF's TPREL_LO12 and DTPREL_LO12 are.
+# RUN: %{a64} a64-small.s -o a64-small.obj
+# RUN: %{exe} -machine:arm64 a64-small.obj small-a64.obj end-a64.obj \
+# RUN:   -out:small-a64.exe
+# RUN: %{dis} small-a64.exe | FileCheck --check-prefix=A64-SMALL %s
+# RUN: not %{exe} -machine:arm64 a64-small.obj small-a64.obj plane-a64.obj \
+# RUN:   end-a64.obj -out:small-plane.exe 2>&1 | \
+# RUN:   FileCheck --check-prefix=A64-SMALL-ERR %s
+
+# A64-SMALL:      <.text>:
+# A64-SMALL-NEXT: ldr w1, [x28, #0x140]
+# A64-SMALL-NEXT: add x0, x9, #0xdbc
+
+# A64-SMALL-ERR:      error: a64-small.obj: IMAGE_REL_LLVM_TPOFF_LOW12L relocation against tv is out of range
+# A64-SMALL-ERR-NEXT: error: a64-small.obj: IMAGE_REL_LLVM_DTPOFF_LOW12A relocation against tend is out of range
+
 #--- x64.s
   .text
   .globl main
@@ -424,7 +445,15 @@ dead:
 main:
   add x0, x28, :tprel_hi12:tend
   add x0, x0, :tprel_lo12_nc:tend
-  ldr w1, [x28, :tprel_lo12:tv+8]
+  ldr w1, [x28, :tprel_lo12_nc:tv+8]
+  ret
+
+#--- a64-small.s
+  .text
+  .globl main
+main:
+  ldr w1, [x28, :tprel_lo12:tv]
+  add x0, x9, :dtprel_lo12:tend+3500
   ret
 
 #--- a64-site.s

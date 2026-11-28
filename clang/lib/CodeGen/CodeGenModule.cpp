@@ -3564,7 +3564,7 @@ void CodeGenModule::SetLLVMFunctionAttributesForDefinition(const Decl *D,
   // A function passed no thread pointer says how it comes by its own; one
   // passed it has a plain entry that does (EmitGlobalFunctionDefinition).
   if (const auto *A = D->getAttr<ThreadPointerEntryAttr>();
-      A && getTriple().isWindowsNTPOSIXEnvironment() &&
+      A && getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       !F->hasFnAttribute("thread-pointer-argument")) {
     if (A->getEntry() == ThreadPointerEntryAttr::Probe)
       B.addAttribute("thread-pointer-probe");
@@ -6537,7 +6537,7 @@ static bool isOverridable(const FunctionDecl *D) {
 }
 
 bool CodeGenModule::isPassedThreadPointer(const FunctionDecl *FD) const {
-  if (!getTriple().isWindowsNTPOSIXEnvironment())
+  if (!getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     return false;
   // A function that a program replaces for every image is one body at its
   // address, which a default's slot, the executable's table and every cell

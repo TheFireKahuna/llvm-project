@@ -1,4 +1,4 @@
-//===- ThreadPointer.h - Pass and derive the thread pointer -*- C++ -*-//
+//===- ThreadPointer.h - Pass and derive the thread pointer ---*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -15,8 +15,7 @@ namespace llvm {
 
 class TargetMachine;
 
-class ThreadPointerPass
-    : public RequiredPassInfoMixin<ThreadPointerPass> {
+class ThreadPointerPass : public RequiredPassInfoMixin<ThreadPointerPass> {
   const TargetMachine *TM;
 
 public:

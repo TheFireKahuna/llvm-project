@@ -1,12 +1,14 @@
 # REQUIRES: x86, aarch64
 
 ## An importer reaches another image's thread-local through a word of its own,
-## __imp_X$tpoff, and its guard through __imp_X$guard$tpoff, where the import
-## library that offers X$tls offers __tp_unit, which an image whose form
-## is direct exports: the chain of the record becomes each word's load and an
-## access at the thread pointer plus the word, ELF's initial-exec, and the
-## rest of the chain is dead, deleted where the assembler kept no size and
-## else no-operations. The words are a pair of .sealed that the fill writes
+## and its guard through a second, where the import library that offers X$tls
+## offers __tp_unit, which an image whose form is direct exports: the chain of
+## the record becomes each word's load and an access at the thread pointer
+## plus the word, ELF's initial-exec, the thread pointer in the register the
+## chain's base adds the place to, and the rest of the chain is dead, deleted
+## where the assembler kept no size and else no-operations. Where an access
+## does not say that it reads the thread pointer there, the chain's base is
+## the thread pointer instead and its accesses add the words to it. The words are a pair of .sealed that the fill writes
 ## from the record, kind 5, and hold 0xF1F1F1F1F1F1F1F1 until then. A wide
 ## image's import library offers no unit, and its importer keeps the record.
 
@@ -32,6 +34,10 @@
 # DEFINE:   %{dll} two.obj d.lib -out:two.dll -debug:symtab && \
 # DEFINE:   llvm-objdump -d --no-show-raw-insn two.dll | \
 # DEFINE:     FileCheck --check-prefix=TWO-%{t} %s && \
+# DEFINE:   sed '/site_fact 14,/d' %S/Inputs/tls-chain-%{t}.s | %{mc} -o base.obj && \
+# DEFINE:   %{dll} base.obj d.lib -out:b.dll -debug:symtab && \
+# DEFINE:   llvm-objdump -d --no-show-raw-insn b.dll | \
+# DEFINE:     FileCheck --check-prefix=BASE-%{t} %s && \
 # DEFINE:   %{dll} use.obj w.lib -out:r.dll -debug:symtab && \
 # DEFINE:   llvm-objdump -d --no-show-raw-insn r.dll | \
 # DEFINE:     FileCheck --check-prefix=RECORD-%{t} %s
@@ -45,14 +51,13 @@
 # UNIT:        D __imp_x$tls
 # NO-UNIT-NOT: __tp_unit
 
-## The chain's base is the thread pointer, from the register the chain names
-## it in, and its accesses add the $tpoff words.
+## Each access adds its word to the thread pointer, r14 or x28, which the
+## chain's base names.
 # TPOFF-x86_64:      <use$tp>:
-# TPOFF-x86_64-NEXT: leaq (%r14), %rsi
 # TPOFF-x86_64-NEXT: movq 0x{{[0-9a-f]+}}(%rip), %rcx # 0x180003018
-# TPOFF-x86_64-NEXT: cmpb $0x0, (%rsi,%rcx)
+# TPOFF-x86_64-NEXT: cmpb $0x0, (%r14,%rcx)
 # TPOFF-x86_64-NEXT: movq 0x{{[0-9a-f]+}}(%rip), %rax # 0x180003010
-# TPOFF-x86_64-NEXT: movl (%rsi,%rax), %eax
+# TPOFF-x86_64-NEXT: movl (%r14,%rax), %eax
 # TPOFF-x86_64-NEXT: retq
 
 ## The record's adrp gives the pair's page to both loads.
@@ -60,10 +65,8 @@
 # TPOFF-aarch64-NEXT:     adrp x8, 0x180003000
 # TPOFF-aarch64-NEXT:     ldr x13, [x8, #0x18]
 # TPOFF-aarch64-NEXT:     ldr x8, [x8, #0x10]
-# TPOFF-aarch64-NEXT:     add x10, x28, #0x0
-# TPOFF-aarch64-NEXT:     mov x9, x10
-# TPOFF-aarch64-NEXT:     ldrb w14, [x9, x13]
-# TPOFF-aarch64-NEXT:     ldr w0, [x9, x8]
+# TPOFF-aarch64-NEXT:     ldrb w14, [x28, x13]
+# TPOFF-aarch64-NEXT:     ldr w0, [x28, x8]
 # TPOFF-aarch64-NEXT:     ret
 
 ## Chains that share the load of the place word's address and the key's
@@ -89,6 +92,23 @@
 # TWO-aarch64-NEXT: bl {{.*}} <init>
 # TWO-aarch64-NEXT: adrp x8, 0x180003000
 # TWO-aarch64-NEXT: b
+
+# BASE-x86_64:      <use$tp>:
+# BASE-x86_64-NEXT: leaq (%r14), %rsi
+# BASE-x86_64-NEXT: movq 0x{{[0-9a-f]+}}(%rip), %rcx # 0x180003018
+# BASE-x86_64-NEXT: cmpb $0x0, (%rsi,%rcx)
+# BASE-x86_64-NEXT: movq 0x{{[0-9a-f]+}}(%rip), %rax # 0x180003010
+# BASE-x86_64-NEXT: movl (%rsi,%rax), %eax
+# BASE-x86_64-NEXT: retq
+# BASE-aarch64:      <use$tp>:
+# BASE-aarch64-NEXT: adrp x8, 0x180003000
+# BASE-aarch64-NEXT: ldr x13, [x8, #0x18]
+# BASE-aarch64-NEXT: ldr x8, [x8, #0x10]
+# BASE-aarch64-NEXT: add x10, x28, #0x0
+# BASE-aarch64-NEXT: mov x9, x10
+# BASE-aarch64-NEXT: ldrb w14, [x9, x13]
+# BASE-aarch64-NEXT: ldr w0, [x9, x8]
+# BASE-aarch64-NEXT: ret
 
 ## The fill's list names x's word at 0x3010 and its guard's at 0x3018 by the
 ## entry of x$tls at 0x2000, kind 5, and the record's word, 8 or 12. No chain

@@ -33,8 +33,9 @@ namespace {
 class AArch64WinCOFFStreamer : public MCWinCOFFStreamer {
   Win64EH::ARM64UnwindEmitter EHStreamer;
   // The fragment, the word and the relocation type of an adrp, or of the add
-  // of a thread-local's high part, that its section's last instruction is,
-  // which the linker may fold or delete with the next.
+  // of a thread-local's high part or of a low part that has none, that its
+  // section's last instruction is, which the linker may fold or delete with
+  // the next.
   std::tuple<MCFragment *, uint32_t, uint16_t> First;
 
 public:
@@ -92,16 +93,20 @@ void AArch64WinCOFFStreamer::emitInstruction(const MCInst &Inst,
     finishInstruction(Tail || Fold, Fold ? FirstF : nullptr);
     if (After)
       First = {};
-    auto *Hi =
+    auto *Part =
         Inst.getOpcode() == AArch64::ADDXri && Inst.getOperand(2).isExpr()
             ? dyn_cast<MCSpecifierExpr>(Inst.getOperand(2).getExpr())
             : nullptr;
     if (Inst.getOpcode() == AArch64::ADRP)
       First = {F, Word, COFF::IMAGE_REL_ARM64_PAGEBASE_REL21};
-    else if (Hi && Hi->getSpecifier() == AArch64::S_SECREL_HI12)
+    else if (Part && Part->getSpecifier() == AArch64::S_SECREL_HI12)
       First = {F, Word, COFF::IMAGE_REL_ARM64_SECREL_HIGH12A};
-    else if (Hi && Hi->getSpecifier() == AArch64::S_TPREL_HI12)
+    else if (Part && Part->getSpecifier() == AArch64::S_TPREL_HI12)
       First = {F, Word, COFF::IMAGE_REL_LLVM_TPOFF_HIGH12A};
+    else if (Part && Part->getSpecifier() == AArch64::S_DTPREL_LO12)
+      First = {F, Word, COFF::IMAGE_REL_LLVM_DTPOFF_LOW12A};
+    else if (Part && Part->getSpecifier() == AArch64::S_TPREL_LO12)
+      First = {F, Word, COFF::IMAGE_REL_LLVM_TPOFF_LOW12A};
   });
   if (MCII) {
     // A 64-bit ldr of a pointer loads it, and is a fused read where its

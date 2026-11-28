@@ -1077,7 +1077,7 @@ Function *CodeExtractor::constructFunctionDeclaration(
 
     newFunction->addFnAttr(Attr);
   }
-  if (M->getTargetTriple().isWindowsNTPOSIXEnvironment() &&
+  if (M->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       !oldFunction->hasFnAttribute("no-thread-pointer"))
     newFunction->addFnAttr("thread-pointer-argument");
 

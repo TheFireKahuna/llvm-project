@@ -26,10 +26,10 @@
 // transfers to the replacement. Every image observes one address for each
 // default: the replacement's where the executable replaces it, and the
 // runtime's own where it forwards, and a local name of a default the
-// default's own, as on ELF. A program that replaces nothing writes no
-// word in either DLL. One whose table or anchor has been changed does not
-// start, and nor does one whose slot and anchor both name a place that no
-// call may reach, which a DLL's call cell would otherwise reach unchecked.
+// default's own, as on ELF. A program whose table or anchor has been changed
+// does not start, and nor does one whose slot and anchor both name a place
+// that no call may reach, which a DLL's call cell would otherwise reach
+// unchecked.
 // An executable that defines the defaults itself, as a static runtime does,
 // takes a DLL's offer for its own calls and address-takes too.
 // A DLL that LTO compiles keeps a default that it neither exports nor offers
@@ -57,7 +57,6 @@
 // PLAIN-NEXT: plugin: new 0, delete 0, defaults 12
 // PLAIN-NEXT: foreign: new 0, delete 0, defaults 13
 // PLAIN-NEXT: address: new 1 1, new[] 1 1, the runtime's 1, own 1
-// PLAIN-NEXT: written: runtime 0, plugin 0
 
 // STATIC: static: offered 4, defaults 0, address 1
 

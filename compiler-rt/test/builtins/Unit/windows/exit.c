@@ -26,10 +26,10 @@
 // RUN:   --implicit-check-not='Symbol: exit ' --implicit-check-not='Symbol: _exit ' \
 // RUN:   --implicit-check-not='Symbol: _Exit ' --implicit-check-not='Symbol: quick_exit '
 // RUN: %clang -DPLAIN %s -o %t-plain.exe
-// RUN: llvm-readobj --file-headers %t-plain.exe | FileCheck %s --check-prefix=PLAIN
+// RUN: llvm-readobj --coff-imports %t-plain.exe | FileCheck %s --check-prefix=PLAIN
 // RUN: %clang -static -DPLAIN %s -o %t-plain-static.exe
-// RUN: llvm-readobj --file-headers --coff-imports %t-plain-static.exe \
-// RUN:   | FileCheck %s --check-prefix=PLAIN --implicit-check-not=wincrt_dynamic
+// RUN: llvm-readobj --coff-imports %t-plain-static.exe \
+// RUN:   | FileCheck %s --check-prefix=STATIC --implicit-check-not=wincrt_dynamic
 
 // [CHECK] A thread's thread-local destructors run in reverse order when it
 // exits, and one registered while they run runs next.
@@ -56,8 +56,9 @@
 // Universal CRT's, which runs the executable's registrations with the DLL's.
 // [IMPORT] Images reach wincrt's functions and import none of the Universal
 // CRT's. [PLAIN] A program that registers no thread-local destructor links no
-// thread registry and so has no TLS directory; under -static it imports no
-// runtime DLL.
+// thread registry and so imports no release at a thread's end. [STATIC] Under
+// -static it imports no runtime DLL, the runtime founded by the executable's
+// own TLS callback.
 
 // CHECK:         thread 3
 // CHECK-NEXT:    thread 2
@@ -93,7 +94,8 @@
 // HOST-NEXT: at_quick_exit host
 
 // IMPORT-COUNT-2: Name: clang_rt.wincrt_dynamic.dll
-// PLAIN:          TLSTableSize: 0x0
+// PLAIN-NOT:      __wincrt_thread_end
+// STATIC:         Import {
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -333,8 +333,8 @@ sections:
       - { VirtualAddress: 224, SymbolName: fn, Type: IMAGE_REL_LLVM_FUSED_READ }
       - { VirtualAddress: 232, SymbolName: fn, Type: IMAGE_REL_LLVM_FUSED_TEST }
       - { VirtualAddress: 240, SymbolName: fn, Type: IMAGE_REL_LLVM_TPOFF_HIGH12A }
-      - { VirtualAddress: 248, SymbolName: fn, Type: IMAGE_REL_LLVM_TPOFF_LOW12A }
-      - { VirtualAddress: 256, SymbolName: fn, Type: IMAGE_REL_LLVM_TPOFF_LOW12L }
+      - { VirtualAddress: 248, SymbolName: fn, Type: IMAGE_REL_LLVM_TPOFF_LOW12A_NC }
+      - { VirtualAddress: 256, SymbolName: fn, Type: IMAGE_REL_LLVM_TPOFF_LOW12L_NC }
       - { VirtualAddress: 264, SymbolName: fn, Type: IMAGE_REL_LLVM_SSPAN8 }
       - { VirtualAddress: 264, SymbolName: main, Type: IMAGE_REL_ARM64_PAIR }
       - { VirtualAddress: 272, SymbolName: fn, Type: IMAGE_REL_LLVM_SSPAN16 }

@@ -1,25 +1,26 @@
 # REQUIRES: x86, aarch64
 
-## The record x$tls is written from x's guard fact (_tls_index's address, then
-## x's and the guard's offsets) only where an export or live code names it;
-## __imp_x$tls in x's own image is a local import pointer to it.
+## The record x$tls is written from x's guard fact (the image's place word's
+## address, then x's and the guard's offsets) only where an export or live code
+## names it; __imp_x$tls in x's own image is a local import pointer to it.
 
 # RUN: rm -rf %t && split-file %s %t && cd %t
 
 # DEFINE: %{t} = x86_64
+# DEFINE: %{a} = x64
 # DEFINE: %{as} = llvm-mc -triple=%{t}-windows-itanium -filetype=obj
 # DEFINE: %{exe} = lld-link -entry:main -subsystem:console
-# DEFINE: %{dll} = lld-link -dll -noentry def.obj sup.obj \
+# DEFINE: %{dll} = lld-link -dll -noentry def.obj sup.obj rt.lib fill.obj \
 # DEFINE:   -export:x$tls,data -export:y$tls,data
 # DEFINE: %{run} = \
 # DEFINE:   %{as} def.s -o def.obj && %{as} %S/Inputs/tls-support.s -o sup.obj && \
+# DEFINE:   %{as} %S/Inputs/fill-entry.s -o fill.obj && \
+# DEFINE:   lld-link -machine:%{a} -def:rt.def -out:rt.lib && \
 # DEFINE:   %{as} use-%{t}.s -o use.obj && %{as} bad.s -o bad.obj && \
 # DEFINE:   %{as} guard1.s -o guard1.obj && %{as} guard2.s -o guard2.obj && \
 # DEFINE:   %{dll} -out:def.dll -implib:def.lib && \
 # DEFINE:   llvm-readobj --coff-exports -x .rdata def.dll | FileCheck %s \
 # DEFINE:     --check-prefixes=RECORDS,EXPORTS --implicit-check-not=Name: && \
-# DEFINE:   %{dll} -out:merge.dll -merge:.tls=.data && \
-# DEFINE:   llvm-readobj -x .rdata merge.dll | FileCheck %s --check-prefix=RECORDS && \
 # DEFINE:   llvm-nm def.lib | FileCheck %s --check-prefix=LIB && \
 # DEFINE:   %{exe} use.obj def.lib -out:import.exe && \
 # DEFINE:   llvm-readobj --coff-imports import.exe | FileCheck %s --check-prefix=IMPORT && \
@@ -36,73 +37,64 @@
 # DEFINE:   %{exe} use.obj lto.bc sup.obj -out:lto.exe && \
 # DEFINE:   llvm-readobj --coff-exports -x .rdata -x .tls lto.exe | FileCheck %s --check-prefix=LTO \
 # DEFINE:     --implicit-check-not=Name: && \
-# DEFINE:   lld-link -dll -noentry def.obj -out:none.dll -export:y && \
+# DEFINE:   lld-link -dll -noentry def.obj rt.lib fill.obj -out:none.dll -export:y && \
 # DEFINE:   not lld-link -dll -noentry def.obj -out:err.dll -export:y$tls,data 2>&1 \
-# DEFINE:     | FileCheck %s --check-prefix=NOINDEX && \
-# DEFINE:   not lld-link -dll -noentry def.obj bad.obj sup.obj -out:err.dll \
+# DEFINE:     | FileCheck %s --check-prefix=NOPLACE && \
+# DEFINE:   not lld-link -dll -noentry def.obj bad.obj sup.obj rt.lib fill.obj -out:err.dll \
 # DEFINE:     -export:p$tls,data -export:q$tls,data 2>&1 | FileCheck %s --check-prefix=BAD && \
-# DEFINE:   not lld-link -dll -noentry guard1.obj guard2.obj sup.obj -out:err.dll 2>&1 \
+# DEFINE:   not lld-link -dll -noentry guard1.obj guard2.obj sup.obj rt.lib fill.obj \
+# DEFINE:     -out:err.dll 2>&1 \
 # DEFINE:     | FileCheck %s --check-prefix=GUARDS && \
 # DEFINE:   env LLD_IN_TEST=1 not %{exe} use.obj def.lib -out:err.exe -delayload:def.dll \
 # DEFINE:     -alternatename:__delayLoadHelper2=main 2>&1 | FileCheck %s --check-prefix=DELAY && \
-# DEFINE:   not lld-link -dll -noentry bad.obj def.lib -out:err.dll 2>&1 \
+# DEFINE:   not lld-link -dll -noentry bad.obj def.lib rt.lib fill.obj -out:err.dll 2>&1 \
 # DEFINE:     | FileCheck %s --check-prefix=DIRECT && \
 # DEFINE:   %{as} norecord.s -o norecord.obj && \
-# DEFINE:   not lld-link -dll -noentry norecord.obj sup.obj -out:err.dll 2>&1 \
+# DEFINE:   not lld-link -dll -noentry norecord.obj sup.obj rt.lib fill.obj -out:err.dll \
+# DEFINE:     2>&1 \
 # DEFINE:     | FileCheck %s --check-prefix=NORECORD
 
 # RUN: %{run}
 # REDEFINE: %{t} = aarch64
+# REDEFINE: %{a} = arm64
 # RUN: %{run}
 
-## LTO never takes a record for final: bitcode that reads x through its record
-## leaves the record's pointer, which the link makes the direct access where
-## the image defines x, under ThinLTO too.
+## Bitcode that names a thread-local variable that another image defines
+## reaches it through the record that the import library offers, which the
+## link makes the thread pointer plus the variable's $tpoff word: the thread
+## pointer in its register where the function is passed it, and where the
+## function derived it into rax, which only the chain's own wide word's load
+## and select overwrite, in rax still.
 # RUN: llvm-mc -triple=x86_64-windows-itanium -filetype=obj %S/Inputs/tls-support.s \
 # RUN:   -o sup64.obj
-# RUN: opt -mtriple=x86_64-windows-itanium lto.ll -o lto.bc
-# RUN: opt -mtriple=x86_64-windows-itanium read.ll -o read.bc
-# RUN: lld-link -entry:readx -include:readxy -subsystem:console read.bc lto.bc sup64.obj \
-# RUN:   -out:read.exe -debug:symtab
-# RUN: llvm-objdump -d --no-show-raw-insn read.exe | FileCheck %s --check-prefixes=READ,FULL
-# RUN: opt -module-summary -mtriple=x86_64-windows-itanium lto.ll -o lto.bc
-# RUN: opt -module-summary -mtriple=x86_64-windows-itanium read.ll -o read.bc
-# RUN: lld-link -entry:readx -subsystem:console read.bc lto.bc sup64.obj \
-# RUN:   -out:read.exe -debug:symtab
-# RUN: llvm-objdump -d --no-show-raw-insn read.exe | FileCheck %s --check-prefix=READ
-# READ:      <readx>:
-# READ-NEXT: movl {{.*}}(%rip), %e[[I:[a-z]+]] # {{.*}} <_tls_index>
-# READ-NEXT: movq %gs:0x58, %r[[A:[a-z]+]]
-# READ-NEXT: movq (%r[[A]],%r[[I]],8), %r[[B:[a-z]+]]
-# READ-NEXT: movl 0x8(%r[[B]]), %eax
-# READ-NEXT: retq
-## Full LTO has every record of the module's final definitions read the
-## image's TLS index directly, so x and y share the index and the block.
-# FULL:      <readxy>:
-# FULL-NEXT: movl {{.*}}(%rip), %e[[I:[a-z]+]] # {{.*}} <_tls_index>
-# FULL-NEXT: movq %gs:0x58, %r[[A:[a-z]+]]
-# FULL-NEXT: movq (%r[[A]],%r[[I]],8), %r[[B:[a-z]+]]
-# FULL-NEXT: movl 0x8(%r[[B]]), %eax
-# FULL-NEXT: addl 0xc(%r[[B]]), %eax
-# FULL-NEXT: retq
-
-## Bitcode that names a thread-local variable that another image defines
-## reaches it through the record that the import library offers.
+# RUN: llvm-mc -triple=x86_64-windows-itanium -filetype=obj %S/Inputs/fill-entry.s \
+# RUN:   -o fill64.obj
+# RUN: lld-link -machine:x64 -def:rt.def -out:rt64.lib
 # RUN: llvm-mc -triple=x86_64-windows-itanium -filetype=obj def.s -o def64.obj
-# RUN: lld-link -dll -noentry def64.obj sup64.obj -export:x$tls,data \
+# RUN: lld-link -dll -noentry def64.obj sup64.obj rt64.lib fill64.obj -export:x$tls,data \
 # RUN:   -out:def64.dll -implib:def64.lib
 # RUN: opt -mtriple=x86_64-windows-itanium sym.ll -o sym.bc
-# RUN: lld-link -entry:readx -subsystem:console sym.bc def64.lib -out:sym.exe \
-# RUN:   -debug:symtab
+# RUN: llvm-mc -triple=x86_64-windows-itanium -filetype=obj fill-exe.s -o fill-exe.obj
+# RUN: lld-link -entry:readx -subsystem:console sym.bc def64.lib rt64.lib \
+# RUN:   fill-exe.obj -out:sym.exe -debug:symtab
 # RUN: llvm-objdump -d --no-show-raw-insn sym.exe | FileCheck %s --check-prefix=SYM
 # SYM:      <readx>:
-# SYM-NEXT: movq {{.*}}(%rip), %rax # {{.*}} <__imp_x$tls>
+# SYM-NOT:  __imp_x$tls
+# SYM:      addq {{.*}} <__imp___tp_base$val>
+# SYM-NEXT: movq {{.*}}(%rip), %rcx # 0x140003010
+# SYM-NEXT: movl (%rax,%rcx), %eax
+# SYM:      <readtp$tp>:
+# SYM-NEXT: movq {{.*}}(%rip), %rcx # 0x140003010
+# SYM-NEXT: movl (%r14,%rcx), %eax
+# SYM-NEXT: retq
 
-## An export keeps a record, not the variable: _tls_index at 0x2000, x 12 and
-## its guard 21 bytes into the groups, y 16 and its guard 20.
-# RECORDS:      00001000 00200080 01000000
-# RECORDS-NEXT: 0c000000 15000000 00200080 01000000
-# RECORDS-NEXT: 10000000 14000000
+## An export keeps a record, not the variable: the place word at 0x3008, x 4
+## and its guard 13 bytes into the template, y 8 and its guard 12. The image,
+## direct, offers its importers its unit.
+# RECORDS:      08300080 01000000
+# RECORDS-NEXT: 04000000 0d000000 08300080 01000000
+# RECORDS-NEXT: 08000000 0c000000
+# EXPORTS:      Name: __tp_unit
 # EXPORTS:      Name: x$tls
 # EXPORTS:      Name: y$tls
 # LIB:          D __imp_x$tls
@@ -116,9 +108,10 @@
 # BOTH: Format:
 
 ## The pointer's load takes the record's address; the dead function keeps
-## neither y's pointer nor y's record.
-# ONE:      00001000 00300040 01000000
-# ONE-NEXT: 0c000000 15000000 00000000 00000000 {{[^ ]+$}}
+## neither y's pointer nor y's record. The executable's place word holds its
+## place, 0x140.
+# ONE:      38200040 01000000
+# ONE-NEXT: 04000000 0d000000 40010000 00000000
 # LOCAL-x86_64:       leaq {{.*}} # 0x140002028
 # LOCAL-x86_64-NEXT:  movq (%rax), %rcx
 # LOCAL-aarch64:      adr x8, 0x140002028
@@ -129,15 +122,15 @@
 
 ## Bitcode keeps x and y, whose records an object or export names, and the LTO
 ## object states the guard.
-# LTO:      00003000 00300040 01000000
-# LTO-NEXT: 08000000 10000000 00300040 01000000
-# LTO-NEXT: 0c000000 10000000
+# LTO:      48200040 01000000
+# LTO-NEXT: 00000000 08000000 48200040 01000000
+# LTO-NEXT: 04000000 08000000
 # LTO:      Hex dump of section '.tls':
-# LTO-NEXT: 00000000 00000000 05000000 06000000
-# LTO-NEXT: 0x{{[0-9a-f]+}} 01000000 00000000 00{{ }}
+# LTO-NEXT: 05000000 06000000 01{{ }}
+# LTO:      Name: __tp_unit
 # LTO:      Name: y$tls
 
-# NOINDEX: error: thread-local record y$tls needs _tls_index, which the image does not define
+# NOPLACE: error: the image's thread-locals need its place, __imp___tp_register$init, which clang_rt.wincrt_dynamic.dll's __tp_register gives; link clang_rt.wincrt_dynamic.lib
 
 # BAD-DAG: error: thread-local record p$tls: the guard of p, which no object states, is not in the thread-local data of the image
 # BAD-DAG: error: thread-local record q$tls: q is not in the thread-local data of the image
@@ -251,55 +244,13 @@ define i32 @readx() {
   ret i32 %v
 }
 
+define dllexport i32 @readtp() "thread-pointer-argument" {
+  %a = call ptr @llvm.threadlocal.address.p0(ptr @x)
+  %v = load i32, ptr %a
+  ret i32 %v
+}
+
 declare ptr @llvm.threadlocal.address.p0(ptr)
-
-#--- read.ll
-@"x$tls" = external dllimport constant { ptr, i32, i32 }
-
-define i32 @readx() {
-  %record = load ptr, ptr @"x$tls", !invariant.load !0
-  %index = load i32, ptr %record, !invariant.load !0
-  %tp = call ptr @llvm.thread.pointer.p0()
-  %index64 = zext i32 %index to i64
-  %slot = getelementptr [8 x i8], ptr %tp, i64 %index64
-  %block = load ptr, ptr %slot
-  %offset = load i32, ptr getelementptr (i8, ptr @"x$tls", i64 8), !invariant.load !0
-  %offset64 = zext i32 %offset to i64
-  %addr = getelementptr i8, ptr %block, i64 %offset64
-  %v = load i32, ptr %addr
-  ret i32 %v
-}
-
-define i32 @readxy() {
-  %rx = load ptr, ptr @"x$tls", !invariant.load !0
-  %ix = load i32, ptr %rx, !invariant.load !0
-  %tx = call ptr @llvm.thread.pointer.p0()
-  %ix64 = zext i32 %ix to i64
-  %sx = getelementptr [8 x i8], ptr %tx, i64 %ix64
-  %bx = load ptr, ptr %sx, !invariant.load !0
-  %ox = load i32, ptr getelementptr (i8, ptr @"x$tls", i64 8), !invariant.load !0
-  %ox64 = zext i32 %ox to i64
-  %ax = getelementptr i8, ptr %bx, i64 %ox64
-  %vx = load i32, ptr %ax
-  %ry = load ptr, ptr @"y$tls", !invariant.load !0
-  %iy = load i32, ptr %ry, !invariant.load !0
-  %ty = call ptr @llvm.thread.pointer.p0()
-  %iy64 = zext i32 %iy to i64
-  %sy = getelementptr [8 x i8], ptr %ty, i64 %iy64
-  %by = load ptr, ptr %sy, !invariant.load !0
-  %oy = load i32, ptr getelementptr (i8, ptr @"y$tls", i64 8), !invariant.load !0
-  %oy64 = zext i32 %oy to i64
-  %ay = getelementptr i8, ptr %by, i64 %oy64
-  %vy = load i32, ptr %ay
-  %v = add i32 %vx, %vy
-  ret i32 %v
-}
-
-@"y$tls" = external dllimport constant { ptr, i32, i32 }
-
-declare ptr @llvm.thread.pointer.p0()
-
-!0 = !{}
 
 #--- lto.ll
 $__tls_set = comdat any
@@ -313,3 +264,29 @@ $__tls_set = comdat any
 !llvm.linker.options = !{!1}
 !0 = !{ptr @__tls_set}
 !1 = !{!"-export:y$tls,data"}
+
+#--- rt.def
+LIBRARY clang_rt.wincrt_dynamic.dll
+EXPORTS
+__tp_register
+__tp_map DATA
+__tp_base DATA
+__tp_key DATA
+__tp_slow
+__tp_personality
+
+#--- fill-exe.s
+.macro entry name
+.section .text,"xr",one_only,\name
+.globl \name
+\name:
+  ret
+  .rva __llvm_fill_list
+  .rva __llvm_fill_target
+.endm
+  entry __llvm_fill_exe
+  entry __llvm_fill_exe_imports
+.section .text,"xr",one_only,__llvm_fill_true
+.globl __llvm_fill_true
+__llvm_fill_true:
+  ret

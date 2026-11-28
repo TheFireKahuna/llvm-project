@@ -280,14 +280,19 @@ MCOperand AArch64MCInstLower::lowerSymbolOperandCOFF(const MachineOperand &MO,
 
   if (MO.getTargetFlags() & AArch64II::MO_TLS) {
     // Under the owned model a local-exec variable counts from the thread
-    // pointer, any other from its section.
+    // pointer, any other from its section, or checked to fit where it has no
+    // high part, from its image's base as ELF's DTPREL.
     auto *GV =
         MO.isGlobal() ? dyn_cast<GlobalVariable>(MO.getGlobal()) : nullptr;
     bool LocalExec =
         GV && GV->getThreadLocalMode() == GlobalValue::LocalExecTLSModel &&
-        Printer.TM.getTargetTriple().isWindowsNTPOSIXEnvironment();
+        Printer.TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+    bool NC = MO.getTargetFlags() & AArch64II::MO_NC;
     if ((MO.getTargetFlags() & AArch64II::MO_FRAGMENT) == AArch64II::MO_PAGEOFF)
-      RefFlags |= LocalExec ? AArch64::S_TPREL_LO12_NC : AArch64::S_SECREL_LO12;
+      RefFlags |= LocalExec
+                      ? (NC ? AArch64::S_TPREL_LO12_NC : AArch64::S_TPREL_LO12)
+                  : NC ? AArch64::S_SECREL_LO12
+                       : AArch64::S_DTPREL_LO12;
     else if ((MO.getTargetFlags() & AArch64II::MO_FRAGMENT) ==
              AArch64II::MO_HI12)
       RefFlags |= LocalExec ? AArch64::S_TPREL_HI12 : AArch64::S_SECREL_HI12;

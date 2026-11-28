@@ -139,18 +139,11 @@ public:
   // sets field to the offset in it of the displacement, which holds zero.
   // An index adds two registers, and reads the first of them, or with second
   // the second: its direct form has that register's place taken by a
-  // displacement of 32 bits.
+  // displacement of 32 bits, or with on the other's by the 64-bit register
+  // whose encoding on is.
   bool decodeFused(ArrayRef<uint8_t> code, FusedInsn &insn,
                    llvm::SmallVectorImpl<char> *direct = nullptr,
-                   unsigned *field = nullptr, bool second = false);
-
-  // Encodes the index at the start of code, which reads the first of its two
-  // registers or with second the second, into out with the register that the
-  // index at the start of from, read likewise as fromSecond says, adds to
-  // it in the other's place.
-  bool encodeOnRegisterOf(ArrayRef<uint8_t> code, bool second,
-                          ArrayRef<uint8_t> from, bool fromSecond,
-                          llvm::SmallVectorImpl<char> &out);
+                   unsigned *field = nullptr, bool second = false, int on = -1);
 
   // Decodes the instruction at the start of code as a site that reads
   // memory relative to rip.

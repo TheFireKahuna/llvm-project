@@ -2128,12 +2128,15 @@ void SymbolTable::selectPlaceWord() {
     localImportChunks.push_back(li->getChunk());
     reg = li;
   }
+  // The image of the runtime that exports the model's names.
+  StringRef rt = ctx.tlsRuntime() == "wincrt" ? "clang_rt.wincrt_dynamic"
+                                              : "ntposix";
   // An executable's words are reported where the fill selects its entry.
   if (!reg) {
     if (ctx.config.dll)
       Err(ctx) << "the image's thread-locals need its place, "
-               << COFF::TP::RegisterImport << ", which ntposix.dll's "
-               << COFF::TP::Register << " gives; link ntposix.lib";
+               << COFF::TP::RegisterImport << ", which " << rt << ".dll's "
+               << COFF::TP::Register << " gives; link " << rt << ".lib";
     return;
   }
   placeWord->registers = true;
@@ -2153,8 +2156,8 @@ void SymbolTable::selectPlaceWord() {
     ctx.fill.words.push_back({placeWord, TP_KEY_AT, key, 0, FillWord::Value});
   } else {
     Err(ctx) << "the image's wide thread-locals need its key, "
-             << COFF::TP::KeyImport << ", which ntposix.dll's "
-             << COFF::TP::Key << " gives; link ntposix.lib";
+             << COFF::TP::KeyImport << ", which " << rt << ".dll's "
+             << COFF::TP::Key << " gives; link " << rt << ".lib";
   }
 }
 

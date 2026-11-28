@@ -499,10 +499,9 @@ public:
       // its base holds there, and states where nothing after reads what it
       // wrote: the linker deletes the add of a zero part and gives that
       // instruction its base. A low add moves first, then its high add.
-      // Under -mtls-size=12 there is no high part.
       for (MachineBasicBlock &MBB : MF)
         for (MachineInstr &MI : make_early_inc_range(reverse(MBB))) {
-          if (TM.Options.TLSSize == 12 || MI.getOpcode() != AArch64::ADDXri ||
+          if (MI.getOpcode() != AArch64::ADDXri ||
               !MI.getOperand(2).isGlobal() ||
               !(MI.getOperand(2).getTargetFlags() & AArch64II::MO_TLS))
             continue;
@@ -523,8 +522,7 @@ public:
             I.clearRegisterKills(Base, TRI);
           MBB.splice(Next, &MBB, MI.getIterator());
           if (Next->modifiesRegister(Reg, TRI) ||
-              MBB.computeRegisterLiveness(TRI, Reg, std::next(Next)) ==
-                  MachineBasicBlock::LQR_Dead)
+              IsDead(MBB, Reg, std::next(Next)))
             OnlyNextReads.insert(&MI);
         }
 #ifdef EXPENSIVE_CHECKS

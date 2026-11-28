@@ -46,8 +46,11 @@ __attribute__((noinline)) int _Unwind_RaiseException(void *Object) {
 }
 
 #ifdef TABLE
+// libunwind's table names the bodies that raise, the entries passed the
+// thread pointer.
+int raiseBody(void *) __asm__("_Unwind_RaiseException$tp");
 __attribute__((visibility("hidden"))) const void *const __unw_seh_raise_functions[2] = {
-    _Unwind_RaiseException, _Unwind_RaiseException};
+    raiseBody, raiseBody};
 #endif
 
 static int Exception;

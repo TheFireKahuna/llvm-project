@@ -43,8 +43,10 @@ use$tp:
         csel    x9, x11, x10, ne
         .reloc ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
         .site_fact 8, 12
+        .site_fact 14, 28
         ldrb    w14, [x9, x13]
         .reloc ., IMAGE_REL_LLVM_FUSED_INDEX, __imp_x$tls
         .site_fact 8, 8
+        .site_fact 14, 28
         ldr     w0, [x9, x8]
         ret

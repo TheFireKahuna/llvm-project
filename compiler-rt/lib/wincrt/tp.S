@@ -201,8 +201,26 @@ __wincrt_probe_landing:
   cold __tp_try, 1
   cold __tp_probe, 2
 
+// The personality of a function whose only landing pads are its fault
+// probes', which the vectored handler recovers: it lets every search and
+// every unwind pass.
+  .globl __tp_personality
+  .def __tp_personality
+  .scl 2
+  .type 32
+  .endef
+  .p2align 4
+__tp_personality:
+#if defined(__x86_64__)
+  movl $1, %eax
+#else
+  mov w0, #1
+#endif
+  ret
+
   .section .drectve,"yni"
   .ascii " -export:__tp_slow -export:__tp_try -export:__tp_probe"
+  .ascii " -export:__tp_personality"
 
   .section .gehcont$y,"dr"
   .symidx __wincrt_probe_landing

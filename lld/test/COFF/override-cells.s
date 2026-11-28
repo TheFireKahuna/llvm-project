@@ -51,7 +51,9 @@
 # DEFINE:   llvm-objdump -d --no-show-raw-insn user.dll >> user.txt && \
 # DEFINE:   llvm-objdump -s -j .rdata -j .sealed user.dll >> user.txt && \
 # DEFINE:   FileCheck --check-prefixes=USER,USER-%{a} %s < user.txt && \
-# DEFINE:   %{mc} tl.s -o tl.obj && not %{dll} tl.obj rt.lib -out:tl.dll \
+# DEFINE:   %{mc} tl.s -o tl-own.obj && \
+# DEFINE:   llvm-objcopy --remove-section=.drectve tl-own.obj tl.obj && \
+# DEFINE:   not %{dll} tl.obj rt.lib -out:tl.dll \
 # DEFINE:     2>&1 | FileCheck --check-prefix=TL %s && \
 # DEFINE:   lld-link -machine:%{a} -entry:inner -subsystem:console fill.lib \
 # DEFINE:     rt.obj -out:static.exe && \
@@ -144,9 +146,9 @@
 # USER-NEXT: 180002080 18200000 0c010000 00000000 00000000
 # USER-NEXT: 180002090 00400000 0c020000
 
-## A word of the loader's thread-local template that holds a default's
-## address would be the fill's, which no thread that copied the template
-## before it ran sees.
+## A word of the loader's thread-local template, an object's that states no
+## model, that holds a default's address would be the fill's, which no thread
+## that copied the template before it ran sees.
 # TL: error: tl.obj: .tls$+0x0: holds an address inside del, for which rt.dll exports no name, in the loader's thread-local template, which threads copy before the image's fill runs
 # STATIC-x64:      <inner>:
 # STATIC-x64-NEXT: callq

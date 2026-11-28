@@ -1,12 +1,5 @@
-## _tls_used and the symbols it names, for images with thread-local data.
-        .section .tls,"dw"
-        .globl  _tls_start
-_tls_start:
-        .quad   0
-        .section .tls$ZZZ,"dw"
-        .globl  _tls_end
-_tls_end:
-        .quad   0
+## _tls_used and the symbols it names, for images with thread-local data: the
+## linker defines _tls_start and _tls_end at the loader's template.
         .data
         .globl  _tls_index
 _tls_index:
