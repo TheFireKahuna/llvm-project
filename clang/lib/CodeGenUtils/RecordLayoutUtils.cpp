@@ -63,4 +63,63 @@ bool isOverlappingVBaseABI(const ASTContext &Ctx) {
   return !Ctx.getTargetInfo().getCXXABI().isMicrosoft();
 }
 
+void LayoutWalker::walkType(QualType T, uint64_t Offset) {
+  T = Ctx.getCanonicalType(T).getUnqualifiedType();
+  if (const auto *AT = T->getAs<AtomicType>();
+      AT && Ctx.getTypeSize(AT->getValueType()) == Ctx.getTypeSize(T))
+    return walkType(AT->getValueType(), Offset);
+  if (const auto *AT = Ctx.getAsConstantArrayType(T))
+    return array(Offset, T, AT->getZExtSize(), AT->getElementType());
+  if (const auto *CT = T->getAs<ComplexType>())
+    return array(Offset, T, 2, CT->getElementType());
+  if (const auto *VT = T->getAs<VectorType>())
+    return array(Offset, T, VT->getNumElements(), VT->getElementType());
+  if (const RecordDecl *RD = T->getAsRecordDecl())
+    return record(Offset, RD);
+
+  ScalarKind Kind = ScalarKind::Opaque;
+  if (T->isBitIntType())
+    Kind = ScalarKind::BitInt;
+  else if (T->isIntegerType() || T->isEnumeralType())
+    Kind = ScalarKind::Integer;
+  else if (T->isRealFloatingType())
+    Kind = ScalarKind::Float;
+  else if (T->isAnyPointerType() || T->isReferenceType() ||
+           T->isBlockPointerType() || T->isNullPtrType())
+    Kind = ScalarKind::Pointer;
+  else if (T->isMemberFunctionPointerType())
+    Kind = ScalarKind::MemberFunctionPointer;
+  else if (T->isMemberDataPointerType())
+    Kind = ScalarKind::MemberDataPointer;
+  scalar(Offset, Kind, T);
+}
+
+void LayoutWalker::walkRecord(const RecordDecl *RD, uint64_t Offset,
+                              bool IsCompleteObject) {
+  const ASTRecordLayout &Layout = Ctx.getASTRecordLayout(RD);
+  if (const auto *CRD = dyn_cast<CXXRecordDecl>(RD)) {
+    if (Layout.hasOwnVFPtr())
+      scalar(Offset, ScalarKind::VTablePointer, Ctx.VoidPtrTy);
+    for (const CXXBaseSpecifier &B : CRD->bases())
+      if (!B.isVirtual()) {
+        const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+        base(Offset + Ctx.toBits(Layout.getBaseClassOffset(Base)), Base,
+             /*IsVirtual=*/false);
+      }
+    if (IsCompleteObject)
+      for (const CXXBaseSpecifier &B : CRD->vbases()) {
+        const CXXRecordDecl *Base = B.getType()->getAsCXXRecordDecl();
+        base(Offset + Ctx.toBits(Layout.getVBaseClassOffset(Base)), Base,
+             /*IsVirtual=*/true);
+      }
+  }
+  for (const FieldDecl *FD : RD->fields()) {
+    uint64_t FieldOffset = Offset + Layout.getFieldOffset(FD->getFieldIndex());
+    if (!FD->isBitField())
+      walkType(FD->getType(), FieldOffset);
+    else if (FD->getBitWidthValue() != 0)
+      bitField(FieldOffset, FD);
+  }
+}
+
 } // namespace clang::CodeGenUtils

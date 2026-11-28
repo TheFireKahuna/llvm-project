@@ -32,12 +32,14 @@
 #include "clang/Basic/PointerAuthOptions.h"
 #include "clang/CodeGen/ConstantInitBuilder.h"
 #include "clang/CodeGenUtils/ItaniumCXXABIUtils.h"
+#include "clang/CodeGenUtils/RecordLayoutUtils.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/Value.h"
 #include "llvm/Support/ConvertEBCDIC.h"
+#include "llvm/Support/LEB128.h"
 #include "llvm/Support/ScopedPrinter.h"
 
 #include <optional>
@@ -427,7 +429,11 @@ public:
 protected:
   /// Returns true if the ABI requires RTTI type_info objects to be unique
   /// across a program.
-  virtual bool shouldRTTIBeUnique() const { return true; }
+  virtual bool shouldRTTIBeUnique() const {
+    // PE gives each image its own copy of a type_info object with vague
+    // linkage, unless a link binds the images to one.
+    return !CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  }
 
 public:
   /// What sort of unique-RTTI behavior should we use?
@@ -3512,7 +3518,228 @@ ItaniumCXXABI::getOrCreateVirtualFunctionPointerThunk(const CXXMethodDecl *MD) {
   return ThunkFn;
 }
 
+/// On Windows Itanium and NT-POSIX a type_info object's name word holds the
+/// length of the name object in bits 48 to 62, beside the non-unique flag in
+/// bit 63, so that two names compare without a scan of either: a user-mode
+/// address there is below 2^47. A length that fills the field is the 64-bit
+/// word ahead of the name instead.
+static constexpr unsigned TypeNameLengthShift = 48;
+static constexpr uint64_t MaxTypeNameLength = 0x7FFF;
+
+/// The prefix of the name of the placeholder that stands, on Windows Itanium
+/// and NT-POSIX, for a type_info object that reaches a class incomplete in
+/// the translation unit.
+static constexpr llvm::StringLiteral IncompletePrefix = "__llvm_incomplete$";
+
 namespace {
+/// Encodes the layout shape that follows a class's name in the name object of
+/// its non-unique type_info object on Windows Itanium and NT-POSIX, by which
+/// images that no link joins tell two layouts of one name apart: the scalars
+/// an object of the class holds, with its bases and the records it holds by
+/// value flattened in. An item is a byte whose low four bits are its kind and
+/// whose high four bits count the bits of padding ahead of it, or are 15 ahead
+/// of a ULEB128 count of them, then the kind's operands.
+class LayoutShapeBuilder final : CodeGenUtils::LayoutWalker {
+  enum Kind : uint8_t {
+    K_Int8, // Integers of 1, 2, 4, 8 and 16 bytes follow in order.
+    K_Float32 = 5,
+    K_Float64,
+    K_Float80,
+    K_Pointer,
+    K_VTablePointer,
+    K_MemberFunctionPointer,
+    K_BitField, // Its width.
+    K_Array,    // Its count, its element's items and K_End.
+    K_Union,    // Its count of alternatives, each one's items and K_End.
+    K_End,
+    K_Extended, // An ExtendedKind in a byte of its own.
+  };
+  enum ExtendedKind : uint8_t {
+    X_Float16,
+    X_BFloat16,
+    X_Float128,
+    X_MemberDataPointer,
+    X_Vector, // Its count, its element's items and K_End.
+    X_BitInt, // Its width.
+    X_Opaque, // Its size in bits.
+  };
+
+  struct Item {
+    uint64_t Begin, End;
+    std::string Bytes;
+  };
+  SmallVector<Item, 8> Items;
+  /// The types of the scalars whose kinds leave their types open, in the
+  /// order of the walk.
+  SmallVectorImpl<QualType> &OpenTypes;
+
+  static std::string counted(std::string Kind, uint64_t Count) {
+    llvm::raw_string_ostream OS(Kind);
+    llvm::encodeULEB128(Count, OS);
+    return Kind;
+  }
+  static std::string extended(ExtendedKind Kind) {
+    return {char(K_Extended), char(Kind)};
+  }
+  std::string nested(QualType T) {
+    LayoutShapeBuilder Element(Ctx, OpenTypes);
+    Element.walkType(T, 0);
+    return Element.encode() + char(K_End);
+  }
+  void add(uint64_t Offset, uint64_t Width, std::string Bytes) {
+    Items.push_back({Offset, Offset + Width, std::move(Bytes)});
+  }
+
+  void scalar(uint64_t Offset, ScalarKind Kind, QualType T) override {
+    uint64_t Width = Ctx.getTypeSize(T);
+    std::string Bytes;
+    switch (Kind) {
+    case ScalarKind::Integer:
+      if (T->isEnumeralType())
+        OpenTypes.push_back(T);
+      if (Width >= 8 && Width <= 128 && llvm::isPowerOf2_64(Width))
+        Bytes = char(K_Int8 + llvm::Log2_64(Width / 8));
+      break;
+    case ScalarKind::BitInt:
+      Bytes =
+          counted(extended(X_BitInt), T->castAs<BitIntType>()->getNumBits());
+      break;
+    case ScalarKind::Float: {
+      const llvm::fltSemantics &S = Ctx.getFloatTypeSemantics(T);
+      if (&S == &llvm::APFloat::IEEEsingle())
+        Bytes = char(K_Float32);
+      else if (&S == &llvm::APFloat::IEEEdouble())
+        Bytes = char(K_Float64);
+      else if (&S == &llvm::APFloat::x87DoubleExtended())
+        Bytes = char(K_Float80);
+      else if (&S == &llvm::APFloat::IEEEhalf())
+        Bytes = extended(X_Float16);
+      else if (&S == &llvm::APFloat::BFloat())
+        Bytes = extended(X_BFloat16);
+      else if (&S == &llvm::APFloat::IEEEquad())
+        Bytes = extended(X_Float128);
+      break;
+    }
+    case ScalarKind::Pointer:
+      OpenTypes.push_back(T);
+      Bytes = char(K_Pointer);
+      break;
+    case ScalarKind::VTablePointer:
+      Bytes = char(K_VTablePointer);
+      break;
+    case ScalarKind::MemberFunctionPointer:
+      OpenTypes.push_back(T);
+      Bytes = char(K_MemberFunctionPointer);
+      break;
+    case ScalarKind::MemberDataPointer:
+      OpenTypes.push_back(T);
+      Bytes = extended(X_MemberDataPointer);
+      break;
+    case ScalarKind::Opaque:
+      break;
+    }
+    if (Bytes.empty())
+      Bytes = counted(extended(X_Opaque), Width);
+    add(Offset, Width, std::move(Bytes));
+  }
+
+  void bitField(uint64_t Offset, const FieldDecl *FD) override {
+    unsigned Width = FD->getBitWidthValue();
+    add(Offset, Width, counted({char(K_BitField)}, Width));
+  }
+
+  void array(uint64_t Offset, QualType T, uint64_t Count,
+             QualType Element) override {
+    if (Count != 0)
+      add(Offset, Ctx.getTypeSize(T),
+          counted(T->isVectorType() ? extended(X_Vector)
+                                    : std::string{char(K_Array)},
+                  Count) +
+              nested(Element));
+  }
+
+  void record(uint64_t Offset, const RecordDecl *RD) override {
+    if (!RD->isUnion())
+      return walkRecord(RD, Offset, /*IsCompleteObject=*/true);
+    std::string Bytes = counted(
+        {char(K_Union)}, std::distance(RD->field_begin(), RD->field_end()));
+    for (const FieldDecl *FD : RD->fields())
+      Bytes += nested(FD->getType());
+    add(Offset, Ctx.getTypeSize(Ctx.getCanonicalTagType(RD)), std::move(Bytes));
+  }
+
+  void base(uint64_t Offset, const CXXRecordDecl *Base, bool) override {
+    walkRecord(Base, Offset, /*IsCompleteObject=*/false);
+  }
+
+  /// Returns the items in the order of their offsets. A run of equal items
+  /// with no padding between them, as an array's elements are, is one array
+  /// item, so that one layout has one encoding.
+  std::string encode() {
+    llvm::stable_sort(Items, [](const Item &A, const Item &B) {
+      return std::tie(A.Begin, A.End) < std::tie(B.Begin, B.End);
+    });
+    std::string Shape;
+    llvm::raw_string_ostream OS(Shape);
+    uint64_t Previous = 0;
+    for (size_t I = 0, J; I != Items.size(); I = J) {
+      J = I + 1;
+      while (J != Items.size() && Items[J].Bytes == Items[I].Bytes &&
+             Items[J].Begin == Items[J - 1].End)
+        ++J;
+      std::string Bytes = Items[I].Bytes;
+      if (J - I > 1)
+        Bytes = counted({char(K_Array)}, J - I) + Bytes + char(K_End);
+      uint64_t Padding =
+          Items[I].Begin > Previous ? Items[I].Begin - Previous : 0;
+      OS << char(Bytes[0] | std::min<uint64_t>(Padding, 15) << 4);
+      if (Padding >= 15)
+        llvm::encodeULEB128(Padding, OS);
+      OS << StringRef(Bytes).drop_front();
+      Previous = Items[J - 1].End;
+    }
+    return Shape;
+  }
+
+  LayoutShapeBuilder(const ASTContext &Ctx,
+                     SmallVectorImpl<QualType> &OpenTypes)
+      : LayoutWalker(Ctx), OpenTypes(OpenTypes) {}
+
+public:
+  /// Returns the shape of the complete class \p Ty, whose mangled name is
+  /// \p Name: its size, the log2 of its alignment and its items. Where a
+  /// scalar's kind leaves its type open, as a pointer's or an enumeration's
+  /// does, K_End and the field-type signature follow: those types, mangled as
+  /// the parameters that follow the class in a function type, whose
+  /// substitutions spell a repeated name once and may refer to the class's.
+  static std::string get(const ASTContext &Ctx, MangleContext &Mangler,
+                         QualType Ty, StringRef Name) {
+    const ASTRecordLayout &Layout =
+        Ctx.getASTRecordLayout(Ty->getAsRecordDecl());
+    SmallVector<QualType, 8> OpenTypes = {Ty};
+    LayoutShapeBuilder Builder(Ctx, OpenTypes);
+    Builder.walkType(Ty, 0);
+    std::string Shape;
+    llvm::raw_string_ostream OS(Shape);
+    llvm::encodeULEB128(Layout.getSize().getQuantity(), OS);
+    OS << char(llvm::Log2_64(Layout.getAlignment().getQuantity()))
+       << Builder.encode();
+    if (OpenTypes.size() > 1) {
+      SmallString<64> Signature;
+      llvm::raw_svector_ostream SignatureOS(Signature);
+      Mangler.mangleCXXRTTIName(
+          Ctx.getFunctionType(Ctx.VoidTy, OpenTypes,
+                              FunctionProtoType::ExtProtoInfo()),
+          SignatureOS);
+      OS << char(K_End)
+         << Signature.str()
+                .drop_front(strlen("_ZTSFv") + Name.size())
+                .drop_back();
+    }
+    return Shape;
+  }
+};
+
 class ItaniumRTTIBuilder {
   CodeGenModule &CGM;  // Per-module state.
   llvm::LLVMContext &VMContext;
@@ -3521,9 +3748,12 @@ class ItaniumRTTIBuilder {
   /// Fields - The fields of the RTTI descriptor currently being built.
   SmallVector<llvm::Constant *, 16> Fields;
 
-  /// GetAddrOfTypeName - Returns the mangled type name of the given type.
-  llvm::GlobalVariable *
-  GetAddrOfTypeName(QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage);
+  /// GetAddrOfTypeName - Returns the mangled type name of the given type, and
+  /// in \p Length the length of the name object where the type_info object's
+  /// name word holds it.
+  llvm::GlobalValue *
+  GetAddrOfTypeName(QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage,
+                    uint64_t &Length);
 
   /// GetAddrOfExternalRTTIDescriptor - Returns the constant for the RTTI
   /// descriptor of the given type.
@@ -3572,25 +3802,67 @@ public:
 };
 }
 
-llvm::GlobalVariable *ItaniumRTTIBuilder::GetAddrOfTypeName(
-    QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage) {
+llvm::GlobalValue *ItaniumRTTIBuilder::GetAddrOfTypeName(
+    QualType Ty, llvm::GlobalVariable::LinkageTypes Linkage, uint64_t &Length) {
+  MangleContext &Mangler = CGM.getCXXABI().getMangleContext();
+  bool HasLength = CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment();
+  const RecordDecl *RD = Ty->getAsRecordDecl();
   SmallString<256> Name;
   llvm::raw_svector_ostream Out(Name);
-  CGM.getCXXABI().getMangleContext().mangleCXXRTTIName(Ty, Out);
+  // A placeholder for an incomplete class has a name object of its own, since
+  // the complete class's may hold the class's layout.
+  if (HasLength && RD && !RD->isCompleteDefinition())
+    Out << IncompletePrefix;
+  size_t TypeStart = Name.size() + 4;
+  Mangler.mangleCXXRTTIName(Ty, Out);
 
   // We know that the mangled name of the type starts at index 4 of the
   // mangled name of the typename, so we can just index into it in order to
   // get the mangled name of the type.
+  StringRef TypeString = Name.str().substr(TypeStart);
   llvm::Constant *Init;
   if (CGM.getTriple().isOSzOS()) {
     // On z/OS, typename is stored as 2 encodings: EBCDIC followed by ASCII.
     SmallString<256> DualEncodedName;
-    llvm::ConverterEBCDIC::convertToEBCDIC(Name.substr(4), DualEncodedName);
+    llvm::ConverterEBCDIC::convertToEBCDIC(TypeString, DualEncodedName);
     DualEncodedName += '\0';
-    DualEncodedName += Name.substr(4);
+    DualEncodedName += TypeString;
     Init = llvm::ConstantDataArray::getString(VMContext, DualEncodedName);
+  } else if (HasLength) {
+    // The name object of a complete class whose type_info object is not
+    // unique holds the class's layout shape after the name.
+    std::string Object = TypeString.str() + '\0';
+    if (RD && RD->isCompleteDefinition() &&
+        CXXABI.classifyRTTIUniqueness(Ty, Linkage) != ItaniumCXXABI::RUK_Unique)
+      Object +=
+          LayoutShapeBuilder::get(CGM.getContext(), Mangler, Ty, TypeString);
+    Init = llvm::ConstantDataArray::getString(VMContext, Object,
+                                              /*AddNull=*/false);
   } else
-    Init = llvm::ConstantDataArray::getString(VMContext, Name.substr(4));
+    Init = llvm::ConstantDataArray::getString(VMContext, TypeString);
+  Length = HasLength ? Init->getType()->getArrayNumElements() : 0;
+
+  // A length that the name word cannot hold leads the object, whose symbol
+  // still labels the name.
+  if (Length >= MaxTypeNameLength) {
+    llvm::Module &M = CGM.getModule();
+    llvm::Constant *Fields[] = {llvm::ConstantInt::get(CGM.Int64Ty, Length),
+                                Init};
+    Init = llvm::ConstantStruct::getAnon(Fields, /*Packed=*/true);
+    auto *Object = new llvm::GlobalVariable(
+        M, Init->getType(), /*isConstant=*/true,
+        llvm::GlobalValue::PrivateLinkage, Init, Name + ".length");
+    Object->setAlignment(llvm::Align(8));
+    bool IsWeak = llvm::GlobalValue::isWeakForLinker(Linkage);
+    if (IsWeak)
+      Object->setComdat(M.getOrInsertComdat(Name));
+    return llvm::GlobalAlias::create(
+        CGM.Int8Ty, 0, IsWeak ? llvm::GlobalValue::ExternalLinkage : Linkage,
+        Name,
+        llvm::ConstantExpr::getInBoundsPtrAdd(
+            Object, llvm::ConstantInt::get(CGM.Int64Ty, 8)),
+        &M);
+  }
 
   auto Align = CGM.getContext().getTypeAlignInChars(CGM.getContext().CharTy);
 
@@ -3854,8 +4126,14 @@ static llvm::GlobalVariable::LinkageTypes getTypeInfoLinkage(CodeGenModule &CGM,
   //   generated for the incomplete type that will not resolve to the final
   //   complete class RTTI (because the latter need not exist), possibly by
   //   making it a local static object.
+  //
+  // On Windows Itanium and NT-POSIX they are placeholders under names of their
+  // own instead, kept once in an image, and a reference to one is a weak
+  // reference to the type_info object of the complete class.
   if (CodeGenUtils::containsIncompleteClassType(Ty))
-    return llvm::GlobalValue::InternalLinkage;
+    return CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()
+               ? llvm::GlobalValue::LinkOnceODRLinkage
+               : llvm::GlobalValue::InternalLinkage;
 
   switch (Ty->getLinkage()) {
   case Linkage::Invalid:
@@ -3915,7 +4193,7 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(QualType Ty) {
   llvm::raw_svector_ostream Out(Name);
   CGM.getCXXABI().getMangleContext().mangleCXXRTTI(Ty, Out);
 
-  llvm::GlobalVariable *OldGV = CGM.getModule().getNamedGlobal(Name);
+  llvm::GlobalValue *OldGV = CGM.getModule().getNamedValue(Name);
   if (OldGV && !OldGV->isDeclaration()) {
     assert(!OldGV->hasAvailableExternallyLinkage() &&
            "available_externally typeinfos not yet implemented");
@@ -3984,33 +4262,40 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
   CGM.getCXXABI().getMangleContext().mangleCXXRTTI(Ty, Out);
   llvm::Module &M = CGM.getModule();
   llvm::GlobalVariable *OldGV = M.getNamedGlobal(Name);
+  // On Windows Itanium and NT-POSIX a type_info object that reaches a class
+  // incomplete in the translation unit is a placeholder for the complete
+  // class's, which need not exist.
+  bool IsPlaceholder = CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+                       CodeGenUtils::containsIncompleteClassType(Ty);
   // int8 is an arbitrary type to be replaced later with replaceInitializer.
-  llvm::GlobalVariable *GV =
-      new llvm::GlobalVariable(M, CGM.Int8Ty, /*isConstant=*/true, Linkage,
-                               /*Initializer=*/nullptr, Name);
+  llvm::GlobalVariable *GV = new llvm::GlobalVariable(
+      M, CGM.Int8Ty, /*isConstant=*/true, Linkage, /*Initializer=*/nullptr,
+      IsPlaceholder ? Twine(IncompletePrefix) + Name : Twine(Name));
 
   // Add the vtable pointer.
   BuildVTablePointer(cast<Type>(Ty), GV);
 
   // And the name.
-  llvm::GlobalVariable *TypeName = GetAddrOfTypeName(Ty, Linkage);
-  llvm::Constant *TypeNameField;
+  uint64_t TypeNameLength;
+  llvm::GlobalValue *TypeName = GetAddrOfTypeName(Ty, Linkage, TypeNameLength);
+  llvm::Constant *TypeNameField = TypeName;
 
   // If we're supposed to demote the visibility, be sure to set a flag
   // to use a string comparison for type_info comparisons.
   ItaniumCXXABI::RTTIUniquenessKind RTTIUniqueness =
       CXXABI.classifyRTTIUniqueness(Ty, Linkage);
-  if (RTTIUniqueness != ItaniumCXXABI::RUK_Unique) {
-    // The flag is the sign bit, which on ARM64 is defined to be clear
-    // for global pointers.  This is very ARM64-specific.
+  uint64_t TypeNameBits = std::min(TypeNameLength, MaxTypeNameLength)
+                          << TypeNameLengthShift;
+  if (RTTIUniqueness != ItaniumCXXABI::RUK_Unique)
+    // The flag is the sign bit, which is clear in the address of a global on
+    // ARM64 and in every user-mode address on Windows.
+    TypeNameBits |= uint64_t(1) << 63;
+  if (TypeNameBits) {
     TypeNameField = llvm::ConstantExpr::getPtrToInt(TypeName, CGM.Int64Ty);
-    llvm::Constant *flag =
-        llvm::ConstantInt::get(CGM.Int64Ty, ((uint64_t)1) << 63);
-    TypeNameField = llvm::ConstantExpr::getAdd(TypeNameField, flag);
+    TypeNameField = llvm::ConstantExpr::getAdd(
+        TypeNameField, llvm::ConstantInt::get(CGM.Int64Ty, TypeNameBits));
     TypeNameField =
         llvm::ConstantExpr::getIntToPtr(TypeNameField, CGM.GlobalsInt8PtrTy);
-  } else {
-    TypeNameField = TypeName;
   }
   Fields.push_back(TypeNameField);
 
@@ -4148,6 +4433,13 @@ llvm::Constant *ItaniumRTTIBuilder::BuildTypeInfo(
 
   GV->setVisibility(TypeInfoVisibility);
   CGM.setDSOLocal(GV);
+
+  // A reference reaches a placeholder, which no image exports, through a weak
+  // alias under the type_info object's name, so that the link binds it to the
+  // complete class's wherever one of its inputs defines that.
+  if (IsPlaceholder)
+    return llvm::GlobalAlias::create(
+        GV->getValueType(), 0, llvm::GlobalValue::WeakAnyLinkage, Name, GV, &M);
 
   TypeName->setDLLStorageClass(DLLStorageClass);
   GV->setDLLStorageClass(TypeInfoDLLStorageClass);
@@ -4385,18 +4677,23 @@ ItaniumCXXABI::RTTIUniquenessKind ItaniumCXXABI::classifyRTTIUniqueness(
       Linkage != llvm::GlobalValue::WeakODRLinkage)
     return RUK_Unique;
 
-  // It's only necessary with default visibility.
-  if (CanTy->getVisibility() != DefaultVisibility)
+  // It's only necessary with default visibility, and on Windows Itanium and
+  // NT-POSIX with protected, whose image owns an entity that others share.
+  if (CanTy->getVisibility() != DefaultVisibility &&
+      (CanTy->getVisibility() != ProtectedVisibility ||
+       !CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment()))
     return RUK_Unique;
 
-  // If we're not required to publish this symbol, hide it.
-  if (Linkage == llvm::GlobalValue::LinkOnceODRLinkage)
+  // If we're not required to publish this symbol, hide it. Windows Itanium
+  // and NT-POSIX publish it, so that a link can bind the images it joins to
+  // one copy.
+  if (Linkage == llvm::GlobalValue::LinkOnceODRLinkage &&
+      !CGM.getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
     return RUK_NonUniqueHidden;
 
   // If we're required to publish this symbol, as we might be under an
   // explicit instantiation, leave it with default visibility but
   // enable string-comparisons.
-  assert(Linkage == llvm::GlobalValue::WeakODRLinkage);
   return RUK_NonUniqueVisible;
 }
 

@@ -1258,6 +1258,14 @@ void CodeGenModule::Release() {
   }
   if (LangOpts.Sanitize.has(SanitizerKind::KCFI))
     finalizeKCFITypes();
+  // On Windows Itanium and NT-POSIX a C++ object records the revision of the
+  // C++ ABI it was compiled for, which fixes how its type_info objects compare
+  // and how it passes and returns classes, so that a link with an object
+  // compiled for another revision fails.
+  if (LangOpts.CPlusPlus &&
+      getTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !LangOpts.isCompatibleWith(LangOptions::ClangABI::Ver23))
+    AddDetectMismatch("_WIN_ITANIUM_CXX_ABI", "1");
   emitAtAvailableLinkGuard();
   if (Context.getTargetInfo().getTriple().isWasm())
     EmitMainVoidAlias();
@@ -4025,11 +4033,23 @@ void CodeGenModule::AppendLinkerOptions(StringRef Opts) {
   LinkerOptionsMetadata.push_back(llvm::MDNode::get(getLLVMContext(), MDOpts));
 }
 
+void CodeGenModule::AppendLinkFact(StringRef Opts) {
+  auto *MDOpts = llvm::MDString::get(getLLVMContext(), Opts);
+  getModule()
+      .getOrInsertNamedMetadata("llvm.linker.options")
+      ->addOperand(llvm::MDNode::get(getLLVMContext(), MDOpts));
+}
+
 void CodeGenModule::AddDetectMismatch(StringRef Name, StringRef Value) {
   llvm::SmallString<32> Opt;
   getTargetCodeGenInfo().getDetectMismatchOption(Name, Value, Opt);
   if (Opt.empty())
     return;
+  // On Windows Itanium and NT-POSIX a mismatch record guards the ABI that the
+  // object was compiled for, and -fno-autolink drops only the names of
+  // libraries, as MSVC's /Zl does.
+  if (getTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    return AppendLinkFact(Opt);
   auto *MDOpts = llvm::MDString::get(getLLVMContext(), Opt);
   LinkerOptionsMetadata.push_back(llvm::MDNode::get(getLLVMContext(), MDOpts));
 }

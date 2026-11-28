@@ -8,6 +8,11 @@
 
 // UNSUPPORTED: no-rtti
 
+// On Windows Itanium and NT-POSIX the compiler packs the length of a type name
+// into the pointer to it, which only the NonUniqueARMRTTIBit implementation
+// reads.
+// UNSUPPORTED: target={{.+}}-windows-{{itanium|ntposix}}
+
 // RUN: %{cxx} %s %{flags} %{compile_flags} -c -o %t.tu1.o -DTU1 -D_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2
 // RUN: %{cxx} %s %{flags} %{compile_flags} -c -o %t.tu2.o -DTU2 -D_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2
 // RUN: %{cxx} %s %{flags} %{compile_flags} -c -o %t.main.o -DMAIN -D_LIBCPP_TYPEINFO_COMPARISON_IMPLEMENTATION=2

@@ -71,7 +71,11 @@ static inline bool is_equal(const std::type_info* x, const std::type_info* y, bo
   if (!use_strcmp)
     return *x == *y;
   // Still allow pointer equality to short circut.
+#if defined(_LIBCPP_TYPEINFO_NAME_HAS_LENGTH)
+  return x == y || __cxxabiv1::__shim_type_info::equal_names(x, y);
+#else
   return x == y || strcmp(x->name(), y->name()) == 0;
+#endif
 }
 
 // Whether the pointee of either pointer or pointer to member type, or the class
