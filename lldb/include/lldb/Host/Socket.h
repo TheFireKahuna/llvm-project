@@ -21,7 +21,7 @@
 #include "lldb/Utility/IOObject.h"
 #include "lldb/Utility/Status.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/Pipe.h"
 #include "lldb/Host/windows/windows.h"
 #include <winsock2.h>
@@ -34,7 +34,7 @@ class StringRef;
 
 namespace lldb_private {
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 typedef SOCKET NativeSocket;
 typedef lldb::pipe_t shared_fd_t;
 #else
@@ -58,7 +58,7 @@ public:
   static Status GetNativeSocket(shared_fd_t fd, NativeSocket &socket);
 
 private:
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   Pipe m_socket_pipe;
   NativeSocket m_socket;
 #endif

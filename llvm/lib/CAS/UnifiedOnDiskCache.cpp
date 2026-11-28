@@ -416,7 +416,7 @@ Expected<ValidationResult> UnifiedOnDiskCache::validateIfNeeded(
     return std::move(E);
 
   std::shared_ptr<ondisk::OnDiskCASLogger> Logger;
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (Error E =
           ondisk::OnDiskCASLogger::openIfEnabled(RootPath).moveInto(Logger))
     return std::move(E);
@@ -464,7 +464,7 @@ Expected<ValidationResult> UnifiedOnDiskCache::recover(StringRef RootPath) {
     return std::move(E);
 
   std::shared_ptr<ondisk::OnDiskCASLogger> Logger;
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (Error E =
           ondisk::OnDiskCASLogger::openIfEnabled(RootPath).moveInto(Logger))
     return std::move(E);
@@ -532,7 +532,7 @@ UnifiedOnDiskCache::open(StringRef RootPath, std::optional<uint64_t> SizeLimit,
     DBDirs->push_back((Twine(DBDirPrefix) + "1").str());
 
   std::shared_ptr<ondisk::OnDiskCASLogger> Logger;
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (Error E =
           ondisk::OnDiskCASLogger::openIfEnabled(RootPath).moveInto(Logger))
     return std::move(E);

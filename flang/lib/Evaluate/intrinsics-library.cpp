@@ -18,6 +18,7 @@
 #include "flang/Common/idioms.h"
 #include "flang/Common/static-multimap-view.h"
 #include "flang/Evaluate/expression.h"
+#include "llvm/Config/llvm-config.h" // for LLVM_RUNTIME_WIN32
 #include <cmath>
 #include <complex>
 #include <functional>
@@ -27,7 +28,7 @@
 #include "flang/Common/float128.h"
 #include "flang/Common/float80.h"
 #include <type_traits>
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #include <unistd.h> // _POSIX_VERSION, _XOPEN_VERSION
 #endif
 
@@ -498,7 +499,7 @@ struct HostRuntimeLibrary<long double, LibraryVersion::LibmExtensions> {
 #endif // __GLIBC__ && (HAS_FLOAT80 || HAS_LDBL128)
 #endif // _POSIX_VERSION >= 200112L || _XOPEN_VERSION >= 600
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 template <> struct HostRuntimeLibrary<double, LibraryVersion::LibmExtensions> {
   using F = FuncPointer<double, double>;
   using FN = FuncPointer<double, int, double>;
@@ -513,7 +514,7 @@ template <> struct HostRuntimeLibrary<double, LibraryVersion::LibmExtensions> {
   static constexpr HostRuntimeMap map{table};
   static_assert(map.Verify(), "map must be sorted");
 };
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 #if HAS_QUADMATHLIB
 template <> struct HostRuntimeLibrary<__float128, LibraryVersion::Libm> {

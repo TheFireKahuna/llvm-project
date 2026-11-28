@@ -361,7 +361,7 @@ if( MSVC )
 endif()
 
 # Use the Unicode (UTF-16) APIs by default on Win32
-if (CMAKE_SYSTEM_NAME MATCHES "Windows")
+if (LLVM_RUNTIME_WIN32)
     add_definitions( -D_UNICODE -DUNICODE )
 endif()
 
@@ -423,7 +423,7 @@ if (APPLE)
   find_library(SECURITY_LIBRARY Security)
 endif()
 
-if( WIN32 AND NOT CYGWIN )
+if( LLVM_RUNTIME_WIN32 )
   set(PURE_WINDOWS 1)
 endif()
 

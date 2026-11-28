@@ -19,10 +19,10 @@
 #endif // ifndef NDEBUG
 
 // Include the platform-specific parts of this class.
-#ifdef LLVM_ON_UNIX
+#ifdef LLVM_RUNTIME_POSIX
 #include "Unix/Memory.inc"
 #endif
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "Windows/Memory.inc"
 #endif
 

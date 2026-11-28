@@ -527,7 +527,7 @@ RcOptions parseRcOptions(ArrayRef<const char *> ArgsArr,
   Opts.Params.ShowIncludes = InputArgs.hasArg(OPT_show_includes);
   if (Opts.Params.NoInclude) {
     // Clear the INLCUDE variable for the external preprocessor
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     ::_putenv("INCLUDE=");
 #else
     ::unsetenv("INCLUDE");

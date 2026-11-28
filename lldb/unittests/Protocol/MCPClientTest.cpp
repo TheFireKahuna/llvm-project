@@ -34,7 +34,7 @@ using namespace lldb_private::transport;
 using namespace lldb_protocol::mcp;
 
 // Flakey, see https://github.com/llvm/llvm-project/issues/152677.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 namespace {
 
@@ -220,4 +220,4 @@ TEST_F(MCPClientTest, ErrorHandler) {
   EXPECT_EQ(message, "kaboom");
 }
 
-#endif // ifndef _WIN32
+#endif // ifndef LLVM_RUNTIME_WIN32

@@ -263,6 +263,11 @@ if(CMAKE_C_COMPILER_ID MATCHES "Clang")
   endif()
 endif()
 
+# CMake has no variable for Windows Itanium as it has MINGW for MinGW.
+if(LLVM_DEFAULT_TARGET_TRIPLE MATCHES "-windows-itanium$")
+  set(WIN32_ITANIUM TRUE)
+endif()
+
 # Determine output and install paths based on LLVM_TARGET_TRIPLE
 if(LLVM_TREE_AVAILABLE)
   # Despite Clang in the name, get_clang_resource_dir does not depend on Clang

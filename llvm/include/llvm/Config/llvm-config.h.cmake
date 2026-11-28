@@ -57,6 +57,15 @@
 /* Define if this is Unixish platform */
 #cmakedefine LLVM_ON_UNIX ${LLVM_ON_UNIX}
 
+/* Define if host code uses the Win32 API and the Windows C runtime */
+#cmakedefine LLVM_RUNTIME_WIN32 ${LLVM_RUNTIME_WIN32}
+
+/* Define if host code uses the POSIX API and a POSIX C runtime */
+#cmakedefine LLVM_RUNTIME_POSIX ${LLVM_RUNTIME_POSIX}
+
+/* Define if the host is Windows with a POSIX runtime (NT-POSIX) */
+#cmakedefine LLVM_RUNTIME_NTPOSIX ${LLVM_RUNTIME_NTPOSIX}
+
 /* Define if we have the Intel JIT API runtime support library */
 #cmakedefine01 LLVM_USE_INTEL_JITEVENTS
 

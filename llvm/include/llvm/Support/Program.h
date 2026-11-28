@@ -35,7 +35,7 @@ const char EnvPathSeparator = ':';
 const char EnvPathSeparator = ';';
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 typedef unsigned long procid_t; // Must match the type of DWORD on Windows.
 typedef void *process_t;        // Must match the type of HANDLE on Windows.
 #else

@@ -37,7 +37,7 @@ class OnDiskCASLoggerTest : public testing::Test {
 protected:
   void SetUp() override {
     auto EnvP = [] {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
       _wgetenv(L"TMP"); // Populate _wenviron, initially is null
       return _wenviron;
 #elif defined(__APPLE__)
@@ -49,7 +49,7 @@ protected:
     ASSERT_TRUE(EnvP);
 
     auto prepareEnvVar = [this](decltype(*EnvP) Var) -> StringRef {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
       // On Windows convert UTF16 encoded variable to UTF8
       auto Len = wcslen(Var);
       ArrayRef<char> Ref{reinterpret_cast<char const *>(Var),
@@ -82,7 +82,7 @@ protected:
   ArrayRef<StringRef> getEnviron() const { return EnvTable; }
 };
 
-#ifndef _WIN32 // windows doesn't support logging yet.
+#ifndef LLVM_RUNTIME_WIN32 // windows doesn't support logging yet.
 
 static void writeToLog(OnDiskCASLogger *Logger, int NumOpens, int NumEntries) {
   StringRef Path = "/fake_cas/index";
@@ -236,4 +236,4 @@ TEST_F(OnDiskCASLoggerTest, MultiProcess) {
   ASSERT_THAT_ERROR(checkLog(Dir.path()), Succeeded());
 }
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

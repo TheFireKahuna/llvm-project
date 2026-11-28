@@ -31,7 +31,7 @@
 #include "lldb/lldb-defines.h"
 #include "llvm/Support/ThreadPool.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/PosixApi.h"
 #endif
 

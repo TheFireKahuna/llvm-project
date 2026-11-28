@@ -236,7 +236,7 @@ std::optional<MemoryBufferRef> elf::readFile(Ctx &ctx, StringRef path) {
   if (remapped) {
     // Use /dev/null to indicate an input file that should be ignored. Change
     // the path to NUL on Windows.
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     if (path == "/dev/null")
       path = "NUL";
 #endif

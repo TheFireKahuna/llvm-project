@@ -23,7 +23,7 @@ public:
 };
 
 // Named pipes are files only on POSIX.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 TEST_F(FileCacheTest, WriteToPipe) {
   Pipe pipe;
   llvm::SmallString<0> name;

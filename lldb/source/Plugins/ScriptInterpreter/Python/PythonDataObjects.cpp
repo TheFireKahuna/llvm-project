@@ -21,7 +21,7 @@
 #include "llvm/Support/ConvertUTF.h"
 #include "llvm/Support/Errno.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #endif
 
@@ -1004,7 +1004,7 @@ bool PythonFile::Check(PyObject *py_obj) {
   return !!r;
 }
 
-#if defined(_WIN32) && !defined(_DLL)
+#if defined(LLVM_RUNTIME_WIN32) && !defined(_DLL)
 // When LLVM is built with a different CRT allocator, it's built against the
 // static C runtime. The official Python builds link to the dynamic C runtime.
 // Since the file descriptors are managed per CRT instance, liblldb and Python

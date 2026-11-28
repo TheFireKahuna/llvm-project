@@ -15,7 +15,7 @@
 
 #include "PipSqueak.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 

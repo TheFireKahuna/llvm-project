@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <vector>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 // Defined in UCRTFormattedIO.c.
 extern "C" void (*llvm_orc_find_ucrt_formatted_io(const char *Name))(void);
 
@@ -55,7 +55,7 @@ int runAsVoidFunction(int (*Func)(void)) { return Func(); }
 int runAsIntFunction(int (*Func)(int), int Arg) { return Func(Arg); }
 
 void registerInlineCRTFunctions() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // No module exports the Universal CRT's formatted I/O, which its headers
   // define inline; this program's definitions stand in for them.
   sys::DynamicLibrary::setProcessSymbolFallback(findUCRTFormattedIO);

@@ -110,8 +110,9 @@ function(llvm_ExternalProject_Add name source_dir)
       list(APPEND ARG_TOOLCHAIN_TOOLS lld llvm-ar llvm-ranlib llvm-nm llvm-objdump)
       if(_cmake_system_name STREQUAL Darwin)
         list(APPEND ARG_TOOLCHAIN_TOOLS llvm-libtool-darwin llvm-lipo)
-      elseif(is_msvc_target)
-        list(APPEND ARG_TOOLCHAIN_TOOLS llvm-lib llvm-rc)
+      elseif(is_msvc_target OR
+             target_triple MATCHES "-windows-(itanium|ntposix)")
+        list(APPEND ARG_TOOLCHAIN_TOOLS llvm-dlltool llvm-lib llvm-rc)
         if (LLVM_ENABLE_LIBXML2)
           list(APPEND ARG_TOOLCHAIN_TOOLS llvm-mt)
         endif()
@@ -386,6 +387,13 @@ function(llvm_ExternalProject_Add name source_dir)
     list(APPEND compiler_args -DCMAKE_CXX_COMPILER_TARGET=${ARG_TARGET_TRIPLE})
     list(APPEND compiler_args -DCMAKE_Fortran_COMPILER_TARGET=${ARG_TARGET_TRIPLE})
     list(APPEND compiler_args -DCMAKE_ASM_COMPILER_TARGET=${ARG_TARGET_TRIPLE})
+  endif()
+
+  # CMake has no rules for Windows Itanium or NT-POSIX and applies MinGW's.
+  if(target_triple MATCHES "-windows-(itanium|ntposix)")
+    cmake_path(SET rules NORMALIZE
+      "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/../platforms/WindowsItaniumRules.cmake")
+    list(APPEND compiler_args -DCMAKE_USER_MAKE_RULES_OVERRIDE=${rules})
   endif()
 
   if(CMAKE_VERBOSE_MAKEFILE)

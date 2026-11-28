@@ -2632,7 +2632,7 @@ void PruneThreadPlans();
 
   void CalculateExecutionContext(ExecutionContext &exe_ctx) override;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   /// Associates a ConPTY read and write HANDLEs with the process' STDIO
   /// handling and configures an asynchronous reading of that ConPTY's stdout
   /// HANDLE.
@@ -2684,7 +2684,7 @@ void PruneThreadPlans();
   void SetSTDIOFileDescriptor(int file_descriptor,
                               std::optional<int> secondary_fd = std::nullopt);
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   /// Associates the primary side of \a pty with the process' STDIO handling.
   /// The process takes ownership of both of \a pty's descriptors.
   ///

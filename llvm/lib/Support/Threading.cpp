@@ -26,7 +26,7 @@
 //===----------------------------------------------------------------------===//
 
 #if LLVM_ENABLE_THREADS == 0 ||                                                \
-    (!defined(_WIN32) && !defined(HAVE_PTHREAD_H))
+    (!defined(LLVM_RUNTIME_WIN32) && !defined(HAVE_PTHREAD_H))
 
 using namespace llvm;
 
@@ -53,10 +53,10 @@ int llvm::get_physical_cores() { return -1; }
 static int computeHostNumHardwareThreads();
 
 // Include the platform-specific parts of this class.
-#ifdef LLVM_ON_UNIX
+#ifdef LLVM_RUNTIME_POSIX
 #include "Unix/Threading.inc"
 #endif
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "Windows/Threading.inc"
 #endif
 

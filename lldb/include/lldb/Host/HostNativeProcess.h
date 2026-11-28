@@ -9,7 +9,9 @@
 #ifndef LLDB_HOST_HOSTNATIVEPROCESS_H
 #define LLDB_HOST_HOSTNATIVEPROCESS_H
 
-#if defined(_WIN32)
+#include "llvm/Config/llvm-config.h"
+
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/HostProcessWindows.h"
 namespace lldb_private {
 typedef HostProcessWindows HostNativeProcess;

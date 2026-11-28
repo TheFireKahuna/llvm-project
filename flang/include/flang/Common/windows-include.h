@@ -13,7 +13,7 @@
 #ifndef FORTRAN_COMMON_WINDOWS_INCLUDE_H_
 #define FORTRAN_COMMON_WINDOWS_INCLUDE_H_
 
-#ifdef _WIN32
+#if defined(_WIN32) && !defined(__NTPOSIX__)
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -26,6 +26,6 @@
 
 #include <windows.h>
 
-#endif // _WIN32
+#endif // _WIN32 && !__NTPOSIX__
 
 #endif // FORTRAN_COMMON_WINDOWS_INCLUDE_H_

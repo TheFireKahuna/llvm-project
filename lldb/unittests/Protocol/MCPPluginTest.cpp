@@ -44,7 +44,7 @@ using namespace lldb_private;
 using namespace lldb_private::mcp;
 using namespace lldb_protocol::mcp;
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 namespace {
 class MCPPluginTest : public testing::Test {

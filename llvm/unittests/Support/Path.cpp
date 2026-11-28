@@ -30,7 +30,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Chrono.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
@@ -442,7 +442,7 @@ TEST(Support, AbsolutePathIteratorEnd) {
   }
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 std::string getEnvWin(const wchar_t *Var) {
   std::string expected;
   if (wchar_t const *path = ::_wgetenv(Var)) {
@@ -482,7 +482,7 @@ public:
 
 TEST(Support, HomeDirectory) {
   std::string expected;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   expected = getEnvWin(L"USERPROFILE");
 #else
   if (char const *path = ::getenv("HOME"))
@@ -566,7 +566,7 @@ TEST(Support, ConfigDirectory) {
 }
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 TEST(Support, ConfigDirectory) {
   std::string Expected = getEnvWin(L"LOCALAPPDATA");
   // Do not try to test it if we don't know what to expect.
@@ -626,7 +626,7 @@ TEST(Support, TempDirectory) {
   EXPECT_TRUE(!TempDir.empty());
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 static std::string path2regex(std::string Path) {
   size_t Pos = 0;
   bool Forward = path::get_separator()[0] == '/';
@@ -995,7 +995,7 @@ TEST_F(FileSystemTest, StatusTrailingSeparator) {
   fs::file_status Status;
   EXPECT_TRUE(fs::status(FilePath + "/", Status));
   EXPECT_FALSE(fs::is_regular_file(FilePath + "/"));
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   EXPECT_TRUE(fs::status(FilePath + "\\", Status));
 #endif
   ASSERT_NO_ERROR(fs::status(TestDirectory + "/", Status));
@@ -1004,7 +1004,7 @@ TEST_F(FileSystemTest, StatusTrailingSeparator) {
   ASSERT_NO_ERROR(fs::remove(FilePath));
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 TEST_F(FileSystemTest, StatusWin32Names) {
   // status() reads a name as the Win32 layer does: a single trailing dot is
   // dropped from every segment, and a reserved device name in the last one
@@ -1281,7 +1281,7 @@ TEST_F(FileSystemTest, CreateDir) {
   ::umask(OldUmask);
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Prove that create_directories() can handle a pathname > 248 characters,
   // which is the documented limit for CreateDirectory().
   // (248 is MAX_PATH subtracting room for an 8.3 filename.)
@@ -2214,7 +2214,7 @@ TEST_F(FileSystemTest, SetLastAccessAndModificationTimeDirectory) {
 TEST_F(FileSystemTest, OpenDirectoryAsFileForRead) {
   std::string Buf(5, '?');
   Expected<fs::file_t> FD = fs::openNativeFileForRead(TestDirectory);
-#if defined(_WIN32) || defined(_AIX) || defined(__MVS__)
+#if defined(LLVM_RUNTIME_WIN32) || defined(_AIX) || defined(__MVS__)
   EXPECT_EQ(errorToErrorCode(FD.takeError()), errc::is_a_directory);
 #else
   ASSERT_THAT_EXPECTED(FD, Succeeded());
@@ -2824,7 +2824,7 @@ TEST_F(FileSystemTest, permissions) {
 #endif
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 TEST_F(FileSystemTest, widenPath) {
   const std::wstring LongPathPrefix(L"\\\\?\\");
 
@@ -2918,7 +2918,7 @@ TEST_F(FileSystemTest, widenPath) {
 }
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 /// Checks whether short 8.3 form names are enabled in the given UTF-8 path.
 static llvm::Expected<bool> areShortNamesEnabled(llvm::StringRef Path8) {
   // Create a directory under Path8 with a name long enough that Windows will

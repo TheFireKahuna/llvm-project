@@ -17,7 +17,7 @@
 #include "llvm/Support/Path.h"
 #include "llvm/Support/raw_ostream.h"
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 #include <pwd.h>
 #endif
 
@@ -47,7 +47,7 @@ bool StandardTildeExpressionResolver::ResolvePartial(StringRef Expr,
   assert(Expr.empty() || Expr[0] == '~');
 
   Output.clear();
-#if defined(_WIN32) || defined(__ANDROID__)
+#if defined(LLVM_RUNTIME_WIN32) || defined(__ANDROID__)
   return false;
 #else
   if (Expr.empty())

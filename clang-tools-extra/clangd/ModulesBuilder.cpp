@@ -202,7 +202,7 @@ std::string getModuleFileVersionTimestamp() {
                       std::chrono::seconds(1);
   const std::time_t CalendarTime = std::chrono::system_clock::to_time_t(Now);
   std::tm LocalTime;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   localtime_s(&LocalTime, &CalendarTime);
 #else
   localtime_r(&CalendarTime, &LocalTime);

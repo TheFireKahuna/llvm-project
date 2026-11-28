@@ -21,7 +21,7 @@
 #include "llvm/Support/Error.h"
 #include "llvm/Support/ManagedStatic.h"
 #include "llvm/Support/raw_ostream.h"
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #else
 #include "Unix/Unix.h"
@@ -68,7 +68,7 @@ RandomNumberGenerator::result_type RandomNumberGenerator::operator()() {
 
 // Get random vector of specified size
 std::error_code llvm::getRandomBytes(void *Buffer, size_t Size) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   if (BCRYPT_SUCCESS(BCryptGenRandom(nullptr, static_cast<PUCHAR>(Buffer), Size,
                                      BCRYPT_USE_SYSTEM_PREFERRED_RNG)))
     return std::error_code();

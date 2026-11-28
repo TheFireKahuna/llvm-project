@@ -16,7 +16,7 @@
 #include "lldb/Utility/Listener.h"
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/Status.h"
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #endif
 
@@ -296,7 +296,7 @@ lldb::thread_result_t ThreadedCommunication::ReadThread() {
         disconnect = GetCloseOnEOF();
         done = true;
       }
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
       if (error.GetType() == eErrorTypeWin32 &&
           error.GetError() == ERROR_INVALID_HANDLE) {
         // ERROR_INVALID_HANDLE on a pipe is usually caused by a remote shutdown

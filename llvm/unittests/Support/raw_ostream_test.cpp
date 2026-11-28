@@ -660,7 +660,7 @@ TEST(raw_ostreamTest, writeToDevNull) {
   EXPECT_TRUE(DevNullIsUsed);
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 TEST(raw_ostreamTest, writeToNUL) {
   // raw_null_ostream never touches the filesystem, so no "NUL.temp-stream-*"
   // file should exist in the CWD while Write() runs.

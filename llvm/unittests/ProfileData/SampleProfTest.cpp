@@ -38,10 +38,10 @@
 #include <system_error>
 #include <vector>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "llvm/Support/Windows/WindowsSupport.h"
 #include "llvm/Support/WindowsError.h"
-#elif defined(LLVM_ON_UNIX) && !defined(__MVS__)
+#elif defined(LLVM_RUNTIME_POSIX) && !defined(__MVS__)
 #include <sys/mman.h>
 #endif
 
@@ -113,7 +113,8 @@ struct GuardedMemoryBuffer {
 
 /// Return whether this host exposes an API for no-access memory pages.
 static constexpr bool guardPagesSupported() {
-#if defined(_WIN32) || (defined(LLVM_ON_UNIX) && !defined(__MVS__))
+#if defined(LLVM_RUNTIME_WIN32) ||                                             \
+    (defined(LLVM_RUNTIME_POSIX) && !defined(__MVS__))
   return true;
 #else
   return false;
@@ -122,13 +123,13 @@ static constexpr bool guardPagesSupported() {
 
 /// Make \p GuardPage inaccessible so an out-of-bounds read faults immediately.
 static std::error_code protectGuardPage(sys::MemoryBlock GuardPage) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   DWORD OldProtection;
   if (!VirtualProtect(GuardPage.base(), GuardPage.allocatedSize(),
                       PAGE_NOACCESS, &OldProtection))
     return mapLastWindowsError();
   return std::error_code();
-#elif defined(LLVM_ON_UNIX) && !defined(__MVS__)
+#elif defined(LLVM_RUNTIME_POSIX) && !defined(__MVS__)
   if (::mprotect(GuardPage.base(), GuardPage.allocatedSize(), PROT_NONE))
     return errnoAsErrorCode();
   return std::error_code();

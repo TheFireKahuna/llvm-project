@@ -20,7 +20,7 @@
 #include <termios.h>
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #endif
 
@@ -405,7 +405,7 @@ llvm::Error Terminal::SetHardwareFlowControl(bool enabled) {
 }
 
 bool Terminal::SupportsUnicode() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   return ::GetFileType(GetStdHandle(STD_OUTPUT_HANDLE)) == FILE_TYPE_CHAR;
 #else
   static std::optional<bool> g_result;

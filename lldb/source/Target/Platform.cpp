@@ -1154,7 +1154,7 @@ lldb::ProcessSP Platform::DebugProcess(ProcessLaunchInfo &launch_info,
         // been used where the secondary side was given as the file to open for
         // stdin/out/err after we have already opened the primary so we can
         // read/write stdin/out/err.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
         if (launch_info.GetPTY().GetPrimaryFileDescriptor() !=
             PseudoTerminal::invalid_fd) {
           process_sp->SetSTDIOPseudoTerminal(launch_info.GetPTY());

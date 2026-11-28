@@ -5048,7 +5048,7 @@ void Process::SetSTDIOFileDescriptor(int fd, std::optional<int> secondary_fd) {
   }
 }
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
 void Process::SetSTDIOPseudoTerminal(PseudoTerminal &pty) {
   // Take a descriptor for the secondary side so it is kept alive.
   if (llvm::Error err = pty.OpenSecondary(O_RDWR | O_NOCTTY | O_CLOEXEC))

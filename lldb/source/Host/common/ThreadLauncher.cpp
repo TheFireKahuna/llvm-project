@@ -12,7 +12,7 @@
 #include "lldb/Host/HostThread.h"
 #include "lldb/Utility/Log.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/windows.h"
 #endif
 
@@ -29,7 +29,7 @@ ThreadLauncher::LaunchThread(llvm::StringRef name,
   // successful.
   auto info_up = std::make_unique<HostThreadCreateInfo>(name.str(), impl);
   lldb::thread_t thread;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   thread = (lldb::thread_t)::_beginthreadex(
       0, (unsigned)min_stack_byte_size,
       HostNativeThread::ThreadCreateTrampoline, info_up.get(), 0, NULL);

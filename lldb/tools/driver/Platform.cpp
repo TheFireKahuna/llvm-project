@@ -6,8 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Config/llvm-config.h"
+
 // this file is only relevant for Visual C++
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 
 #include <cassert>
 #include <cstdlib>

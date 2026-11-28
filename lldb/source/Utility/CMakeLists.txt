@@ -15,7 +15,7 @@ endif()
 
 list(APPEND LLDB_SYSTEM_LIBS ${CMAKE_DL_LIBS})
 
-if (CMAKE_SYSTEM_NAME MATCHES "Windows")
+if (LLVM_RUNTIME_WIN32)
   list(APPEND LLDB_SYSTEM_LIBS ws2_32 rpcrt4)
 endif ()
 

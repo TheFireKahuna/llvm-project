@@ -28,7 +28,7 @@
 #include <string>
 #include <vector>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <windows.h>
 #endif
 
@@ -82,7 +82,7 @@ static cl::opt<HipApiVersion> HipApi(
                           "Force unversioned API")),
     cl::init(HipApiVersion::Auto), cl::cat(AMDGPUArchByHIPCategory));
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 // Return candidate bin/ directories by walking parent dirs of ExeDir.
 SmallVector<std::string, 8> getCandidateBinPaths(StringRef ExeDir) {
   SmallVector<std::string, 8> Paths;
@@ -189,7 +189,7 @@ bool compareVersions(StringRef A, StringRef B) {
 //
 // On Linux, always use default libamdhip64.so.
 static std::pair<std::string, bool> findNewestHIPDLL() {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   StringRef HipDLLPrefix = "amdhip64_";
   StringRef HipDLLSuffix = ".dll";
 
@@ -220,7 +220,7 @@ static std::pair<std::string, bool> findNewestHIPDLL() {
 #endif
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 // Pre-load DLL with LOAD_WITH_ALTERED_SEARCH_PATH so transitive deps
 // resolve from its directory. Pinned so getPermanentLibrary reuses it.
 static void primeLibraryLoad(StringRef Path) {
@@ -265,7 +265,7 @@ int printGPUsByHIP() {
   }
 
   std::string ErrMsg;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Prime DLL load so transitive deps resolve from its directory.
   if (!IsFallback)
     primeLibraryLoad(DynamicHIPPath);

@@ -11,7 +11,7 @@
 
 #include "lldb/Host/Config.h"
 #include "llvm/Support/Compiler.h"
-#if !defined(_WIN32)
+#if !defined(_WIN32) || defined(__NTPOSIX__)
 #error "windows/PosixApi.h being #included on non Windows system!"
 #endif
 
@@ -58,7 +58,7 @@
 #define S_IRWXO 0
 #endif
 
-#ifdef _MSC_VER
+#if defined(_MSC_VER) || defined(_WIN32_ITANIUM)
 
 // PRIxxx format macros for printf()
 #include <cinttypes>
@@ -77,7 +77,7 @@ typedef int pid_t;
 #define STDOUT_FILENO 1
 #define STDERR_FILENO 2
 
-#endif // _MSC_VER
+#endif // _MSC_VER || _WIN32_ITANIUM
 
 // empty functions
 inline int posix_openpt(int flag) { LLVM_BUILTIN_UNREACHABLE; }

@@ -906,7 +906,7 @@ TEST(OnDiskBackendTest, DiscardAfterWriteError) {
 
 // On Windows, RunInterruptHandlers also runs the signal handlers, and only
 // once per process.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 TEST(OnDiskBackendTest, NoDiscardOnSignal) {
   OnDiskOutputBackendProvider Provider;
   auto Backend = Provider.createBackend();

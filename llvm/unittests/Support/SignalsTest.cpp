@@ -20,7 +20,7 @@
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -75,7 +75,7 @@ TEST(SignalsTest, SymbolizerMarkupDisabled) {
 
 #endif // defined(HAVE_BACKTRACE) && ...
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 extern const char *TestMainArgv0;
 static int SignalsTestAnchor;
 
@@ -103,4 +103,4 @@ TEST(SignalsTest, LoadsDbgHelpOnFirstStackTrace) {
   ::SetEnvironmentVariableW(L"LLVM_SIGNALS_TEST_CHILD", nullptr);
   EXPECT_EQ(3, RC);
 }
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

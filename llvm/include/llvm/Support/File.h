@@ -14,12 +14,14 @@
 #ifndef LLVM_SUPPORT_FILE_H
 #define LLVM_SUPPORT_FILE_H
 
+#include "llvm/Config/llvm-config.h"
+
 namespace llvm::sys::fs {
 
 /// This class wraps the platform specific file handle/descriptor type to
 /// provide an unified representation.
 struct file_t {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   /// A Win32 HANDLE is a typedef of void*
   using value_type = void *;
   /// Value for an invalid file handle INVALID_FILE_HANDLE.

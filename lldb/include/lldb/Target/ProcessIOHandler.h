@@ -46,7 +46,7 @@ protected:
   bool m_is_running = false;
 };
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 using HANDLE = void *;
 
@@ -96,7 +96,7 @@ private:
   bool m_is_running = false;
 };
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 } // namespace lldb_private
 

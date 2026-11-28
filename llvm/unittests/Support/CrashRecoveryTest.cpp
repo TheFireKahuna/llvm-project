@@ -19,7 +19,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #define WIN32_LEAN_AND_MEAN
 #define NOGDI
 #include <windows.h>
@@ -112,7 +112,7 @@ TEST(CrashRecoveryTest, LimitedStackTrace) {
   EXPECT_EQ(std::string::npos, Res.find("#1"));
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 static void raiseIt() {
   RaiseException(123, EXCEPTION_NONCONTINUABLE, 0, NULL);
 }

@@ -9,9 +9,10 @@
 #ifndef LLDB_HOST_SOCKETADDRESS_H
 #define LLDB_HOST_SOCKETADDRESS_H
 
+#include "llvm/Config/llvm-config.h"
 #include <cstdint>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/windows.h"
 #include <winsock2.h>
 #include <ws2tcpip.h>

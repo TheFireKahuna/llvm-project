@@ -14,7 +14,7 @@
 #include "llvm/Support/Process.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
 
@@ -119,7 +119,7 @@ TEST(rename, FileOpenedForReadingCanBeReplaced) {
   ASSERT_NO_ERROR(fs::remove(TestDirectory.str()));
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #ifndef FILE_SUPPORTS_POSIX_UNLINK_RENAME
 #define FILE_SUPPORTS_POSIX_UNLINK_RENAME 0x00000400
 #endif

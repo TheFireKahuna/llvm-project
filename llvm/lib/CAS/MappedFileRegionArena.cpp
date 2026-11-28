@@ -260,7 +260,7 @@ Expected<MappedFileRegionArena> MappedFileRegionArena::create(
   {
     std::error_code EC;
     const char *Name = nullptr;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     // Give the file mapping a name to ensure the same mappings are
     // shared across processes.
     std::string MapName = Result.Path;
@@ -332,7 +332,7 @@ void MappedFileRegionArena::destroyImpl() {
     }
   }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   // Always unmap to
   // - avoid address space leak;
   // - avoid data loss for sparse files.

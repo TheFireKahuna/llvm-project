@@ -44,7 +44,7 @@ public:
 
   bool AddLibrary(void *Handle, bool IsProcess = false, bool CanClose = true,
                   bool AllowDuplicates = false) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     assert((Handle == this ? IsProcess : !IsProcess) && "Bad Handle.");
 #endif
     assert((!AllowDuplicates || !CanClose) &&
@@ -58,7 +58,7 @@ public:
       }
       Handles.push_back(Handle);
     } else {
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
       if (Process != &Invalid) {
         if (CanClose)
           DLClose(Process);
@@ -141,7 +141,7 @@ std::atomic<void *(*)(const char *)> ProcessSymbolFallback;
 
 } // namespace
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 #include "Windows/DynamicLibrary.inc"
 

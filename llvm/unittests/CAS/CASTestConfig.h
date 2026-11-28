@@ -15,7 +15,7 @@
 #include "gtest/gtest.h"
 #include <memory>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/VersionTuple.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
 #endif
@@ -110,7 +110,7 @@ protected:
   }
 
   void SetUp() override {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
     // Temporarily disable CAS tests on pre windows 11 OS.
     if (llvm::GetWindowsOSVersion() < llvm::VersionTuple(10, 0, 0, 22000))
       GTEST_SKIP() << "CAS tests skipped on older windows version";

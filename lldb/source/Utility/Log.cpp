@@ -30,7 +30,7 @@
 #include <utility>
 
 #include <cassert>
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <process.h>
 #else
 #include <unistd.h>

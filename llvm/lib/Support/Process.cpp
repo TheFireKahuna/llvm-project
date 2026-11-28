@@ -118,9 +118,9 @@ bool Process::AreCoreFilesPrevented() { return coreFilesPrevented; }
 }
 
 // Include the platform-specific parts of this class.
-#ifdef LLVM_ON_UNIX
+#ifdef LLVM_RUNTIME_POSIX
 #include "Unix/Process.inc"
 #endif
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "Windows/Process.inc"
 #endif

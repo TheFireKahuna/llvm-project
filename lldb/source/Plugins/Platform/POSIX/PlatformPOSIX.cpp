@@ -492,7 +492,7 @@ lldb::ProcessSP PlatformPOSIX::DebugProcess(ProcessLaunchInfo &launch_info,
   if (error.Success()) {
     // Hook up process PTY if we have one (which we should for local debugging
     // with llgs).
-#ifndef _WIN32 // TODO: Implement on Windows
+#ifndef LLVM_RUNTIME_WIN32 // TODO: Implement on Windows
     if (launch_info.GetPTY().GetPrimaryFileDescriptor() !=
         PseudoTerminal::invalid_fd) {
       process_sp->SetSTDIOPseudoTerminal(launch_info.GetPTY());

@@ -36,7 +36,7 @@ using namespace lldb_private;
 using namespace lldb_protocol::mcp;
 using namespace lldb_mcp;
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 namespace {
 
@@ -645,4 +645,4 @@ TEST_F(MultiplexerTest, SessionsListSurvivesBackendDisconnect) {
   EXPECT_THAT(text, testing::Not(testing::HasSubstr("instance/200")));
 }
 
-#endif // ifndef _WIN32
+#endif // ifndef LLVM_RUNTIME_WIN32

@@ -1357,7 +1357,7 @@ Error ExpansionContext::expandResponseFiles(
 bool cl::expandResponseFiles(int Argc, const char *const *Argv,
                              const char *EnvVar, StringSaver &Saver,
                              SmallVectorImpl<const char *> &NewArgv) {
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   auto Tokenize = cl::TokenizeWindowsCommandLine;
 #else
   auto Tokenize = cl::TokenizeGNUCommandLine;
@@ -1528,7 +1528,7 @@ bool CommandLineParser::ParseCommandLineOptions(
   // Expand response files.
   SmallVector<const char *, 20> newArgv(argv, argv + argc);
   BumpPtrAllocator A;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   auto Tokenize = cl::TokenizeWindowsCommandLine;
 #else
   auto Tokenize = cl::TokenizeGNUCommandLine;

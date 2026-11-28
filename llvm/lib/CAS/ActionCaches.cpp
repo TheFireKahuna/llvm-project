@@ -155,7 +155,7 @@ OnDiskActionCache::OnDiskActionCache(
 Expected<std::unique_ptr<OnDiskActionCache>>
 OnDiskActionCache::create(StringRef AbsPath) {
   std::shared_ptr<ondisk::OnDiskCASLogger> Logger;
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   if (Error E =
           ondisk::OnDiskCASLogger::openIfEnabled(AbsPath).moveInto(Logger))
     return std::move(E);

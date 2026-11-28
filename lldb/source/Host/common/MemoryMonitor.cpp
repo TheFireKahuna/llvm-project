@@ -27,7 +27,7 @@
 #include <unistd.h>
 #endif
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include <atomic>
 #include <windows.h>
 #endif
@@ -165,7 +165,7 @@ private:
   int m_stop_fd = -1;
   HostThread m_memory_monitor_thread;
 };
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 
 class MemoryMonitorWindows : public MemoryMonitor {
 public:
@@ -216,7 +216,7 @@ private:
 std::unique_ptr<MemoryMonitor> MemoryMonitor::Create(Callback callback) {
 #if defined(__linux__)
   return std::make_unique<MemoryMonitorLinux>(std::move(callback));
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
   return std::make_unique<MemoryMonitorWindows>(std::move(callback));
 #else
   return nullptr;

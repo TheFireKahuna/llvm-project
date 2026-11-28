@@ -25,7 +25,7 @@ namespace llvm {
 
 class raw_socket_stream;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 /// Ensures proper initialization and cleanup of winsock resources
 ///
 /// Make sure that calls to WSAStartup and WSACleanup are balanced.
@@ -34,7 +34,7 @@ public:
   LLVM_ABI WSABalancer();
   LLVM_ABI ~WSABalancer();
 };
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 /// Manages a passive (i.e., listening) UNIX domain socket
 ///
@@ -70,9 +70,9 @@ class ListeningSocket {
 
   ListeningSocket(int SocketFD, StringRef SocketPath, int PipeFD[2]);
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   WSABalancer _;
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 public:
   LLVM_ABI ~ListeningSocket();
@@ -120,9 +120,9 @@ public:
 
 class LLVM_ABI raw_socket_stream : public raw_fd_stream {
   uint64_t current_pos() const override { return 0; }
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   WSABalancer _;
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 public:
   raw_socket_stream(int SocketFD);

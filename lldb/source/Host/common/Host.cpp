@@ -6,6 +6,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/Config/llvm-config.h" // for LLVM_RUNTIME_WIN32/POSIX
+
 // C includes
 #include <cctype>
 #include <cerrno>
@@ -13,7 +15,7 @@
 #include <cstdlib>
 #include <sys/types.h>
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #include <dlfcn.h>
 #include <grp.h>
 #include <netdb.h>
@@ -59,12 +61,11 @@
 #include "lldb/lldb-private-forward.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
-#include "llvm/Config/llvm-config.h" // for LLVM_ON_UNIX
 #include "llvm/Support/Errno.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Program.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/ConnectionGenericFileWindows.h"
 #include "lldb/Host/windows/ProcessLauncherWindows.h"
 #elif !defined(__EMSCRIPTEN__)
@@ -86,7 +87,7 @@ int __pthread_fchdir(int fildes);
 using namespace lldb;
 using namespace lldb_private;
 
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(LLVM_RUNTIME_WIN32)
 // The system log is currently only meaningful on Darwin and Windows.
 // On Darwin, this means os_log. On Windows this means Events Viewer.
 // The meaning of a "system log" isn't as clear on other platforms, and
@@ -111,7 +112,7 @@ void LogChannelSystem::Initialize() {
 
 void LogChannelSystem::Terminate() { g_system_log.Disable(); }
 
-#if !defined(__APPLE__) && !defined(_WIN32)
+#if !defined(__APPLE__) && !defined(LLVM_RUNTIME_WIN32)
 extern "C" char **environ;
 
 Environment Host::GetEnvironment() { return Environment(environ); }
@@ -238,11 +239,11 @@ MonitorChildProcessThreadFunction(::pid_t pid,
   return nullptr;
 }
 
-#endif // #if !defined (__APPLE__) && !defined (_WIN32)
+#endif // #if !defined (__APPLE__) && !defined (LLVM_RUNTIME_WIN32)
 
 lldb::pid_t Host::GetCurrentProcessID() { return ::getpid(); }
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 lldb::thread_t Host::GetCurrentThread() {
   return lldb::thread_t(pthread_self());
@@ -346,7 +347,7 @@ bool Host::GetBundleDirectory(const FileSpec &file, FileSpec &bundle) {
 bool Host::ResolveExecutableInBundle(FileSpec &file) { return false; }
 #endif
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 
 FileSpec Host::GetModuleFileSpecForHostAddress(const void *host_addr) {
   FileSpec module_filespec;
@@ -584,7 +585,7 @@ Status Host::RunShellCommand(llvm::StringRef shell_path, const Args &args,
 #if !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 Status Host::LaunchProcess(ProcessLaunchInfo &launch_info) {
   std::unique_ptr<ProcessLauncher> delegate_launcher;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   delegate_launcher.reset(new ProcessLauncherWindows());
 #else
   delegate_launcher.reset(new ProcessLauncherPosixFork());
@@ -602,7 +603,7 @@ Status Host::LaunchProcess(ProcessLaunchInfo &launch_info) {
 }
 #endif // !defined(__APPLE__) && !defined(__EMSCRIPTEN__)
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 void Host::Kill(lldb::pid_t pid, int signo) { ::kill(pid, signo); }
 
 #endif
@@ -623,7 +624,7 @@ llvm::Error Host::OpenURL(llvm::StringRef url) {
 
   LLDB_LOG(GetLog(LLDBLog::Host), "Opening URL: {0}", url);
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   // TODO: open the URL with ShellExecuteW (needs a shell32 link dependency).
   return llvm::errorCodeToError(
       std::error_code(ENOTSUP, std::system_category()));
@@ -665,14 +666,14 @@ std::string Host::URLEncode(llvm::StringRef str) {
 }
 
 std::unique_ptr<Connection> Host::CreateDefaultConnection(llvm::StringRef url) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   if (url.starts_with("file://"))
     return std::unique_ptr<Connection>(new ConnectionGenericFile());
 #endif
   return std::unique_ptr<Connection>(new ConnectionFileDescriptor());
 }
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 WaitStatus WaitStatus::Decode(int wstatus) {
   if (WIFEXITED(wstatus))
     return {Exit, uint8_t(WEXITSTATUS(wstatus))};

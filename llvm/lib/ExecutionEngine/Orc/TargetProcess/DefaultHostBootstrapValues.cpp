@@ -24,7 +24,7 @@
 
 namespace llvm::orc {
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 static shared::CWrapperFunctionBuffer
 restrictCallTargetsAllocAction(const char *ArgData, size_t ArgSize) {
   using namespace shared;
@@ -44,7 +44,7 @@ restrictCallTargetsAllocAction(const char *ArgData, size_t ArgSize) {
              })
           .release();
 }
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 void addDefaultBootstrapValuesForHostProcess(
     StringMap<std::vector<char>> &BootstrapMap,
@@ -63,10 +63,10 @@ void addDefaultBootstrapValuesForHostProcess(
       rt::RegisterJITLoaderGDBAllocActionName)] =
       ExecutorAddr::fromPtr(&llvm_orc_registerJITLoaderGDBAllocAction);
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   BootstrapSymbols[Mangle.mangledCopy(rt::RestrictCallTargetsAllocActionName)] =
       ExecutorAddr::fromPtr(&restrictCallTargetsAllocAction);
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
   // JIT'd code looks up the C runtime's functions in this process.
   registerInlineCRTFunctions();

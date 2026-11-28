@@ -21,7 +21,7 @@
 #include <string>
 
 // Defined in AMDGPUArchByHIP.cpp (non-static, linked via clangOffloadArch).
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 bool compareVersions(llvm::StringRef A, llvm::StringRef B);
 llvm::SmallVector<std::string, 8> getCandidateBinPaths(llvm::StringRef ExeDir);
 #endif
@@ -34,7 +34,7 @@ std::string getIntelGPUArchName(uint32_t IPVersion);
 
 using namespace llvm;
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 
 // --- compareVersions ---
 
@@ -122,7 +122,7 @@ TEST(CandidateBinPaths, NoDriveRootBin) {
         << "Drive-root bin/ must not appear (DLL planting risk)";
 }
 
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 // --- printGPUsByKFD ---
 
@@ -175,7 +175,7 @@ class ScopedEnvironment {
   std::optional<std::string> OldValue;
 
   static void setEnv(const std::string &Name, std::optional<StringRef> Value) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     // On Windows, setting an environment variable to the empty string
     // unsets it, so getenv() returns NULL
     _putenv_s(Name.c_str(), Value ? Value->str().c_str() : "");

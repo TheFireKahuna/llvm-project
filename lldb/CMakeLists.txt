@@ -56,7 +56,7 @@ if(uppercase_CMAKE_BUILD_TYPE STREQUAL "DEBUG" )
   add_definitions(-DLLDB_CONFIGURATION_DEBUG)
 endif()
 
-if (WIN32)
+if (LLVM_RUNTIME_WIN32)
   add_definitions(-D_ENABLE_EXTENDED_ALIGNED_STORAGE)
   if (NOT MSVC)
     # _BSD_SOURCE is required for MinGW's getopt.h to define optreset

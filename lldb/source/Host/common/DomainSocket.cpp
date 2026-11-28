@@ -21,7 +21,7 @@
 #include <cstddef>
 #include <memory>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <afunix.h>
 #else
 #include <sys/socket.h>

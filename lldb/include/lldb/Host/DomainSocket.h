@@ -11,7 +11,7 @@
 
 #include "lldb/Host/common/DomainSocket.h"
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/DomainSocketWindows.h"
 #else
 #include "lldb/Host/posix/DomainSocketPosix.h"
@@ -19,7 +19,7 @@
 
 namespace lldb_private {
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 using DomainSocketPlatform = DomainSocketWindows;
 #else
 using DomainSocketPlatform = DomainSocketPosix;

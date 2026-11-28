@@ -21,7 +21,7 @@
 #include <cstdlib>
 #include <string>
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #include "lldb/Host/windows/LazyImport.h"
 #include "lldb/Host/windows/windows.h"
 #include "llvm/Support/Windows/WindowsSupport.h"
@@ -33,7 +33,7 @@ namespace lldb_private {
 
 namespace {
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 #ifndef LOAD_LIBRARY_SEARCH_DEFAULT_DIRS
 #define LOAD_LIBRARY_SEARCH_DEFAULT_DIRS 0x00001000
 #endif
@@ -66,14 +66,14 @@ void RegisterDllSearchDirectory(llvm::StringRef path) {
     return;
   (*add_dll_directory)(wide_dir.data());
 }
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32
 
 /// True if libpython is currently mapped into the process. A single-symbol
 /// probe can match an incompatible runtime that happens to export it, so
 /// pair an old symbol with one introduced in 3.8 to bound the version on
 /// both ends.
 bool IsPythonAlreadyLoaded() {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   HMODULE main = ::GetModuleHandleW(nullptr);
   return ::GetProcAddress(main, "Py_IsInitialized") != nullptr &&
          ::GetProcAddress(main, "Py_InitializeFromConfig") != nullptr;
@@ -84,7 +84,7 @@ bool IsPythonAlreadyLoaded() {
 }
 
 llvm::Error TryLoad(const char *path) {
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
   RegisterDllSearchDirectory(path);
 #endif
   std::string err_msg;
@@ -172,7 +172,7 @@ private:
         m_path = std::move(*result);
         if (m_path.empty())
           return;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
         // liblldb.dll may link against (lib)python3.dll (stable ABI). Ensure
         // it is loaded from the same directory as the version-specific runtime
         // so the delay-load resolver can find it.

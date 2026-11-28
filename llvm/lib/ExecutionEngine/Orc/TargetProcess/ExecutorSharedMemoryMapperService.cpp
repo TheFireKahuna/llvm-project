@@ -17,7 +17,7 @@
 #include "llvm/TargetParser/Triple.h"
 #include <sstream>
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -32,7 +32,7 @@ namespace llvm {
 namespace orc {
 namespace rt_bootstrap {
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
 static DWORD getWindowsProtectionFlags(MemProt MP) {
   if (MP == MemProt::Read)
     return PAGE_READONLY;
@@ -54,9 +54,10 @@ static DWORD getWindowsProtectionFlags(MemProt MP) {
 
 Expected<std::pair<ExecutorAddr, std::string>>
 ExecutorSharedMemoryMapperService::reserve(uint64_t Size) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                  \
+    defined(LLVM_RUNTIME_WIN32)
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 
   std::string SharedMemoryName;
   {
@@ -97,7 +98,7 @@ ExecutorSharedMemoryMapperService::reserve(uint64_t Size) {
   close(SharedMemoryFile);
 #endif
 
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 
   std::string SharedMemoryName;
   {
@@ -127,7 +128,7 @@ ExecutorSharedMemoryMapperService::reserve(uint64_t Size) {
   {
     std::lock_guard<std::mutex> Lock(Mutex);
     Reservations[Addr].Size = Size;
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     Reservations[Addr].SharedMemoryFile = SharedMemoryFile;
 #endif
   }
@@ -143,7 +144,8 @@ ExecutorSharedMemoryMapperService::reserve(uint64_t Size) {
 
 Expected<ExecutorAddr> ExecutorSharedMemoryMapperService::initialize(
     ExecutorAddr Reservation, tpctypes::SharedMemoryFinalizeRequest &FR) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                  \
+    defined(LLVM_RUNTIME_WIN32)
 
   ExecutorAddr MinAddr(~0ULL);
 
@@ -152,7 +154,7 @@ Expected<ExecutorAddr> ExecutorSharedMemoryMapperService::initialize(
     if (Segment.Addr < MinAddr)
       MinAddr = Segment.Addr;
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 
 #if defined(__MVS__)
       // TODO Is it possible to change the protection level?
@@ -169,7 +171,7 @@ Expected<ExecutorAddr> ExecutorSharedMemoryMapperService::initialize(
       return errorCodeToError(errnoAsErrorCode());
 #endif
 
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 
     DWORD NativeProt = getWindowsProtectionFlags(Segment.RAG.Prot);
 
@@ -237,14 +239,15 @@ Error ExecutorSharedMemoryMapperService::deinitialize(
 
 Error ExecutorSharedMemoryMapperService::release(
     const std::vector<ExecutorAddr> &Bases) {
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                  \
+    defined(LLVM_RUNTIME_WIN32)
   Error Err = Error::success();
 
   for (auto Base : Bases) {
     std::vector<ExecutorAddr> AllocAddrs;
     size_t Size;
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
     HANDLE SharedMemoryFile;
 #endif
 
@@ -253,7 +256,7 @@ Error ExecutorSharedMemoryMapperService::release(
       auto &R = Reservations[Base.toPtr<void *>()];
       Size = R.Size;
 
-#if defined(_WIN32)
+#if defined(LLVM_RUNTIME_WIN32)
       SharedMemoryFile = R.SharedMemoryFile;
 #endif
 
@@ -264,7 +267,7 @@ Error ExecutorSharedMemoryMapperService::release(
     if (Error E = deinitialize(AllocAddrs))
       Err = joinErrors(std::move(Err), std::move(E));
 
-#if defined(LLVM_ON_UNIX)
+#if defined(LLVM_RUNTIME_POSIX)
 
 #if defined(__MVS__)
     (void)Size;
@@ -276,7 +279,7 @@ Error ExecutorSharedMemoryMapperService::release(
       Err = joinErrors(std::move(Err), errorCodeToError(errnoAsErrorCode()));
 #endif
 
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
     (void)Size;
 
     if (!UnmapViewOfFile(Base.toPtr<void *>()))

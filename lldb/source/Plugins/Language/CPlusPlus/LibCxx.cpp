@@ -804,7 +804,7 @@ LibcxxChronoTimePointSecondsSummaryProvider(ValueObject &valobj, Stream &stream,
   if (!ptr_sp)
     return false;
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   // The date time in the chrono library is valid in the range
   // [-32767-01-01T00:00:00Z, 32767-12-31T23:59:59Z]. A 64-bit time_t has a
   // larger range, the function strftime is not able to format the entire range
@@ -860,7 +860,7 @@ LibcxxChronoTimepointDaysSummaryProvider(ValueObject &valobj, Stream &stream,
   if (!ptr_sp)
     return false;
 
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
   // The date time in the chrono library is valid in the range
   // [-32767-01-01Z, 32767-12-31Z]. A 32-bit time_t has a larger range, the
   // function strftime is not able to format the entire range of time_t. The

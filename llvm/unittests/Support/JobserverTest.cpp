@@ -523,7 +523,7 @@ TEST_F(JobserverStrategyTest, ParallelSortIsLimited_SubprocessChild) {
 
 #endif // LLVM_ENABLE_THREADS
 
-#elif defined(_WIN32)
+#elif defined(LLVM_RUNTIME_WIN32)
 
 TEST_F(JobserverClientTest, WindowsClientSemaphore) {
   std::string Name =

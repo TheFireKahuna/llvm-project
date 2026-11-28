@@ -24,7 +24,8 @@ using namespace llvm::orc;
 using namespace llvm::orc::shared;
 using namespace llvm::orc::rt_bootstrap;
 
-#if (defined(LLVM_ON_UNIX) && !defined(__ANDROID__)) || defined(_WIN32)
+#if (defined(LLVM_RUNTIME_POSIX) && !defined(__ANDROID__)) ||                  \
+    defined(LLVM_RUNTIME_WIN32)
 
 // A basic function to be used as both initializer/deinitializer
 CWrapperFunctionBuffer incrementWrapper(const char *ArgData, size_t ArgSize) {

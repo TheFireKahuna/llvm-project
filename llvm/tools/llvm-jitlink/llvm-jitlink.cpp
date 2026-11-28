@@ -759,7 +759,7 @@ Expected<uint64_t> getSlabAllocSize(StringRef SizeString) {
 
 static std::unique_ptr<JITLinkMemoryManager> createInProcessMemoryManager() {
   uint64_t SlabSize;
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   SlabSize = 1024 * 1024;
 #else
   SlabSize = 1024 * 1024 * 1024;
@@ -787,7 +787,7 @@ createSimpleRemoteMemoryManager(ExecutorProcessControl &EPC) {
   auto B = sps::createSimpleMemoryMapBindings(ES);
   if (!B)
     return B.takeError();
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   size_t SlabSize = 1024 * 1024;
 #else
   size_t SlabSize = 1024 * 1024 * 1024;
@@ -803,7 +803,7 @@ createSharedMemoryManager(ExecutorProcessControl &EPC) {
   if (!B)
     return B.takeError();
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   size_t SlabSize = 1024 * 1024;
 #else
   size_t SlabSize = 1024 * 1024 * 1024;

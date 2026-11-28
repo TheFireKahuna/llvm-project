@@ -46,7 +46,7 @@
 #include <clocale>
 #include <csignal>
 #include <future>
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
 #include <pthread.h>
 #endif
 #include <string>
@@ -638,7 +638,7 @@ void Driver::UpdateWindowSize() {
       ::ioctl(STDIN_FILENO, TIOCGWINSZ, &window_size) == 0) {
     if (window_size.ws_col > 0) {
       // Set both dimensions together to avoid recomputing from a stale value.
-#ifndef _WIN32
+#ifndef LLVM_RUNTIME_WIN32
       m_debugger.SetTerminalDimensions(window_size.ws_col, window_size.ws_row);
 #else
       m_debugger.SetTerminalDimensions(window_size.ws_col,
@@ -648,7 +648,7 @@ void Driver::UpdateWindowSize() {
   }
 }
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 void sigint_handler(int signo) {
   // Restore handler as it is not persistent on Windows.
   signal(SIGINT, sigint_handler);
@@ -786,7 +786,7 @@ int main(int argc, char const *argv[]) {
   // Setup LLDB signal handlers once the debugger has been initialized.
   SBDebugger::PrintDiagnosticsOnError();
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
   signal(SIGINT, sigint_handler);
 #else
   signal(SIGPIPE, SIG_IGN);
@@ -914,7 +914,7 @@ int main(int argc, char const *argv[]) {
     future.wait();
   }
 
-#if !defined(_WIN32)
+#if !defined(LLVM_RUNTIME_WIN32)
   // Try to interrupt the signal thread.  If that succeeds, wait for it to exit.
   if (signal_loop.AddPendingCallback(
           [](MainLoopBase &loop) { loop.RequestTermination(); }))

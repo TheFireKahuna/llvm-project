@@ -14,7 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include <windows.h>
 #endif
 
@@ -439,7 +439,7 @@ unsigned MemoryFlags[] = {
 INSTANTIATE_TEST_SUITE_P(AllocationTests, MappedMemoryTest,
                          ::testing::ValuesIn(MemoryFlags));
 
-#if defined(_WIN32) && (defined(_M_X64) || defined(_M_ARM64))
+#if defined(LLVM_RUNTIME_WIN32) && (defined(_M_X64) || defined(_M_ARM64))
 static int callAt(unsigned char *P) {
   volatile auto F = reinterpret_cast<int (*)()>(P);
   return F();
@@ -485,7 +485,7 @@ TEST(CallTargetsTest, RestrictCallTargets) {
 }
 #endif
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 static int MemoryTestAnchor;
 
 // Only a request for large pages looks up the privilege they need, which

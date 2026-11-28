@@ -9,7 +9,7 @@
 #include "llvm/Support/COM.h"
 #include "gtest/gtest.h"
 
-#ifdef _WIN32
+#ifdef LLVM_RUNTIME_WIN32
 #include "llvm/Support/Windows/WindowsSupport.h"
 #include <objbase.h>
 #include <thread>
@@ -35,4 +35,4 @@ TEST(COMTest, KeepsExistingApartment) {
 }
 
 } // namespace
-#endif // _WIN32
+#endif // LLVM_RUNTIME_WIN32

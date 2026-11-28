@@ -9,7 +9,9 @@
 #ifndef LLDB_HOST_MAINLOOP_H
 #define LLDB_HOST_MAINLOOP_H
 
-#ifdef _WIN32
+#include "llvm/Config/llvm-config.h"
+
+#ifdef LLVM_RUNTIME_WIN32
 #include "lldb/Host/windows/MainLoopWindows.h"
 namespace lldb_private {
 using MainLoop = MainLoopWindows;
