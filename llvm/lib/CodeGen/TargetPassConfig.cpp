@@ -837,6 +837,10 @@ void TargetPassConfig::addISelPrepare() {
   addPass(createSafeStackPass());
   addPass(createStackProtectorPass());
 
+  // NT-POSIX's functions are passed their thread pointer, or derive it.
+  if (TM->getTargetTriple().isWindowsNTPOSIXEnvironment())
+    addPass(createThreadPointerPass());
+
   if (Opts.print_isel_input)
     addPass(createPrintFunctionPass(
         dbgs(), "\n\n*** Final LLVM Code input to ISel ***\n"));

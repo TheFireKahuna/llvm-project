@@ -11,15 +11,18 @@
 #include "CallGraphSort.h"
 #include "Config.h"
 #include "DLL.h"
+#include "ICF.h"
 #include "InputFiles.h"
 #include "LLDMapFile.h"
 #include "MapFile.h"
 #include "PDB.h"
+#include "Relocations.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/ErrorHandler.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Timer.h"
+#include "lld/Common/X86Instructions.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/ScopeExit.h"
@@ -83,13 +86,6 @@ static_assert((sizeof(dos_header) + sizeof(dosProgram)) % 8 == 0,
               "DOSStub size must be multiple of 8");
 
 static const int numberOfDataDirectory = 16;
-
-// The constants of NT-POSIX's thread-local model's revision 1: a thread's
-// block and its slot of a plane hold tlsSlotSize each, the block starts with
-// a header, and the first plane's slot lies 48 KiB from the thread pointer.
-static const uint64_t tlsSlotSize = COFFLinkerContext::tlsSlotSize;
-static const uint64_t tlsHeaderSize = 0x100;
-static const uint64_t tlsPlaneOffset = 48 * 1024;
 
 namespace {
 
@@ -223,6 +219,13 @@ private:
   void createSections();
   void createMiscChunks();
   void createImportTables();
+  uint64_t getIatSize() const;
+  void placeImportSlots();
+  void placeDelayWords();
+  void placeFillWords();
+  void findFillRanges();
+  void placeImportSlotSections();
+  void checkImportSlots();
   void appendImportThunks();
   void locateImportTables();
   void createExportTable();
@@ -244,6 +247,7 @@ private:
   bool verifyRanges(const std::vector<Chunk *> chunks);
   void createECCodeMap();
   void finalizeAddresses();
+  void countRVATableEntries();
   void removeEmptySections();
   void assignOutputSectionIndices();
   void createSymbolAndStringTable();
@@ -281,6 +285,8 @@ private:
   void sortCRTSectionChunks(std::vector<Chunk *> &chunks);
   void addSyntheticIdata();
   void sortBySectionOrder(std::vector<Chunk *> &chunks);
+  // The places the call graph's order gives sections.
+  DenseMap<const SectionChunk *, int> callGraphOrder;
   void fixPartialSectionChars(StringRef name, uint32_t chars);
   bool fixGnuImportChunks();
   void fixTlsAlignment(SymbolTable &symtab);
@@ -318,9 +324,29 @@ private:
   // A word that an image with a TLS directory and no import states as its
   // import address table.
   Chunk *tlsGate = nullptr;
+  // The last chunk of the import address table directory where it holds
+  // read-only in-place slots, which follow the tables.
+  Chunk *iatEnd = nullptr;
+  // The sections that hold in-place slots and are laid out apart from the
+  // rest of their sections: read-only ones after the import address tables,
+  // writable ones at the end of .data.
+  std::vector<Chunk *> slotRdata, slotData;
+  // The read-only sections that hold in-place slots and keep their place, and
+  // whether some are $ groups of .rdata.
+  SmallPtrSet<Chunk *, 0> slotSections;
+  // The sections of .rdata that hold a word the image's fill writes, which
+  // leave for .sealed.
+  SetVector<Chunk *> sealedChunks;
+  bool slotRdataGroups = false;
   DelayLoadContents delayIdata;
   bool setNoSEHCharacteristic = false;
+  // The alignments of the loader's thread-local template and the image's.
   uint32_t tlsAlignment = 0;
+  uint32_t tlsImageAlignment = 0;
+  // The guard tables, each with the symbol that holds its entry count.
+  std::vector<std::pair<RVATableChunk *, StringRef>> rvaTables;
+  // The scanned relocations range thunks redirected, with their targets.
+  std::vector<std::pair<Relocation *, Symbol *>> thunkRedirects;
 
   DebugDirectoryChunk *debugDirectory = nullptr;
   std::vector<std::pair<COFF::DebugType, Chunk *>> debugRecords;
@@ -346,6 +372,8 @@ private:
   uint64_t sizeOfHeaders;
 
   uint32_t dosStubSize;
+  // The size of the DOS header and what follows it before the DOS program.
+  uint32_t dosHeaderSize = sizeof(dos_header);
   uint32_t coffHeaderOffset;
   uint32_t peHeaderOffset;
   uint32_t dataDirOffset64;
@@ -361,7 +389,9 @@ private:
   OutputSection *pdataSec;
   OutputSection *idataSec;
   OutputSection *edataSec;
+  OutputSection *ovraSec;
   OutputSection *didatSec;
+  OutputSection *sealedSec;
   DelayIatPlacement delayIatPlacement = DelayIatPlacement::Data;
   OutputSection *a64xrmSec;
   OutputSection *rsrcSec;
@@ -453,6 +483,22 @@ void OutputSection::splitECChunks() {
   });
 }
 
+// The type by which relocation i of a section, of the given type, is ranged:
+// a fused call or jump made direct is a branch.
+static uint16_t getRangeType(const ScannedSection *s, size_t i, uint16_t type) {
+  return s && (s->relocs[i].expr == R_LOCAL_CALL ||
+               s->relocs[i].expr == R_LOCAL_JUMP)
+             ? uint16_t(IMAGE_REL_ARM64_BRANCH26)
+             : type;
+}
+
+// Whether c ends in a deleted jump and falls into the chunk after it.
+static bool fallsThrough(const Chunk *c) {
+  auto *sc = dyn_cast<SectionChunk>(c);
+  ScannedSection *s = sc && sc->resizable ? sc->getScanned() : nullptr;
+  return s && s->aux && s->aux->fallsThrough;
+}
+
 // Check whether the target address S is in range from a relocation
 // of type relType at address P.
 bool Writer::isInRange(uint16_t relType, uint64_t s, uint64_t p, int margin,
@@ -539,7 +585,11 @@ bool Writer::createThunks(OutputSection *os, int margin) {
       continue;
     }
     MachineTypes machine = sc->getMachine();
+    // No thunk goes between a chunk and the one it falls into.
     size_t thunkInsertionSpot = i + 1;
+    while (thunkInsertionSpot != os->chunks.size() &&
+           fallsThrough(os->chunks[thunkInsertionSpot - 1]))
+      ++thunkInsertionSpot;
 
     // Try to get a good enough estimate of where new thunks will be placed.
     // Offset this by the size of the new thunks added so far, to make the
@@ -549,15 +599,20 @@ bool Writer::createThunks(OutputSection *os, int margin) {
     std::vector<std::pair<uint32_t, uint32_t>> relocReplacements;
     ArrayRef<coff_relocation> originalRelocs =
         file->getCOFFObj()->getRelocations(sc->header);
+    ScannedSection *ss = sc->getScanned();
     for (size_t j = 0, e = originalRelocs.size(); j < e; ++j) {
       const coff_relocation &rel = originalRelocs[j];
-      Symbol *relocTarget = sc->getRelocTarget(rel);
+      Symbol *relocTarget = sc->getTarget(j, ss);
+      if (isDeleted(ss, j))
+        continue;
+      uint16_t type = getRangeType(ss, j, rel.Type);
 
       // The estimate of the source address P should be pretty accurate,
       // but we don't know whether the target Symbol address should be
       // offset by thunksSize or not (or by some of thunksSize but not all of
       // it), giving us some uncertainty once we have added one thunk.
-      uint64_t p = sc->getRVA() + rel.VirtualAddress + thunksSize;
+      uint64_t p =
+          sc->getRVA() + sc->getOutputOffset(rel.VirtualAddress) + thunksSize;
 
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
       if (!sym)
@@ -569,12 +624,12 @@ bool Writer::createThunks(OutputSection *os, int margin) {
         continue;
       uint64_t s = sym->getRVA();
 
-      if (isInRange(rel.Type, s, p, margin, machine))
+      if (isInRange(type, s, p, margin, machine))
         continue;
 
       // If the target isn't in range, hook it up to an existing or new thunk.
       auto [thunk, wasNew] =
-          getThunk(lastThunks, sym, p, rel.Type, margin, machine);
+          getThunk(lastThunks, sym, p, type, margin, machine);
       if (wasNew) {
         Chunk *thunkChunk = thunk->getChunk();
         thunkChunk->setRVA(
@@ -586,6 +641,14 @@ bool Writer::createThunks(OutputSection *os, int margin) {
         addressesChanged = true;
       }
 
+      // A scanned relocation is redirected in place, and back where the
+      // thunks are thrown away.
+      if (ss) {
+        thunkRedirects.emplace_back(&ss->relocs[j], ss->relocs[j].sym);
+        ss->relocs[j].sym = thunk;
+        continue;
+      }
+
       // To redirect the relocation, add a symbol to the parent object file's
       // symbol table, and replace the relocation symbol table index with the
       // new index.
@@ -595,6 +658,9 @@ bool Writer::createThunks(OutputSection *os, int margin) {
         thunkSymbolIndex = file->addRangeThunkSymbol(thunk);
       relocReplacements.emplace_back(j, thunkSymbolIndex);
     }
+
+    if (ss)
+      continue;
 
     // Get a writable copy of this section's relocations so they can be
     // modified. If the relocations point into the object file, allocate new
@@ -682,19 +748,21 @@ bool Writer::verifyRanges(const std::vector<Chunk *> chunks) {
     MachineTypes machine = sc->getMachine();
 
     ArrayRef<coff_relocation> relocs = sc->getRelocs();
+    ScannedSection *ss = sc->getScanned();
     for (const coff_relocation &rel : relocs) {
-      Symbol *relocTarget = sc->getRelocTarget(rel);
+      Symbol *relocTarget = sc->getTarget(&rel - relocs.begin(), ss);
 
       Defined *sym = dyn_cast_or_null<Defined>(relocTarget);
-      if (!sym)
+      if (!sym || isDeleted(ss, &rel - relocs.begin()))
         continue;
 
-      uint64_t p = sc->getRVA() + rel.VirtualAddress;
+      uint64_t p = sc->getRVA() + sc->getOutputOffset(rel.VirtualAddress);
       if (isAnyArm64(machine) && isAbsoluteZero(sym))
         continue;
       uint64_t s = sym->getRVA();
 
-      if (!isInRange(rel.Type, s, p, 0, machine))
+      if (!isInRange(getRangeType(ss, &rel - relocs.begin(), rel.Type), s, p, 0,
+                     machine))
         return false;
     }
   }
@@ -739,8 +807,17 @@ void Writer::finalizeAddresses() {
   });
   if (gap)
     assignAddresses();
-  if (ctx.config.machine != ARMNT && !isAnyArm64(ctx.config.machine))
+
+  // Relaxation and range thunks run in one loop. Relaxation starts every
+  // section at its smallest, and each pass lengthens the jumps and unfolds the
+  // ARM64 address pairs whose targets the layout left out of reach; none
+  // shortens or folds again, so the passes end.
+  bool relax = initRelax(ctx);
+  bool thunks = ctx.config.machine == ARMNT || isAnyArm64(ctx.config.machine);
+  if (!relax && !thunks)
     return;
+  if (relax)
+    assignAddresses();
 
   size_t origNumChunks = 0;
   for (OutputSection *sec : ctx.outputSections) {
@@ -750,14 +827,30 @@ void Writer::finalizeAddresses() {
 
   int pass = 0;
   int margin = 1024 * 100;
+  // Once the layout has settled, every span has its value and the unwind
+  // records of two functions may be equal. Folding them moves what follows
+  // them, which must leave every choice the passes made in place: a record
+  // that was folded cannot follow its function again.
+  bool merged = false;
+  auto settled = [&] {
+    if (merged)
+      Err(ctx) << "folding equal unwind records moved an address out of the "
+                  "reach relaxation chose for it; link with /opt:noicf";
+    return merged;
+  };
   while (true) {
-    llvm::TimeTraceScope timeScope2("Add thunks pass");
+    if (relax && relaxOnce(ctx)) {
+      if (settled())
+        return;
+      assignAddresses();
+      continue;
+    }
 
     // First check whether we need thunks at all, or if the previous pass of
     // adding them turned out ok.
     bool rangesOk = true;
     size_t numChunks = 0;
-    {
+    if (thunks) {
       llvm::TimeTraceScope timeScope3("Verify ranges");
       for (OutputSection *sec : ctx.outputSections) {
         if (!verifyRanges(sec->chunks)) {
@@ -768,12 +861,35 @@ void Writer::finalizeAddresses() {
       }
     }
     if (rangesOk) {
+      if (fixMisfits(ctx)) {
+        if (settled())
+          return;
+        assignAddresses();
+        continue;
+      }
+      if (relax && !merged) {
+        merged = true;
+        if (size_t removed = mergeUnwindRecords(ctx)) {
+          for (OutputSection *sec : ctx.outputSections)
+            llvm::erase_if(sec->chunks, [](Chunk *c) {
+              auto *sc = dyn_cast<SectionChunk>(c);
+              return sc && !sc->live;
+            });
+          origNumChunks -= removed;
+          Log(ctx) << "folded " << removed << " unwind records";
+          assignAddresses();
+          continue;
+        }
+      }
       if (pass > 0)
         Log(ctx) << "Added " << (numChunks - origNumChunks) << " thunks with "
                  << "margin " << margin << " in " << pass << " passes";
       return;
     }
 
+    llvm::TimeTraceScope timeScope2("Add thunks pass");
+    if (settled())
+      return;
     if (pass >= 10)
       Fatal(ctx) << "adding thunks hasn't converged after " << pass
                  << " passes";
@@ -784,6 +900,9 @@ void Writer::finalizeAddresses() {
       // ideally never happen under real circumstances.
       for (OutputSection *sec : ctx.outputSections)
         sec->chunks = sec->origChunks;
+      for (auto [r, sym] : thunkRedirects)
+        r->sym = sym;
+      thunkRedirects.clear();
       margin *= 2;
     }
 
@@ -851,29 +970,43 @@ void Writer::run() {
     llvm::TimeTraceScope timeScope("Write PE");
     ScopedTimer t1(ctx.codeLayoutTimer);
 
+    selectDelayBoundImports(ctx);
+    scanRelocations(ctx);
     calculateStubDependentSizes();
     if (ctx.config.machine == ARM64X)
       ctx.dynamicRelocs = make<DynamicRelocsChunk>();
     createImportTables();
     createSections();
     appendImportThunks();
+    if (!ctx.fill.empty())
+      createFill(ctx, rdataSec, sealedSec);
     createFunctionOverrides();
     // Import thunks and function-override stubs must be added before the
     // Control Flow Guard tables are added.
     createMiscChunks();
     createExportTable();
     mergeSections();
+    // The offer table goes last, after what /merge moved into .rdata.
+    if (OfferTableChunk *t = ctx.symtab.offerTable) {
+      t->finalizeContents(ctx);
+      rdataSec->addChunk(t);
+    }
+    findFillRanges();
     sortECChunks();
     appendECImportTables();
+    placeImportSlotSections();
     createDynamicRelocs();
     removeUnusedSections();
     layoutSections();
     finalizeAddresses();
+    countRVATableEntries();
     checkFunctionOverrides();
     removeEmptySections();
     assignOutputSectionIndices();
     placeStartStopSymbols();
     setSectionPermissions();
+    checkImportSlots();
+    delayIdata.checkWords();
     setECSymbols();
     createSymbolAndStringTable();
 
@@ -934,12 +1067,15 @@ static StringRef getOutputSectionName(StringRef name, bool isMinGW) {
   return s.substr(0, s.find('.', 1));
 }
 
-// For /order.
+// For /order and the call graph's order.
 void Writer::sortBySectionOrder(std::vector<Chunk *> &chunks) {
-  auto getPriority = [&ctx = ctx](const Chunk *c) {
-    if (auto *sec = dyn_cast<SectionChunk>(c))
+  auto getPriority = [&](const Chunk *c) {
+    if (auto *sec = dyn_cast<SectionChunk>(c)) {
+      if (int priority = callGraphOrder.lookup(sec))
+        return priority;
       if (sec->sym)
         return ctx.config.order.lookup(sec->sym->getName());
+    }
     return 0;
   };
 
@@ -1097,6 +1233,8 @@ void Writer::locateImportTables() {
       iatStart = importAddresses->chunks.front();
     for (Chunk *c : importAddresses->chunks)
       iatSize += c->getSize();
+    if (!slotRdata.empty())
+      iatEnd = slotRdata.back();
   }
 }
 
@@ -1123,25 +1261,489 @@ static bool shouldStripSectionSuffix(SectionChunk *sc, StringRef name,
          name.starts_with(".xdata$") || name.starts_with(".eh_frame$");
 }
 
-void Writer::sortSections() {
-  if (!ctx.config.callGraphProfile.empty()) {
-    DenseMap<const SectionChunk *, int> order =
-        computeCallGraphProfileOrder(ctx);
-    for (auto it : order) {
-      if (DefinedRegular *sym = it.first->sym)
-        ctx.config.order[sym->getName()] = it.second;
-    }
+// The template's groups in partial-section order, each aligned. An image of
+// more than a block is wide; the runtime states its place, and a direct
+// executable has the room of its block past the wide area where its
+// thread-locals fit it, else its slot of the first plane.
+void lld::coff::setTlsForm(COFFLinkerContext &ctx) {
+  std::vector<std::pair<StringRef, SectionChunk *>> groups;
+  for (Chunk *c : ctx.driver.getChunks())
+    if (auto *sc = dyn_cast<SectionChunk>(c);
+        sc && sc->live && sc->file->tlsModel &&
+        sc->getSectionName().split('$').first == ".tls")
+      groups.push_back({sc->getSectionName(), sc});
+  llvm::stable_sort(groups, llvm::less_first());
+  for (auto [name, sc] : groups)
+    ctx.tlsSize = alignTo(ctx.tlsSize, sc->getAlignment()) + sc->getSize();
+  ctx.tlsWide = ctx.tlsSize > TP_BLOCK;
+  Symbol *place = ctx.symtab.find(COFF::TP::Place);
+  if (isa_and_nonnull<Defined>(place) && ctx.tlsRuntime().empty())
+    Err(ctx) << COFF::TP::Place << " is defined in an image where no "
+             << "object states the owned thread-local model, which has no "
+                "place";
+  if (auto *d = dyn_cast_or_null<DefinedAbsolute>(place)) {
+    ctx.tlsPlace = d->getVA();
+    if (ctx.tlsWide)
+      Err(ctx) << COFF::TP::Place << ": the runtime's thread-locals "
+               << "exceed " << TP_BLOCK << " bytes; it has " << ctx.tlsSize;
+  } else if (!ctx.config.dll && !groups.empty() && !ctx.tlsWide) {
+    ctx.tlsPlace = ctx.tlsSize <= TP_BLOCK - TP_EXE_PLACE
+                       ? TP_EXE_PLACE
+                       : TP_PLANE;
   }
-  if (!ctx.config.order.empty())
+}
+
+void Writer::sortSections() {
+  if (ctx.config.callGraphProfileSort != CGProfileSortKind::None &&
+      (ctx.hasForkObject || !ctx.config.callGraphProfile.empty()))
+    callGraphOrder = computeCallGraphProfileOrder(ctx);
+  if (!callGraphOrder.empty() || !ctx.config.order.empty())
     for (auto it : partialSections)
       sortBySectionOrder(it.second->chunks);
 }
 
+// The size of the import address table directory: the tables, and the
+// read-only in-place slots laid out with them.
+uint64_t Writer::getIatSize() const {
+  return iatEnd ? iatEnd->getRVA() + iatEnd->getSize() - iatStart->getRVA()
+                : iatSize;
+}
+
+namespace {
+// A section that holds words of runs: its words, its name less any suffix that
+// the output strips, its output section's name and its characteristics.
+struct RunSection {
+  SectionChunk *sc;
+  ArrayRef<ImportSlot> own;
+  StringRef name, outName;
+  uint32_t chars;
+};
+} // namespace
+
+// The sections that the words of slots lie in, but those /streams names.
+static SmallVector<RunSection, 0> getRunSections(COFFLinkerContext &ctx,
+                                                 ArrayRef<ImportSlot> slots) {
+  SmallVector<RunSection, 0> v;
+  while (!slots.empty()) {
+    SectionChunk *sc = slots[0].chunk;
+    ArrayRef<ImportSlot> own =
+        slots.take_while([&](const ImportSlot &s) { return s.chunk == sc; });
+    slots = slots.drop_front(own.size());
+    StringRef name = sc->getSectionName();
+    if (ctx.config.sectionStreams.contains(name))
+      continue;
+    if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
+      name = name.split('$').first;
+    v.push_back({sc, own, name, getOutputSectionName(name, ctx.config.mingw),
+                 sc->getOutputCharacteristics()});
+  }
+  return v;
+}
+
+// Decides where the sections that hold in-place import slots are laid out,
+// and forms the runs: slots of one DLL a word apart, each run the address
+// table of an import descriptor. The loader makes only the import address
+// table directory writable while it binds, so a read-only slot lies inside
+// it: a section of .rdata follows the tables, and any other read-only section
+// keeps its place in a section that placeImportSlotSections lays out beside
+// them. A writable section of .data goes to its end. The sections laid out
+// together are in the order of their first slots' DLLs, so that those holding
+// one pointer each form one run a DLL.
+void Writer::placeImportSlots() {
+  if (ctx.importSlots.empty())
+    return;
+  const uint32_t data = IMAGE_SCN_CNT_INITIALIZED_DATA;
+  const uint32_t r = IMAGE_SCN_MEM_READ;
+  const uint32_t w = IMAGE_SCN_MEM_WRITE;
+  struct Section {
+    int dll;
+    ArrayRef<ImportSlot> slots;
+    // Whether code can read a pointer here: the section stays read-only and
+    // in place for all the link knows.
+    bool readable;
+  };
+  std::vector<Section> inPlace, writable, readOnly;
+  for (const RunSection &rs : getRunSections(ctx, ctx.importSlots)) {
+    SectionChunk *sc = rs.sc;
+    ArrayRef<ImportSlot> own = rs.own;
+    StringRef name = rs.name, outName = rs.outName;
+    uint32_t chars = rs.chars;
+    DefinedImportData *imp = own[0].sym;
+    // The image's thread-local template is read-only.
+    bool ro = !(chars & w) || outName == ".CRT" || outName == ".tls";
+    auto report = [&] {
+      COFFSyncStream err = Err(ctx);
+      err << sc->file << ": " << sc->getSectionName()
+          << " holds the address of " << imp->getName().substr(strlen("__imp_"))
+          << ", imported from " << imp->getDLLName() << ", at offset 0x"
+          << Twine::utohexstr(own[0].offset);
+      return err;
+    };
+    if (outName == ".tls" && !sc->file->tlsModel) {
+      report() << ", in the loader's thread-local template, which threads "
+                  "copy before the image's fill runs";
+      continue;
+    }
+    // The loader copies an executable's thread-local data into the main
+    // thread's block before it binds the image's imports.
+    if (outName == ".tls" && !ctx.config.dll) {
+      report() << " in the thread-local data of an executable, which the "
+                  "main thread would read unbound; set the variable when "
+                  "the program starts";
+      continue;
+    }
+    // Unwind data keeps its place among the image's tables.
+    if (ro && outName == ".xdata") {
+      report() << ", but is read-only and cannot be laid out with the import "
+                  "address table; refer to "
+               << imp->getName() << " there";
+      continue;
+    }
+    Section s = {ctx.config.dllOrder.at(imp->getDLLName().lower()), own,
+                 ro && sc->getAlignment() >= 8 &&
+                     !ctx.config.merge.count(outName) &&
+                     !ctx.config.section.count(outName)};
+    // A section that leaves for .sealed keeps its place there, and the
+    // directory covers it as it does any section that keeps its place.
+    bool sealed = sealedChunks.contains(sc);
+    if (ro && name == ".rdata" && chars == (data | r) && !sealed) {
+      readOnly.push_back(s);
+    } else if (!ro && name == ".data" && chars == (data | r | w)) {
+      writable.push_back(s);
+    } else {
+      inPlace.push_back(s);
+      if (ro) {
+        slotSections.insert(sc);
+        slotRdataGroups |= outName == ".rdata" && !sealed;
+      }
+    }
+  }
+
+  std::vector<ImportSlot> ordered;
+  ordered.reserve(ctx.importSlots.size());
+  for (std::vector<Section> *sections : {&inPlace, &writable, &readOnly}) {
+    bool together = sections != &inPlace;
+    if (together)
+      llvm::stable_sort(*sections, [](const Section &a, const Section &b) {
+        return a.dll < b.dll;
+      });
+    const ImportSlot *prev = nullptr;
+    for (const Section &sec : *sections) {
+      if (together)
+        (sections == &writable ? slotData : slotRdata)
+            .push_back(sec.slots[0].chunk);
+      else
+        prev = nullptr;
+      for (ImportSlot s : sec.slots) {
+        // A run goes on into the next section where that follows the last
+        // word of this one with no padding.
+        s.startsRun = !continuesRun(prev, s, /*across=*/true);
+        ordered.push_back(s);
+        prev = &ordered.back();
+        // An import that a slot holds needs no entry in an import address
+        // table where every use of its pointer reads all of it: its pointer
+        // is then the first slot that code can read, or any slot where
+        // nothing reads it, but never a slot of .sealed.
+        ImportFile *file = s.sym->file;
+        if (!file->slotOnly && !(file->uses & ImportFile::Keep) &&
+            !sealedChunks.contains(s.chunk) &&
+            (!(file->uses & ImportFile::Read) ||
+             (sec.readable && s.offset % 8 == 0))) {
+          file->location = s.chunk;
+          file->offset = s.offset;
+          file->slotOnly = true;
+        }
+      }
+    }
+  }
+  ctx.importSlots = std::move(ordered);
+}
+
+// Sorts the words that hold the address of a delay-loaded function which is
+// its DLL's own by who binds them. The loader binds a word of read-only data
+// in place, opening the pages of its run, so the sections of .rdata that
+// hold one leave their place for pages of their own, in the order of their
+// first words' DLLs, as the sections of in-place slots are; any other
+// read-only section keeps its place, with a zero word after it where it
+// holds none after its last run. The runtime exchanges a word of writable
+// data, atomically, so only one that is aligned. A word of thread-local
+// data, which each thread copies, keeps its thunk, and so do those of a
+// section that ends with a run and holds an in-place import slot, which
+// decides what follows it.
+void Writer::placeDelayWords() {
+  if (ctx.delayWords.empty())
+    return;
+  SmallPtrSet<SectionChunk *, 8> slotted;
+  for (const ImportSlot &s : ctx.importSlots)
+    slotted.insert(s.chunk);
+  const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+  struct Section {
+    int dll;
+    ArrayRef<ImportSlot> slots;
+  };
+  std::vector<Section> gathered;
+  std::vector<ImportSlot> readOnly, inPlace, writable;
+  for (const RunSection &rs : getRunSections(ctx, ctx.delayWords)) {
+    SectionChunk *sc = rs.sc;
+    ArrayRef<ImportSlot> own = rs.own;
+    StringRef name = rs.name, outName = rs.outName;
+    uint32_t chars = rs.chars;
+    if (outName == ".tls")
+      continue;
+    if ((chars & IMAGE_SCN_MEM_WRITE) && outName != ".CRT")
+      llvm::copy_if(own, std::back_inserter(writable),
+                    [&](const ImportSlot &s) {
+                      return sc->getAlignment() >= 8 && s.offset % 8 == 0;
+                    });
+    else if (!slotted.contains(sc) && !sealedChunks.contains(sc) &&
+             name == ".rdata" && chars == rdata)
+      gathered.push_back(
+          {ctx.config.dllOrder.at(own[0].sym->getDLLName().lower()), own});
+    else if (!slotted.contains(sc) ||
+             !DelayLoadContents::endsSection(own.back()))
+      llvm::append_range(inPlace, own);
+    else
+      Warn(ctx) << sc->file << ": the address of "
+                << own[0].sym->getName().substr(strlen("__imp_"))
+                << ", delay-loaded from " << own[0].sym->getDLLName()
+                << ", at offset 0x" << Twine::utohexstr(own[0].offset) << " of "
+                << sc->getSectionName()
+                << " stays its thunk's: the section holds an import that the "
+                   "loader binds in place, and no zero word after its last "
+                   "address of a delay-loaded function";
+  }
+  llvm::stable_sort(gathered, [](const Section &a, const Section &b) {
+    return a.dll < b.dll;
+  });
+  for (const Section &s : gathered)
+    llvm::append_range(readOnly, s.slots);
+  size_t count = readOnly.size();
+  llvm::append_range(readOnly, inPlace);
+  delayIdata.placeWords(std::move(readOnly), count, std::move(writable));
+}
+
+// Decides where the words that the image's fill writes are laid out. The fill
+// opens read-only memory around its stores, so a section of .rdata that holds
+// such a word leaves for .sealed, which holds nothing but what the fill
+// writes: the sealed values, in the order of the fill's list, the pointers of
+// the imports that it binds, and then those sections. Any other section keeps
+// its place.
+void Writer::placeFillWords() {
+  // A section that /coffsecttopdbstrm moves into the PDB is not in the image.
+  llvm::erase_if(ctx.fill.words, [&](const FillWord &w) {
+    auto *sc = dyn_cast_or_null<SectionChunk>(w.chunk);
+    return sc && ctx.config.sectionStreams.contains(sc->getSectionName());
+  });
+  const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+  for (FillWord &w : ctx.fill.words) {
+    // A word of an overridable default is where the loader binds it, or the
+    // image's own pointer, which goes in .sealed; a name word is in its
+    // object.
+    if (w.kind == FillWord::Cell && !isa_and_nonnull<SectionChunk>(w.chunk)) {
+      if (isa_and_nonnull<DefinedLocalImport>(w.source)) {
+        w.chunk = w.source->getChunk();
+        createPartialSection(".sealed", rdata)->chunks.push_back(w.chunk);
+      }
+      continue;
+    }
+    // The place word's key is a word of the place word's chunk.
+    auto *sc = dyn_cast<SectionChunk>(w.chunk);
+    if (!sc) {
+      if (!w.offset)
+        createPartialSection(".sealed", rdata)->chunks.push_back(w.chunk);
+      continue;
+    }
+    StringRef name = sc->getSectionName();
+    if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
+      name = name.split('$').first;
+    if (name == ".rdata" && sc->getOutputCharacteristics() == rdata)
+      sealedChunks.insert(sc);
+  }
+}
+
+// Lists the read-only sections other than .sealed that hold a word the fill
+// writes, each of which it opens around its stores, once /merge has decided
+// them; a section has the permissions that /section gives it. The fill gives
+// whole pages a protection, which only a section that begins on a page of
+// its own, holds no code and is not left writable stands. An image in which
+// it writes read-only memory has .sealed, which begins with the word that
+// the fill sets once it has written.
+void Writer::findFillRanges() {
+  if (ctx.fill.empty())
+    return;
+  auto getPermissions = [&](OutputSection *sec) {
+    auto i = ctx.config.section.find(sec->name);
+    return i == ctx.config.section.end() ? sec->header.Characteristics
+                                         : i->second;
+  };
+  DenseMap<Chunk *, const FillWord *> words;
+  bool tables = false;
+  for (FillWord &w : ctx.fill.words) {
+    // An import's entry that holds the address of an overridable default is
+    // in .rdata, where the address tables go once the fill's sections are
+    // known.
+    if (auto *imp = dyn_cast_or_null<DefinedImportData>(w.source);
+        imp && w.kind == FillWord::Cell && !w.chunk) {
+      w.chunk = imp->getChunk();
+      w.offset = imp->file->offset;
+      tables = true;
+    }
+    words.try_emplace(w.chunk, &w);
+  }
+  for (OutputSection *sec : ctx.outputSections) {
+    auto c =
+        llvm::find_if(sec->chunks, [&](Chunk *c) { return words.contains(c); });
+    uint32_t perms = getPermissions(sec);
+    if (sec == sealedSec ||
+        (c == sec->chunks.end() && !(sec == rdataSec && tables)) ||
+        (perms & IMAGE_SCN_MEM_WRITE))
+      continue;
+    if (c != sec->chunks.end() && (perms & IMAGE_SCN_MEM_EXECUTE))
+      reportFillWord(ctx, *words.find(*c)->second)
+          << ", in the executable section " << sec->name
+          << ", where the image cannot write it as it starts; keep its "
+             "section apart from /merge and /section";
+    ctx.fill.ranges.push_back(sec);
+  }
+  if (sealedSec->chunks.empty() && ctx.fill.ranges.empty())
+    return;
+  sealedSec->insertChunkAtStart(make<EmptyChunk>(8));
+  if (getPermissions(sealedSec) & (IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE))
+    Err(ctx) << "/section: .sealed is read-only data, which the image writes "
+                "as it starts and no later";
+  if (ctx.config.align < pageSize)
+    Err(ctx) << "/align:" << ctx.config.align << ": the image writes "
+             << "read-only data as it starts, a page at a time, so its "
+             << "sections are aligned to " << pageSize << " bytes or more";
+}
+
+// Lays out the read-only sections that hold in-place import slots and keep
+// their place so that the import address table directory covers them with
+// nothing else between: the tables start .rdata, its $ groups follow them
+// where one holds a slot, and each other read-only output section that holds
+// one comes just before .rdata.
+void Writer::placeImportSlotSections() {
+  if (slotSections.empty())
+    return;
+  const uint32_t rdata = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+  std::vector<Chunk *> start;
+  std::vector<PartialSection *> contribs;
+  // .idata$5 sorts before .rdata$, so the tables come first.
+  for (auto &[key, pSec] : partialSections) {
+    if (key.characteristics != rdata ||
+        (key.name != ".idata$5" &&
+         !(slotRdataGroups && key.name.starts_with(".rdata$"))))
+      continue;
+    start.insert(start.end(), pSec->chunks.begin(), pSec->chunks.end());
+    contribs.push_back(pSec);
+  }
+  rdataSec->chunks.insert(rdataSec->chunks.begin(), start.begin(), start.end());
+  rdataSec->contribSections.insert(rdataSec->contribSections.begin(),
+                                   contribs.begin(), contribs.end());
+  if (!start.empty()) {
+    if (!iatStart)
+      iatStart = start.front();
+    iatEnd = start.back();
+  }
+
+  // A section merged into a writable one holds writable slots.
+  std::vector<OutputSection *> before;
+  for (OutputSection *sec : ctx.outputSections)
+    if (sec != rdataSec &&
+        !(sec->header.Characteristics & IMAGE_SCN_MEM_WRITE) &&
+        llvm::any_of(sec->chunks,
+                     [&](Chunk *c) { return slotSections.contains(c); }))
+      before.push_back(sec);
+  if (before.empty())
+    return;
+  llvm::erase_if(ctx.outputSections, [&](OutputSection *sec) {
+    return llvm::is_contained(before, sec);
+  });
+  ctx.outputSections.insert(llvm::find(ctx.outputSections, rdataSec),
+                            before.begin(), before.end());
+  iatStart = before.front()->chunks.front();
+  if (!iatEnd)
+    iatEnd = before.back()->chunks.back();
+}
+
+// The loader makes the import address table directory writable while it
+// binds and restores one protection over all of it, so an in-place import
+// slot is outside code, a read-only one is inside the directory, and the
+// pages of the directory have one protection. Merged sections and /section
+// decide these only once the image is laid out.
+void Writer::checkImportSlots() {
+  if (ctx.importSlots.empty())
+    return;
+  const uint32_t perms =
+      IMAGE_SCN_MEM_READ | IMAGE_SCN_MEM_WRITE | IMAGE_SCN_MEM_EXECUTE;
+  uint64_t begin = iatStart ? iatStart->getRVA() : 0;
+  uint64_t end = iatStart ? begin + getIatSize() : 0;
+  uint64_t last = 0;
+  for (const ImportSlot &s : ctx.importSlots) {
+    OutputSection *os = ctx.getOutputSection(s.chunk);
+    uint32_t chars = os->header.Characteristics;
+    uint64_t rva = s.chunk->getRVA() + s.offset;
+    auto report = [&] {
+      COFFSyncStream err = Err(ctx);
+      err << s.chunk->file << ": the address of "
+          << s.sym->getName().substr(strlen("__imp_")) << ", imported from "
+          << s.sym->getDLLName() << ", at offset 0x"
+          << Twine::utohexstr(s.offset) << " of " << s.chunk->getSectionName();
+      return err;
+    };
+    if (chars & IMAGE_SCN_MEM_EXECUTE)
+      report() << " is in the executable section " << os->name
+               << ", where the loader cannot write it";
+    else if (!(chars & IMAGE_SCN_MEM_WRITE) && (rva < begin || rva + 8 > end)) {
+      StringRef own =
+          getOutputSectionName(s.chunk->getSectionName(), ctx.config.mingw);
+      COFFSyncStream err = report();
+      err << " is in the read-only section " << os->name;
+      if (own != os->name)
+        err << ", where /merge:" << own << "=" << os->name << " put it,";
+      err << " outside the import address table, where the loader cannot "
+             "write it; keep its section apart from /merge and /section, or "
+             "make it writable";
+    }
+    if (!s.startsRun && rva != last + 8)
+      report() << " does not follow the word before it in its run";
+    last = rva;
+  }
+  // Code reads a pointer that left the tables from a slot, which the program
+  // must not be able to write.
+  for (ImportFile *file : ctx.importFileInstances) {
+    if (!file->slotOnly || !(file->uses & ImportFile::Read))
+      continue;
+    OutputSection *os = ctx.getOutputSection(file->location);
+    if ((os->header.Characteristics & IMAGE_SCN_MEM_WRITE) ||
+        file->impSym->getRVA() % 8)
+      Err(ctx) << "code reads the address of " << file->externalName
+               << ", imported from " << file->dllName
+               << ", from an in-place import slot in section " << os->name
+               << ", which is writable or misaligned; keep the slot's "
+                  "section apart from /merge and /section";
+  }
+  OutputSection *first = iatStart ? ctx.getOutputSection(iatStart) : nullptr;
+  for (OutputSection *os : ctx.outputSections)
+    if (first && os->getRVA() < alignTo(end, pageSize) &&
+        os->getRVA() + os->getVirtualSize() > alignDown(begin, pageSize) &&
+        ((os->header.Characteristics ^ first->header.Characteristics) & perms))
+      Err(ctx) << "section " << os->name
+               << " shares the pages of the import address table, which "
+                  "holds in-place import slots, with section "
+               << first->name << " but not its protection";
+}
+
 void Writer::calculateStubDependentSizes() {
+  // An override table follows the DOS header: eight slots, its header and
+  // the slots from the ninth on. The DOS program follows it at a paragraph,
+  // where the DOS header's size says it is.
+  if (OverrideAnchorChunk *anchor = ctx.symtab.overrideAnchor)
+    dosHeaderSize = alignTo(anchor->getSlotOffset(anchor->count), 16);
   if (ctx.config.dosStub)
     dosStubSize = alignTo(ctx.config.dosStub->getBufferSize(), 8);
   else
-    dosStubSize = sizeof(dos_header) + sizeof(dosProgram);
+    dosStubSize = dosHeaderSize + sizeof(dosProgram);
 
   coffHeaderOffset = dosStubSize + sizeof(PEMagic);
   peHeaderOffset = coffHeaderOffset + sizeof(coff_file_header);
@@ -1159,6 +1761,8 @@ void Writer::createSections() {
   const uint32_t r = IMAGE_SCN_MEM_READ;
   const uint32_t w = IMAGE_SCN_MEM_WRITE;
   const uint32_t x = IMAGE_SCN_MEM_EXECUTE;
+  // Whether an object states the owned model, so the image has a template.
+  bool ownedTls = !ctx.tlsRuntime().empty();
 
   SmallDenseMap<std::pair<StringRef, uint32_t>, OutputSection *> sections;
   auto createSection = [&](StringRef name, uint32_t outChars) {
@@ -1178,15 +1782,17 @@ void Writer::createSections() {
   }
   bssSec = createSection(".bss", bss | r | w);
   rdataSec = createSection(".rdata", data | r);
+  sealedSec = createSection(".sealed", data | r);
   buildidSec = createSection(".buildid", data | r);
   cvinfoSec = createSection(".cvinfo", data | r);
   dataSec = createSection(".data", data | r | w);
   pdataSec = createSection(".pdata", data | r);
   idataSec = createSection(".idata", data | r);
   edataSec = createSection(".edata", data | r);
+  ovraSec = createSection(OverrideAnchorSection, data | r);
   // A .didat that holds the IAT stays writable: the delay-load helper fails
   // otherwise.
-  delayIatPlacement = delayIdata.getIatPlacement();
+  delayIatPlacement = getDelayIatPlacement(ctx);
   bool iatInDidat = delayIatPlacement == DelayIatPlacement::Didat;
   didatSec = createSection(".didat", data | r | (iatInDidat ? w : 0));
   if (isArm64EC(ctx.config.machine))
@@ -1215,20 +1821,36 @@ void Writer::createSections() {
     if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
       name = name.split('$').first;
 
-    if (name.starts_with(".tls"))
-      tlsAlignment = std::max(tlsAlignment, c->getAlignment());
-
-    PartialSection *pSec = createPartialSection(name,
-                                                c->getOutputCharacteristics());
-    pSec->chunks.push_back(c);
+    // The .tls groups of an object of the owned model are the image's
+    // template, read-only, as the runtime copies it; a foreign object's are
+    // the loader's, a read-only run of .rdata where the image has a template
+    // of its own.
+    uint32_t chars = c->getOutputCharacteristics();
+    if (name.split('$').first == ".tls") {
+      bool own = sc && sc->file->tlsModel;
+      uint32_t &align = own ? tlsImageAlignment : tlsAlignment;
+      align = std::max(align, c->getAlignment());
+      if (own || ownedTls)
+        chars = data | r;
+      if (!own && ownedTls)
+        name = saver().save(".rdata$" + name);
+    }
+    createPartialSection(name, chars)->chunks.push_back(c);
   }
+  // The loader's template's bounds that the link defines are its first chunk
+  // and its last group.
+  for (int i = 0; i != 2; ++i)
+    if (Chunk *c = ctx.tlsBounds[i]) {
+      std::vector<Chunk *> &v =
+          createPartialSection(ownedTls ? (i ? ".rdata$.tls$~" : ".rdata$.tls")
+                                        : (i ? ".tls$~" : ".tls"),
+                               data | r | (ownedTls ? 0 : w))
+              ->chunks;
+      v.insert(i ? v.end() : v.begin(), c);
+    }
 
   fixPartialSectionChars(".rsrc", data | r);
   fixPartialSectionChars(".edata", data | r);
-  // The ntposix model's template is read-only: the runtime copies it.
-  bool ntposixTls = ctx.isTlsModel("ntposix");
-  if (ntposixTls)
-    fixPartialSectionChars(".tls", data | r);
   if (iatInDidat)
     fixPartialSectionChars(".didat", data | r | w);
   // Even in non MinGW cases, we might need to link against GNU import
@@ -1237,10 +1859,53 @@ void Writer::createSections() {
   if (!idata.empty())
     hasIdata = true;
 
+  placeFillWords();
+  placeImportSlots();
+  placeDelayWords();
   if (hasIdata)
     addSyntheticIdata();
 
   sortSections();
+
+  // Sections are in their final order within each group, so the ones that
+  // hold in-place import slots and are laid out together can leave theirs.
+  auto move = [&](ArrayRef<Chunk *> chunks, StringRef from, StringRef to,
+                  uint32_t chars) {
+    if (chunks.empty())
+      return;
+    SmallPtrSet<Chunk *, 0> moved(llvm::from_range, chunks);
+    PartialSection *source = findPartialSection(from, chars);
+    llvm::erase_if(source->chunks, [&](Chunk *c) { return moved.contains(c); });
+    if (!to.empty())
+      llvm::append_range(createPartialSection(to, chars)->chunks, chunks);
+    if (source->chunks.empty())
+      partialSections.erase({from, chars});
+  };
+  move(sealedChunks.getArrayRef(), ".rdata", ".sealed", data | r);
+  move(slotRdata, ".rdata", ".idata$5", data | r);
+  move(slotData, ".data", ".data", data | r | w);
+  // The sections that hold the loader's delay-load runs leave .rdata, and the
+  // delay-load tables add them.
+  move(delayIdata.getRunChunks(), ".rdata", "", data | r);
+  // A delay-load run's zero word, and an ARM64 delay-load guard, follow
+  // their section, the guards in their sites' order.
+  auto placeAfter = [&](SectionChunk *sc, Chunk *c) {
+    StringRef name = sc->getSectionName();
+    if (shouldStripSectionSuffix(sc, name, ctx.config.mingw))
+      name = name.split('$').first;
+    if (PartialSection *sec =
+            findPartialSection(name, sc->getOutputCharacteristics()))
+      if (auto i = llvm::find(sec->chunks, sc); i != sec->chunks.end())
+        sec->chunks.insert(i + 1, c);
+  };
+  for (auto [sc, pad] : delayIdata.getPlacedPads())
+    placeAfter(sc, pad);
+  for (Chunk *c : llvm::reverse(ctx.delayGuardsA64))
+    placeAfter(static_cast<DelayGuardA64Chunk *>(c)->sc, c);
+  // Where every import is held in slots there may be no address table.
+  if (PartialSection *iat = findPartialSection(".idata$5", data | r);
+      iat && iat->chunks.empty())
+    partialSections.erase({".idata$5", data | r});
 
   if (hasIdata)
     locateImportTables();
@@ -1269,10 +1934,19 @@ void Writer::createSections() {
       sortCRTSectionChunks(pSec->chunks);
     }
 
-    // The ntposix model's .tls header states the template's alignment, as it
-    // states its bounds.
-    if (name == ".tls" && ntposixTls)
-      outChars |= (Log2_32(tlsAlignment) + 1) * IMAGE_SCN_ALIGN_1BYTES;
+    // The image's template's .tls header states its alignment, as it states
+    // its bounds; each template's bounds are its groups' first chunks and the
+    // last chunk of the image's (COFFLinkerContext::tlsOffset).
+    bool loader =
+        ownedTls ? pSec->name.starts_with(".rdata$.tls") : name == ".tls";
+    if (name == ".tls" && ownedTls)
+      outChars |= (Log2_32(tlsImageAlignment) + 1) * IMAGE_SCN_ALIGN_1BYTES;
+    if ((loader || name == ".tls") && !pSec->chunks.empty()) {
+      Chunk **t = loader ? ctx.tlsLoader : ctx.tlsImage;
+      if (!t[0])
+        t[0] = pSec->chunks.front();
+      t[1] = loader ? pSec->chunks.front() : pSec->chunks.back();
+    }
 
     // ARM64EC has specific placement and alignment requirements for the IAT.
     // Delay adding its chunks until appendECImportTables.
@@ -1280,17 +1954,18 @@ void Writer::createSections() {
         (pSec->name == ".idata$5" || pSec->name == ".idata$9"))
       continue;
 
+    // placeImportSlotSections puts the import address tables, and with them
+    // .rdata's $ groups, at the start of .rdata.
+    if (!slotSections.empty() && outChars == (data | r) &&
+        (pSec->name == ".idata$5" ||
+         (slotRdataGroups && pSec->name.starts_with(".rdata$"))))
+      continue;
+
     OutputSection *sec = createSection(name, outChars);
     for (Chunk *c : pSec->chunks)
       sec->addChunk(c);
 
     sec->addContributingPartialSection(pSec);
-    if (name == ".tls" && !pSec->chunks.empty()) {
-      if (!ctx.tlsFirst)
-        ctx.tlsFirst = pSec->chunks.front();
-      ctx.tlsLast = pSec->chunks.front();
-      ctx.tlsEnd = pSec->chunks.back();
-    }
   }
 
   if (ctx.hybridSymtab) {
@@ -1335,12 +2010,52 @@ void Writer::createMiscChunks() {
     }
   }
 
+  // The anchor of the override table, alone in its section, by whose name
+  // an image finds it, and the thunks of forwarding defaults.
+  if (OverrideAnchorChunk *anchor = ctx.symtab.overrideAnchor)
+    ovraSec->addChunk(anchor);
+  for (OverrideThunk *t : ctx.symtab.overrideThunks)
+    textSec->addChunk(t);
+
   // Create thunks for locally-dllimported symbols.
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     if (!symtab.localImportChunks.empty()) {
       for (Chunk *c : symtab.localImportChunks)
         rdataSec->addChunk(c);
     }
+  });
+
+  // Write the records of thread-local variables that are still named, by
+  // name, so that reordering the inputs moves none. One that nothing names
+  // takes no room, unless code that reads the variable for itself comes to
+  // keep its size and goes through the record again.
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    std::vector<TlsRecordChunk *> records;
+    for (auto [var, r] : symtab.tlsRecords)
+      if (r->live)
+        records.push_back(r);
+    llvm::sort(records, [](TlsRecordChunk *a, TlsRecordChunk *b) {
+      return a->sym->getName() < b->sym->getName();
+    });
+    for (TlsRecordChunk *r : records) {
+      r->setNamed(r->isNamed());
+      rdataSec->addChunk(r);
+    }
+    // A place word that the fill does not write is a constant, but a wide
+    // executable's, the first of .sealed, whose key its runtime writes.
+    if (TlsPlaceChunk *p = symtab.placeWord; p && !p->registers) {
+      if (!ctx.tlsWide || ctx.config.dll)
+        rdataSec->addChunk(p);
+      else if (sealedSec->insertChunkAtStart(p); ctx.fill.empty())
+        sealedSec->insertChunkAtStart(make<EmptyChunk>(TP_PLACE_IN_SEALED));
+    }
+    llvm::erase_if(records, [](TlsRecordChunk *r) { return !r->named; });
+    // A record of the pe model holds the address of the index that the loader
+    // gives the image, and one of the ntposix model the image's place word.
+    if (!records.empty() && !symtab.placeWord &&
+        !isa_and_nonnull<Defined>(symtab.tlsIndex))
+      Err(ctx) << "thread-local record " << toString(ctx, *records[0]->sym)
+               << " needs _tls_index, which the image does not define";
   });
 
   // The loader reads an image's TLS directory only on the path that binds
@@ -1450,7 +2165,12 @@ void Writer::createImportTables() {
     if (file->impSym && !isa<DefinedImportData>(file->impSym))
       Fatal(ctx) << file->symtab.printSymbol(file->impSym) << " was replaced";
     DefinedImportData *impSym = cast_or_null<DefinedImportData>(file->impSym);
-    if (ctx.config.delayLoads.contains(StringRef(file->dllName).lower())) {
+    // The fill writes the pointer of an import that it binds, a word of
+    // .sealed that selectFill made.
+    if (file->binding)
+      continue;
+    if (ctx.config.delayLoads.contains(
+                   StringRef(file->dllName).lower())) {
       if (!file->thunkSym)
         Fatal(ctx) << "cannot delay-load " << toString(file)
                    << " due to import of data: "
@@ -1500,6 +2220,8 @@ void Writer::appendImportThunks() {
       (iatInDidat ? rdataSec : didatSec)->addChunk(c);
     for (Chunk *c : delayIdata.getModuleHandles())
       dataSec->addChunk(c);
+    for (Chunk *c : delayIdata.getRunChunks())
+      rdataSec->addChunk(c);
     ArrayRef<Chunk *> iat = delayIdata.getAddresses();
     if (iatInDidat) {
       // The loader reopens only the IAT's pages, so it comes first and input
@@ -1847,13 +2569,17 @@ void Writer::mergeSections() {
     }
   }
 
-  // A .didat that holds the IAT stays its own section. The ntposix model's
-  // .tls is the image's one thread-local range, which its header describes.
-  bool ntposixTls = ctx.isTlsModel("ntposix");
+  // A .didat that holds the IAT stays its own section. The image's template
+  // is its one .tls range, which the section's header describes.
+  bool ownedTls = !ctx.tlsRuntime().empty();
   for (auto &p : ctx.config.merge) {
-    if (ntposixTls && (p.first == ".tls" || p.second == ".tls"))
-      Err(ctx) << "/merge: cannot merge '.tls' with any section in an image "
-               << "of the ntposix thread-local model";
+    if (ownedTls && (p.first == ".tls" || p.second == ".tls"))
+      Err(ctx) << "/merge: cannot merge '.tls' with any section: it is the "
+               << "image's thread-local template";
+    else if (!ctx.fill.empty() &&
+             (p.first == ".sealed" || p.second == ".sealed"))
+      Err(ctx) << "/merge: cannot merge '.sealed' with any section: it holds "
+               << "what the image writes as it starts and nothing else";
     else if (p.first != ".bss" &&
              !(p.first == ".didat" &&
                delayIatPlacement == DelayIatPlacement::Didat))
@@ -1952,13 +2678,25 @@ void Writer::assignAddresses() {
           prevECRange = rangeType;
         }
       }
+      uint64_t prevEnd = virtualSize;
       if (padding && c->isHotPatchable())
         virtualSize += padding;
       // If chunk has EC entry thunk, reserve a space for an offset to the
       // thunk.
       if (c->getEntryThunk())
         virtualSize += sizeof(uint32_t);
+      // What a chunk leaves out overlaps the end of the chunk before it, and
+      // nothing reserved between the two.
+      if (virtualSize == prevEnd)
+        virtualSize -= std::min<uint64_t>(virtualSize, c->getLeftOut());
       virtualSize = alignTo(virtualSize, c->getAlignment());
+      // A chunk barred from places within a line takes the next that it is
+      // not barred from, which puts it and every chunk after it no later
+      // than any other choice would.
+      if (auto *sc = dyn_cast<SectionChunk>(c))
+        for (int n = 0;
+             n != 3 && sc->linePlacesBarred >> (virtualSize / 16 % 4) & 1; ++n)
+          virtualSize += std::max(c->getAlignment(), 16u);
       c->setRVA(rva + virtualSize);
       virtualSize += c->getSize();
       if (c->hasData)
@@ -1975,29 +2713,10 @@ void Writer::assignAddresses() {
   }
   sizeOfImage = alignTo(rva, config->align);
 
-  // The thread-locals' scale counts the slots they fill. In the ntposix
-  // model the runtime states its own place, and an executable has the room
-  // of its block past the header where they fit it, else its slot of the
-  // first plane where they fit a slot. The pe model has no place.
-  Symbol *placeSym = ctx.symtab.find("__tp_place");
-  if (isa_and_nonnull<Defined>(placeSym) && ctx.isTlsModel("pe") &&
-      !deferBaserels)
-    Err(ctx) << "__tp_place is defined in an image of the pe thread-local "
-             << "model, which has no place";
-  if (ctx.tlsFirst) {
-    uint64_t size =
-        ctx.tlsEnd->getRVA() + ctx.tlsEnd->getSize() - ctx.tlsFirst->getRVA();
-    ctx.tlsScale = std::max<uint64_t>(1, divideCeil(size, tlsSlotSize));
-    if (ctx.isTlsModel("ntposix")) {
-      if (auto *place = dyn_cast_or_null<DefinedAbsolute>(placeSym))
-        ctx.tlsPlace = place->getVA();
-      else if (!config->dll && size <= tlsSlotSize)
-        ctx.tlsPlace = size <= tlsSlotSize - tlsHeaderSize ? tlsHeaderSize
-                                                           : tlsPlaneOffset;
-      else if (!config->dll)
-        ctx.tlsOversize = size;
-    }
-  }
+  assert(!ctx.tlsImage[0] || ctx.tlsImage[1]->getRVA() +
+                                     ctx.tlsImage[1]->getSize() -
+                                     ctx.tlsImage[0]->getRVA() ==
+                                 ctx.tlsSize);
 
   // Assign addresses to sections in MergeChunks.
   for (MergeChunk *mc : ctx.mergeChunkInstances)
@@ -2027,12 +2746,12 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     // In that case, we add zero paddings ourselves.
     buf += alignTo(config->dosStub->getBufferSize(), 8);
   } else {
-    buf += sizeof(dos_header);
+    buf += dosHeaderSize;
     dos->Magic[0] = 'M';
     dos->Magic[1] = 'Z';
     dos->UsedBytesInTheLastPage = dosStubSize % 512;
     dos->FileSizeInPages = divideCeil(dosStubSize, 512);
-    dos->HeaderSizeInParagraphs = sizeof(dos_header) / 16;
+    dos->HeaderSizeInParagraphs = dosHeaderSize / 16;
 
     dos->AddressOfRelocationTable = sizeof(dos_header);
     dos->AddressOfNewExeHeader = dosStubSize;
@@ -2050,6 +2769,12 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
     write32le(buffer->getBufferStart() + 0x30, 0x7E1A5C03);
     write32le(buffer->getBufferStart() + 0x34, state->getRVA());
   }
+
+  if (OverrideAnchorChunk *anchor = ctx.symtab.overrideAnchor)
+    anchor->writeTable(buffer->getBufferStart());
+  // Other images' fills find the offer table through this reserved word.
+  if (OfferTableChunk *t = ctx.symtab.offerTable)
+    write32le(buffer->getBufferStart() + OfferTableHeaderWord, t->getRVA());
 
   // Make sure DOS stub is aligned to 8 bytes at this point
   assert((buf - buffer->getBufferStart()) % 8 == 0);
@@ -2169,7 +2894,7 @@ template <typename PEHeaderTy> void Writer::writeHeader() {
   }
   if (iatStart) {
     dir[IAT].RelativeVirtualAddress = iatStart->getRVA();
-    dir[IAT].Size = iatSize;
+    dir[IAT].Size = getIatSize();
   } else if (tlsGate) {
     dir[IAT].RelativeVirtualAddress = tlsGate->getRVA();
     dir[IAT].Size = tlsGate->getSize();
@@ -2332,8 +3057,10 @@ static void maybeAddAddressTakenFunction(SymbolRVASet &addressTakenSyms,
     break;
 
   case Symbol::DefinedImportThunkKind:
-    // Thunks are always code, include them.
-    addSymbolToRVASet(addressTakenSyms, cast<Defined>(s));
+    // Thunks are always code, include them, unless every reference holds
+    // the function's own address in an in-place slot.
+    if (s->isLive())
+      addSymbolToRVASet(addressTakenSyms, cast<Defined>(s));
     break;
 
   case Symbol::DefinedRegularKind: {
@@ -2375,7 +3102,7 @@ void Writer::markSymbolsWithRelocations(ObjFile *file,
       if (auto *di = dyn_cast_or_null<DefinedImportData>(ref)) {
         if (di->file->hdr->getType() == IMPORT_CODE)
           giatsSymbols.push_back(di);
-      } else {
+      } else if (!(ref && ref->addressImported && takesAddress(*sc, reloc))) {
         maybeAddAddressTakenFunction(usedSymbols, ref);
       }
     }
@@ -2561,8 +3288,11 @@ void Writer::createGuardCFTables() {
       if (file->forkObject) {
         std::vector<Symbol *> syms;
         getSymbolsFromSections(file, file->getGuardFidChunks(), syms);
+        // Its address-takes of a function that a DLL offers read the DLL's
+        // function's address, so the image's copy is no target of theirs.
         for (Symbol *s : syms)
-          maybeAddAddressTakenFunction(addressTakenSyms, s);
+          if (!s || !s->addressImported)
+            maybeAddAddressTakenFunction(addressTakenSyms, s);
       } else {
         markSymbolsForRVATable(file, file->getGuardFidChunks(),
                                addressTakenSyms);
@@ -2595,6 +3325,16 @@ void Writer::createGuardCFTables() {
       maybeAddAddressTakenFunction(addressTakenSyms, symtab.entry);
   });
 
+  // The anchor of the override table takes the address of what each slot
+  // names, which a default in another image transfers to: a DLL's offer
+  // through the executable's entry, which the loader then grants.
+  if (OverrideAnchorChunk *anchor = ctx.symtab.overrideAnchor)
+    for (Defined *slot : anchor->slots)
+      if (slot)
+        addSymbolToRVASet(isa<DefinedImportData>(slot) ? giatsRVASet
+                                                       : addressTakenSyms,
+                          slot);
+
   // An import's address is taken through its IAT entry, and through the load
   // thunk if it is delay-loaded; a local import's is its target's.
   for (Symbol *s : giatsSymbols) {
@@ -2607,6 +3347,25 @@ void Writer::createGuardCFTables() {
     if (di->loadThunkSym)
       addSymbolToRVASet(addressTakenSyms, di->loadThunkSym);
   }
+  // Code that took an imported function's address loads it from the entry,
+  // which holds the load thunk of a delay-loaded function until its DLL is
+  // bound. The loader's grant for such a function's own address is that of
+  // its entry, which other words take the address from.
+  for (ImportFile *file : ctx.importFileInstances)
+    if (file->live && ((file->uses & ImportFile::Loaded) || file->observed)) {
+      addSymbolToRVASet(giatsRVASet, file->impSym);
+      if (auto *di = dyn_cast<DefinedImportData>(file->impSym);
+          di && di->loadThunkSym)
+        addSymbolToRVASet(addressTakenSyms, di->loadThunkSym);
+    }
+  // The loader also writes a function's address into each in-place slot that
+  // imports one.
+  for (const ImportSlot &s : ctx.importSlots)
+    if (s.sym->file->hdr->getType() == IMPORT_CODE)
+      giatsRVASet.insert({s.chunk, s.offset});
+  // So it does into each word of a delay-load run.
+  for (const ImportSlot &s : delayIdata.getRunWords())
+    giatsRVASet.insert({s.chunk, s.offset});
 
   // A DLL's function listed only because it is exported is export-suppressed
   // when 16-byte aligned, and a listed one /guardsym names is suppressed.
@@ -2729,13 +3488,14 @@ void Writer::maybeAddRVATable(SymbolRVASet tableSymbols, StringRef tableSym,
   if (tableSymbols.empty())
     return;
 
-  NonSectionChunk *tableChunk;
+  RVATableChunk *tableChunk;
   if (hasFlag)
     tableChunk =
         make<RVAFlagTableChunk>(std::move(tableSymbols), std::move(flags));
   else
     tableChunk = make<RVATableChunk>(std::move(tableSymbols));
   rdataSec->addChunk(tableChunk);
+  rvaTables.push_back({tableChunk, countSym});
 
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     Symbol *t = symtab.findUnderscore(tableSym);
@@ -2743,6 +3503,20 @@ void Writer::maybeAddRVATable(SymbolRVASet tableSymbols, StringRef tableSym,
     replaceSymbol<DefinedSynthetic>(t, t->getName(), tableChunk);
     cast<DefinedAbsolute>(c)->setVA(tableChunk->getSize() / (hasFlag ? 5 : 4));
   });
+}
+
+// A guard table holds an address once, and resizing may have brought two of
+// its symbols to one, so its entries are counted once every address is final.
+void Writer::countRVATableEntries() {
+  if (!ctx.hasForkObject)
+    return;
+  for (const std::pair<RVATableChunk *, StringRef> &table : rvaTables) {
+    std::vector<uint8_t> buf(table.first->getSize());
+    size_t count = table.first->write(buf.data());
+    ctx.forEachSymtab([&](SymbolTable &symtab) {
+      cast<DefinedAbsolute>(symtab.findUnderscore(table.second))->setVA(count);
+    });
+  }
 }
 
 // Create CHPE metadata chunks.
@@ -2924,7 +3698,8 @@ void Writer::placeStartStopSymbols() {
         continue;
       }
       if (run.start)
-        replaceSymbol<DefinedSynthetic>(run.start, run.start->getName(), first);
+        replaceSymbol<DefinedSynthetic>(run.start, run.start->getName(), first,
+                                        first->getLeftOut());
       if (run.stop)
         replaceSymbol<DefinedSynthetic>(run.stop, run.stop->getName(), last,
                                         last->getSize());
@@ -3107,7 +3882,7 @@ void Writer::writeSections() {
         // rawSize; stop filling when we reach the end of raw data.
         if (off >= rawSize)
           break;
-        memset(secBuf + prevEnd, 0xCC, off - prevEnd);
+        memset(secBuf + prevEnd, 0xCC, off + c->getLeftOut() - prevEnd);
         prevEnd = std::min(off + static_cast<uint32_t>(c->getSize()), rawSize);
       }
       memset(secBuf + prevEnd, 0xCC, rawSize - prevEnd);
@@ -3124,6 +3899,20 @@ void Writer::writeSections() {
         write32le(buf - sizeof(uint32_t),
                   entryThunk->getRVA() - c->getRVA() + 1);
     });
+    // A chunk that falls into the next one runs the gap between them, which
+    // holds no-operations, written once the chunks are.
+    for (size_t i = 0; i + 1 < sec->chunks.size(); ++i) {
+      Chunk *c = sec->chunks[i];
+      if (!fallsThrough(c))
+        continue;
+      uint8_t *p = secBuf + c->getRVA() - sec->getRVA() + c->getSize();
+      size_t gap = sec->chunks[i + 1]->getRVA() - c->getRVA() - c->getSize();
+      if (c->getMachine() == AMD64)
+        x86::writeNops(p, gap, 15);
+      else
+        for (size_t k = 0; k < gap; k += 4)
+          write32le(p + k, 0xd503201f);
+    }
   }
 }
 
@@ -3232,20 +4021,6 @@ void Writer::sortExceptionTables() {
   }
 }
 
-static bool isSecRel(Triple::ArchType arch, uint16_t type) {
-  switch (arch) {
-  case Triple::x86:
-    return type == IMAGE_REL_I386_SECREL || type == IMAGE_REL_I386_SECREL7;
-  case Triple::x86_64:
-    return type == IMAGE_REL_AMD64_SECREL || type == IMAGE_REL_AMD64_SECREL7;
-  case Triple::aarch64:
-    return type >= IMAGE_REL_ARM64_SECREL &&
-           type <= IMAGE_REL_ARM64_SECREL_LOW12L;
-  default:
-    return false;
-  }
-}
-
 // Lists the image's relocations for the PDB's Fixup Data stream as link.exe
 // does: one record for each relocation that names a symbol, a PAIR's at the
 // site of the relocation it follows, none for x86-64's EHANDLER outside the
@@ -3266,6 +4041,7 @@ void Writer::createFixups() {
         continue;
       const COFFObjectFile *obj = sc->file->getCOFFObj();
       ArrayRef<coff_relocation> rels = sc->getRelocs();
+      ScannedSection *ss = rels.empty() ? nullptr : sc->getScanned();
       bool x64 = sc->getArch() == Triple::x86_64;
 
       // The exception table was sorted by its entries' first fields, so an
@@ -3283,14 +4059,20 @@ void Writer::createFixups() {
       uint32_t site = 0;
       bool absolute = false;
       for (const coff_relocation &rel : rels) {
-        if (relocationNamesNoSymbol(rel.Type))
+        if (relocationNamesNoSymbol(rel.Type) ||
+            isDeleted(ss, &rel - rels.begin()))
           continue;
-        auto *d = dyn_cast_or_null<Defined>(
-            sc->file->getSymbol(rel.SymbolTableIndex));
+        // A site is recorded where relaxation left it, under the type of
+        // the form it took.
+        uint16_t type = rel.Type;
+        Symbol *target = ss ? ss->relocs[&rel - rels.begin()].sym
+                            : sc->file->getSymbol(rel.SymbolTableIndex);
         if (!sc->isPair(rel.Type)) {
-          site = rel.VirtualAddress;
-          absolute = !d || isa<DefinedAbsolute>(d);
+          site = getRelaxedSite(*sc, &rel - rels.begin(), type, target);
+          absolute = !isa_and_nonnull<Defined>(target) ||
+                     isa<DefinedAbsolute>(target);
         }
+        auto *d = dyn_cast_or_null<Defined>(target);
         Chunk *tc = d ? d->getChunk() : nullptr;
         OutputSection *tos = tc ? ctx.getOutputSection(tc) : nullptr;
         if (absolute || !d || (tc && !tos) ||
@@ -3333,12 +4115,12 @@ void Writer::createFixups() {
           }
           rva = table.first->getRVA() + entry * entrySize + site % entrySize;
         } else if (isSecRel(sc->getArch(), rel.Type) &&
-                   ctx.tlsOffset(d->getRVA())) {
+                   ctx.tlsOffset(d->getRVA(), /*loader=*/true)) {
           flags |= 0x2000;
         }
         (sorted ? tableFixups : fixups)
-            .push_back({ulittle16_t(rel.Type), ulittle16_t(flags),
-                        ulittle32_t(rva), ulittle32_t(d->getRVA())});
+            .push_back({ulittle16_t(type), ulittle16_t(flags), ulittle32_t(rva),
+                        ulittle32_t(d->getRVA())});
       }
     }
   }
@@ -3461,17 +4243,21 @@ void Writer::addBaserelBlocks(std::vector<Baserel> &v) {
 }
 
 // Lays out each live function override's stub and lists the function in the
-// dynamic value relocation table with its sites: the stub's branch, and on
-// ARM64 each BRANCH26 to the function, which as a branch it states.
+// dynamic value relocation table with its sites: the stub's branch, on ARM64
+// each BRANCH26 to the function, which as a branch it states, and each
+// branch to a default body that has no stub of the link's that its
+// relocation's type states.
 void Writer::createFunctionOverrides() {
   std::vector<FunctionOverride *> fos;
   ctx.forEachSymtab([&](SymbolTable &symtab) {
     for (FunctionOverride *fo : symtab.functionOverrides) {
-      if (!fo->stub->live)
+      if (fo->stub ? !fo->stub->live : !fo->body->isLive())
         continue;
-      textSec->addChunk(fo->stub);
-      fo->sites.emplace_back(fo->stub, fo->stub->prefix.size() +
-                                           (fo->stub->machine == AMD64));
+      if (fo->stub) {
+        textSec->addChunk(fo->stub);
+        fo->sites.emplace_back(fo->stub, fo->stub->getEntry() +
+                                             (fo->stub->machine == AMD64));
+      }
       // A candidate that is itself a function override means its body.
       for (Defined *&c : fo->candidates)
         if (FunctionOverrideThunk *t = FunctionOverrideThunk::get(c))
@@ -3484,20 +4270,38 @@ void Writer::createFunctionOverrides() {
   if (!ctx.dynamicRelocs)
     ctx.dynamicRelocs = make<DynamicRelocsChunk>();
   ctx.dynamicRelocs->functionOverrides = std::move(fos);
-  if (ctx.config.machine != ARM64)
+  bool arm64 = ctx.config.machine == ARM64;
+  if (!arm64 && ctx.functionOverrideBodies.empty())
     return;
   for (OutputSection *sec : ctx.outputSections)
     for (Chunk *c : sec->chunks)
-      if (auto *sc = dyn_cast<SectionChunk>(c))
-        for (const coff_relocation &rel : sc->getRelocs())
-          if (FunctionOverrideThunk *t =
-                  rel.Type == IMAGE_REL_ARM64_BRANCH26 ||
-                          rel.Type == IMAGE_REL_LLVM_BRANCH_TAIL
-                      ? FunctionOverrideThunk::get(sc->getRelocTarget(rel))
-                      : nullptr;
-              t &&
-              !(read32le(&sc->getContents()[rel.VirtualAddress]) & 0x3ffffff))
-            t->fo.sites.emplace_back(sc, rel.VirtualAddress);
+      if (auto *sc = dyn_cast<SectionChunk>(c)) {
+        ArrayRef<coff_relocation> rels = sc->getRelocs();
+        ScannedSection *s = rels.empty() ? nullptr : sc->getScanned();
+        for (size_t i = 0, e = rels.size(); i != e; ++i) {
+          const coff_relocation &rel = rels[i];
+          Symbol *to = sc->getTarget(i, s);
+          FunctionOverride *fo = FunctionOverride::get(to);
+          if (fo) {
+            if (!isFunctionOverrideSite(*sc, rel,
+                                        s ? s->relocs[i].expr : R_TYPE))
+              continue;
+          } else if (FunctionOverrideThunk *t =
+                         arm64 &&
+                                 (rel.Type == IMAGE_REL_ARM64_BRANCH26 ||
+                                  rel.Type == IMAGE_REL_LLVM_BRANCH_TAIL) &&
+                                 !(read32le(
+                                       &sc->getContents()[rel.VirtualAddress]) &
+                                   0x3ffffff)
+                             ? FunctionOverrideThunk::get(to)
+                             : nullptr) {
+            fo = &t->fo;
+          } else {
+            continue;
+          }
+          fo->sites.emplace_back(sc, rel.VirtualAddress);
+        }
+      }
 }
 
 // Windows writes an ARM64 site's displacement without checking its range.
@@ -3505,13 +4309,16 @@ void Writer::checkFunctionOverrides() {
   if (!ctx.dynamicRelocs || ctx.config.machine != ARM64)
     return;
   for (FunctionOverride *fo : ctx.dynamicRelocs->functionOverrides)
-    for (auto [c, off] : fo->sites)
+    for (auto [c, off] : fo->sites) {
+      auto *sc = dyn_cast<SectionChunk>(c);
+      uint64_t p = c->getRVA() + (sc ? sc->getOutputOffset(off) : off);
       for (Defined *d : fo->candidates)
-        if (!isInt<28>(int64_t(d->getRVA()) - int64_t(c->getRVA() + off)))
+        if (!isInt<28>(int64_t(d->getRVA()) - int64_t(p)))
           Err(ctx) << "function override " << fo->body->getName()
                    << ": candidate " << d->getName()
                    << " is out of range of the branch at RVA 0x"
-                   << Twine::utohexstr(c->getRVA() + off);
+                   << Twine::utohexstr(p);
+    }
 }
 
 void Writer::createDynamicRelocs() {

@@ -303,6 +303,10 @@ public:
   /// getSPAdjust - This returns the stack pointer adjustment made by
   /// this instruction. For x86, we need to handle more complex call
   /// sequences involving PUSHes.
+  void insertThreadPointerCheck(MachineBasicBlock &MBB,
+                                MachineBasicBlock::iterator MI,
+                                Register Reg) const override;
+
   int getSPAdjust(const MachineInstr &MI) const override;
 
   /// isCoalescableExtInstr - Return true if the instruction is a "coalescable"

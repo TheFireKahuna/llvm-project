@@ -42,8 +42,10 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   // The register that the last instruction loaded a pointer into for the call
   // through it, which is due.
   MCRegister CallLoad;
-  // The prefix-only instructions that end where the last instruction ended.
+  // The bytes of the prefix-only instructions that end where the last
+  // instruction ended, or UnknownPrefixes where a label follows them.
   unsigned PrefixRun = 0;
+  static constexpr unsigned UnknownPrefixes = -1u;
   // The fragment of the last load of a pointer that the linker binds, the
   // fixup of its field and the bytes of the prefix-only instructions after
   // it, until the instruction after it is emitted, and whether the load is a
@@ -74,8 +76,8 @@ public:
     if (C.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
         C.getTargetTriple().isX86_64()) {
       MCII.reset(getTheX86_64Target().createMCInstrInfo());
-      // imul, then add.
-      TlsScaleInsts = 2;
+      // The wide form: two loads, the rotate and the key's xor.
+      TlsBaseInsts = 4;
       FusedForms[size_t(COFF::FusedUse::Add)] =
           "lea of a constant directly after the load of a pointer";
       FusedForms[size_t(COFF::FusedUse::Access)] =
@@ -126,6 +128,8 @@ void X86WinCOFFStreamer::emitLabel(MCSymbol *Symbol, SMLoc Loc) {
     OverTarget = nullptr;
   }
   JccTarget = nullptr;
+  if (PrefixRun)
+    PrefixRun = UnknownPrefixes;
   if (CallLoad)
     getContext().reportError(Loc, "label between the load of a pointer for a "
                                   "call and the call");
@@ -138,6 +142,12 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
   bool Follows =
       getCurrentFragment() == LastFrag && getCurFragSize() == LastEnd;
   const MCSymbol *Over = Follows ? JccTarget : nullptr;
+  // The bytes before the instruction that may prefix it: those of the
+  // prefix-only instructions directly before it, unknown after a label or
+  // where bytes that no instruction stated may be prefixes.
+  unsigned Prefixes = Follows                          ? PrefixRun
+                      : getCurFragSize() || PrefixRun ? UnknownPrefixes
+                                                       : 0;
   JccTarget = OverTarget = nullptr;
   // On Windows Itanium and NT-POSIX the relocation type of a jmp, direct,
   // through a pointer or fused, states what the linker may do to it, which
@@ -356,25 +366,20 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
       OverFrag = Frag;
       OverFixup = Frag->getFixups().size() - 1;
     }
-    PrefixRun = MCII && X86II::isPrefix(MCII->get(Opcode).TSFlags)
-                    ? (Follows ? PrefixRun : 0) + 1
-                    : 0;
+    PrefixRun = !MCII || !X86II::isPrefix(MCII->get(Opcode).TSFlags) ? 0
+                : Prefixes == UnknownPrefixes ? Prefixes
+                                              : Prefixes + 1;
     LastFrag = After;
     LastEnd = End;
     CallLoad = ForCall;
   });
 
-  // A jmp through memory states the prefixes before it, which the linker
-  // cannot see from its site: a prefix-only instruction's among them, and
-  // data, whose bytes may be prefixes.
+  // An instruction states the prefixes before it, which the linker cannot
+  // see from its site, to the code emitter.
   unsigned Flags = Inst.getFlags();
-  if (Opcode == X86::JMP64m || Opcode == X86::JMP64m_REX ||
-      Opcode == X86::JMP64m_NT) {
-    if (PrefixRun == 1 && Follows)
-      Flags |= X86::IP_AFTER_PREFIX;
-    else if (PrefixRun || (!Follows && getCurFragSize()))
-      Flags |= X86::IP_AFTER_PREFIXES;
-  }
+  if (MCII && Prefixes)
+    Flags |= Prefixes <= 15 ? Prefixes << X86::IP_PREFIX_BYTES_SHIFT
+                            : unsigned(X86::IP_AFTER_UNKNOWN);
 
   if ((Opcode == X86::JMP_1 || Opcode == X86::JMP64m) &&
       STI.hasFeature(X86::Is64Bit) &&
@@ -382,9 +387,9 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
       MayDelete())
     Flags |= X86::IP_TAIL_JUMP;
   if (Flags != Inst.getFlags()) {
-    MCInst Jump(Inst);
-    Jump.setFlags(Flags);
-    return X86_MC::emitInstruction(*this, Jump, STI, Part, Marker);
+    MCInst Flagged(Inst);
+    Flagged.setFlags(Flags);
+    return X86_MC::emitInstruction(*this, Flagged, STI, Part, Marker);
   }
   X86_MC::emitInstruction(*this, Inst, STI, Part, Marker);
 }

@@ -26,6 +26,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringExtras.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
@@ -2495,6 +2496,52 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
   case X86::TLS_desc64:
     return LowerTlsAddr(MCInstLowering, *MI);
 
+  case X86::TLS_BASE64: {
+    // mov t, [rip + place]; mov t, [tp + t]; ror t, 17; xor t, [rip + key],
+    // the key the place word's third word. The address names the thread
+    // pointer's register in a form of four bytes where either can be the base.
+    MCSymbol *Dot = OutContext.createTempSymbol();
+    OutStreamer->emitLabel(Dot);
+    OutStreamer->emitRelocDirective(
+        *MCSymbolRefExpr::create(Dot, OutContext),
+        COFF::getLLVMRelocName(COFF::IMAGE_FILE_MACHINE_AMD64,
+                               COFF::IMAGE_REL_LLVM_TLS_BASE),
+        nullptr, SMLoc());
+    Register T = MI->getOperand(0).getReg(), Tp = MI->getOperand(1).getReg();
+    const MCExpr *Place = MCSymbolRefExpr::create(
+        OutContext.getOrCreateSymbol(COFF::TP::RegisterImport), OutContext);
+    bool TpIsBase =
+        (MF->getSubtarget().getRegisterInfo()->getEncodingValue(Tp) & 7) != 5;
+    EmitAndCountInstruction(MCInstBuilder(X86::MOV64rm)
+                                .addReg(T)
+                                .addReg(X86::RIP)
+                                .addImm(1)
+                                .addReg(0)
+                                .addExpr(Place)
+                                .addReg(0));
+    EmitAndCountInstruction(MCInstBuilder(X86::MOV64rm)
+                                .addReg(T)
+                                .addReg(TpIsBase ? Tp : T)
+                                .addImm(1)
+                                .addReg(TpIsBase ? T : Tp)
+                                .addImm(0)
+                                .addReg(0));
+    EmitAndCountInstruction(
+        MCInstBuilder(X86::ROR64ri).addReg(T).addReg(T).addImm(TP_ROTATE));
+    EmitAndCountInstruction(
+        MCInstBuilder(X86::XOR64rm)
+            .addReg(T)
+            .addReg(T)
+            .addReg(X86::RIP)
+            .addImm(1)
+            .addReg(0)
+            .addExpr(MCBinaryExpr::createAdd(
+                Place, MCConstantExpr::create(TP_KEY_AT, OutContext),
+                OutContext))
+            .addReg(0));
+    return;
+  }
+
   case X86::MOVPC32r: {
     // This is a pseudo op for a two instruction sequence with a label, which
     // looks like:
@@ -2609,6 +2656,24 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
 
   case X86::KCFI_CHECK:
     return LowerKCFI_CHECK(*MI);
+
+  case X86::TP_CHECK: {
+    Register TP = MI->getOperand(0).getReg();
+    EmitAndCountInstruction(MCInstBuilder(X86::CMP64rm)
+                                .addReg(TP)
+                                .addReg(TP)
+                                .addImm(1)
+                                .addReg(X86::NoRegister)
+                                .addImm(0)
+                                .addReg(X86::NoRegister));
+    if (!ThreadPointerCheckFail)
+      ThreadPointerCheckFail = OutContext.createTempSymbol();
+    EmitAndCountInstruction(MCInstBuilder(X86::JCC_1)
+                                .addExpr(MCSymbolRefExpr::create(
+                                    ThreadPointerCheckFail, OutContext))
+                                .addImm(X86::COND_NE));
+    return;
+  }
 
   case X86::ASAN_CHECK_MEMACCESS:
     return LowerASAN_CHECK_MEMACCESS(*MI);
@@ -2802,7 +2867,12 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
   MCInstLowering.Lower(MI, TmpInst);
 
   // A fused read states so in the type of its relocation, as does the compare
-  // of a fused test, and any other fused site in a marker.
+  // of a fused test, and any other fused site in a marker, after those of the
+  // record chains' values that the instruction reads.
+  emitDerivedReads(*MI, [&](const MachineInstr &Load) {
+    return MCInstLowering.GetSymbolFromOperand(
+        Load.getOperand(1 + X86::AddrDisp));
+  });
   if (FusedSite Site = FusedSites.lookup(MI); Site.Load) {
     // A load reads the pointer in the operands after the register it
     // writes, and the compare of a fused test in its first ones.

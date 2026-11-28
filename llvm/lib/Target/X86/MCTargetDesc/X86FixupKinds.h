@@ -46,15 +46,23 @@ enum Fixups {
   reloc_riprel_4byte_jump_p1, // jmp *sym(%rip) after one prefix byte
   reloc_riprel_4byte_tail,    // jmp *sym(%rip) that may be deleted
   reloc_riprel_4byte_lea,     // lea sym+k(%rip), r64
+  // The same behind REX2.
+  reloc_riprel_4byte_lea_rex2,
   reloc_riprel_4byte_narrow,  // lea sym+k(%rip), r16 or r32
   reloc_riprel_4byte_test,    // cmpq $0, sym@FUSED(%rip)
   reloc_jump_4byte_pcrel,     // jmp or jcc the assembler relaxed to 32 bits
   reloc_jump_1byte_pcrel,     // jmp or jcc the assembler left at 8 bits
   reloc_tail_4byte_pcrel,     // 32-bit jmp that no unwind frame covers
+  // Any other field relative to rip: this kind plus the bytes of the
+  // instruction before the field times 16 and those of its immediate after.
+  reloc_riprel_4byte_insn,
   // Marker
   LastTargetFixupKind,
   NumTargetFixupKinds = LastTargetFixupKind - FirstTargetFixupKind
 };
+inline bool isRipRelInsn(MCFixupKind Kind) {
+  return Kind >= reloc_riprel_4byte_insn && Kind < reloc_riprel_4byte_insn + 256;
+}
 }
 }
 

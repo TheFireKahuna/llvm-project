@@ -18,6 +18,7 @@
 #include "llvm/ADT/Twine.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/CodeGen/Analysis.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -2154,7 +2155,7 @@ std::optional<unsigned> TargetLoweringBase::getFaultProbeAddressSpace() const {
   const Triple &TT = TM.getTargetTriple();
   if (TT.isWindowsItaniumOrNTPOSIXEnvironment() &&
       (TT.isX86_64() || TT.isAArch64()))
-    return 280;
+    return COFF::TP::FaultProbeAddrSpace;
   return std::nullopt;
 }
 
@@ -2533,7 +2534,78 @@ bool TargetLoweringBase::isLoadBitCastBeneficial(
          Fast;
 }
 
+// A record chain's select chooses between a wide word decoded and its direct
+// arm, the thread pointer plus the place that the record's place word holds.
+// Each access that adds a variable's offset, or its guard's, to the select's
+// base also reads that thread pointer, so that the register allocator keeps
+// it in a register there, and the linker, which takes the register from the
+// direct arm, may make the access the thread pointer plus a $tpoff word.
+static void readThreadPointerAtRecordAccesses(MachineFunction &MF,
+                                              MCRegister TpReg) {
+  MachineRegisterInfo &MRI = MF.getRegInfo();
+  // The first register a load reads, its address's base.
+  auto Base = [&](Register R) -> MachineInstr * {
+    MachineInstr *Load = R.isVirtual() ? MRI.getVRegDef(R) : nullptr;
+    if (!Load || !Load->mayLoad())
+      return nullptr;
+    for (const MachineOperand &MO : Load->explicit_uses())
+      if (MO.isReg() && MO.getReg().isVirtual())
+        return MRI.getVRegDef(MO.getReg());
+    return nullptr;
+  };
+  // Whether R is a place: loaded from a place word that is loaded from a
+  // record.
+  auto IsPlace = [&](Register R) {
+    MachineInstr *Word = Base(R);
+    MachineInstr *Record = Word ? Base(Word->getOperand(0).getReg()) : nullptr;
+    return Record && any_of(Record->operands(), [](const MachineOperand &MO) {
+             return MO.isGlobal() &&
+                    COFF::isTlsRecordName(MO.getGlobal()->getName());
+           });
+  };
+  for (MachineBasicBlock &MBB : MF)
+    for (MachineInstr &Select : MBB) {
+      if (Select.getNumExplicitDefs() != 1 ||
+          none_of(Select.implicit_operands(),
+                  [](const MachineOperand &MO) { return MO.isUse(); }))
+        continue;
+      Register Tp;
+      for (const MachineOperand &Arm : Select.explicit_uses()) {
+        MachineInstr *Direct = Arm.isReg() && Arm.getReg().isVirtual()
+                                   ? MRI.getVRegDef(Arm.getReg())
+                                   : nullptr;
+        if (!Direct || Direct->mayLoad())
+          continue;
+        SmallVector<Register, 2> Regs;
+        for (const MachineOperand &MO : Direct->explicit_uses())
+          if (MO.isReg() && MO.getReg().isVirtual())
+            Regs.push_back(MO.getReg());
+        if (Regs.size() == 2 && IsPlace(Regs[1]) != IsPlace(Regs[0]))
+          Tp = Regs[IsPlace(Regs[0])];
+      }
+      if (!Tp)
+        continue;
+      SmallVector<MachineInstr *, 4> Accesses;
+      SmallVector<Register, 2> Work{Select.getOperand(0).getReg()};
+      while (!Work.empty())
+        for (MachineInstr &Access :
+             MRI.use_nodbg_instructions(Work.pop_back_val()))
+          if (Access.isCopy())
+            Work.push_back(Access.getOperand(0).getReg());
+          else
+            Accesses.push_back(&Access);
+      for (MachineInstr *Access : Accesses)
+        Access->addOperand(MF, MachineOperand::CreateReg(Tp, false, true));
+      MRI.clearKillFlags(Tp);
+      // The register's own value stays where it is.
+      if (MRI.getVRegDef(Tp)->getOpcode() == TargetOpcode::LOAD_THREAD_POINTER)
+        MRI.setSimpleHint(Tp, TpReg);
+    }
+}
+
 void TargetLoweringBase::finalizeLowering(MachineFunction &MF) const {
+  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    readThreadPointerAtRecordAccesses(MF, getThreadPointerRegister());
   MF.getRegInfo().freezeReservedRegs();
 }
 

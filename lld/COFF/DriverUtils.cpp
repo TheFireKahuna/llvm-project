@@ -688,7 +688,7 @@ std::unique_ptr<MemoryBuffer> LinkerDriver::createManifestRes() {
 
   // A Windows Itanium executable whose manifest a .res input gives runs on
   // the segment heap still, which wincrt's start-up requires.
-  if (!resourceManifests.empty() && ctx.isTlsModel("pe") &&
+  if (!resourceManifests.empty() && ctx.tlsRuntime() == "wincrt" &&
       !Regex("<([[:alnum:]_]+:)?heapType[^>]*>[[:space:]]*SegmentHeap"
              "[[:space:]]*<")
            .match(manifest))
@@ -805,11 +805,15 @@ void LinkerDriver::checkFailIfMismatch(StringRef arg, InputFile *source) {
     if (k.empty() || v.empty())
       Fatal(ctx) << "/failifmismatch: invalid argument: " << arg;
     std::string sourceStr = source ? toString(source) : "cmd-line";
-    // The revision of the ntposix thread-local model that LLD holds.
-    if (k == "_TLS_MODEL" && v.split('.').first == "ntposix" &&
-        v != "ntposix.1")
-      Err(ctx) << sourceStr << ": unknown revision of the ntposix "
-               << "thread-local model: " << v;
+    // The key states the owned thread-local model, its runtime and the
+    // revision of its constants, which LLD holds as 1.
+    if (k == "_TLS_MODEL") {
+      if (source)
+        source->tlsModel = true;
+      if (v.split('.').second != "1")
+        Err(ctx) << sourceStr << ": unknown revision of the "
+                 << v.split('.').first << " thread-local model: " << v;
+    }
     auto [it, inserted] = ctx.config.mustMatch.try_emplace(k, v, source);
     auto [existing, existingSource] = it->second;
     if (!inserted && v != existing) {

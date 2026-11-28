@@ -44,7 +44,8 @@ def color_diagnostics_eq: Joined<["--"], "color-diagnostics=">,
     MetaVarName<"[auto,always,never]">;
 def defaultlib : P<"defaultlib", "Add the library to the list of input files">;
 def delay : P<"delay",
-    "Delay-load option: unload (write unload tables) or nobind">;
+    "Delay-load option: unload (write unload tables), nobind, or "
+    "nocanonical:<dll> (its functions' addresses stay their thunks')">;
 def delayload : P<"delayload", "Delay loaded DLL name">;
 def diasdkdir : P<"diasdkdir", "Set the location of the DIA SDK">;
 def discard_section : P<"discard-section", "Discard input sections by name">;
@@ -267,6 +268,16 @@ def help : F<"help">;
 def help_q : Flag<["/??", "-??", "/?", "-?"], "">, Alias<help>;
 
 // LLD extensions
+def Bno_symbolic : F<"Bno-symbolic">,
+    HelpText<"Let another image's vague entities stand for a DLL's own (default)">;
+def Bsymbolic : F<"Bsymbolic">,
+    HelpText<"Bind a DLL's vague entities to its own definitions">;
+def Bsymbolic_functions : F<"Bsymbolic-functions">,
+    HelpText<"Bind a DLL's vague functions to its own definitions">;
+def Bsymbolic_non_weak : F<"Bsymbolic-non-weak">,
+    HelpText<"Accepted as for ELF: a vague entity is weak, so none is bound">;
+def Bsymbolic_non_weak_functions : F<"Bsymbolic-non-weak-functions">,
+    HelpText<"Accepted as for ELF: a vague entity is weak, so none is bound">;
 defm auto_import : B_priv<"auto-import">;
 defm runtime_pseudo_reloc : B_priv<"runtime-pseudo-reloc">;
 def end_lib : F<"end-lib">,
@@ -277,6 +288,20 @@ def exclude_libs : P<"exclude-libs",
     MetaVarName<"<lib[,lib,...]|ALL>">;
 def : Separate<["--", "-"], "exclude-libs">, Alias<exclude_libs>;
 def : Joined<["--", "-"], "exclude-libs=">, Alias<exclude_libs>;
+def allow_vague_duplicate : P<"allow-vague-duplicate",
+    "Accept that images keep their own copies of a vague entity, or every one an image keeps">,
+    MetaVarName<"<entity|@dll>">;
+def offers_baseline : P<"offers-baseline",
+    "Mark the vague entities that the import library of a release the DLL replaces does not export">,
+    MetaVarName<"<lib>">;
+def ignore_offers : P<"ignore-offers",
+    "Keep the image's own copies of the vague entities that a DLL offers">,
+    MetaVarName<"<dll>">;
+def ignore_address_equality : F<"ignore-function-address-equality">,
+    HelpText<"Let the objects of other producers keep the image's own address of each function">;
+def ignore_address_equality_file : P<"ignore-function-address-equality",
+    "Let that object or archive keep the image's own address of each function">,
+    MetaVarName<"<file>">;
 def export_all_symbols : F<"export-all-symbols">;
 defm demangle : B<"demangle",
     "Demangle symbols in output (default)",
@@ -300,6 +325,13 @@ def : Joined<["--", "-"], "rpath=">, Alias<rpath>;
 def start_lib : F<"start-lib">,
   HelpText<"Start group of objects treated as if they were in a library">;
 defm stdcall_fixup : B_priv<"stdcall-fixup">;
+def unresolved_host_imports : F<"unresolved-host-imports">,
+    HelpText<"Import what nothing in a DLL's link defines from the executable "
+             "that loads the DLL">;
+def no_undefined : Flag<["--", "-"], "no-undefined">,
+    HelpText<"Report what nothing in the link defines (default)">;
+def z : Separate<["-"], "z">, MetaVarName<"<option>">,
+    HelpText<"defs: as --no-undefined">;
 def version_script : P<"version-script",
     "Narrow the exports that objects state with a GNU version script">;
 def : Separate<["--", "-"], "version-script">, Alias<version_script>;
@@ -365,10 +397,12 @@ def threads
 def call_graph_ordering_file: P<
     "call-graph-ordering-file",
     "Layout sections to optimize the given callgraph">;
-defm call_graph_profile_sort: B<
+def call_graph_profile_sort: P<
     "call-graph-profile-sort",
-    "Reorder sections with call graph profile (default)",
-    "Do not reorder sections with call graph profile">;
+    "Reorder sections with call graph profile using the specified algorithm: "
+    "cdsort (default), hfsort or none">;
+def : F<"call-graph-profile-sort">, Alias<call_graph_profile_sort>,
+    AliasArgs<["cdsort"]>;
 def print_symbol_order: P<
     "print-symbol-order",
     "Print a symbol order specified by /call-graph-ordering-file and "

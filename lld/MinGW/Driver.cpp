@@ -537,6 +537,18 @@ bool link(ArrayRef<const char *> argsArr, llvm::raw_ostream &stdoutOS,
     add("-version-script:" + StringRef(a->getValue()));
   for (auto *a : args.filtered(OPT_exclude_libs))
     add("-exclude-libs:" + StringRef(a->getValue()));
+  for (auto *a : args.filtered(OPT_allow_vague_duplicate))
+    add("-allow-vague-duplicate:" + StringRef(a->getValue()));
+  for (auto *a : args.filtered(OPT_ignore_offers))
+    add("-ignore-offers:" + StringRef(a->getValue()));
+  for (auto *a : args.filtered(OPT_ignore_address_equality,
+                               OPT_ignore_address_equality_eq))
+    add("-ignore-function-address-equality" +
+        (a->getNumValues() ? ":" + StringRef(a->getValue()) : ""));
+  if (auto *a = args.getLastArg(
+          OPT_Bno_symbolic, OPT_Bsymbolic_non_weak_functions,
+          OPT_Bsymbolic_functions, OPT_Bsymbolic_non_weak, OPT_Bsymbolic))
+    add("-" + a->getOption().getName());
 
   std::vector<StringRef> searchPaths;
   for (auto *a : args.filtered(OPT_L)) {

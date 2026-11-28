@@ -145,6 +145,7 @@ void llvm::initializeCodeGen(PassRegistry &Registry) {
   initializeSSAMachineSchedulerLegacyPass(Registry);
   initializeSafeStackLegacyPassPass(Registry);
   initializeFaultProbeLoweringPass(Registry);
+  initializeThreadPointerLegacyPass(Registry);
   initializeSelectOptimizePass(Registry);
   initializeShadowStackGCLoweringPass(Registry);
   initializeShrinkWrapLegacyPass(Registry);

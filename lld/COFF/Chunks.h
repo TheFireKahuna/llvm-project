@@ -19,6 +19,7 @@
 #include "llvm/MC/StringTableBuilder.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Object/WindowsMachineFlag.h"
+#include <atomic>
 #include <utility>
 #include <vector>
 
@@ -38,6 +39,8 @@ class DefinedRegular;
 class ObjFile;
 class OutputSection;
 class RuntimePseudoReloc;
+struct Relocation;
+struct ScannedSection;
 class Symbol;
 
 // Mask for permissions (discardable, writable, readable, executable, etc).
@@ -61,7 +64,8 @@ public:
     OtherKind,
     ImportThunkKind,
     ECExportThunkKind,
-    FunctionOverrideKind
+    FunctionOverrideKind,
+    TlsRecordKind
   };
   Kind kind() const { return chunkKind; }
 
@@ -78,9 +82,9 @@ public:
     // Treat zero byte alignment as 1 byte alignment.
     align = align ? align : 1;
     assert(llvm::isPowerOf2_32(align) && "alignment is not a power of 2");
-    p2Align = llvm::Log2_32(align);
-    assert(p2Align <= Log2MaxSectionAlignment &&
+    assert(llvm::Log2_32(align) <= Log2MaxSectionAlignment &&
            "impossible requested alignment");
+    p2Align = llvm::Log2_32(align);
   }
 
   // Write this chunk to a mmap'ed file, assuming Buf is pointing to
@@ -132,7 +136,8 @@ public:
   void setEntryThunk(Defined *entryThunk);
 
 protected:
-  Chunk(Kind k = OtherKind) : chunkKind(k), hasData(true), p2Align(0) {}
+  Chunk(Kind k = OtherKind)
+      : chunkKind(k), hasData(true), p2Align(0), leftOut(0) {}
 
   const Kind chunkKind;
 
@@ -146,7 +151,14 @@ public:
 public:
   // The alignment of this chunk, stored in log2 form. The writer uses the
   // value.
-  uint8_t p2Align : 7;
+  uint8_t p2Align : 4;
+
+  // The 4-byte words at the start of this chunk that the image leaves out:
+  // the padding before a function's type prefix, which aligns the entry. The
+  // chunk's address counts them, so they overlap the end of what precedes it,
+  // and every offset into the chunk stands.
+  uint8_t leftOut : 3;
+  uint32_t getLeftOut() const { return leftOut * 4; }
 
   // The output section index for this chunk. The first valid section number is
   // one.
@@ -253,7 +265,10 @@ public:
 
   SectionChunk(ObjFile *file, const coff_section *header, Kind k = SectionKind);
   static bool classof(const Chunk *c) { return c->kind() <= SectionECKind; }
-  size_t getSize() const { return header->SizeOfRawData; }
+  size_t getSize() const {
+    return resizable ? getResizedSize() : header->SizeOfRawData;
+  }
+  size_t getResizedSize() const;
   ArrayRef<uint8_t> getContents() const;
   void writeTo(uint8_t *buf) const;
   MachineTypes getMachine() const;
@@ -275,7 +290,10 @@ public:
   }
   void getBaserels(std::vector<Baserel> *res);
   bool isCOMDAT() const;
-  void applyRelocation(uint8_t *off, const coff_relocation &rel) const;
+  // Applies rel, whose place is at offset in the output and whose scanned
+  // relocation, holding its target, is r, or null if it has none.
+  void applyRelocation(uint8_t *off, const coff_relocation &rel,
+                       uint32_t offset, const Relocation *r) const;
   bool isPair(uint16_t type) const;
   const coff_relocation *getPair(const coff_relocation &rel) const;
   bool applyRelX64(uint8_t *off, uint16_t type, OutputSection *os, uint64_t s,
@@ -322,6 +340,20 @@ public:
   // nothing: a type that names no symbol, and a PAIR outside a fork object,
   // whose symbol then keeps nothing live and is ignored by ICF, as in link.exe.
   Symbol *getRelocTarget(const coff_relocation &rel) const;
+
+  // Whether rel marks a fused site that has no field of its own.
+
+  // The relocations the scan kept for this section, or null.
+  ScannedSection *getScanned() const;
+
+  // The target of relocation i, s being getScanned(): where the scan kept a
+  // section's relocations, they hold the targets, which a later pass may
+  // change.
+  Symbol *getTarget(size_t i, const ScannedSection *s) const;
+
+  // Where the byte at an input offset is in the output. A stored input offset
+  // into a section the link may resize goes through this.
+  uint32_t getOutputOffset(uint32_t offset) const;
 
   ArrayRef<coff_relocation> getRelocs() const {
     return llvm::ArrayRef(relocsData, relocsSize);
@@ -393,7 +425,7 @@ public:
 
   // Whether this section needs to be kept distinct from other sections during
   // ICF. This is set by the driver using address-significance tables.
-  bool keepUnique = false;
+  bool keepUnique : 1;
 
   // Whether the object states that the linker may change the size of this
   // section: every value that depends on its layout is then a relocation or
@@ -406,6 +438,12 @@ public:
   // which the link may delete, and each of its sites keeps its length.
   bool movable : 1;
 
+  // Whether the object states as spans the values that depend on this
+  // resizable section's layout: the link moves its code only by deleting
+  // bytes, those of a load before the call through its register that became
+  // a direct call among them, and by redoing padding.
+  bool compacts : 1;
+
   // Whether ICF must never fold this section: a program enumerates it through
   // __start_ and __stop_ symbols, or it is a function override's body, whose
   // branches stay sites of its own record.
@@ -414,6 +452,13 @@ public:
   // Whether /guardsym suppresses a function here, so that it folds only with
   // another such section.
   bool guardSuppressed : 1;
+
+  // Of the places 0, 16, 32 and 48 bytes into a 64-byte line, as bits 0 to
+  // 3, those where this chunk may not begin: a loop of it that a line is to
+  // keep would cross one there. Never all four. The object states those of
+  // the loops whose offsets are its own, and the solve of a resized section
+  // adds those of the loops it lays out.
+  mutable uint8_t linePlacesBarred = 0;
 
   // The COMDAT selection if this is a COMDAT chunk.
   llvm::COFF::COMDATType selection = (llvm::COFF::COMDATType)0;
@@ -648,12 +693,19 @@ public:
       : ImportThunkChunk(ctx, s), machine(machine) {
     setAlignment(4);
   }
-  size_t getSize() const override { return sizeof(importThunkARM64); }
+  size_t getSize() const override { return near() ? 8 : 12; }
   void writeTo(uint8_t *buf) const override;
   MachineTypes getMachine() const override { return machine; }
+  bool verifyRanges() override;
+  uint32_t extendRanges() override;
 
 private:
+  // In an image with a fork object, the thunk reads the pointer with one ldr
+  // (literal) where that reaches it.
+  bool near() const;
+
   MachineTypes machine;
+  bool far = false;
 };
 
 // ARM64EC __impchk_* thunk implementation.
@@ -739,18 +791,27 @@ public:
   void getBaserels(std::vector<Baserel> *res) override;
   void writeTo(uint8_t *buf) const override;
   Defined *getTarget() const { return sym; }
+  void setTarget(Defined *s) { sym = s; }
 
-  // How roots and live sections use the pointer. On ARM64, when every
-  // instruction that refers to it loads it, they reach the symbol instead, and
-  // it is left out unless something keeps it.
+  // How roots and live sections use the pointer. A Load reaches the target
+  // instead where the scan rewrites it: an x86-64 one always, and ARM64's
+  // when every instruction that refers to the pointer is a Load. The pointer
+  // is left out when they all reach the target and nothing keeps it. The scan
+  // sets the bits from several threads.
   enum Use : uint8_t { Keep = 1, Load = 2, Read = 4 };
-  uint8_t uses = 0;
+  std::atomic<uint8_t> uses = 0;
   bool isBypassed() const { return (uses & (Load | Read)) == Load; }
   bool isLive() const { return !isBypassed() || (uses & Keep); }
   // The compiler's .refptr cell that this pointer binds, if any. The cell
   // stays the pointer, so that it keeps one address, and this one is never
   // written.
   SectionChunk *cell = nullptr;
+  // Whether the target is the default of a weak reference to X, and so no
+  // definition of X.
+  bool weakDefault = false;
+  // Whether the image's fill may write the pointer, which code then reads
+  // where it is.
+  bool filled = false;
 
 private:
   Defined *sym;
@@ -782,22 +843,25 @@ class RVATableChunk : public NonSectionChunk {
 public:
   explicit RVATableChunk(SymbolRVASet s) : syms(std::move(s)) {}
   size_t getSize() const override { return syms.size() * 4; }
-  void writeTo(uint8_t *buf) const override;
+  void writeTo(uint8_t *buf) const override { write(buf); }
+  // Writes the table and returns the number of its entries. A table holds an
+  // address once, so it has fewer entries than symbols, and unused bytes after
+  // them, where resizing brought two of its symbols to one address.
+  virtual size_t write(uint8_t *buf) const;
 
-private:
+protected:
   SymbolRVASet syms;
 };
 
 // Table which contains symbol RVAs with flags. Used for /guard:cf.
-class RVAFlagTableChunk : public NonSectionChunk {
+class RVAFlagTableChunk : public RVATableChunk {
 public:
   RVAFlagTableChunk(SymbolRVASet s, llvm::DenseMap<ChunkAndOffset, uint8_t> f)
-      : syms(std::move(s)), flags(std::move(f)) {}
+      : RVATableChunk(std::move(s)), flags(std::move(f)) {}
   size_t getSize() const override { return syms.size() * 5; }
-  void writeTo(uint8_t *buf) const override;
+  size_t write(uint8_t *buf) const override;
 
 private:
-  SymbolRVASet syms;
   llvm::DenseMap<ChunkAndOffset, uint8_t> flags;
 };
 
@@ -943,17 +1007,27 @@ class FunctionOverrideThunk;
 // A function whose body Windows selects as it maps the image: its default
 // body, the binary decision diagram that selects one of the candidates, the
 // stub that stands for the function, and the sites, branches to the default
-// body that Windows rewrites to the selected one.
+// body that Windows rewrites to the selected one. The function of an object
+// that LLVM made for Windows Itanium or NT-POSIX has the compiler's stub and
+// none of the link's, and its symbol is its default body.
 struct FunctionOverride {
+  // Returns the function override that s is the default body of, if it has
+  // no stub.
+  static FunctionOverride *get(const Symbol *s);
+
   DefinedRegular *body;
   ArrayRef<uint8_t> diagram;
   std::vector<Defined *> candidates;
-  FunctionOverrideThunk *stub;
+  FunctionOverrideThunk *stub = nullptr;
+  bool live = false;
   std::vector<std::pair<const Chunk *, uint32_t>> sites;
 };
 
 // A function override's stub: a copy of the body's prefix [__cfi_X, X), so
 // that a KCFI check of the stub passes, then a branch to the default body.
+// The stub is a Control Flow Guard target, so the copy ends on a 16-byte
+// boundary; the bytes before it are not written, and overlap what precedes
+// the stub.
 class FunctionOverrideThunk : public NonSectionCodeChunk {
 public:
   FunctionOverrideThunk(FunctionOverride &fo, ArrayRef<uint8_t> prefix,
@@ -961,6 +1035,7 @@ public:
       : NonSectionCodeChunk(FunctionOverrideKind), fo(fo), prefix(prefix),
         machine(machine), live(live) {
     setAlignment(16);
+    leftOut = (getEntry() - prefix.size()) / 4;
   }
   static bool classof(const Chunk *c) {
     return c->kind() == FunctionOverrideKind;
@@ -968,8 +1043,10 @@ public:
   // Returns the stub that s stands for, if s is a function override.
   static FunctionOverrideThunk *get(const Symbol *s);
 
+  // The offset of the stub's branch, its entry.
+  uint32_t getEntry() const { return llvm::alignTo(prefix.size(), 16); }
   size_t getSize() const override {
-    return prefix.size() + (machine == AMD64 ? 5 : 4);
+    return getEntry() + (machine == AMD64 ? 5 : 4);
   }
   void writeTo(uint8_t *buf) const override;
   MachineTypes getMachine() const override { return machine; }
@@ -978,6 +1055,176 @@ public:
   ArrayRef<uint8_t> prefix;
   MachineTypes machine;
   bool live;
+};
+
+// What the override table names for an overridable default that forwards to
+// a replacement across a dropped argument: the default's type prefix, which
+// the link writes from the image's key and the default's type ID, so that
+// the default's check of what it transfers to passes, then a jump to the
+// replacement, after the arguments that follow a dropped middle one move
+// down. A jump to a DLL's offer is through the executable's pointer to it.
+// ARM64 jumps by an address in a register where the replacement is out of a
+// branch's reach. The prefix ends on a 16-byte boundary, as a function
+// override's stub's does.
+class OverrideThunk : public NonSectionCodeChunk {
+public:
+  OverrideThunk(COFFLinkerContext &ctx, StringRef key,
+                std::optional<uint32_t> typeId, Defined *target, bool moves);
+  uint32_t getEntry() const { return llvm::alignTo(prefix.size(), 16); }
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  MachineTypes getMachine() const override;
+
+private:
+  COFFLinkerContext &ctx;
+  SmallVector<uint8_t, 0> prefix;
+  Defined *target;
+  bool moves;
+};
+
+// The anchor of an executable's override table, __ovr_anchor: the table's
+// header with the masks of the slots that a definition replaces and of those
+// whose entry is the executable's pointer to a DLL's offer, then for each
+// slot the address of what stands for its default, which is null where the
+// default itself does, and last for each slot the slot whose entry a call of
+// its default reaches. An image that reads the table checks each slot against
+// it, and it makes every such target one of Control Flow Guard's.
+class OverrideAnchorChunk : public NonSectionChunk {
+public:
+  explicit OverrideAnchorChunk(COFFLinkerContext &ctx) : ctx(ctx) {
+    setAlignment(8);
+  }
+  size_t getSize() const override {
+    return llvm::COFF::OverrideAnchorHeaderSize + count * 8 +
+           llvm::alignTo(count, 8);
+  }
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+  // Writes the table in the header page that begins at page.
+  void writeTable(uint8_t *page) const;
+  // The offset of the table's slot i in the header page.
+  static uint32_t getSlotOffset(unsigned i) {
+    return llvm::COFF::OverrideTableOffset + 8 * i +
+           (i < 8 ? 0 : llvm::COFF::OverrideTableHeaderSize);
+  }
+
+  // A replacement, a thunk's entry or the executable's import of a DLL's
+  // offer.
+  Defined *slots[llvm::COFF::LinkFactMaxOverrideSlot + 1] = {};
+  uint8_t calls[llvm::COFF::LinkFactMaxOverrideSlot + 1] = {};
+  // The number of slots that the table has.
+  unsigned count = 8;
+  uint32_t mask = 0;
+
+private:
+  void writeHeader(uint8_t *buf) const;
+  COFFLinkerContext &ctx;
+};
+
+// The image's offer table (llvm::COFF::OfferTableMagic): each name of a vague
+// entity that the image keeps, at its instance or at the cell through which
+// it reaches it, in a DLL each that it imports from a DLL that keeps it
+// preemptible, at the import's entry, and in an executable each that it takes
+// from the owner that its link picks, at the import's entry. A guard's entry
+// states its variable's size, so that a fill binds the two together.
+class OfferTableChunk : public NonSectionChunk {
+public:
+  OfferTableChunk() { setAlignment(8); }
+  size_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  // The key of a name, by which a fill finds an entry.
+  static uint64_t getKey(StringRef name);
+  // The identity of an image's entry, which a fill compares as its size: a
+  // digest of what the record of image, of the images closure, states that
+  // a fill relies on, what the image keeps and what it imports from.
+  static uint32_t getIdentity(ArrayRef<llvm::object::COFFLinkImage> closure,
+                              const llvm::object::COFFLinkImage &image);
+  // Orders the entries by key, reporting two names with one, and names each
+  // by a string the image holds: its import's hint, its export or the
+  // table's own.
+  void finalizeContents(COFFLinkerContext &ctx);
+  // The RVA of the entry that names at, and the entry's key.
+  std::pair<uint32_t, uint64_t> getEntry(const Defined *at) const;
+  // The RVA of the entry that names the image name.
+  uint32_t getImageEntry(StringRef name) const;
+
+  struct Entry {
+    StringRef name;
+    Defined *at;
+    uint16_t flags;
+    uint8_t log2Align;
+    uint64_t size;
+    uint64_t key = 0;
+    Chunk *nameChunk = nullptr;
+    uint32_t nameOffset = 0;
+  };
+  std::vector<Entry> entries;
+  // The identity of a DLL's record, which its own entry states.
+  uint32_t identity = 0;
+
+private:
+  uint32_t getNamesOffset() const;
+  std::string names;
+  llvm::DenseMap<const Defined *, uint32_t> indices;
+};
+
+// The record of a thread-local variable X that a link fact states, the symbol
+// X$tls: the address of the image's TLS index and the offsets of X and of
+// its guard from the first TLS group. Another image reaches X through it, as
+// does code of this image that cannot tell where X is; both load its address
+// from __imp_X$tls, here a local import pointer. It is left out, and takes no
+// room, unless something still names it once the relocations are scanned:
+// code that the link made read the TLS index and the offsets for itself does
+// not.
+class TlsRecordChunk : public NonSectionChunk {
+public:
+  TlsRecordChunk(SymbolTable &symtab, Symbol *sym, Symbol *var,
+                 InputFile *file);
+  static bool classof(const Chunk *c) { return c->kind() == TlsRecordKind; }
+  // Returns the record that s is the symbol of, if any.
+  static TlsRecordChunk *get(const Symbol *s);
+  size_t getSize() const override { return named ? 16 : 0; }
+  void getBaserels(std::vector<Baserel> *res) override;
+  void writeTo(uint8_t *buf) const override;
+
+  // Whether an input names the record or reads its pointer once the
+  // relocations are scanned, or before LTO whether one may.
+  bool isNamed(bool beforeLTO = false) const;
+  // Names the record or not, which gives it its room.
+  void setNamed(bool is) {
+    named = is;
+    setAlignment(is ? 8 : 1);
+  }
+  // Whether a rewrite of the scan reaches the record, which the scan sets
+  // from several threads, or after it whether the image holds the record.
+  std::atomic<bool> named = false;
+
+  Symbol *sym;
+  Symbol *var;
+  // The first object that states the record.
+  InputFile *file;
+  // The thread-local byte that is not zero once a thread has initialized
+  // the variable, which an object's fact states.
+  Symbol *guard = nullptr;
+  // Whether a root or a live section reaches the record.
+  bool live;
+  SymbolTable &symtab;
+};
+
+// An image's place word, which its records name and
+// __imp___tp_register$init is: {place, form, key}, the link-time place
+// where the image has one, else unfilled until its fill registers it.
+class TlsPlaceChunk : public NonSectionChunk {
+public:
+  explicit TlsPlaceChunk(COFFLinkerContext &ctx) : ctx(ctx) { setAlignment(8); }
+  size_t getSize() const override { return TP_PLACE_WORD_SIZE; }
+  void writeTo(uint8_t *buf) const override;
+
+  // Whether the image's fill registers the image and writes the place.
+  bool registers = false;
+
+private:
+  COFFLinkerContext &ctx;
 };
 
 // The dynamic value relocation table: the ARM64X relocations of a hybrid
@@ -1069,7 +1316,13 @@ void applyBranch24T(uint8_t *off, int32_t v);
 
 void applyArm64Addr(uint8_t *off, uint64_t s, uint64_t p, int shift);
 void applyArm64Imm(uint8_t *off, uint64_t imm, uint32_t rangeLimit);
+void applyArm64Ldr(uint8_t *off, uint64_t imm);
 void applyArm64Branch26(uint8_t *off, int64_t v);
+void applyArm64Ldr(uint8_t *off, uint64_t imm);
+// The log2 of the bytes an ARM64 load or store with an unsigned offset moves.
+uint32_t getArm64LdrScale(uint32_t insn);
+// Whether the relocation type counts from a section's or a template's start.
+bool isSecRel(llvm::Triple::ArchType arch, uint16_t type);
 
 // Convenience class for initializing a coff_section with specific flags.
 class FakeSection {

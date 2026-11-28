@@ -1585,6 +1585,23 @@ def BR_JumpTable : Pseudo<(outs), (ins i32imm:$jti), []>, Sched<[]> {
 // algorithms. Immediate operand is the number of bytes this "instruction"
 // occupies; register operands can be used to enforce dependency and constrain
 // the scheduler.
+// The base of the image's thread-locals in a thread, formed from the thread
+// pointer at a site of the wide form's length that the linker writes in the
+// image's form (IMAGE_REL_LLVM_TLS_BASE); $key holds the key in the wide forms
+// and is dead after it. The words it reads never change.
+let hasSideEffects = 0, Size = 24,
+    Constraints = "@earlyclobber $dst,@earlyclobber $key" in
+def TLS_BASE : Pseudo<(outs GPR64common:$dst, GPR64common:$key),
+                      (ins GPR64common:$tp), []>,
+               Sched<[]>;
+
+// A thread pointer reloaded from its register's save slot names a block, whose
+// first word is its address, or fails fast: ldr, sub and cbnz to the
+// function's fast-fail, through $tmp and with the flags kept.
+let hasSideEffects = 1, mayLoad = 1, Size = 12,
+    Constraints = "@earlyclobber $tmp" in
+def TP_CHECK : Pseudo<(outs GPR64:$tmp), (ins GPR64:$tp), []>, Sched<[]>;
+
 let hasSideEffects = 1, mayLoad = 1, mayStore = 1 in
 def SPACE : Pseudo<(outs GPR64:$Rd), (ins i32imm:$size, GPR64:$Rn),
                    [(set GPR64:$Rd, (int_aarch64_space imm:$size, GPR64:$Rn))]>,

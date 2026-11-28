@@ -653,11 +653,13 @@ MCFixupKindInfo X86AsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
       {"reloc_riprel_4byte_jump_p1", 0, 32, 0},
       {"reloc_riprel_4byte_tail", 0, 32, 0},
       {"reloc_riprel_4byte_lea", 0, 32, 0},
+      {"reloc_riprel_4byte_lea_rex2", 0, 32, 0},
       {"reloc_riprel_4byte_narrow", 0, 32, 0},
       {"reloc_riprel_4byte_test", 0, 32, 0},
       {"reloc_jump_4byte_pcrel", 0, 32, 0},
       {"reloc_jump_1byte_pcrel", 0, 8, 0},
       {"reloc_tail_4byte_pcrel", 0, 32, 0},
+      {"reloc_riprel_4byte_insn", 0, 32, 0},
       // clang-format on
   };
 
@@ -668,6 +670,8 @@ MCFixupKindInfo X86AsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
 
   if (Kind < FirstTargetFixupKind)
     return MCAsmBackend::getFixupKindInfo(Kind);
+  if (X86::isRipRelInsn(Kind))
+    Kind = X86::reloc_riprel_4byte_insn;
 
   assert(unsigned(Kind - FirstTargetFixupKind) < X86::NumTargetFixupKinds &&
          "Invalid kind!");
@@ -676,6 +680,8 @@ MCFixupKindInfo X86AsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
 }
 
 static unsigned getFixupKindSize(unsigned Kind) {
+  if (X86::isRipRelInsn(Kind))
+    return 4;
   switch (Kind) {
   default:
     llvm_unreachable("invalid fixup kind!");
@@ -698,6 +704,7 @@ static unsigned getFixupKindSize(unsigned Kind) {
   case X86::reloc_riprel_4byte_jump_p1:
   case X86::reloc_riprel_4byte_tail:
   case X86::reloc_riprel_4byte_lea:
+  case X86::reloc_riprel_4byte_lea_rex2:
   case X86::reloc_riprel_4byte_narrow:
   case X86::reloc_riprel_4byte_test:
   case X86::reloc_jump_4byte_pcrel:
@@ -810,7 +817,9 @@ void X86AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
     unsigned After = Fixup.getKind() == X86::reloc_riprel_4byte_imm1   ? 1
                      : Fixup.getKind() == X86::reloc_riprel_4byte_imm2 ? 2
                      : Fixup.getKind() == X86::reloc_riprel_4byte_imm4 ? 4
-                                                                       : 0;
+                     : X86::isRipRelInsn(Fixup.getKind())
+                         ? (Fixup.getKind() - X86::reloc_riprel_4byte_insn) & 15
+                         : 0;
     W.addSpan(F, Fixup, *F.getParent(),
               IsJump      ? COFF::SpanJump32
               : Size == 1 ? COFF::SpanRel8
@@ -1606,14 +1615,13 @@ public:
             .Default(-1u);
     // A Windows Itanium or NT-POSIX object marks its fused sites, and the
     // sequence that forms an image's thread-local base.
-    if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
-      if (Name == "IMAGE_REL_LLVM_TLS_SCALE")
-        Type = COFF::IMAGE_REL_LLVM_TLS_SCALE;
-      else if (const COFF::FusedMarker *Marker = COFF::findFusedMarker(
-                   COFF::IMAGE_FILE_MACHINE_AMD64,
-                   [&](const COFF::FusedMarker &M) { return M.Name == Name; }))
-        Type = Marker->Type;
-    }
+    if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+      if (uint16_t T =
+              COFF::getLLVMRelocType(COFF::IMAGE_FILE_MACHINE_AMD64, Name);
+          T == COFF::IMAGE_REL_LLVM_TLS_BASE ||
+          COFF::getFusedMarkerUse(COFF::IMAGE_FILE_MACHINE_AMD64, T) !=
+              COFF::FusedUse::None)
+        Type = T;
     if (Is64Bit && Type != -1u)
       return getCOFFRelocFixupKind(Type);
     return StringSwitch<std::optional<MCFixupKind>>(Name)

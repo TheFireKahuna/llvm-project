@@ -1245,6 +1245,13 @@ public:
   /// machine flags on the spill instruction e.g. FrameDestroy flag on a callee
   /// saved register reload instruction, part of epilogue, during the frame
   /// lowering.
+  /// Checks, before \p MI, the thread pointer that \p Reg holds, reloaded
+  /// from its register's save slot: a block's first word is its address, and
+  /// anything else fails fast.
+  virtual void insertThreadPointerCheck(MachineBasicBlock &MBB,
+                                        MachineBasicBlock::iterator MI,
+                                        Register Reg) const {}
+
   virtual void loadRegFromStackSlot(
       MachineBasicBlock &MBB, MachineBasicBlock::iterator MI, Register DestReg,
       int FrameIndex, const TargetRegisterClass *RC, Register VReg,

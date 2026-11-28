@@ -28180,6 +28180,19 @@ SDValue X86TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
                                              getPointerTy(DAG.getDataLayout())),
                        Op.getOperand(1), ShAmt);
   }
+  case Intrinsic::threadlocal_offset: {
+    // A COFF variable's offset in its image's template, or from the thread
+    // pointer where it is local-exec.
+    auto *GA = cast<GlobalAddressSDNode>(Op.getOperand(1));
+    return DAG.getNode(
+        X86ISD::Wrapper, dl, MVT::i64,
+        DAG.getTargetGlobalAddress(
+            GA->getGlobal(), dl, MVT::i64, 0,
+            cast<GlobalVariable>(GA->getGlobal())->getThreadLocalMode() ==
+                    GlobalValue::LocalExecTLSModel
+                ? X86II::MO_TPOFF
+                : X86II::MO_SECREL));
+  }
   case Intrinsic::thread_pointer: {
     // On Windows it is the thread's TLS array, through which native TLS
     // reaches the variables of every image.

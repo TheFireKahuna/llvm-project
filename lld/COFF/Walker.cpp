@@ -8,7 +8,9 @@
 
 #include "Walker.h"
 #include "Chunks.h"
+#include "Driver.h"
 #include "InputFiles.h"
+#include "SymbolTable.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/Config/Targets.h"
@@ -23,10 +25,13 @@
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrAnalysis.h"
+#include "llvm/MC/MCInstPrinter.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCTargetOptions.h"
+#include "llvm/MC/MCWinCOFFStreamer.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/BinaryStreamReader.h"
 #include "llvm/Support/DataExtractor.h"
@@ -35,6 +40,9 @@
 #include "llvm/Support/Win64EH.h"
 #include <map>
 #include <set>
+#if LLVM_HAS_X86_TARGET
+#include "MCTargetDesc/X86BaseInfo.h"
+#endif
 
 using namespace llvm;
 using namespace llvm::COFF;
@@ -105,8 +113,12 @@ struct X86Decoder::Impl {
   std::unique_ptr<MCDisassembler> dis;
   std::unique_ptr<MCInstrAnalysis> mia;
   std::unique_ptr<MCCodeEmitter> emitter;
+  std::unique_ptr<MCInstPrinter> printer;
   Recorder *recorder;
   MCRegister cs;
+  const MCExpr *zero;
+  // The instruction that decode read last.
+  MCInst inst;
 };
 
 X86Decoder::X86Decoder(std::unique_ptr<Impl> impl) : impl(std::move(impl)) {}
@@ -134,6 +146,9 @@ std::unique_ptr<X86Decoder> X86Decoder::create() {
   m->dis.reset(target->createMCDisassembler(*m->sti, *m->ctx));
   m->mia.reset(target->createMCInstrAnalysis(m->mii.get()));
   m->emitter.reset(target->createMCCodeEmitter(*m->mii, *m->ctx));
+  m->printer.reset(
+      target->createMCInstPrinter(triple, 1, *m->mai, *m->mii, *m->mri));
+  m->zero = MCConstantExpr::create(0, *m->ctx);
   MCRegister eip;
   for (unsigned r = 1, e = m->mri->getNumRegs(); r != e; ++r) {
     if (StringRef(m->mri->getName(r)) == "EIP")
@@ -199,7 +214,7 @@ static unsigned getBranchOpcode(ArrayRef<uint8_t> code, const InsnField &f) {
 
 bool X86Decoder::decode(ArrayRef<uint8_t> code, uint64_t address, Insn &insn) {
   Impl &m = *impl;
-  MCInst inst, again;
+  MCInst &inst = m.inst, again;
   uint64_t size, sizeAgain;
   // The disassembler takes encodings that no processor does. A VEX, EVEX or
   // XOP prefix after 66, lock or rep, or right after REX.
@@ -311,6 +326,204 @@ bool X86Decoder::decode(ArrayRef<uint8_t> code, uint64_t address, Insn &insn) {
   return true;
 }
 
+bool X86Decoder::decodeRead(ArrayRef<uint8_t> code, ReadInsn &insn) {
+#if LLVM_HAS_X86_TARGET
+  Insn decoded;
+  if (!decode(code, 0, decoded))
+    return false;
+  Impl &m = *impl;
+  const MCInst &inst = m.inst;
+  const MCInstrDesc &desc = m.mii->get(inst.getOpcode());
+  insn.size = decoded.size;
+  insn.reads = desc.mayLoad() && !desc.isBranch() && !desc.isCall();
+  insn.stack = desc.hasImplicitUseOfPhysReg(X86::RSP) ||
+               desc.hasImplicitDefOfPhysReg(X86::RSP, m.mri.get()) ||
+               llvm::any_of(inst, [&](const MCOperand &op) {
+                 return op.isReg() && op.getReg() &&
+                        m.mri->isSuperOrSubRegisterEq(X86::RSP, op.getReg());
+               });
+  bool lea = inst.getOpcode() == X86::LEA64r;
+  insn.address = lea;
+  insn.value = (lea || inst.getOpcode() == X86::MOV64rm) &&
+                       inst.getOperand(1 + X86::AddrBaseReg).getReg() ==
+                           X86::RIP &&
+                       !inst.getOperand(1 + X86::AddrSegmentReg).getReg()
+                   ? m.mri->getEncodingValue(inst.getOperand(0).getReg())
+                   : -1;
+  // The size of a memory operand is the printer's alone to state.
+  std::string text;
+  raw_string_ostream os(text);
+  m.printer->printInst(&inst, 0, "", *m.sti, os);
+  insn.width = 64;
+  for (auto [name, size] : {std::pair(" byte ptr", 1), {" word ptr", 2},
+                            {" dword ptr", 4}, {" qword ptr", 8},
+                            {" tbyte ptr", 10}, {" xmmword ptr", 16},
+                            {" ymmword ptr", 32}})
+    if (StringRef(text).contains(name))
+      insn.width = size;
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool X86Decoder::decodeFused(ArrayRef<uint8_t> code, FusedInsn &insn,
+                             SmallVectorImpl<char> *direct, unsigned *field,
+                             bool second, int base) {
+#if LLVM_HAS_X86_TARGET
+  Impl &m = *impl;
+  Insn decoded;
+  unsigned regOp;
+  if (!decode(code, 0, decoded))
+    return false;
+  MCInst &inst = m.inst;
+  const MCInstrDesc &desc = m.mii->get(inst.getOpcode());
+  insn.use = X86::getFusedUse(inst, desc, regOp);
+  if (insn.use == FusedUse::None)
+    return false;
+  unsigned mem = regOp;
+  if (insn.use == FusedUse::Index && second)
+    regOp = getFusedIndexOperand(inst, regOp);
+  MCRegister reg = inst.getOperand(regOp).getReg();
+  if (reg == m.mri->getProgramCounter() ||
+      !MCWinCOFFStreamer::readsFusedRegisterOnce(inst, desc, *m.mri, insn.use,
+                                                 regOp))
+    return false;
+  insn.reg = m.mri->getEncodingValue(reg);
+  insn.size = decoded.size;
+  insn.disp = 0;
+  bool wide = inst.getOpcode() == X86::MOV64rm;
+  insn.loads = wide ? 8 : inst.getOpcode() == X86::MOV32rm ? 4 : 0;
+  insn.dest = insn.loads || inst.getOpcode() == X86::MOVSX64rm32
+                  ? m.mri->getEncodingValue(inst.getOperand(0).getReg())
+                  : 0;
+  if (insn.use != FusedUse::Add && insn.use != FusedUse::Access &&
+      insn.use != FusedUse::Index)
+    return true;
+  MCOperand &disp = inst.getOperand(mem + X86::AddrDisp);
+  insn.disp = disp.getImm();
+  if (!direct)
+    return true;
+  // The disassembler gives lock as an instruction of its own, so the encoder
+  // writes none; an instruction it writes shorter for another reason has no
+  // direct form here. It leaves a displacement that is an expression to a
+  // fixup, which says where the displacement is.
+  SmallString<16> same;
+  SmallVector<MCFixup, 1> fixups;
+  m.emitter->encodeInstruction(inst, same, fixups, *m.sti);
+  bool lock = same.size() + 1 == insn.size && code[0] == 0xf0;
+  if (same.size() + lock != insn.size)
+    return true;
+  if (lock)
+    direct->push_back(char(0xf0));
+  // The register that an index keeps is the base of its direct form.
+  if (insn.use == FusedUse::Index) {
+    MCOperand &index = inst.getOperand(mem + X86::AddrIndexReg);
+    if (!second)
+      inst.getOperand(mem).setReg(index.getReg());
+    index.setReg(MCRegister());
+    if (base >= 0)
+      for (MCRegister reg : m.mri->getRegClass(X86::GR64RegClassID))
+        if (m.mri->getEncodingValue(reg) == base &&
+            reg != m.mri->getProgramCounter())
+          inst.getOperand(mem).setReg(reg);
+  } else {
+    inst.getOperand(regOp).setReg(m.mri->getProgramCounter());
+  }
+  disp = MCOperand::createExpr(m.zero);
+  m.emitter->encodeInstruction(inst, *direct, fixups, *m.sti);
+  *field = fixups.back().getOffset() + lock;
+  return true;
+#else
+  return false;
+#endif
+}
+
+bool X86Decoder::encodeOnRegisterOf(ArrayRef<uint8_t> code, bool second,
+                                    ArrayRef<uint8_t> from, bool fromSecond,
+                                    SmallVectorImpl<char> &out) {
+#if LLVM_HAS_X86_TARGET
+  Impl &m = *impl;
+  Insn decoded;
+  unsigned regOp;
+  // The operand of an index that the register it reads is added to.
+  auto other = [&](bool second) -> MCOperand * {
+    MCInst &inst = m.inst;
+    if (X86::getFusedUse(inst, m.mii->get(inst.getOpcode()), regOp) !=
+        FusedUse::Index)
+      return nullptr;
+    return &inst.getOperand(second ? regOp
+                                   : COFF::getFusedIndexOperand(inst, regOp));
+  };
+  MCOperand *op;
+  if (!decode(from, 0, decoded) || !(op = other(fromSecond)))
+    return false;
+  MCRegister reg = op->getReg();
+  if (!decode(code, 0, decoded) || !(op = other(second)))
+    return false;
+  op->setReg(reg);
+  SmallVector<MCFixup, 1> fixups;
+  m.emitter->encodeInstruction(m.inst, out, fixups, *m.sti);
+  return fixups.empty();
+#else
+  return false;
+#endif
+}
+
+bool X86Decoder::encodeOnThreadPointer(ArrayRef<uint8_t> code, bool second,
+                                       SmallVectorImpl<char> &out) {
+#if LLVM_HAS_X86_TARGET
+  Impl &m = *impl;
+  Insn decoded;
+  unsigned regOp;
+  if (!decode(code, 0, decoded))
+    return false;
+  MCInst &inst = m.inst;
+  if (X86::getFusedUse(inst, m.mii->get(inst.getOpcode()), regOp) !=
+      FusedUse::Index)
+    return false;
+  if (!second)
+    regOp = getFusedIndexOperand(inst, regOp);
+  inst.getOperand(regOp).setReg(X86::R14);
+  SmallVector<MCFixup, 1> fixups;
+  m.emitter->encodeInstruction(inst, out, fixups, *m.sti);
+  return fixups.empty();
+#else
+  return false;
+#endif
+}
+
+bool X86Decoder::decodeTlsBlock(ArrayRef<uint8_t> code, unsigned &size,
+                                unsigned &index, int &adds) {
+#if LLVM_HAS_X86_TARGET
+  Insn decoded;
+  if (!decode(code, 0, decoded))
+    return false;
+  const MCInst &inst = impl->inst;
+  bool add = inst.getOpcode() == X86::ADD64rm;
+  unsigned mem = 1 + add;
+  const MCOperand &disp = inst.getOperand(mem + X86::AddrDisp);
+  if ((!add && inst.getOpcode() != X86::MOV64rm) ||
+      !inst.getOperand(mem + X86::AddrBaseReg).getReg() ||
+      inst.getOperand(mem + X86::AddrScaleAmt).getImm() != 8 ||
+      !inst.getOperand(mem + X86::AddrIndexReg).getReg() || !disp.isImm() ||
+      disp.getImm() || inst.getOperand(mem + X86::AddrSegmentReg).getReg())
+    return false;
+  size = decoded.size;
+  index = impl->mri->getEncodingValue(
+      inst.getOperand(mem + X86::AddrIndexReg).getReg());
+  adds = add ? impl->mri->getEncodingValue(inst.getOperand(0).getReg()) : -1;
+  return true;
+#else
+  return false;
+#endif
+}
+
+X86Decoder *X86Decoder::get() {
+  static thread_local std::unique_ptr<X86Decoder> decoder = create();
+  return decoder.get();
+}
+
 //===----------------------------------------------------------------------===//
 // What an object states about its code.
 //===----------------------------------------------------------------------===//
@@ -414,6 +627,12 @@ struct Walker::Object {
   // start on; MSVC or MASM, whose static symbols in code are data; a compiler
   // by CodeView, which then states the functions without inline assembly.
   bool compiler = false, marksData = false, described = false;
+  // The sites that the object lists as those that take a function's address,
+  // as cl /Gu does, and the symbols whose address a table of it lists as
+  // taken: its address-significance table, or that for Control Flow Guard of
+  // an object that states it is guarded.
+  std::optional<DenseSet<Place>> unique;
+  std::optional<SmallPtrSet<Symbol *, 8>> taken;
 
   RawSection &section(uint32_t n);
   CodeSection *getCode(uint32_t n);
@@ -692,6 +911,17 @@ Walker::Object::Object(ObjFile &file)
     if (name.starts_with(".debug") || name.starts_with(".xdata"))
       continue;
     RawSection &s = section(n);
+    // Each record is a section's number, a count, and that many offsets.
+    if (name == ".unqRlcs") {
+      unique.emplace();
+      for (size_t off = 0; off + 8 <= s.data.size();) {
+        uint32_t in = read32le(&s.data[off]),
+                 count = read32le(&s.data[off + 4]);
+        for (off += 8; count-- && off + 4 <= s.data.size(); off += 4)
+          unique->insert({in, read32le(&s.data[off])});
+      }
+      continue;
+    }
     if (name.starts_with(".pdata")) {
       for (uint32_t off = 0; off + 12 <= s.data.size(); off += 12) {
         std::optional<Place> begin = getPlace(n, off),
@@ -737,6 +967,13 @@ Walker::Object::Object(ObjFile &file)
   for (SectionChunk *c : file.getDebugChunks())
     if (c->getSectionName() == ".debug$S")
       readDebug(c->getSectionNumber(), c->getContents());
+  if (file.addrsigSec ||
+      (file.hasGuardCF() && !file.getGuardFidChunks().empty())) {
+    taken.emplace();
+    ObjFile *f = &file;
+    forEachAddressSignificant(
+        file.symtab.ctx, f, [&](Symbol *s) { taken->insert(s); }, true);
+  }
 
   for (auto &[n, cs] : code) {
     llvm::sort(cs.funcs);
@@ -892,7 +1129,8 @@ struct FunctionWalk {
       if (to && f->pcRelative && rel.Type == IMAGE_REL_AMD64_REL32 &&
           f->offset + 4u == insn.size)
         bases.insert(*to);
-      found[rel.VirtualAddress] = classifySite(code, *f);
+      Site &s = found[rel.VirtualAddress] = classifySite(code, *f);
+      s.before = rel.VirtualAddress - off;
     }
     return relocated;
   }
@@ -1032,6 +1270,7 @@ std::optional<Extent> Walker::Object::getExtent(uint32_t n, uint32_t off,
     x = Extent{std::prev(next)->first,
                next == cs->funcs.end() ? UINT32_MAX : next->first};
   site = Site(SiteKind::Refused, unreached);
+  site.how = ", decoded from proven starts";
   if (next != cs->funcs.begin())
     site.function =
         check(obj.getSymbolName(check(obj.getSymbol(std::prev(next)->second))));
@@ -1042,6 +1281,8 @@ std::optional<Extent> Walker::Object::getExtent(uint32_t n, uint32_t off,
   site.linear = compiler;
   for (const Proc &p : cs->procs)
     site.linear |= described && p.noInlineAsm && p.contains(x->begin);
+  if (site.linear)
+    site.how = ", decoded from the function's start";
   return x;
 }
 
@@ -1078,7 +1319,8 @@ bool Walker::Object::walk(Walker &w, uint32_t n, Extent x, Site site) {
     if (fw.failure)
       s.reason = fw.failure == unexplained && free ? unreached : fw.failure;
     else if (auto f = fw.found.find(at); f != fw.found.end())
-      s.kind = f->second.kind, s.reason = f->second.reason;
+      s.kind = f->second.kind, s.reason = f->second.reason,
+      s.before = f->second.before;
     else if (llvm::all_of(ArrayRef(&fw.at(at), 4),
                           [](uint8_t b) { return b == FunctionWalk::Data; }))
       s.kind = SiteKind::Data, s.reason = nullptr;
@@ -1095,12 +1337,39 @@ bool Walker::Object::walk(Walker &w, uint32_t n, Extent x, Site site) {
   return true;
 }
 
+bool lld::coff::isRipLea64(ArrayRef<uint8_t> c, size_t o) {
+  return o >= 3 && o + 4 <= c.size() && c[o - 2] == 0x8d &&
+         (c[o - 1] & 0xc7) == 0x05 &&
+         ((c[o - 3] & 0xf8) == 0x48 ||
+          (o >= 4 && c[o - 4] == 0xd5 && (c[o - 3] & 0x88) == 0x08));
+}
+
 Site Walker::Object::classify(Walker &w, uint32_t n,
                               const coff_relocation &rel) {
   uint32_t off = rel.VirtualAddress;
   CodeSection *cs = getCode(n);
   if (!cs)
     return SiteKind::Data;
+
+  // A reference to a symbol that the object types as a function is a branch
+  // where the object lists the sites that take an address and not this one,
+  // or lists the functions whose address it takes and not this one, in code
+  // that is known to be a compiler's alone, since no table lists what inline
+  // assembly does. A listed site takes the address, and has room for a load
+  // of it if it is a lea of 64 bits. A decode never answers for such a site.
+  Site site;
+  if (check(obj.getSymbol(rel.SymbolTableIndex)).getComplexType() ==
+          IMAGE_SYM_DTYPE_FUNCTION &&
+      (unique || (taken && (compiler || described) &&
+                  !taken->count(file.getSymbol(rel.SymbolTableIndex)))) &&
+      (getExtent(n, off, site), unique || site.linear)) {
+    site.kind = !unique || !unique->count({n, off}) ? SiteKind::Branch
+                : isRipLea64(section(n).data, off) ? SiteKind::Address
+                                                   : SiteKind::Operand;
+    site.reason = nullptr;
+    site.how = ", by the object's tables";
+    return site;
+  }
   if (auto it = cs->sites.find(off); it != cs->sites.end())
     return it->second;
 
@@ -1118,7 +1387,6 @@ Site Walker::Object::classify(Walker &w, uint32_t n,
   };
   SmallVector<Member, 4> group;
   SmallVector<Place, 4> todo{{n, off}};
-  Site site;
   while (!todo.empty()) {
     Place at = todo.pop_back_val();
     CodeSection *in = getCode(at.first);
@@ -1159,7 +1427,7 @@ Site Walker::classify(const SectionChunk &sc, const coff_relocation &rel) {
       return SiteKind::Operand;
     }
   }
-  if (sc.getArch() != Triple::x86_64 || rel.Type != IMAGE_REL_AMD64_REL32)
+  if (sc.getArch() != Triple::x86_64 || !isRel32(rel.Type))
     return SiteKind::Operand;
   Object *o;
   {

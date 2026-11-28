@@ -156,7 +156,7 @@ protected:
   /// The instructions still to come of the site at a marker of code that the
   /// linker may resize, and the instructions of a thread-local base's site.
   unsigned SiteInsts = 0;
-  unsigned TlsScaleInsts = 0;
+  unsigned TlsBaseInsts = 0;
   /// The sections with a site after which the linker moves the code, as
   /// COFF::relocationMovesCode says.
   SmallPtrSet<const MCSection *, 0> MovingSections;

@@ -2143,6 +2143,7 @@ bool RegAllocFastImpl::runOnMachineFunction(MachineFunction &MF) {
     // All machine operands and other references to virtual registers have been
     // replaced. Remove the virtual registers.
     MRI->clearVirtRegs();
+    resolveThreadPointers(MF, nullptr);
   }
 
   StackSlotForVirtReg.clear();

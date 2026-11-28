@@ -18,6 +18,7 @@ add_lld_library(lldCOFF
   MarkLive.cpp
   MinGW.cpp
   PDB.cpp
+  Relocations.cpp
   SymbolTable.cpp
   Symbols.cpp
   Walker.cpp
@@ -55,3 +56,13 @@ add_lld_library(lldCOFF
   COFFOptionsTableGen
   intrinsics_gen
   )
+
+# The linker checks a fused site against the description the X86 target
+# keeps for the compiler and the assembler.
+if("X86" IN_LIST LLVM_TARGETS_TO_BUILD)
+  add_dependencies(lldCOFF X86CommonTableGen)
+  target_include_directories(lldCOFF PRIVATE
+    ${LLVM_MAIN_SRC_DIR}/lib/Target/X86
+    ${LLVM_BINARY_DIR}/lib/Target/X86
+    )
+endif()

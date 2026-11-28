@@ -21,7 +21,6 @@
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectWriter.h"
 #include "llvm/MC/MCSubtargetInfo.h"
-#include "llvm/MC/MCValue.h"
 #include "llvm/MC/MCWin64EH.h"
 #include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
@@ -33,6 +32,10 @@ namespace {
 
 class AArch64WinCOFFStreamer : public MCWinCOFFStreamer {
   Win64EH::ARM64UnwindEmitter EHStreamer;
+  // The fragment, the word and the relocation type of an adrp, or of the add
+  // of a thread-local's high part, that its section's last instruction is,
+  // which the linker may fold or delete with the next.
+  std::tuple<MCFragment *, uint32_t, uint16_t> First;
 
 public:
   AArch64WinCOFFStreamer(MCContext &C, std::unique_ptr<MCAsmBackend> AB,
@@ -41,8 +44,9 @@ public:
       : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {
     if (C.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
       MCII.reset(getTheAArch64leTarget().createMCInstrInfo());
-      // adrp and ldr, then movz and madd.
-      TlsScaleInsts = 4;
+      // The wide form: the place's adrp and ldr, the word's ldr, the key's
+      // adrp and ldr, and the eor.
+      TlsBaseInsts = 6;
       FusedForms[size_t(COFF::FusedUse::Call)] = "blr";
       FusedForms[size_t(COFF::FusedUse::Jump)] = "br";
       FusedForms[size_t(COFF::FusedUse::Access)] =
@@ -69,12 +73,35 @@ void AArch64WinCOFFStreamer::emitInstruction(const MCInst &Inst,
   // A section that holds an instruction is aligned as one, wherever the
   // linker lays it.
   getCurrentSectionOnly()->ensureMinAlignment(Align(4));
-  // The code emitter states the instructions that the linker may resize; a
-  // fused jump that it may delete has no relocation of the emitter's.
+  // The code emitter states the instructions that the linker may resize but
+  // a pair, which the list states by its two words; a fused jump that
+  // the linker may delete has no relocation of the emitter's.
   bool Tail = false;
   scope_exit Emitted([&] {
-    if (MCII)
-      finishInstruction(Tail);
+    if (!MCII)
+      return;
+    MCFragment *F = getCurrentFragment();
+    ArrayRef<char> Code = F->getContents();
+    uint32_t Word =
+        Code.size() < 4 ? 0 : support::endian::read32le(Code.end() - 4);
+    auto [FirstF, FirstWord, Type] = First;
+    bool After = FirstF && FirstF->getParent() == F->getParent();
+    bool Fold = After && COFF::relocationMayResizeCode(
+                             COFF::IMAGE_FILE_MACHINE_ARM64, Type, {},
+                             FirstWord | uint64_t(Word) << 32);
+    finishInstruction(Tail || Fold, Fold ? FirstF : nullptr);
+    if (After)
+      First = {};
+    auto *Hi =
+        Inst.getOpcode() == AArch64::ADDXri && Inst.getOperand(2).isExpr()
+            ? dyn_cast<MCSpecifierExpr>(Inst.getOperand(2).getExpr())
+            : nullptr;
+    if (Inst.getOpcode() == AArch64::ADRP)
+      First = {F, Word, COFF::IMAGE_REL_ARM64_PAGEBASE_REL21};
+    else if (Hi && Hi->getSpecifier() == AArch64::S_SECREL_HI12)
+      First = {F, Word, COFF::IMAGE_REL_ARM64_SECREL_HIGH12A};
+    else if (Hi && Hi->getSpecifier() == AArch64::S_TPREL_HI12)
+      First = {F, Word, COFF::IMAGE_REL_LLVM_TPOFF_HIGH12A};
   });
   if (MCII) {
     // A 64-bit ldr of a pointer loads it, and is a fused read where its

@@ -9,6 +9,8 @@
 #ifndef LLD_COFF_CONFIG_H
 #define LLD_COFF_CONFIG_H
 
+#include "lld/Common/Bsymbolic.h"
+#include "lld/Common/CallGraphSort.h"
 #include "lld/Common/ErrorHandler.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
@@ -74,6 +76,8 @@ struct Export {
   // forwardTo is set to "dllname.bar" part. Usually empty.
   StringRef forwardTo;
   StringChunk *forwardChunk = nullptr;
+  // The export's name in the export name table.
+  StringChunk *nameChunk = nullptr;
   // The import that an offer of a vague entity forwards to: an image that
   // reads the import library imports from that import's DLL.
   ImportFile *owner = nullptr;
@@ -139,6 +143,9 @@ struct Configuration {
   bool forceMultiple = false;
   bool forceMultipleRes = false;
   bool forceUnresolved = false;
+  // Whether a DLL imports what nothing in the link defines from the
+  // executable that loads it, as ELF's -shared does.
+  bool unresolvedHostImports = false;
   bool debug = false;
   bool includeDwarfChunks = false;
   bool debugGHashes = false;
@@ -172,7 +179,24 @@ struct Configuration {
   bool dll = false;
   StringRef implib;
   bool noimplib = false;
+  // -offers-baseline.
+  StringRef offersBaseline;
   llvm::StringSet<> delayLoads;
+  // The delay-loaded DLLs of /delay:nocanonical, whose functions' addresses
+  // stay their thunks'.
+  llvm::StringSet<> delayNoCanonical;
+  // The DLLs, in lower case, whose offers of vague entities the image does
+  // not take.
+  llvm::StringSet<> ignoredOffers;
+  // The vague entities, and the DLLs after '@' in lower case, whose copies in
+  // more than one image the link accepts.
+  std::vector<StringRef> allowedDuplicates;
+  // The objects and archives, by their file names in lower case, whose
+  // references to a function all take the address it has in the image
+  // alone; an empty name stands for every input.
+  llvm::StringSet<> ignoredAddressEquality;
+  // Which of its own vague entities a DLL binds for good.
+  BsymbolicKind bsymbolic = BsymbolicKind::None;
   bool delayUnload = false;
   bool didatOwnSection = false;
   // A bare /wholearchive in a directive.
@@ -322,7 +346,7 @@ struct Configuration {
   llvm::MapVector<std::pair<const SectionChunk *, const SectionChunk *>,
                   uint64_t>
       callGraphProfile;
-  bool callGraphProfileSort = false;
+  CGProfileSortKind callGraphProfileSort = CGProfileSortKind::None;
 
   // Used for /print-symbol-order:
   StringRef printSymbolOrder;

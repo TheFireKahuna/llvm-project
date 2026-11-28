@@ -511,6 +511,10 @@ LLVM_ABI FunctionPass *createSafeStackPass();
 /// exception table.
 LLVM_ABI extern char &FaultProbeLoweringID;
 
+/// Hands each call that passes the thread pointer its "threadpointer" bundle,
+/// and derives the thread pointer of a function that is passed none.
+LLVM_ABI FunctionPass *createThreadPointerPass();
+
 /// This pass detects subregister lanes in a virtual register that are used
 /// independently of other lanes and splits them into separate virtual
 /// registers.

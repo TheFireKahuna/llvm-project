@@ -9,6 +9,7 @@
 #include "Driver.h"
 #include "COFFLinkerContext.h"
 #include "Config.h"
+#include "DLL.h"
 #include "DebugTypes.h"
 #include "ICF.h"
 #include "InputFiles.h"
@@ -228,6 +229,7 @@ void LinkerDriver::addFile(InputFile *file) {
     } else if (auto *f = dyn_cast<ImportFile>(file)) {
       ctx.importFileInstances.push_back(f);
     }
+    file->symtab.addForeignEntities();
   }
 
   MachineTypes mt = file->getMachineType();
@@ -1153,10 +1155,12 @@ std::string LinkerDriver::getImportName(bool asLib) {
 }
 
 // Returns the images that lib, an import library, states in its link records:
-// its DLL and every image loaded with it. A library of another linker has no
-// records and states none.
-static std::vector<COFFLinkImage> readLinkImages(COFFLinkerContext &ctx,
-                                                 ArchiveFile *lib) {
+// its DLL and every image loaded with it. overrides takes the overridable
+// defaults that they define. A library of another linker has no records and
+// states none.
+static std::vector<COFFLinkImage>
+readLinkImages(COFFLinkerContext &ctx, ArchiveFile *lib,
+               COFFLinkOverrides &overrides) {
   std::vector<COFFLinkImage> images;
   std::optional<MemoryBufferRef> mb = lib->findMember(LinkRecordsMemberSymbol);
   if (!mb)
@@ -1166,7 +1170,7 @@ static std::vector<COFFLinkImage> readLinkImages(COFFLinkerContext &ctx,
         ObjectFile::createCOFFObjectFile(*mb);
     if (!obj)
       return obj.takeError();
-    bool seen = false;
+    bool seen[2] = {};
     for (const SectionRef &sec : (*obj)->sections()) {
       Expected<StringRef> name = sec.getName();
       if (!name)
@@ -1179,14 +1183,16 @@ static std::vector<COFFLinkImage> readLinkImages(COFFLinkerContext &ctx,
       uint64_t flags;
       if (Error e = readCOFFLinkRecords(
               *contents, flags, [&](uint64_t kind, StringRef payload) {
-                if (kind != LinkRecordImages)
+                if (kind != LinkRecordImages && kind != LinkRecordOverrides)
                   return kind & LinkRecordCritical
                              ? createStringError("unknown critical kind " +
                                                  Twine(kind))
                              : Error::success();
-                if (std::exchange(seen, true))
-                  return createStringError("two Images groups");
-                return readCOFFLinkImages(payload, images);
+                if (std::exchange(seen[kind == LinkRecordImages], true))
+                  return createStringError("two groups of kind " + Twine(kind));
+                return kind == LinkRecordImages
+                           ? readCOFFLinkImages(payload, images)
+                           : readCOFFLinkOverrides(payload, overrides);
               }))
         return e;
     }
@@ -1200,24 +1206,543 @@ static std::vector<COFFLinkImage> readLinkImages(COFFLinkerContext &ctx,
   if (Error e = read()) {
     Err(ctx) << lib << ": link records: " << std::move(e);
     images.clear();
+    overrides = COFFLinkOverrides();
   }
   return images;
 }
 
-// The import library of a DLL with an object for Windows Itanium or NT-POSIX
-// states, in a member that no link loads, the DLL and every image that is
-// loaded with it, each with the images it imports from and the vague entities
-// it keeps. A link that reads the library so sees which images keep an
-// entity and whether a path of imports joins them, for images whose own
-// libraries it does not read as well.
-std::string LinkerDriver::createLinkRecords(StringRef libName) {
+const LinkerDriver::LinkImages &LinkerDriver::getLinkImages(StringRef path) {
+  auto [it, inserted] = linkImages.try_emplace(path);
+  LinkImages &lib = it->second;
+  if (inserted)
+    if (auto archive = llvm::find_if(
+            archives, [&](auto &a) { return a.first->getName() == path; });
+        archive != archives.end()) {
+      COFFLinkOverrides overrides;
+      lib.images = readLinkImages(ctx, archive->first, overrides);
+      for (const auto &[slot, d] : enumerate(overrides.Slots))
+        if (!d.Name.empty())
+          ctx.symtab.addOverrideDefault(slot, d, overrides.PrefixKey, path);
+      // A guard is found as its variable.
+      for (auto [i, image] : llvm::enumerate(lib.images))
+        for (const COFFLinkImage::Entity &e : image.Kept) {
+          lib.kept.try_emplace({uint32_t(i), e.Name}, &e);
+          if (std::optional<std::string> g =
+                  getGuardName(e.Name, e.Flags >> LinkImageEntityInitShift & 7))
+            lib.kept.try_emplace({uint32_t(i), saver().save(*g)}, &e);
+        }
+    }
+  return lib;
+}
+
+const coff_import_header *LinkerDriver::findImportMember(StringRef name,
+                                                         StringRef dll) {
+  std::string imp = ("__imp_" + name).str();
+  for (auto &[lib, wholeArchive] : archives) {
+    // A short member is its header, the name and the DLL's name.
+    std::optional<MemoryBufferRef> m = lib->findMember(imp);
+    StringRef b = m ? m->getBuffer() : "";
+    if (b.size() <= sizeof(coff_import_header) ||
+        identify_magic(b) != file_magic::coff_import_library)
+      continue;
+    StringRef names = b.drop_front(sizeof(coff_import_header));
+    if (names.drop_front(names.find('\0') + 1)
+            .split('\0')
+            .first.equals_insensitive(dll))
+      return reinterpret_cast<const coff_import_header *>(b.data());
+  }
+  return nullptr;
+}
+
+uint16_t LinkerDriver::getImportHint(StringRef name, StringRef dll) {
+  const coff_import_header *h = findImportMember(name, dll);
+  return h ? h->OrdinalHint : 0;
+}
+
+void LinkerDriver::readOffersBaseline() {
+  SymbolTable &symtab = ctx.symtab;
+  if (!ctx.config.dll || !ctx.hasForkObject || symtab.isEC() ||
+      ctx.hybridSymtab)
+    return;
+  // The library that the link is about to replace is read into memory, which
+  // leaves its file free to be replaced.
+  StringRef stated = ctx.config.offersBaseline;
+  std::string path = stated.empty() ? getImplibPath() : stated.str();
+  ErrorOr<std::unique_ptr<MemoryBuffer>> mb =
+      MemoryBuffer::getFile(path, /*IsText=*/false,
+                            /*RequiresNullTerminator=*/false,
+                            /*IsVolatile=*/true);
+  Expected<std::unique_ptr<Archive>> lib =
+      mb ? Archive::create(takeBuffer(std::move(*mb)))
+         : errorCodeToError(mb.getError());
+  if (!lib) {
+    if (!stated.empty())
+      Err(ctx) << "-offers-baseline: " << path << ": " << lib.takeError();
+    else
+      Log(ctx) << "no import library at " << path << " (" << lib.takeError()
+               << "), so no vague entity is marked as added since a previous "
+                  "release; name the oldest that images may have been linked "
+                  "against with -offers-baseline";
+    return;
+  }
+  // What it exports was there before, whatever the DLL's name.
+  symtab.baseline.emplace();
+  for (const Archive::Symbol &sym : (*lib)->symbols())
+    if (StringRef name = sym.getName(); name.consume_front("__imp_"))
+      symtab.baseline->insert(name);
+}
+
+const COFFLinkImage::Entity *
+LinkerDriver::getOfferedEntity(DefinedImportData *imp) {
+  const LinkImages &lib = getLinkImages(imp->file->parentName);
+  for (auto [i, image] : llvm::enumerate(lib.images))
+    if (image.Name.equals_insensitive(imp->getDLLName()))
+      return lib.kept.lookup(
+          {uint32_t(i), imp->getName().substr(strlen("__imp_"))});
+  return nullptr;
+}
+
+bool LinkerDriver::importsFromExecutable(ImportFile *file) {
+  // -unresolved-host-imports names no executable.
+  if (file->dllName.empty())
+    return true;
+  for (const COFFLinkImage &image : getLinkImages(file->parentName).images)
+    if (image.Name.equals_insensitive(file->dllName))
+      return image.Executable;
+  return StringRef(file->dllName).ends_with_insensitive(".exe");
+}
+
+void LinkerDriver::resolveOverrides() {
+  SymbolTable &symtab = ctx.symtab;
+  if (!ctx.hasForkObject || symtab.isEC() || ctx.hybridSymtab)
+    return;
+  bool shares = false;
+  for (ImportFile *file : ctx.importFileInstances)
+    shares |= !getLinkImages(file->parentName).images.empty();
+  // The library that would import an executable's replacement's default
+  // states the default, which the executable then does not import.
+  for (auto &[sym, entity] : symtab.vagueEntities)
+    if (auto *l = dyn_cast_or_null<LazyArchive>(
+            symtab.replaces(entity)
+                ? symtab.find(("__imp_" + sym->getName()).str())
+                : nullptr))
+      shares |= !getLinkImages(l->file->getName()).images.empty();
+
+  // An object's default has the type ID of its prefix and the key of the
+  // image. A default forwards to one that a link states, and to itself by no
+  // path.
+  auto ours = ctx.config.mustMatch.find("_WIN_ITANIUM_KCFI_PREFIX");
+  StringRef own =
+      ours == ctx.config.mustMatch.end() ? StringRef() : ours->second.first;
+  ArrayRef<COFFLinkOverrides::Default> defaults = symtab.overrides.Slots;
+  for (const auto &[slot, d] : enumerate(defaults)) {
+    if (d.Name.empty())
+      continue;
+    Symbol *sym = symtab.find(d.Name);
+    auto *x = dyn_cast_or_null<DefinedRegular>(sym ? sym->getDefined() : sym);
+    if ((symtab.ownOverrides >> slot & 1) && !d.TypeId && x &&
+        isa<ObjFile>(x->getFile()) && x->getChunk())
+      if (std::optional<uint32_t> id = symtab.getTypeId(x, sym, own))
+        symtab.addOverrideDefault(slot, {d.Name, d.Forward, d.Drops, id}, own,
+                                  toString(x->getFile()));
+    size_t steps = 0;
+    for (int to = d.Forward; to >= 0; to = defaults[to].Forward) {
+      if (!defaults[to].Name.empty() && ++steps != defaults.size())
+        continue;
+      Err(ctx) << "overridable default " << d.Name << " forwards to "
+               << (steps == defaults.size()
+                       ? "itself"
+                       : "slot " + Twine(to) + ", which no default has");
+      break;
+    }
+  }
+  if (errorCount())
+    return;
+
+  // What a default stands for where it forwards across drops to target:
+  // target itself where no argument is dropped, since the two are of one
+  // type, and otherwise a thunk of the default's type, one for each type,
+  // target and drop, which the image's key writes.
+  std::map<std::tuple<std::optional<uint32_t>, Defined *, bool>, Defined *>
+      thunks;
+  auto stand = [&](const COFFLinkOverrides::Default &d, Defined *target,
+                   uint8_t drops) {
+    if (!drops || (drops == 1 && !d.TypeId))
+      return target;
+    if (d.TypeId && !own.empty() && own != symtab.overrides.PrefixKey)
+      Err(ctx) << "the type prefix of overridable default " << d.Name
+               << " is of the variant " << symtab.overrides.PrefixKey
+               << ", and the executable's of " << own;
+    Defined *&t = thunks[{d.TypeId, target, drops == 2}];
+    if (!t) {
+      auto *c = make<OverrideThunk>(
+          ctx, own.empty() ? StringRef(symtab.overrides.PrefixKey) : own,
+          d.TypeId, target, drops == 2);
+      symtab.overrideThunks.push_back(c);
+      t = make<DefinedSynthetic>("__ovr_thunk", c, c->getEntry());
+    }
+    return t;
+  };
+  // The slot whose winner a default reaches, itself or the nearest one it
+  // forwards to that has one, or -1, with the greatest drop on the way.
+  auto reach = [&](ArrayRef<Defined *> winners, int slot, uint8_t &drops) {
+    for (drops = 0; slot >= 0 && !winners[slot]; slot = defaults[slot].Forward)
+      drops = std::max(drops, defaults[slot].Drops);
+    return slot;
+  };
+
+  // A default that the image defines checks its word, which its own calls
+  // read too, and has a word for its address. A replacement of the default
+  // it forwards to that is the image's alone is what the word holds, which
+  // nothing at run time changes; otherwise the image's fill writes both
+  // words, as the program chose.
+  std::array<Defined *, LinkFactMaxOverrideSlot + 1> hidden = {};
+  for (const auto &[slot, d] : enumerate(defaults))
+    if (auto *b = dyn_cast_or_null<DefinedRegular>(symtab.find(d.Name));
+        b && symtab.vagueEntities.lookup(b).overridable &&
+        b->visibility >= LinkFactProtected)
+      hidden[slot] = b;
+  for (const auto &[slot, d] : enumerate(defaults)) {
+    Symbol *name = symtab.find(d.Name);
+    auto *x =
+        dyn_cast_or_null<DefinedRegular>(name ? name->getDefined() : nullptr);
+    if (!(symtab.ownOverrides >> slot & 1) || !x ||
+        symtab.vagueEntities.lookup(name).overridable)
+      continue;
+    SymbolTable::OwnDefault &o =
+        symtab.ownDefaults[{x->getChunk(), x->getValue()}];
+    o.slot = slot;
+    o.check = dyn_cast_or_null<DefinedLocalImport>(
+        symtab.find(("__imp_" + d.Name).str()));
+    o.address = make<DefinedLocalImport>(
+        ctx, saver().save("__imp_" + d.Name + "$address"), x);
+    o.address->getChunk()->filled = true;
+    o.entry = dyn_cast_or_null<Defined>(
+        symtab.find((LinkOverrideOwnPrefix + d.Name).str()));
+    if (o.entry && !o.entry->isGCRoot) {
+      o.entry->isGCRoot = true;
+      ctx.config.gcroot.push_back(o.entry);
+    }
+    if (!o.check)
+      continue;
+    o.check->getChunk()->filled = true;
+    uint8_t drops;
+    if (int to = reach(hidden, slot, drops); to >= 0) {
+      o.check->getChunk()->setTarget(stand(d, hidden[to], drops));
+      o.check = nullptr;
+    }
+  }
+
+  // An executable's definition of a default's name replaces the default for
+  // every image of the program, unless it is the executable's alone.
+  std::array<Defined *, LinkFactMaxOverrideSlot + 1> winners = {};
+  SmallVector<DefinedRegular *, 0> unnamed;
+  for (auto &[sym, entity] : symtab.vagueEntities) {
+    auto *b = dyn_cast<DefinedRegular>(sym);
+    if (!entity.overridable || !b || sym->visibility >= LinkFactProtected)
+      continue;
+    // In a DLL the definition is an offer where the DLL exports it, which
+    // the DLL then exports under a name of its own: its export of the
+    // default's name forwards to the default, whose image transfers to what
+    // the program chose.
+    if (ctx.config.dll) {
+      if (llvm::none_of(symtab.exports, [&](const Export &e) {
+            return e.name == sym->getName();
+          }))
+        continue;
+      Export e;
+      e.name = saver().save(LinkOverrideOfferPrefix + sym->getName());
+      e.sym = b;
+      e.isPrivate = true;
+      if (admitExport(symtab, e, b->getFile()))
+        symtab.exports.push_back(e);
+      continue;
+    }
+    int slot = symtab.findOverrideSlot(sym->getName());
+    if (slot < 0) {
+      unnamed.push_back(b);
+      continue;
+    }
+    winners[slot] = b;
+    if (!b->isGCRoot) {
+      b->isGCRoot = true;
+      ctx.config.gcroot.push_back(b);
+    }
+  }
+  // A replacement whose default no input states would leave the images that
+  // share a runtime with the default, unless it is another name of one that
+  // has a slot.
+  for (DefinedRegular *b : unnamed)
+    if (shares && llvm::none_of(winners, [&](Defined *w) {
+          auto *d = cast_or_null<DefinedRegular>(w);
+          return d && d->getChunk() == b->getChunk() &&
+                 d->getValue() == b->getValue();
+        }))
+      Err(ctx) << b->getFile() << ": " << toString(ctx, *b)
+               << " replaces an overridable default whose slot no input "
+                  "states; link the import library of the DLL that defines "
+                  "the default";
+  // A DLL calls a default that forwards to another through a second import
+  // of it, which its fill writes with what the call reaches, while the
+  // import's own entry holds the default's address.
+  if (ctx.config.dll) {
+    for (ImportFile *f : std::vector<ImportFile *>(ctx.importFileInstances))
+      if (int slot = f->impSym ? symtab.findOverrideSlot(f->externalName) : -1;
+          slot >= 0 && defaults[slot].Forward >= 0) {
+        ImportFile *call = ImportFile::create(
+            ctx, ctx.config.machine,
+            saver().save(LinkOverrideCallPrefix + f->externalName), f->dllName,
+            IMPORT_CODE, IMPORT_NAME_EXPORTAS, f->externalName);
+        addFile(call);
+        f->replacement = call->impSym;
+      }
+    return;
+  }
+  // A default that the executable does not replace takes the first offer of
+  // the images that are loaded with the executable, in breadth-first order
+  // of their imports: the executable imports the offer, through the entry
+  // of its import of the default where it has one, so that its calls and
+  // address-takes reach the offer as every other image's do.
+  forEachImageBreadthFirst([&](const COFFLinkImage &image, bool late,
+                               ArrayRef<COFFLinkImage>) {
+    if (late || ctx.config.ignoredOffers.contains(image.Name.lower()))
+      return;
+    for (const COFFLinkImage::Entity &e : image.Kept) {
+      int slot = symtab.findOverrideSlot(e.Name);
+      if (!(e.Flags & LinkImageEntityOverride) || slot < 0 || winners[slot])
+        continue;
+      StringRef name = saver().save(LinkOverrideOfferPrefix + e.Name);
+      DefinedImportData *offer = nullptr;
+      if (auto *imp = dyn_cast_or_null<DefinedImportData>(
+              symtab.find(("__imp_" + e.Name).str()))) {
+        imp->file->dllName = image.Name.str();
+        imp->file->externalName = name;
+        offer = imp;
+      } else {
+        ImportFile *file =
+            ImportFile::create(ctx, ctx.config.machine, name, image.Name,
+                               IMPORT_DATA, IMPORT_NAME);
+        addFile(file);
+        offer = file->impSym;
+      }
+      if (!offer)
+        continue;
+      winners[slot] = offer;
+      ctx.config.gcroot.push_back(offer);
+    }
+  });
+  if (llvm::none_of(winners, [](Defined *w) { return w; }))
+    return;
+  if (ctx.config.dosStub) {
+    Err(ctx) << "/stub: the executable replaces an overridable default, and "
+                "its override table takes the place of the DOS stub";
+    return;
+  }
+
+  // A default that is not replaced stands for what the nearest default it
+  // forwards to that is does. A call does not check the type of what it
+  // reaches, so a call of the default reaches the replacement directly
+  // unless a middle argument is dropped, which the thunk moves; the
+  // executable's own calls do so, and the anchor states it for those of the
+  // other images.
+  auto *anchor = make<OverrideAnchorChunk>(ctx);
+  for (const auto &[slot, d] : enumerate(defaults)) {
+    uint8_t drops;
+    int to = reach(winners, slot, drops);
+    if (to < 0 || d.Name.empty())
+      continue;
+    anchor->slots[slot] = stand(d, winners[to], drops);
+    anchor->mask |= (to == int(slot)) << slot;
+    anchor->calls[slot] = drops == 2 ? slot : to;
+    anchor->count = std::max<unsigned>(anchor->count, slot + 1);
+    // The executable's own calls of a default that it does not replace.
+    if (to != int(slot))
+      if (auto *imp = dyn_cast_or_null<DefinedImportData>(
+              symtab.find(("__imp_" + d.Name).str())))
+        imp->file->replacement = drops == 2 ? anchor->slots[slot] : winners[to];
+  }
+  // The executable's own defaults' words hold what the table names.
+  for (auto &[at, o] : symtab.ownDefaults)
+    if (Defined *s = anchor->slots[o.slot];
+        o.check && s && !isa<DefinedImportData>(s))
+      o.check->getChunk()->setTarget(s);
+  symtab.overrideAnchor = anchor;
+  symtab.addSynthetic("__ovr_anchor", anchor);
+}
+
+MapVector<StringRef, SmallVector<LinkerDriver::Keeper, 2>>
+LinkerDriver::getKeepers(StringSet<> *allowed) {
+  MapVector<StringRef, SmallVector<Keeper, 2>> keepers;
+  auto add = [&](StringRef image, bool executable, bool late,
+                 const COFFLinkImage::Entity &e) {
+    if ((e.Flags & 3) != LinkFactHidden && !(e.Flags & LinkImageEntityOverride))
+      keepers[e.Name].push_back({image, executable, late, e});
+  };
+  if (allowed) {
+    StringRef self = saver().save(sys::path::filename(ctx.config.outputFile));
+    for (auto &[sym, entity] : ctx.symtab.vagueEntities)
+      if (std::optional<COFFLinkImage::Entity> e = ctx.symtab.getImageEntity(
+              sym, ctx.symtab.getKeptEntity(sym), entity))
+        add(self, !ctx.config.dll, false, *e);
+    allowed->insert_range(ctx.config.allowedDuplicates);
+  }
+  forEachImageBreadthFirst(
+      [&](const COFFLinkImage &image, bool late, ArrayRef<COFFLinkImage>) {
+        for (const COFFLinkImage::Entity &e : image.Kept)
+          add(image.Name, image.Executable, late, e);
+        if (allowed)
+          allowed->insert_range(image.Allowed);
+      });
+  return keepers;
+}
+
+// The owner, of the keepers loaded with the image whose offers it takes: a
+// protected copy, which its own image reaches directly, or else the first, as
+// ELF's scope finds it.
+const LinkerDriver::Keeper *LinkerDriver::getOwner(ArrayRef<Keeper> keepers) {
+  const Keeper *owner = nullptr;
+  for (const Keeper &k : keepers)
+    if (!k.late && !ctx.config.ignoredOffers.contains(k.image.lower()) &&
+        (!owner || ((k.e.Flags & 3) == LinkFactProtected &&
+                    (owner->e.Flags & 3) != LinkFactProtected)))
+      owner = &k;
+  return owner;
+}
+
+// The names of an entity that move with it: its own and its guard's.
+static SmallVector<StringRef, 2> getMovingNames(const COFFLinkImage::Entity &e) {
+  SmallVector<StringRef, 2> names = {e.Name};
+  if (std::optional<std::string> g =
+          getGuardName(e.Name, e.Flags >> LinkImageEntityInitShift & 7))
+    names.push_back(saver().save(*g));
+  return names;
+}
+
+void LinkerDriver::takeProtectedCopies() {
+  SymbolTable &symtab = ctx.symtab;
+  if (ctx.config.dll || !ctx.hasForkObject || symtab.isEC() || ctx.hybridSymtab)
+    return;
+  auto isProtected = [](const Keeper &k) {
+    return (k.e.Flags & 3) == LinkFactProtected;
+  };
+  for (auto &[name, keepers] : getKeepers(nullptr)) {
+    const Keeper *owner = getOwner(keepers);
+    Symbol *sym = symtab.find(name);
+    auto it = sym ? symtab.vagueEntities.find(sym) : symtab.vagueEntities.end();
+    if (owner && isProtected(*owner) && count_if(keepers, isProtected) == 1 &&
+        it != symtab.vagueEntities.end() &&
+        symtab.isPreemptible(sym, it->second.function)) {
+      symtab.takeImport(name, owner->image, it->second.function);
+      symtab.protectedOwners.insert(sym);
+    }
+  }
+}
+
+// Two copies that each keep their own instance split the entity: a protected
+// copy, an executable's and a thread-local variable's record, which no cell
+// holds; so does such a copy loaded late beside any that binds before it
+// loads. A DLL's default copy that -Bsymbolic binds is a split that its author
+// stated, as a hidden copy is. Every other copy is joined to the owner where
+// the two have one shape, and copies of other producers where their bytes
+// agree too.
+//
+// The executable owns an entity that it keeps, as an ELF executable's copy
+// relocation makes it, and imports one that a DLL owns, so that its table
+// names the import's entry, which the loader binds before any DLL's fill
+// reads it.
+void LinkerDriver::pickOwners() {
+  SymbolTable &symtab = ctx.symtab;
+  if (!ctx.hasForkObject || symtab.isEC() || ctx.hybridSymtab)
+    return;
+  symtab.offerTable = make<OfferTableChunk>();
+  StringSet<> allowed;
+  for (auto &entry : getKeepers(&allowed)) {
+    StringRef name = entry.first;
+    ArrayRef<Keeper> keepers = entry.second;
+    auto isOwn = [](const Keeper &k) {
+      return (k.e.Flags & 3) == LinkFactProtected || k.executable ||
+             (isTlsRecordName(k.e.Name) &&
+              (k.e.Flags & LinkImageEntityPreemptible));
+    };
+    auto allows = [&](const Keeper &k) {
+      return allowed.contains(name) || allowed.contains("@" + k.image.lower());
+    };
+    SmallVector<const Keeper *, 2> own;
+    for (const Keeper &k : keepers)
+      if (isOwn(k))
+        own.push_back(&k);
+    bool late = own.size() == 1 && own[0]->late && !keepers[0].late;
+    // Each entity is reported once, by the first pair that splits it. Two
+    // images that each keep a type_info object compare it by name.
+    bool split = (own.size() > 1 || late) &&
+                 !(keepers[0].e.Flags & LinkImageEntityDescriptor);
+    if (split) {
+      const Keeper &a = late ? keepers[0] : *own[0], &b = *own[!late];
+      split = !allows(a) && !allows(b);
+      if (split)
+        Err(ctx) << maybeDemangleSymbol(ctx, name) << " is kept by " << a.image
+                 << " and by " << b.image
+                 << ", each with an instance of its own; link one against the "
+                    "other's import library, give it hidden visibility, or "
+                    "link the two jointly, or accept the split with "
+                    "-allow-vague-duplicate:"
+                 << name;
+    }
+    const Keeper *owner = own.empty() ? getOwner(keepers) : own[0];
+    for (const Keeper &k : split ? ArrayRef<Keeper>() : keepers) {
+      const COFFLinkImage::Entity &x = k.e, &y = owner ? owner->e : k.e;
+      if ((isOwn(k) || (x.Flags & LinkImageEntityPreemptible)) &&
+          (!x.sameShape(y) || ((x.Flags | y.Flags) & LinkImageEntityForeign &&
+                               x.Flags & y.Flags & LinkImageEntityCheckSum &&
+                               x.CheckSum != y.CheckSum))) {
+        Err(ctx) << maybeDemangleSymbol(ctx, name) << " is " << describeShape(x)
+                 << " in " << k.image << " and " << describeShape(y) << " in "
+                 << owner->image
+                 << ", whose copy the program shares, or has other bytes; "
+                    "the two are not one definition";
+        break;
+      }
+    }
+
+    Symbol *sym = symtab.find(name);
+    if (ctx.config.dll || keepers.size() < 2 || !owner || owner->late ||
+        isTlsRecordName(name) || (sym && symtab.getKeptEntity(sym)))
+      continue;
+    for (StringRef n : getMovingNames(owner->e)) {
+      auto *imp = dyn_cast_or_null<DefinedImportData>(
+          symtab.find(("__imp_" + n).str()));
+      if (!imp) {
+        ImportFile *f = ImportFile::create(
+            ctx, ctx.config.machine, saver().save("__llvm_owner$" + n),
+            owner->image, IMPORT_DATA, IMPORT_NAME_EXPORTAS, n,
+            getImportHint(n, owner->image));
+        addFile(f);
+        if (!(imp = f->impSym))
+          continue;
+      }
+      imp->file->live = true;
+      imp->file->uses |= ImportFile::Keep;
+      symtab.offerTable->entries.push_back(
+          {n, imp, uint16_t(owner->e.Flags | LinkImageEntityIndirect),
+           owner->e.Log2Align, owner->e.Size});
+    }
+  }
+}
+
+// Returns the image that the link makes, as name, and then every image that
+// the import libraries which the link read state, each with the images it
+// imports from and what it keeps: the images that are loaded with this one.
+// live leaves out what the link read of a DLL that it imports nothing from.
+std::vector<COFFLinkImage> LinkerDriver::getLoadClosure(StringRef name,
+                                                        bool live) {
   std::vector<COFFLinkImage> images(1);
-  images[0].Name = libName;
+  images[0].Name = name;
+  images[0].Executable = !ctx.config.dll;
   // Whether a library stated the image, and whether its own did, which is
   // what a library that repeats it read.
   std::vector<uint8_t> stated(1, 2);
   StringMap<uint32_t> indices;
-  indices[libName.lower()] = 0;
+  indices[name.lower()] = 0;
   auto indexOf = [&](StringRef name) {
     auto [it, inserted] = indices.try_emplace(name.lower(), images.size());
     if (inserted) {
@@ -1231,20 +1756,17 @@ std::string LinkerDriver::createLinkRecords(StringRef libName) {
   // inputs changes nothing.
   std::map<std::string, ImportFile *> imports;
   for (ImportFile *file : ctx.importFileInstances)
-    if (file->live)
+    if ((file->live || !live) && !file->dllName.empty())
       imports.try_emplace(StringRef(file->dllName).lower(), file);
-  StringMap<ArchiveFile *> libs;
-  for (auto [lib, named] : archives)
-    libs.try_emplace(lib->getName(), lib);
-  SmallPtrSet<ArchiveFile *, 8> read;
+  SmallPtrSet<const LinkImages *, 8> read;
   for (auto &[name, file] : imports) {
     uint32_t index = indexOf(file->dllName);
     images[0].Imports.push_back(index * 2 +
                                 ctx.config.delayLoads.contains(name));
-    ArchiveFile *lib = libs.lookup(file->parentName);
-    if (!lib || !read.insert(lib).second)
+    const LinkImages &lib = getLinkImages(file->parentName);
+    if (!read.insert(&lib).second)
       continue;
-    std::vector<COFFLinkImage> theirs = readLinkImages(ctx, lib);
+    ArrayRef<COFFLinkImage> theirs = lib.images;
     std::vector<uint32_t> to;
     for (const COFFLinkImage &image : theirs)
       to.push_back(indexOf(image.Name));
@@ -1254,37 +1776,93 @@ std::string LinkerDriver::createLinkRecords(StringRef libName) {
         continue;
       stated[to[i]] = by;
       COFFLinkImage &image = images[to[i]];
-      image.Kept = std::move(theirs[i].Kept);
+      image.Kept = theirs[i].Kept;
+      image.Allowed = theirs[i].Allowed;
+      image.Executable = theirs[i].Executable;
       image.Imports.clear();
       for (uint32_t import : theirs[i].Imports)
         image.Imports.push_back(to[import / 2] * 2 + import % 2);
     }
   }
+  return images;
+}
+
+void LinkerDriver::forEachImageBreadthFirst(
+    function_ref<void(const COFFLinkImage &, bool late,
+                      ArrayRef<COFFLinkImage> closure)>
+        visit) {
+  std::vector<COFFLinkImage> images = getLoadClosure("", /*live=*/false);
+  std::vector<uint32_t> queue(1, 0);
+  BitVector seen(images.size());
+  seen.set(0);
+  // The images loaded with this one, and then those that a late load reaches.
+  size_t loaded = 0;
+  for (bool late : {false, true}) {
+    for (size_t i = 0; i != queue.size(); ++i)
+      for (uint32_t import : images[queue[i]].Imports)
+        if ((late || import % 2 == 0) && !seen.test(import / 2)) {
+          seen.set(import / 2);
+          queue.push_back(import / 2);
+        }
+    if (!late)
+      loaded = queue.size();
+  }
+  for (size_t i = 1; i != queue.size(); ++i)
+    visit(images[queue[i]], i >= loaded, images);
+}
+
+// The import library of a DLL with an object for Windows Itanium or NT-POSIX
+// states, in a member that no link loads, the DLL and every image that is
+// loaded with it, each with the images it imports from and the vague entities
+// it keeps. A link that reads the library so sees which images keep an
+// entity and whether a path of imports joins them, for images whose own
+// libraries it does not read as well.
+std::string LinkerDriver::createLinkRecords(StringRef libName) {
+  std::vector<COFFLinkImage> images = getLoadClosure(libName, /*live=*/true);
+  images[0].Allowed = ctx.config.allowedDuplicates;
 
   // What the DLL keeps: each entity once, under the name of its definition.
-  for (auto &[sym, entity] : ctx.symtab.vagueEntities) {
-    DefinedRegular *d = ctx.symtab.getKeptEntity(sym);
-    if (!d || entity.descriptor || d->getChunk()->sym != d)
-      continue;
-    SectionChunk *c = d->getChunk();
-    bool function = c->getOutputCharacteristics() & IMAGE_SCN_CNT_CODE;
-    COFFLinkImage::Entity e;
-    e.Name = sym->getName();
-    e.Flags = sym->visibility | entity.init << LinkImageEntityInitShift |
-              (d->file->forkObject ? 0 : LinkImageEntityForeign) |
-              (function ? LinkImageEntityFunction : 0);
-    e.Size = function ? 0 : c->getSize();
-    e.Log2Align = Log2_32(c->getAlignment());
-    e.CheckSum = 0;
-    if (!function && entity.init == LinkFactConstantImmutable) {
-      e.Flags |= LinkImageEntityCheckSum;
-      e.CheckSum = c->checksum;
+  // An image linked against the baseline may keep its own copy of one that
+  // the DLL added since, which the author learns of here.
+  for (auto &[sym, entity] : ctx.symtab.vagueEntities)
+    if (std::optional<COFFLinkImage::Entity> e = ctx.symtab.getImageEntity(
+            sym, ctx.symtab.getKeptEntity(sym), entity)) {
+      images[0].Kept.push_back(*e);
+      if (e->Flags & LinkImageEntityAddition)
+        Warn(ctx) << libName << " offers " << maybeDemangleSymbol(ctx, e->Name)
+                  << ", which its baseline does not export: an image linked "
+                     "against the baseline may keep an instance of its own, "
+                     "which this DLL takes as it starts where it keeps the "
+                     "entity preemptible";
     }
-    images[0].Kept.push_back(e);
-  }
+  // The definitions with which the DLL offers to replace overridable
+  // defaults.
+  for (const Export &e : ctx.symtab.exports)
+    if (StringRef name = e.name; name.consume_front(LinkOverrideOfferPrefix))
+      images[0].Kept.push_back({name,
+                                LinkFactDefault | LinkImageEntityFunction |
+                                    LinkImageEntityOverride,
+                                0, 0, 0});
   llvm::sort(images[0].Kept,
              [](const COFFLinkImage::Entity &a,
                 const COFFLinkImage::Entity &b) { return a.Name < b.Name; });
+  if (ctx.symtab.offerTable)
+    ctx.symtab.offerTable->identity =
+        OfferTableChunk::getIdentity(images, images[0]);
+
+  // The overridable defaults that the DLL defines and exports, and those
+  // that the libraries it read state, which its importers so learn without
+  // reading those libraries.
+  COFFLinkOverrides overrides = ctx.symtab.overrides;
+  bool anyDefault = false;
+  for (auto [slot, d] : enumerate(overrides.Slots)) {
+    if ((ctx.symtab.ownOverrides >> slot & 1) &&
+        llvm::none_of(ctx.symtab.exports, [&](const Export &e) {
+          return e.name == d.Name && e.forwardTo.empty();
+        }))
+      d = {};
+    anyDefault |= !d.Name.empty();
+  }
 
   // The member is an object with the records in the section that holds an
   // object's and one absolute symbol, which the library's index lists.
@@ -1298,6 +1876,13 @@ std::string LinkerDriver::createLinkRecords(StringRef libName) {
   encodeULEB128(LinkRecordImages, os);
   encodeULEB128(group.size(), os);
   os << group;
+  if (anyDefault) {
+    group.clear();
+    writeCOFFLinkOverrides(groupOS, overrides);
+    encodeULEB128(LinkRecordOverrides, os);
+    encodeULEB128(group.size(), os);
+    os << group;
+  }
 
   StringRef section = ".llvm_link_records";
   coff_file_header header = {};
@@ -1573,19 +2158,57 @@ static void markAddrsig(Symbol *s) {
       c->keepUnique = true;
 }
 
-static void findKeepUniqueSections(COFFLinkerContext &ctx) {
-  llvm::TimeTraceScope timeScope("Find keep unique sections");
+// Calls fn on each symbol that obj's address-significance table lists.
+// Returns false for an object that has no table.
+static bool forEachAddrsigSymbol(COFFLinkerContext &ctx, ObjFile *obj,
+                                 function_ref<void(Symbol *)> fn) {
+  if (!obj->addrsigSec)
+    return false;
+  ArrayRef<Symbol *> syms = obj->getSymbols();
+  ArrayRef<uint8_t> contents;
+  cantFail(obj->getCOFFObj()->getSectionContents(obj->addrsigSec, contents));
+  const uint8_t *cur = contents.begin();
+  while (cur != contents.end()) {
+    unsigned size;
+    const char *err = nullptr;
+    uint64_t symIndex = decodeULEB128(cur, &size, contents.end(), &err);
+    if (err)
+      Fatal(ctx) << toString(obj)
+                 << ": could not decode addrsig section: " << err;
+    if (symIndex >= syms.size())
+      Fatal(ctx) << toString(obj)
+                 << ": invalid symbol index in addrsig section";
+    fn(syms[symIndex]);
+    cur += size;
+  }
+  return true;
+}
 
-  // Exported symbols could be address-significant in other executables or DSOs,
-  // so we conservatively mark them as address-significant.
-  ctx.forEachSymtab([](SymbolTable &symtab) {
-    for (Export &r : symtab.exports)
-      markAddrsig(r.sym);
-  });
+// Marks each function of a delay-loaded DLL whose address an object lists as
+// observed, and defines the names of a DLL's ensure stub and gate for an
+// object that refers to them.
+static void findObservedDelayImports(COFFLinkerContext &ctx) {
+  Configuration &config = ctx.config;
+  if (!ctx.symtab.delayResolve)
+    return;
+  for (ObjFile *obj : ctx.objFileInstances)
+    forEachAddrsigSymbol(ctx, obj, [&](Symbol *s) {
+      auto *imp = dyn_cast_or_null<DefinedImportData>(s);
+      if (auto *thunk = dyn_cast_or_null<DefinedImportThunk>(s))
+        imp = thunk->wrappedSym;
+      if (imp && imp->file->thunkSym &&
+          config.delayLoads.contains(imp->getDLLName().lower()))
+        imp->file->observed = true;
+    });
+  for (const auto &dll : config.delayLoads)
+    namesDelayGate(ctx, dll.getKey(), true);
+}
 
+void forEachAddressSignificant(COFFLinkerContext &ctx, ArrayRef<ObjFile *> objs,
+                               function_ref<void(Symbol *)> markAddrsig) {
   // Visit the address-significance table in each object file and mark each
   // referenced symbol as address-significant.
-  for (ObjFile *obj : ctx.objFileInstances) {
+  for (ObjFile *obj : objs) {
     ArrayRef<Symbol *> syms = obj->getSymbols();
     // A function the object lists as address-taken for Control Flow Guard has
     // a significant address, whatever its address-significance table says.
@@ -1596,31 +2219,25 @@ static void findKeepUniqueSections(COFFLinkerContext &ctx) {
             index < syms.size())
           markAddrsig(syms[index]);
     }
-    if (obj->addrsigSec) {
-      ArrayRef<uint8_t> contents;
-      cantFail(
-          obj->getCOFFObj()->getSectionContents(obj->addrsigSec, contents));
-      const uint8_t *cur = contents.begin();
-      while (cur != contents.end()) {
-        unsigned size;
-        const char *err = nullptr;
-        uint64_t symIndex = decodeULEB128(cur, &size, contents.end(), &err);
-        if (err)
-          Fatal(ctx) << toString(obj)
-                     << ": could not decode addrsig section: " << err;
-        if (symIndex >= syms.size())
-          Fatal(ctx) << toString(obj)
-                     << ": invalid symbol index in addrsig section";
-        markAddrsig(syms[symIndex]);
-        cur += size;
-      }
-    } else {
-      // If an object file does not have an address-significance table,
-      // conservatively mark all of its symbols as address-significant.
+    // If an object file does not have an address-significance table,
+    // conservatively mark all of its symbols as address-significant.
+    if (!forEachAddrsigSymbol(ctx, obj, markAddrsig))
       for (Symbol *s : syms)
         markAddrsig(s);
-    }
   }
+}
+
+static void findKeepUniqueSections(COFFLinkerContext &ctx) {
+  llvm::TimeTraceScope timeScope("Find keep unique sections");
+
+  // Exported symbols could be address-significant in other executables or DSOs,
+  // so we conservatively mark them as address-significant.
+  ctx.forEachSymtab([](SymbolTable &symtab) {
+    for (Export &r : symtab.exports)
+      markAddrsig(r.sym);
+  });
+
+  forEachAddressSignificant(ctx, ctx.objFileInstances, markAddrsig);
 }
 
 // link.exe replaces each %foo% in altPath with the contents of environment
@@ -2240,6 +2857,17 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (args.hasArg(OPT_force, OPT_force_unresolved))
     config->forceUnresolved = true;
 
+  // Handle -unresolved-host-imports, --no-undefined and -z defs, the last of
+  // which decides.
+  for (auto *arg :
+       args.filtered(OPT_unresolved_host_imports, OPT_no_undefined, OPT_z)) {
+    if (arg->getOption().matches(OPT_z) && arg->getValue() != StringRef("defs"))
+      Warn(ctx) << "unknown -z value: " << arg->getValue();
+    else
+      config->unresolvedHostImports =
+          arg->getOption().matches(OPT_unresolved_host_imports);
+  }
+
   // Handle /force or /force:multiple
   if (args.hasArg(OPT_force, OPT_force_multiple))
     config->forceMultiple = true;
@@ -2750,8 +3378,15 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       args.hasFlag(OPT_auto_import, OPT_auto_import_no, config->mingw);
   config->pseudoRelocs = args.hasFlag(
       OPT_runtime_pseudo_reloc, OPT_runtime_pseudo_reloc_no, config->mingw);
-  config->callGraphProfileSort = args.hasFlag(
-      OPT_call_graph_profile_sort, OPT_call_graph_profile_sort_no, true);
+  // "no" also means none.
+  StringRef sort = args.getLastArgValue(OPT_call_graph_profile_sort, "cdsort");
+  config->callGraphProfileSort = StringSwitch<CGProfileSortKind>(sort.lower())
+                                     .Case("cdsort", CGProfileSortKind::Cdsort)
+                                     .Case("hfsort", CGProfileSortKind::Hfsort)
+                                     .Default(CGProfileSortKind::None);
+  if (config->callGraphProfileSort == CGProfileSortKind::None &&
+      !sort.equals_insensitive("none") && !sort.equals_insensitive("no"))
+    Err(ctx) << "unknown /call-graph-profile-sort: value: " << sort;
   config->stdcallFixup =
       args.hasFlag(OPT_stdcall_fixup, OPT_stdcall_fixup_no, config->mingw);
   config->warnStdcallFixup = !args.hasArg(OPT_stdcall_fixup);
@@ -3056,6 +3691,31 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Handle /delayload
   {
     llvm::TimeTraceScope timeScope("Delay load");
+    for (auto *arg : args.filtered(OPT_ignore_offers))
+      config->ignoredOffers.insert(StringRef(arg->getValue()).lower());
+    if (auto *arg = args.getLastArg(OPT_offers_baseline))
+      config->offersBaseline = arg->getValue();
+    for (auto *arg : args.filtered(OPT_allow_vague_duplicate)) {
+      StringRef a = arg->getValue();
+      config->allowedDuplicates.push_back(
+          a.starts_with("@") ? saver().save(a.lower()) : a);
+    }
+    for (auto *arg : args.filtered(OPT_ignore_address_equality,
+                                   OPT_ignore_address_equality_file))
+      config->ignoredAddressEquality.insert(
+          arg->getNumValues() ? StringRef(arg->getValue()).lower() : "");
+    if (auto *arg = args.getLastArg(
+            OPT_Bno_symbolic, OPT_Bsymbolic_non_weak_functions,
+            OPT_Bsymbolic_functions, OPT_Bsymbolic_non_weak, OPT_Bsymbolic)) {
+      const opt::Option &o = arg->getOption();
+      config->bsymbolic =
+          o.matches(OPT_Bsymbolic)             ? BsymbolicKind::All
+          : o.matches(OPT_Bsymbolic_non_weak)  ? BsymbolicKind::NonWeak
+          : o.matches(OPT_Bsymbolic_functions) ? BsymbolicKind::Functions
+          : o.matches(OPT_Bsymbolic_non_weak_functions)
+              ? BsymbolicKind::NonWeakFunctions
+              : BsymbolicKind::None;
+    }
     for (auto *arg : args.filtered(OPT_delayload)) {
       config->delayLoads.insert(StringRef(arg->getValue()).lower());
       ctx.forEachActiveSymtab([&](SymbolTable &symtab) {
@@ -3070,9 +3730,16 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
       StringRef s = arg->getValue();
       if (s.equals_insensitive("unload"))
         config->delayUnload = true;
+      else if (s.consume_front_insensitive("nocanonical:") && !s.empty())
+        config->delayNoCanonical.insert(s.lower());
       else if (!s.equals_insensitive("nobind"))
-        Err(ctx) << "/delay: invalid argument: " << s;
+        Err(ctx) << "/delay: invalid argument: " << arg->getValue();
     }
+    // The runtime resolves the address words of a delay-loaded DLL; a library
+    // that offers the function is asked for it.
+    if (!config->delayLoads.empty() &&
+        (config->machine == AMD64 || config->machine == ARM64))
+      ctx.symtab.delayResolve = ctx.symtab.addUndefined("__llvm_delay_resolve");
     if (args.hasArg(OPT_didatownsection))
       config->didatOwnSection = true;
     config->noOptDidat = args.hasArg(OPT_nooptdidat);
@@ -3251,6 +3918,19 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
         if (symtab.findUnderscore("_load_config_used"))
           symtab.addGCRoot(symtab.mangle("_load_config_used"));
 
+        // An image with an object for Windows Itanium or NT-POSIX may hold
+        // words that the runtime's fill writes, from a list that the link
+        // gives it, in the runtime's entry point, which then calls the entry
+        // the image was linked with; a library that offers it is asked for
+        // it.
+        if (ctx.hasForkObject && !symtab.fill &&
+            (config->machine == AMD64 || config->machine == ARM64)) {
+          symtab.fill = symtab.addUndefined(config->dll ? "__llvm_fill_dll"
+                                                        : "__llvm_fill_exe");
+          symtab.addSynthetic("__llvm_fill_list", nullptr);
+          symtab.addSynthetic("__llvm_fill_target", nullptr);
+        }
+
         if (args.hasArg(OPT_include_optional)) {
           // Handle /includeoptional
           for (auto *arg : args.filtered(OPT_include_optional))
@@ -3307,7 +3987,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // If we are going to do codegen for link-time optimization, check for
   // unresolvable symbols first, so we don't spend time generating code that
   // will fail to link anyway.
-  if (!config->forceUnresolved)
+  if (!config->forceUnresolved &&
+      !(config->unresolvedHostImports && config->dll))
     ctx.forEachSymtab([](SymbolTable &symtab) {
       if (!symtab.bitcodeFileInstances.empty())
         symtab.reportUnresolvable();
@@ -3327,16 +4008,10 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   if (config->ltoValidateAllVtablesHaveTypeInfos)
     ltoValidateAllVtablesHaveTypeInfos(ctx, args);
 
-  // A DLL's offer of a vague entity is an import library's pointer for the
-  // entity's name.
   auto preemptVagueEntities = [&] {
-    ctx.forEachSymtab([](SymbolTable &symtab) {
-      symtab.preemptVagueEntities([&](StringRef name) {
-        auto *imp = dyn_cast_or_null<DefinedImportData>(
-            symtab.find(("__imp_" + name).str()));
-        return imp && symtab.honoursOffer(imp->file) ? imp : nullptr;
-      });
-    });
+    takeProtectedCopies();
+    ctx.forEachSymtab(
+        [](SymbolTable &symtab) { symtab.preemptVagueEntities(); });
   };
   preemptVagueEntities();
   if (errorCount())
@@ -3376,6 +4051,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
   // Likewise, don't emit object files for other /lldemit options.
   if (config->emit != EmitKind::Obj || config->thinLTOIndexOnly)
     return;
+
+  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.keepThreadEndSlot(); });
 
   // If we generated native object files from bitcode files, this resolves
   // references to the symbols we use from them. A library call that LTO made
@@ -3417,10 +4094,15 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     ctx.forEachSymtab(
         [](SymbolTable &symtab) { symtab.addStartStopSymbols(); });
 
+  findObservedDelayImports(ctx);
+  ctx.forEachSymtab([](SymbolTable &symtab) { symtab.checkTlsTemplates(); });
+
   // Resolve remaining undefined symbols and warn about imported locals.
   std::vector<Undefined *> aliases;
-  ctx.forEachSymtab(
-      [&](SymbolTable &symtab) { symtab.resolveRemainingUndefines(aliases); });
+  ctx.forEachSymtab([&](SymbolTable &symtab) {
+    symtab.resolveRemainingUndefines(aliases);
+    symtab.bindValueOnlySites();
+  });
 
   // Bind each SECTION-class symbol to the first section of its name in an
   // object of its object's name, as the members of an import library are.
@@ -3459,6 +4141,7 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     maybeReplaceWithNative("_tls_end");
   }
 
+  resolveOverrides();
   ctx.forEachActiveSymtab([](SymbolTable &symtab) {
     symtab.initializeECThunks();
     symtab.initializeLoadConfig();
@@ -3496,6 +4179,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     symtab.bindLocalImports();
   });
 
+  ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.exportTlsUnit(); });
+  setTlsForm(ctx);
   ctx.symtab.initializeSameAddressThunks();
   for (auto alias : aliases) {
     assert(alias->kind() == Symbol::UndefinedKind);
@@ -3520,6 +4205,8 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     }
   }
 
+  readOffersBaseline();
+  pickOwners();
   ctx.forEachActiveSymtab([](SymbolTable &symtab) { symtab.addOffers(); });
 
   // Windows specific -- when we are creating a .dll file, we also
@@ -3596,11 +4283,11 @@ void LinkerDriver::linkerMain(ArrayRef<const char *> argsArr) {
     if (args.hasArg(OPT_call_graph_ordering_file))
       Err(ctx) << "/order and /call-graph-order-file may not be used together";
     parseOrderFile(arg->getValue());
-    config->callGraphProfileSort = false;
+    config->callGraphProfileSort = CGProfileSortKind::None;
   }
 
   // Handle /call-graph-ordering-file and /call-graph-profile-sort (default on).
-  if (config->callGraphProfileSort) {
+  if (config->callGraphProfileSort != CGProfileSortKind::None) {
     llvm::TimeTraceScope timeScope("Call graph");
     if (auto *arg = args.getLastArg(OPT_call_graph_ordering_file))
       parseCallGraphFile(arg->getValue());

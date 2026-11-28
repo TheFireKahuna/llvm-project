@@ -39,6 +39,7 @@
 #include "llvm/CodeGen/RegisterScavenging.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -171,6 +172,29 @@ using StackObjSet = SmallSetVector<int, 8>;
 using SavedDbgValuesMap =
     SmallDenseMap<MachineBasicBlock *, SmallVector<MachineInstr *, 4>, 4>;
 
+/// Reloads each thread pointer that its register no longer holds from the
+/// register's save slot, where the prologue stored its value on entry, and
+/// checks it.
+static void reloadThreadPointers(MachineFunction &MF) {
+  const TargetSubtargetInfo &STI = MF.getSubtarget();
+  MCRegister TP = STI.getTargetLowering()->getThreadPointerRegister();
+  for (MachineBasicBlock &MBB : MF)
+    for (MachineInstr &MI : make_early_inc_range(MBB)) {
+      if (MI.getOpcode() != TargetOpcode::LOAD_THREAD_POINTER)
+        continue;
+      // The register was saved, since something modified it.
+      const CalleeSavedInfo &Slot = *find_if(
+          MF.getFrameInfo().getCalleeSavedInfo(),
+          [&](const CalleeSavedInfo &CS) { return CS.getReg() == TP; });
+      Register Reg = MI.getOperand(0).getReg();
+      STI.getInstrInfo()->loadRegFromStackSlot(
+          MBB, MI, Reg, Slot.getFrameIdx(),
+          STI.getRegisterInfo()->getMinimalPhysRegClass(Reg), Register());
+      STI.getInstrInfo()->insertThreadPointerCheck(MBB, MI, Reg);
+      MI.eraseFromParent();
+    }
+}
+
 /// Stash DBG_VALUEs that describe parameters and which are placed at the start
 /// of the block. Later on, after the prologue code has been emitted, the
 /// stashed DBG_VALUEs will be reinserted at the start of the block.
@@ -237,8 +261,10 @@ bool PEIImpl::run(MachineFunction &MF) {
     stashEntryDbgValues(*SaveBlock, EntryDbgValues);
 
   // Handle CSR spilling and restoring, for targets that need it.
-  if (MF.getTarget().usesPhysRegsForValues())
+  if (MF.getTarget().usesPhysRegsForValues()) {
     spillCalleeSavedRegs(MF);
+    reloadThreadPointers(MF);
+  }
 
   // Allow the target machine to make final modifications to the function
   // before the frame layout is finalized.

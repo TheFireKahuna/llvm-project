@@ -74,7 +74,20 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
       break;
     case AArch64::S_FUSED:
     case AArch64::S_TPREL:
-      if (Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    case AArch64::S_DTPREL:
+      // Of the offsets from an image's base, :dtprel_lo12: alone.
+      if (Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+          (AArch64::getSymbolLoc(Spec) != AArch64::S_DTPREL ||
+           Spec == AArch64::S_DTPREL_LO12))
+        break;
+      [[fallthrough]];
+    // The word of a thread-local's offset, on its adrp and its 64-bit load.
+    case AArch64::S_GOTTPREL:
+      if (Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+          (Spec == AArch64::S_GOTTPREL_PAGE
+               ? FixupKind == AArch64::fixup_aarch64_pcrel_adrp_imm21
+               : Spec == AArch64::S_GOTTPREL_LO12_NC &&
+                     FixupKind == AArch64::fixup_aarch64_ldst_imm12_scale8))
         break;
       [[fallthrough]];
     default:
@@ -157,11 +170,16 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
         return COFF::IMAGE_REL_ARM64_SECREL_LOW12A;
       if (Spec == AArch64::S_SECREL_HI12)
         return COFF::IMAGE_REL_ARM64_SECREL_HIGH12A;
-      // A thread-local's offset from the thread pointer.
+      // A thread-local's offset from the thread pointer, and its offset from
+      // its image's base checked to fit, as ELF's.
       if (Spec == AArch64::S_TPREL_HI12)
         return COFF::IMAGE_REL_LLVM_TPOFF_HIGH12A;
-      if (Spec == AArch64::S_TPREL_LO12 || Spec == AArch64::S_TPREL_LO12_NC)
+      if (Spec == AArch64::S_TPREL_LO12)
         return COFF::IMAGE_REL_LLVM_TPOFF_LOW12A;
+      if (Spec == AArch64::S_TPREL_LO12_NC)
+        return COFF::IMAGE_REL_LLVM_TPOFF_LOW12A_NC;
+      if (Spec == AArch64::S_DTPREL_LO12)
+        return COFF::IMAGE_REL_LLVM_DTPOFF_LOW12A;
     }
     return COFF::IMAGE_REL_ARM64_PAGEOFFSET_12A;
 
@@ -177,8 +195,14 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
       // A load of a pointer whose register only fused sites read.
       if (Spec == AArch64::S_FUSED_LO12)
         return COFF::IMAGE_REL_LLVM_FUSED_READ;
-      if (Spec == AArch64::S_TPREL_LO12 || Spec == AArch64::S_TPREL_LO12_NC)
+      if (Spec == AArch64::S_TPREL_LO12)
         return COFF::IMAGE_REL_LLVM_TPOFF_LOW12L;
+      if (Spec == AArch64::S_TPREL_LO12_NC)
+        return COFF::IMAGE_REL_LLVM_TPOFF_LOW12L_NC;
+      if (Spec == AArch64::S_DTPREL_LO12)
+        return COFF::IMAGE_REL_LLVM_DTPOFF_LOW12L;
+      if (Spec == AArch64::S_GOTTPREL_LO12_NC)
+        return COFF::IMAGE_REL_LLVM_GOTTPOFF_LOW12L;
     }
     return COFF::IMAGE_REL_ARM64_PAGEOFFSET_12L;
 
@@ -186,7 +210,9 @@ unsigned AArch64WinCOFFObjectWriter::getRelocType(
     return COFF::IMAGE_REL_ARM64_REL21;
 
   case AArch64::fixup_aarch64_pcrel_adrp_imm21:
-    return COFF::IMAGE_REL_ARM64_PAGEBASE_REL21;
+    return Spec == AArch64::S_GOTTPREL_PAGE
+               ? COFF::IMAGE_REL_LLVM_GOTTPOFF_PAGE21
+               : COFF::IMAGE_REL_ARM64_PAGEBASE_REL21;
 
   case AArch64::fixup_aarch64_pcrel_branch14:
     return COFF::IMAGE_REL_ARM64_BRANCH14;

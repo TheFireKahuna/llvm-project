@@ -613,22 +613,27 @@ void X86MCCodeEmitter::emitMemModRMByte(
     unsigned FixupKind = [&]() {
       // On Windows Itanium and NT-POSIX the relocation type states the form of
       // a call, jump, load or lea that refers to a symbol through RIP with no
-      // segment register. NumPrefixes is the bytes before a one-byte opcode
-      // and this ModRM byte; a call's prefixes are not part of its form.
+      // segment register, and of any other such field where its instruction
+      // begins. NumPrefixes is the bytes before a one-byte opcode and this
+      // ModRM byte; a call's prefixes are not part of its form.
       if (STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
-        if (BaseReg != X86::RIP || !Disp.isExpr() ||
-            MI.getOperand(Op + X86::AddrSegmentReg).getReg())
+        if (BaseReg != X86::RIP || !Disp.isExpr())
           return X86::reloc_riprel_4byte;
+        if (MI.getOperand(Op + X86::AddrSegmentReg).getReg())
+          return X86::reloc_riprel_4byte_insn;
         bool HasOffset = !isa<MCSymbolRefExpr>(Disp.getExpr());
-        unsigned NumPrefixes = CB.size() - StartByte - 2 +
-                               (MI.getFlags() & X86::IP_AFTER_PREFIX ? 1 : 0) +
-                               (MI.getFlags() & X86::IP_AFTER_PREFIXES ? 2 : 0);
+        unsigned NumPrefixes =
+            CB.size() - StartByte - 2 +
+            ((MI.getFlags() & X86::IP_PREFIX_BYTES) >>
+             X86::IP_PREFIX_BYTES_SHIFT) +
+            (MI.getFlags() & X86::IP_AFTER_UNKNOWN ? 2 : 0);
         switch (Opcode) {
         case X86::LEA16r:
         case X86::LEA64_32r:
           return X86::reloc_riprel_4byte_narrow;
         case X86::LEA64r:
-          return X86::reloc_riprel_4byte_lea;
+          return Kind == REX2 ? X86::reloc_riprel_4byte_lea_rex2
+                              : X86::reloc_riprel_4byte_lea;
         case X86::MOV64rm:
           if (!HasOffset)
             return Kind == REX2 ? X86::reloc_riprel_4byte_movq_load_rex2
@@ -659,7 +664,7 @@ void X86MCCodeEmitter::emitMemModRMByte(
             return X86::reloc_riprel_4byte_test;
           break;
         }
-        return X86::reloc_riprel_4byte;
+        return X86::reloc_riprel_4byte_insn;
       }
 
       // Enable relaxed relocation only for a MCSymbolRefExpr.  We cannot use a
@@ -723,6 +728,17 @@ void X86MCCodeEmitter::emitMemModRMByte(
     int ImmSize = !Disp.isImm() && X86II::hasImm(TSFlags)
                       ? X86II::getSizeOfImm(TSFlags)
                       : 0;
+    // The bytes before the field, a standalone prefix's among them, and the
+    // immediate's after it; none where bytes that may be prefixes are
+    // unknown, or where they do not fit.
+    if (FixupKind == X86::reloc_riprel_4byte_insn) {
+      unsigned Before = CB.size() - StartByte +
+                        ((MI.getFlags() & X86::IP_PREFIX_BYTES) >>
+                         X86::IP_PREFIX_BYTES_SHIFT);
+      FixupKind = MI.getFlags() & X86::IP_AFTER_UNKNOWN || Before > 15
+                      ? X86::reloc_riprel_4byte
+                      : X86::reloc_riprel_4byte_insn + (Before << 4 | ImmSize);
+    }
     // COFF states the immediate's size in the relocation type instead.
     if (ImmSize && FixupKind == X86::reloc_riprel_4byte &&
         STI.getTargetTriple().isOSBinFormatCOFF())

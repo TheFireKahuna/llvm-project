@@ -31,10 +31,18 @@ class CommonChunk;
 class COFFLinkerContext;
 class Defined;
 class DefinedAbsolute;
+class DefinedImportData;
+class DefinedLocalImport;
 class DefinedRegular;
+class OfferTableChunk;
+class OverrideAnchorChunk;
+class OverrideThunk;
 struct FunctionOverride;
 class ImportThunkChunk;
 class LazyArchive;
+class LocalImportChunk;
+class TlsPlaceChunk;
+class TlsRecordChunk;
 class SameAddressThunkARM64EC;
 class SectionChunk;
 class Symbol;
@@ -83,16 +91,32 @@ public:
   // Try to resolve undefined symbols with alternate names.
   void resolveAlternateNames();
 
-  // On ARM64, once liveness is known, binds .refptr cells as local import
-  // pointers, and when every instruction that refers to a pointer loads it,
-  // makes the loads reach its symbol directly, keeping the pointer only for a
-  // root or data that refers to it.
+  // Once liveness is known, binds .refptr cells as local import pointers
+  // where a reference can be rewritten, and notes the pointers that roots and
+  // other names of a cell keep. The relocation scan finds the rest.
   void bindLocalImports();
+
+  // Reports LNK4217 for a reference from where to li, which binds a
+  // dllimport of a symbol the image defines.
+  void reportLocalImport(StringRef where, DefinedLocalImport *li);
+
+  // The .refptr cells bound as local import pointers, by section.
+  llvm::DenseMap<SectionChunk *, LocalImportChunk *> cells;
 
   // Defines the referenced, undefined __start_X and __stop_X of each run of
   // sections named X or X$*, where X is a C identifier, and _etext, _edata and
   // _end, unprefixed too. The writer places them once the layout is known.
   void addStartStopSymbols();
+
+  // Defines the bounds of the loader's thread-local template where no
+  // foreign object does, and reports what crosses the two templates by
+  // definition: a bound an object of the model defines, and a COMDAT
+  // thread-local with copies of both models.
+  void checkTlsTemplates();
+
+  // Keeps wincrt's thread-end slot in an executable that has TLS callbacks
+  // of its own or registers a thread-local destructor.
+  void keepThreadEndSlot();
 
   // Load lazy objects that are needed for MinGW automatic import and for
   // doing stdcall fixups, and those that a reference to X or __imp_X from an
@@ -104,6 +128,11 @@ public:
   // Returns a symbol for a given name. Returns a nullptr if not found.
   Symbol *find(StringRef name);
   Symbol *findUnderscore(StringRef name);
+  // Returns the import named name, which the image comes to need for the
+  // reason why, loading the member of an import library that offers it: such
+  // a member defines nothing else, so it is still read once the image's
+  // sections are known.
+  DefinedImportData *findImport(const Twine &name, const Twine &why);
   // Returns the symbols whose names match, in the order they entered the table.
   std::vector<Symbol *> findAll(llvm::function_ref<bool(StringRef)> match);
 
@@ -144,6 +173,9 @@ public:
 
   Symbol *addSynthetic(StringRef n, Chunk *c);
   Symbol *addAbsolute(StringRef n, uint64_t va);
+  // Defines var's record, var's name followed by $tls, for the fact of file
+  // that states it, with the guard that an object names.
+  void addTlsRecord(Symbol *var, Symbol *guard, InputFile *file);
 
   Symbol *addUndefined(StringRef name, InputFile *f, bool overrideLazy);
   void addStrongReference(Symbol *s);
@@ -206,18 +238,102 @@ public:
 
   // The vague entities that the link facts state, by the symbol that every
   // copy resolves to, in the order the link met them. A DLL that keeps one
-  // offers it, and an image that imports from that DLL binds the DLL's.
+  // offers it, and an image that imports from that DLL binds the DLL's. A
+  // thread-local variable is one by its record, which is what images share
+  // of it.
   struct VagueEntity {
-    VagueEntity() : init(0), descriptor(false), function(false) {}
+    VagueEntity()
+        : init(0), descriptor(false), function(false), overridable(false) {}
+    // The import of the address of a function with Symbol::addressImported.
+    DefinedImportData *owner = nullptr;
     // The greatest llvm::COFF::LinkFactInitKind that a copy of a variable
     // states.
-    uint8_t init : 2;
+    uint8_t init : 3;
     // True if the entity is a type_info object.
     uint8_t descriptor : 1;
     // True if the entity is a function, whose address some object takes.
     uint8_t function : 1;
+    // True if the entity is a function that an object defines to replace an
+    // overridable default: a strong definition, not a default or an entity
+    // that the copies of one name make.
+    uint8_t overridable : 1;
   };
   llvm::MapVector<Symbol *, VagueEntity> vagueEntities;
+
+  // The overridable defaults that have a slot in the override table, with
+  // the key of their type prefixes. A link fact states one that an object
+  // defines, whose bit ownOverrides has, and an import library's link
+  // records those that its DLL and the images loaded with it define.
+  llvm::object::COFFLinkOverrides overrides;
+  uint32_t ownOverrides = 0;
+  // Enters d, which from states with a type prefix of key, as the default of
+  // slot. A name has one slot, one forwarding and one type prefix, a slot
+  // has one name, and the prefixes are of one key.
+  void addOverrideDefault(unsigned slot,
+                          const llvm::object::COFFLinkOverrides::Default &d,
+                          StringRef key, const Twine &from);
+  // The slot of the overridable default named name, or -1.
+  int findOverrideSlot(StringRef name) const;
+  // Whether an executable's definition replaces an overridable default for
+  // every image, and so is the address of its name in every image.
+  bool replaces(const VagueEntity &e) const;
+  // The anchor of the override table of an executable that replaces an
+  // overridable default.
+  OverrideAnchorChunk *overrideAnchor = nullptr;
+  // The thunks of defaults that forward across a dropped argument.
+  std::vector<OverrideThunk *> overrideThunks;
+  // An overridable default that the image defines: its slot; its check
+  // word, which its own calls read too; the word of its address, which is
+  // made for the address-takes; and the entry that the image's own calls and
+  // jumps reach, which checks the check word and transfers through it. A
+  // DLL's vague entity that it keeps preemptible has only the word, its cell,
+  // through which its accesses and address-takes go, and VagueSlot.
+  enum : uint8_t { VagueSlot = 0xff };
+  struct OwnDefault {
+    uint8_t slot;
+    DefinedLocalImport *check = nullptr, *address = nullptr;
+    Defined *entry = nullptr;
+  };
+  // By where each is, which each name of one shares.
+  llvm::MapVector<std::pair<Chunk *, uint64_t>, OwnDefault> ownDefaults;
+  OwnDefault *findOwnDefault(Symbol *s);
+  // Whether a DLL's offer, which the loader binds, replaces o, a default
+  // that the executable defines.
+  bool replacedByOffer(const OwnDefault &o) const;
+  // Lists the words of the image that hold the address of an overridable
+  // default, once the relocations are scanned: those of its own defaults,
+  // each word that holds an import of one, and the call words of the
+  // second imports of those that forward to another.
+  void bindOverrideCells();
+  // Returns the bytes before the entry of function, which sym defines, that
+  // are its type prefix: what the compiler wrote from __cfi_<function>.
+  ArrayRef<uint8_t> getTypePrefix(DefinedRegular *sym, StringRef function);
+  // Returns the type ID that the prefix before the entry of sym, which name
+  // is, holds where a link fact says it has one, of the layout that key
+  // states.
+  std::optional<uint32_t> getTypeId(DefinedRegular *sym, Symbol *name,
+                                    StringRef key);
+
+  // Enters the vague entities that the objects of other producers define,
+  // which only take part in an image that also has an object for Windows
+  // Itanium or NT-POSIX; foreignRead counts the objects looked at. Each
+  // input that is read asks, so that an import library's pointer read after
+  // a definition finds the definition's entity.
+  void addForeignEntities();
+  void addForeignEntities(ObjFile *file);
+  size_t foreignRead = 0;
+  Symbol *findOwnGuard(DefinedRegular *var);
+  // The initialization function of the thread-local variable whose record
+  // is the vague entity sym, where a thread initializes it: a DLL offers it
+  // with the record, for a unit that only declares the variable, as on ELF.
+  Symbol *findOfferedInit(Symbol *sym, const VagueEntity &entity);
+  // The definition of the vague entity sym, if the link has one: sym, or the
+  // variable of a record.
+  DefinedRegular *getEntityDefinition(Symbol *sym);
+
+  // Whether another image's instance may stand for the image's definition of
+  // sym, a vague entity that is a function or a variable.
+  bool isPreemptible(const Symbol *sym, bool function);
 
   // Whether the image takes the instance of a vague entity that the DLL of
   // file offers for its own. Every binding of an offer asks here, at the
@@ -225,17 +341,62 @@ public:
   // import of its name.
   bool honoursOffer(const ImportFile *file);
 
-  // Gives each vague entity that the link defines and owner names an import
-  // for, with every name of its COMDAT group, the instance of the import's
-  // DLL, and leaves the group's sections out of the image. It runs once
-  // before LTO, which then compiles no copy, and again once every input is
-  // loaded, before liveness is decided.
-  void preemptVagueEntities(
-      llvm::function_ref<DefinedImportData *(StringRef)> owner);
+  // The import library's pointer for name, a name of a vague entity, where
+  // the image takes the offer that it carries.
+  DefinedImportData *findTakenOffer(StringRef name);
+  // Whether another image's instance stands for the image's definition of
+  // sym, as findTakenOffer finds before the link has decided liveness.
+  bool takesOffer(Symbol *sym, bool function);
+
+  // Gives each vague entity that the link defines and a DLL offers, with
+  // every name of its COMDAT group, the instance of the offer's DLL, and
+  // leaves the group's sections out of the image. A function keeps its
+  // definition for its calls, and only its address becomes the DLL's. It runs
+  // once before LTO, which then compiles no copy of a variable but a
+  // constant's, and again once every input is loaded, before liveness is
+  // decided.
+  void preemptVagueEntities();
+  // The vague entities whose protected copy in a DLL the executable takes,
+  // each name of the group from that DLL; and makes name an import from dll,
+  // of a function's address where code.
+  llvm::DenseSet<Symbol *> protectedOwners;
+  void takeImport(StringRef name, StringRef dll, bool code);
 
   // The sections that preemptVagueEntities left out, which no later
   // reference brings back.
   std::vector<SectionChunk *> preempted;
+
+  // By the import that took its name, a pointer to each name of a preempted
+  // group that lies in one read-only section. The group is the image's copy
+  // of constants that the import's DLL holds too.
+  llvm::DenseMap<Symbol *, DefinedLocalImport *> valueCopies;
+
+  // Makes each site that its object states to behave the same with any
+  // definition of a constant refer to the pointer to the image's copy, where
+  // the copy holds what the DLL's does in every word, so that the scan binds
+  // it as a site of the image's own data. Every other site keeps the import,
+  // and with it the one address of the constant. Liveness, which is decided
+  // next, keeps a copy that a site reads.
+  void bindValueOnlySites();
+
+  // The record of each thread-local variable that a link fact states one
+  // for, by the variable, and the image's TLS index, which the records hold
+  // the address of.
+  llvm::MapVector<Symbol *, TlsRecordChunk *> tlsRecords;
+  Symbol *tlsIndex = nullptr;
+  // In the ntposix model, the image's place word, which the records name in
+  // place of the index, once code names it or the scan finds that the image
+  // needs it.
+  TlsPlaceChunk *placeWord = nullptr;
+  // The place word and its key word, which a relaxed record chain reads.
+  Defined *placeSym = nullptr, *keySym = nullptr;
+  // Each thread-local that a GOTTPOFF relocation names, and the word of its
+  // offset from the thread pointer that the link makes, ELF's initial-exec
+  // slot; none where the link knows the offset.
+  llvm::MapVector<Symbol *, Symbol *> tpoffWords;
+  TlsPlaceChunk *getPlaceWord();
+  void selectPlaceWord();
+  void exportTlsUnit();
 
   // A list of DLL exports.
   std::vector<Export> exports;
@@ -254,6 +415,10 @@ public:
   Chunk *edataEnd = nullptr;
 
   Symbol *delayLoadHelper = nullptr;
+  // The runtime's function that an ensure stub calls with its DLL's list.
+  Symbol *delayResolve = nullptr;
+  // The runtime's function that writes the words of COFFLinkerContext::fill.
+  Symbol *fill = nullptr;
   Chunk *tailMergeUnwindInfoChunk = nullptr;
 
   // A list of wrapped symbols.
@@ -276,11 +441,23 @@ public:
   // Returns the definition of sym, a name of a vague entity, where the image
   // keeps the entity: where it is live and no other image's stands for it.
   DefinedRegular *getKeptEntity(Symbol *sym);
+  // The entity that the Images record and the offer table state for sym, of
+  // which d is the copy: once, under the name of its definition.
+  std::optional<llvm::object::COFFLinkImage::Entity>
+  getImageEntity(Symbol *sym, DefinedRegular *d, const VagueEntity &entity);
 
   // Makes a DLL export each vague entity it keeps, and forward each that it
   // imports to the DLL that keeps it. Liveness is decided before, so an offer
-  // keeps nothing.
+  // keeps nothing. Lists each name that the image keeps in its offer table,
+  // and gives a DLL a cell for each that it keeps preemptible.
   void addOffers();
+  OfferTableChunk *offerTable = nullptr;
+  // A DLL's baseline: the names that it exports, of which an entity that the
+  // DLL keeps is no addition.
+  std::optional<llvm::StringSet<>> baseline;
+  // Whether a DLL offers sym, a vague entity that it keeps, since its
+  // baseline, which exports no such name.
+  bool isAddition(Symbol *sym) const;
 
   void addNamedExports();
   void fixupExports();
@@ -305,14 +482,17 @@ public:
   // The copies of exact-match COMDATs that met a bitcode leader, compared with
   // the leader once LTO has compiled it.
   std::vector<std::pair<Symbol *, SectionChunk *>> exactMatchCopies;
+  // A thread-local COMDAT's leader and the file of each of its other copies.
+  std::vector<std::pair<DefinedRegular *, InputFile *>> tlsCopies;
 
   DefinedRegular *loadConfigSym = nullptr;
   uint32_t loadConfigSize = 0;
   void initializeLoadConfig();
 
-  // Under /funcoverride, the X_$fo_bdd$ sections of the objects read, and the
-  // function overrides they make.
-  std::vector<SectionChunk *> functionOverrideDiagrams;
+  // The X_$fo_bdd$ and X_$fo_rvas$ sections of the objects read, under
+  // /funcoverride or in an object that LLVM made for Windows Itanium or
+  // NT-POSIX, and the function overrides they make.
+  std::vector<SectionChunk *> functionOverrideSections;
   std::vector<FunctionOverride *> functionOverrides;
   void initializeFunctionOverrides();
 
@@ -354,6 +534,13 @@ private:
 std::vector<std::string> getSymbolLocations(ObjFile *file, uint32_t symIndex);
 
 StringRef ltrim1(StringRef s, const char *chars);
+
+// The guard variable's name of the vague variable named var, an Itanium
+// special name, where its initialization kind, a LinkFactInitKind, has one.
+std::optional<std::string> getGuardName(StringRef var, uint64_t init);
+
+// An entity's shape, in the words of a diagnostic.
+std::string describeShape(const llvm::object::COFFLinkImage::Entity &e);
 
 } // namespace lld::coff
 

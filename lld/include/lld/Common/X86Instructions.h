@@ -15,10 +15,13 @@
 #ifndef LLD_COMMON_X86INSTRUCTIONS_H
 #define LLD_COMMON_X86INSTRUCTIONS_H
 
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/Support/Endian.h"
 #include "llvm/Support/MathExtras.h"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <optional>
 
 namespace lld::x86 {
@@ -33,6 +36,37 @@ inline constexpr uint8_t nops[][9] = {
     {0x0F, 0x1F, 0x80, 0x00, 0x00, 0x00, 0x00},
     {0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00},
     {0x66, 0x0F, 0x1F, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00}};
+
+// Writes one no-operation of 1 to 15 bytes in the form LLVM's assembler writes
+// it: the table above, a ten-byte form, and more 0x66 prefixes on that.
+inline void writeNop(uint8_t *loc, unsigned size) {
+  assert(size >= 1 && size <= 15);
+  if (size < 10) {
+    memcpy(loc, nops[size - 1], size);
+    return;
+  }
+  memset(loc, 0x66, size - 9);
+  memcpy(loc + size - 9, "\x2e\x0f\x1f\x84\x00\x00\x00\x00\x00", 9);
+}
+
+// Fills size bytes with no-operations of at most longest bytes, as LLVM's
+// assembler fills alignment padding.
+inline void writeNops(uint8_t *loc, size_t size, unsigned longest) {
+  for (unsigned n; size; loc += n, size -= n)
+    writeNop(loc, n = std::min<size_t>(size, longest));
+}
+
+// Returns the length of the no-operation writeNop writes at the start of
+// bytes, or 0 if bytes start with none.
+inline unsigned getNopLength(llvm::ArrayRef<uint8_t> bytes) {
+  uint8_t nop[15];
+  for (unsigned n = std::min<size_t>(bytes.size(), 15); n; --n) {
+    writeNop(nop, n);
+    if (!memcmp(nop, bytes.data(), n))
+      return n;
+  }
+  return 0;
+}
 
 // What an instruction that reads a GOT entry through a RIP-relative operand can
 // become where the entry's value is known at link time.
@@ -150,6 +184,17 @@ inline void relaxMovToImm(uint8_t *loc, bool isRex2) {
   loc[-1] = 0xc0 | loc[-1] >> 3;
 }
 
+// Rewrites "jmp *foo(%rip)", behind the given number of prefix bytes, into
+// "jmp foo" at its first byte, padded with pad to its original end. loc is the
+// address of its 32-bit displacement and val the value relaxGot would write.
+inline void relaxGotJmp(uint8_t *loc, uint64_t val, unsigned prefixes,
+                        uint8_t pad) {
+  uint8_t *insn = loc - 2 - prefixes;
+  insn[0] = 0xe9; // jmp
+  llvm::support::endian::write32le(insn + 1, val + 1 + prefixes);
+  std::fill(insn + 5, loc + 4, pad);
+}
+
 // Rewrites an instruction that classifyGotLoad accepts so that it no longer
 // reads the GOT entry. loc is the address of its 32-bit displacement and val
 // the value to write there; isRex2 says that its prefix is REX2.
@@ -187,9 +232,7 @@ inline void relaxGot(uint8_t *loc, uint64_t val, bool isRex2) {
   // Convert "jmp *foo@GOTPCREL(%rip)" to "jmp foo; nop".
   // jmp doesn't return, so it is fine to use nop here, it is just a stub.
   assert(modRm == 0x25);
-  loc[-2] = 0xe9; // jmp
-  loc[3] = 0x90;  // nop
-  llvm::support::endian::write32le(loc - 1, val + 1);
+  relaxGotJmp(loc, val, 0, 0x90);
 }
 
 // A conditional jump is "70+cc rel8" or "0f 80+cc rel32", where cc is one of

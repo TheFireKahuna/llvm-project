@@ -73,6 +73,7 @@ module LLVM_BinaryFormat {
     requires cplusplus
     umbrella "llvm/BinaryFormat" module * { export * }
     textual header "llvm/BinaryFormat/Dwarf.def"
+    textual header "llvm/BinaryFormat/COFFRelocs/LLVM.def"
     textual header "llvm/BinaryFormat/DXContainerConstants.def"
     textual header "llvm/BinaryFormat/DynamicTags.def"
     textual header "llvm/BinaryFormat/MachO.def"

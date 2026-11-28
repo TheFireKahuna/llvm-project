@@ -281,9 +281,17 @@ protected:
     uint8_t Index = 0;
     bool IndexedRead = false;
     uint8_t ValueOnly = 0;
+    bool ReadsThreadPointer = false;
   };
   /// The current function's fused reads and sites.
   DenseMap<const MachineInstr *, FusedSite> FusedSites;
+  /// The values of record chains that each instruction reads, each with the
+  /// load of the pointer its marker names and its COFF::SiteFactIndex code.
+  struct DerivedRead {
+    const MachineInstr *Load;
+    uint8_t Code;
+  };
+  DenseMap<const MachineInstr *, SmallVector<DerivedRead, 2>> DerivedReads;
 
   /// For dso_local functions, the current $local alias for the function.
   MCSymbol *CurrentFnBeginLocal = nullptr;
@@ -968,11 +976,21 @@ public:
                       function_ref<bool(const MachineInstr &)> Is) const;
 
   /// Gives \p Reader each instruction that reads what \p Def wrote to the
-  /// register of its first operand, on every path from it, and collects the
-  /// debug values that name the register there.
+  /// register of its operand \p DefOp, on every path from it, and collects
+  /// the debug values that name the register there.
   void forEachReader(MachineInstr &Def,
                      SmallVectorImpl<MachineInstr *> &DebugValues,
-                     function_ref<void(MachineInstr &)> Reader) const;
+                     function_ref<void(MachineInstr &)> Reader,
+                     unsigned DefOp = 0) const;
+  /// Finds the instructions that read the values record chains derive, after
+  /// findFusedSites, which \p GetWord serves.
+  void findDerivedReads(
+      function_ref<int(const MachineInstr &, const MachineInstr &)> GetWord);
+  /// Emits the markers of the record chains' values that \p MI reads, with
+  /// the pointer that \p GetPointer gives for the load of each.
+  void emitDerivedReads(
+      const MachineInstr &MI,
+      function_ref<const MCSymbol *(const MachineInstr &)> GetPointer);
 
   /// Finds the current function's fused sites where the object states them,
   /// before any instruction is emitted or described. \p IsPointerLoad says

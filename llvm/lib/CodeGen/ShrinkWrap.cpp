@@ -378,6 +378,9 @@ bool ShrinkWrapImpl::useOrDefCSROrFI(const MachineInstr &MI, RegScavenger *RS,
       return PSV->isJumpTable() || PSV->isConstantPool() || PSV->isGOT();
     return false;
   };
+  // A thread pointer still to be reloaded reads its register's save slot.
+  if (MI.getOpcode() == TargetOpcode::LOAD_THREAD_POINTER)
+    return true;
   // A fault probe's landing is found from the unwind information of the frame
   // it is in.
   if (any_of(MI.memoperands(),

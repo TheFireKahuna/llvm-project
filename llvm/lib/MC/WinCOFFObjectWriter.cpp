@@ -1163,6 +1163,9 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
       Reloc.Data.Type <= COFF::IMAGE_REL_AMD64_REL32_5)
     FixedValue += 4 + Reloc.Data.Type - COFF::IMAGE_REL_AMD64_REL32;
   else if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
+           COFF::isRel32Insn(Reloc.Data.Type))
+    FixedValue += 4 + (Reloc.Data.Type & 15);
+  else if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
            Reloc.Data.Type == COFF::IMAGE_REL_LLVM_BRANCH_TAIL)
     FixedValue += 4;
   else if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
@@ -1176,10 +1179,11 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
             Reloc.Data.Type == COFF::IMAGE_REL_ARM64_REL32) ||
            Reloc.Data.Type == COFF::IMAGE_REL_LLVM_REL32_CALL ||
            (Reloc.Data.Type >= COFF::IMAGE_REL_LLVM_BRANCH32 &&
-            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_MEM_LOAD_CALL) ||
+            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_LEA_OFFSET_REX2) ||
            (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
             (Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ ||
-             Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ_REX2)))
+             Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ_REX2 ||
+             Reloc.Data.Type == COFF::IMAGE_REL_LLVM_GOTTPOFF32)))
     FixedValue += Reloc.Data.Type == COFF::IMAGE_REL_LLVM_JUMP8 ? 1 : 4;
 
   if (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT) {

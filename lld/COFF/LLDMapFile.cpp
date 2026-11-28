@@ -117,7 +117,8 @@ void lld::coff::writeLLDMapFile(const COFFLinkerContext &ctx) {
       if (!sc)
         continue;
 
-      writeHeader(os, sc->getRVA(), sc->getSize(), sc->getAlignment());
+      writeHeader(os, sc->getRVA() + sc->getLeftOut(),
+                  sc->getSize() - sc->getLeftOut(), sc->getAlignment());
       os << indent8 << sc->file->getName() << ":(" << sc->getSectionName()
          << ")\n";
       for (DefinedRegular *sym : sectionSyms[sc])

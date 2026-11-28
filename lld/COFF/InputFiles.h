@@ -10,15 +10,18 @@
 #define LLD_COFF_INPUT_FILES_H
 
 #include "Config.h"
+#include "Relocations.h"
 #include "lld/Common/LLVM.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/BinaryFormat/Magic.h"
 #include "llvm/Object/Archive.h"
 #include "llvm/Object/COFF.h"
 #include "llvm/Support/StringSaver.h"
+#include <atomic>
 #include <memory>
 #include <set>
 #include <vector>
@@ -54,6 +57,7 @@ class Chunk;
 class Defined;
 class DefinedImportData;
 class DefinedImportThunk;
+class DefinedLocalImport;
 class DefinedRegular;
 class ImportThunkChunk;
 class ImportThunkChunkARM64EC;
@@ -115,11 +119,22 @@ public:
   // its @comp.id symbol, bitcode by its triple.
   bool forkObject = false;
 
+  // True if the file states the owned thread-local model in its _TLS_MODEL
+  // key: its thread-locals are the image's template, not the loader's.
+  bool tlsModel = false;
+
+  // True if the assembler of such an object checked its fused relocation
+  // types against its instructions. The link binds only checked fused sites.
+  bool fusedChecked = false;
+
 protected:
   // Applies the link facts of an object's Symbols group, or of bitcode, to
   // the symbols that they name by index, where a null symbol takes none. A
   // fact that is not valid is the error, and then no fact is applied.
-  llvm::Error readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols);
+  // defines says whether the file's definition of the symbol with an index
+  // is one that no other definition of the name replaces.
+  llvm::Error readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols,
+                            llvm::function_ref<bool(uint64_t)> defines);
 };
 
 // .lib or .a file.
@@ -153,6 +168,27 @@ struct SwitchTable {
   DefinedRegular *branch, *table, *base, *load;
   uint64_t count;
   uint8_t type, flags;
+};
+
+// The spans that the link records state of the fields of one section over
+// one code section, llvm::COFF::SpanKind, as the records hold them: each a
+// field that holds the distance between two points of the code. They were
+// checked when the file was read.
+struct SpanList {
+  SectionChunk *field, *target;
+  StringRef spans;
+};
+
+// A fact of the site of a relocation of a section that an object states: an
+// llvm::COFF::SiteFact and its value.
+struct RelocFact {
+  const SectionChunk *chunk;
+  uint32_t reloc;
+  uint32_t fact;
+  uint64_t value;
+  bool operator==(const RelocFact &o) const {
+    return reloc == o.reloc && fact == o.fact && value == o.value;
+  }
 };
 
 // .obj or .o file. This may be a member of an archive file.
@@ -230,12 +266,59 @@ public:
 
   const coff_section *addrsigSec = nullptr;
 
+  // The size that the object states for c, a COMDAT section of its own, which
+  // an assembler that pads its sections keeps apart from the padded size.
+  uint32_t getComdatLength(const SectionChunk *c);
+
   const coff_section *linkRecordsSec = nullptr;
 
   // The dispatches through jump tables that the link records state and whose
   // branches \p sc holds. Kept in the order of the sections of their branches.
   ArrayRef<SwitchTable> getSwitchTables(const SectionChunk *sc) const;
   std::vector<SwitchTable> switchTables;
+
+  // The lists of spans that the link records state for the fields of \p sc.
+  // Kept in the order of the sections of their fields, the first list of
+  // each section by its number in spanStarts.
+  ArrayRef<SpanList> getSpans(const SectionChunk *sc) const;
+  std::vector<SpanList> spanLists;
+  std::vector<uint32_t> spanStarts;
+
+  // The facts that the link records state of the sites of \p sc, in the order
+  // of its relocations, and the value of one fact of one relocation, if the
+  // records state it. Kept in the order of the sections, and only where the
+  // assembler checked the object's fused sites.
+  ArrayRef<RelocFact> getSiteFacts(const SectionChunk *sc) const;
+  std::optional<uint64_t> getSiteFact(const SectionChunk *sc, size_t reloc,
+                                      uint32_t fact) const;
+  std::vector<RelocFact> siteFacts;
+
+  // Each section that the link records list with loops a cache line is to
+  // keep, and its loops whose offsets the link decides, as the record has
+  // them.
+  llvm::DenseMap<const SectionChunk *, StringRef> lineLoops;
+
+  // The relocations of each section whose instructions the link rewrites or
+  // may resize, as scanRelocations gives them.
+  llvm::DenseMap<const SectionChunk *, ScannedSection> relocations;
+
+  // The records of the symbols of this file's resizable sections, which are
+  // the symbols' own, until relaxation anchors them, and the offsets of those
+  // of type prefixes, __cfi_<f>.
+  SmallVector<std::pair<SectionChunk *, llvm::object::coff_symbol_generic *>, 0>
+      movingSymbols;
+  SmallVector<std::pair<SectionChunk *, uint32_t>, 0> typePrefixes;
+
+  // The relocations, by section and index, whose values depend on the layout
+  // of resizable code and might not fit their fields once it is resized.
+  SmallVector<std::pair<SectionChunk *, uint32_t>, 0> fitChecks;
+
+  // The indexes of the symbols that GOTTPOFF relocations name.
+  SmallVector<uint32_t, 0> gotTpoffIndexes;
+
+  // How this object's live sections use each local import pointer, as the
+  // scan finds it, in the order of their first reference.
+  std::vector<std::pair<DefinedLocalImport *, uint8_t>> localImportUses;
 
   const coff_section *callgraphSec = nullptr;
 
@@ -387,7 +470,6 @@ public:
 class ImportFile : public InputFile {
 public:
   explicit ImportFile(COFFLinkerContext &ctx, MemoryBufferRef m);
-
   static bool classof(const InputFile *f) { return f->kind() == ImportKind; }
   MachineTypes getMachineType() const override { return getMachineType(mb); }
   static MachineTypes getMachineType(MemoryBufferRef m);
@@ -395,14 +477,35 @@ public:
   bool isEC() const { return impECSym != nullptr; }
   // Whether a definition in the link beats this import for imp, its pointer.
   bool yieldsToDefinition(Symbol *imp) const;
+  // An import of name from dll as an import library's short member states
+  // it, with exportAs the name it imports by where the name type says so.
+  static ImportFile *create(COFFLinkerContext &ctx, MachineTypes machine,
+                            StringRef name, StringRef dll,
+                            llvm::COFF::ImportType type,
+                            llvm::COFF::ImportNameType nameType,
+                            StringRef exportAs = "", uint16_t hint = 0);
+  // Gives the import of a function a thunk that no symbol of the table
+  // names: that of an image which defines the function and yet calls the
+  // DLL's.
+  void makeUnnamedThunk();
 
   DefinedImportData *impSym = nullptr;
   Defined *thunkSym = nullptr;
+  // What a call or jump through the pointer of an overridable default
+  // reaches, while the pointer holds the function's address: in an
+  // executable what the default's slot names, and in a DLL the pointer of
+  // a second import of a default that forwards to another.
+  Defined *replacement = nullptr;
   ImportThunkChunkARM64EC *impchkThunk = nullptr;
   ImportFile *hybridFile = nullptr;
   std::string dllName;
   // Whether the link delay-loads the DLL.
   bool delayLoaded = false;
+  // Who binds the import: the loader, or the image's fill by name, for an
+  // import from the executable that loads the image, whatever its file name,
+  // a weak import that may be absent, or both. The fill writes the pointer
+  // of one it binds, a word of .sealed in place of the entry.
+  enum Binding : uint8_t { Loader, Host, Weak, HostWeak } binding = Loader;
 
 private:
   void parse() override;
@@ -412,6 +515,32 @@ public:
   StringRef externalName;
   const coff_import_header *hdr;
   Chunk *location = nullptr;
+  // Where the pointer is in location, and whether that is an in-place slot,
+  // the import having no entry in an import address table of its DLL.
+  uint32_t offset = 0;
+  bool slotOnly = false;
+  // Whether an object lists the function as one whose address it observes,
+  // and once the image is scanned, whether that address is its DLL's own
+  // though the DLL is delay-loaded.
+  bool observed = false;
+  // The hint and name that the import's lookup entries give the loader; none
+  // for an import by ordinal.
+  Chunk *hintName = nullptr;
+
+  // How roots and live sections use the import. Its thunk: as the address in
+  // a word that the loader binds in place, or that code takes and the scan
+  // loads from the import's pointer instead, both of which get the function's
+  // own; or otherwise, as Thunk. A thunk with no other reference is left
+  // out. Its pointer: as a Read of all of it, which any word that holds the
+  // address serves, or otherwise, which Keeps its entry.
+  enum Use : uint8_t {
+    InPlace = 1,
+    Loaded = 2,
+    Thunk = 4,
+    Read = 8,
+    Keep = 16
+  };
+  std::atomic<uint8_t> uses = 0;
 
   // Auxiliary IAT symbols and chunks on ARM64EC.
   DefinedImportData *impECSym = nullptr;

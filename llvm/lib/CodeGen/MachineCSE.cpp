@@ -426,6 +426,11 @@ bool MachineCSEImpl::isCSECandidate(MachineInstr *MI) {
   if (MI->getOpcode() == TargetOpcode::LOAD_STACK_GUARD)
     return false;
 
+  // A thread pointer is read where it is used, from its register or its save
+  // slot, so no register holds it in between.
+  if (MI->getOpcode() == TargetOpcode::LOAD_THREAD_POINTER)
+    return false;
+
   return true;
 }
 

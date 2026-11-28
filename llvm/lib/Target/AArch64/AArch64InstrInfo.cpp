@@ -2573,6 +2573,40 @@ bool AArch64InstrInfo::removeCmpToZeroOrOne(
   return true;
 }
 
+void AArch64InstrInfo::insertThreadPointerCheck(MachineBasicBlock &MBB,
+                                                MachineBasicBlock::iterator MI,
+                                                Register Reg) const {
+  // The check needs a register no value lives in: a call's scratch or another
+  // caller-saved one, or else x16 kept on the stack around it.
+  LiveRegUnits Live(RI);
+  Live.addLiveOuts(MBB);
+  for (MachineInstr &I : reverse(make_range(MI, MBB.end())))
+    Live.stepBackward(I);
+  const MachineRegisterInfo &MRI = MBB.getParent()->getRegInfo();
+  static constexpr MCPhysReg Scratch[] = {
+      AArch64::X16, AArch64::X17, AArch64::X9,  AArch64::X10, AArch64::X11,
+      AArch64::X12, AArch64::X13, AArch64::X14, AArch64::X15};
+  const MCPhysReg *Free = find_if(Scratch, [&](MCPhysReg R) {
+    return R != Reg && Live.available(R) && !MRI.isReserved(R);
+  });
+  DebugLoc DL = MI->getDebugLoc();
+  if (Free != std::end(Scratch)) {
+    BuildMI(MBB, MI, DL, get(AArch64::TP_CHECK), *Free).addReg(Reg);
+    return;
+  }
+  BuildMI(MBB, MI, DL, get(AArch64::STRXpre))
+      .addReg(AArch64::SP, RegState::Define)
+      .addReg(AArch64::X16)
+      .addReg(AArch64::SP)
+      .addImm(-16);
+  BuildMI(MBB, MI, DL, get(AArch64::TP_CHECK), AArch64::X16).addReg(Reg);
+  BuildMI(MBB, MI, DL, get(AArch64::LDRXpost))
+      .addReg(AArch64::SP, RegState::Define)
+      .addReg(AArch64::X16, RegState::Define)
+      .addReg(AArch64::SP)
+      .addImm(16);
+}
+
 bool AArch64InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   if (MI.getOpcode() != TargetOpcode::LOAD_STACK_GUARD &&
       MI.getOpcode() != AArch64::CATCHRET &&

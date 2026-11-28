@@ -60,6 +60,11 @@ defm allow_multiple_definition: B<"allow-multiple-definition",
     "Allow multiple definitions",
     "Do not allow multiple definitions (default)">;
 def Bdynamic: F<"Bdynamic">, HelpText<"Link against shared libraries">;
+def Bno_symbolic: F<"Bno-symbolic">;
+def Bsymbolic: F<"Bsymbolic">;
+def Bsymbolic_functions: F<"Bsymbolic-functions">;
+def Bsymbolic_non_weak: F<"Bsymbolic-non-weak">;
+def Bsymbolic_non_weak_functions: F<"Bsymbolic-non-weak-functions">;
 def Bstatic: F<"Bstatic">, HelpText<"Do not link against shared libraries">;
 defm demangle: B<"demangle",
     "Demangle symbol names (default)",
@@ -84,6 +89,17 @@ defm version_script: Eq<"version-script", "Read a version script">;
 defm exclude_libs: Eq<"exclude-libs",
     "Exclude static libraries from automatic export">,
     MetaVarName<"<lib[,lib,...]|ALL>">;
+defm allow_vague_duplicate: Eq<"allow-vague-duplicate",
+    "Accept that images keep their own copies of a vague entity, or every one an image keeps">,
+    MetaVarName<"<entity|@dll>">;
+defm ignore_offers: Eq<"ignore-offers",
+    "Keep the image's own copies of the vague entities that a DLL offers">,
+    MetaVarName<"<dll>">;
+def ignore_address_equality: F<"ignore-function-address-equality">,
+    HelpText<"Let the objects of other producers keep the image's own address of each function">;
+def ignore_address_equality_eq: J<"ignore-function-address-equality=">,
+    HelpText<"Let that object or archive keep the image's own address of each function">,
+    MetaVarName<"<file>">;
 defm exclude_symbols: Eq<"exclude-symbols",
     "Exclude symbols from automatic export">, MetaVarName<"<symbol[,symbol,...]>">;
 def export_all_symbols: F<"export-all-symbols">,

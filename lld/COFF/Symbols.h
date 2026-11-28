@@ -110,7 +110,7 @@ protected:
         forkReferenced(false), strongImport(false), pendingArchiveLoad(false),
         isGCRoot(false), isRuntimePseudoReloc(false), deferUndefined(false),
         canInline(true), isWeak(false), weakKind(Alias), typePrefix(0),
-        visibility(0), nameSize(n.size()),
+        visibility(0), addressImported(false), nameSize(n.size()),
         nameData(n.empty() ? nullptr : n.data()) {
     assert((!n.empty() || k <= LastDefinedCOFFKind) &&
            "If the name is empty, the Symbol must be a DefinedCOFF.");
@@ -182,6 +182,13 @@ public:
   // is unique where every copy of it is.
   unsigned visibility : 2;
 
+  // True if this is a vague entity that the image defines and a DLL the
+  // image imports from offers, whose symbol stays the definition: a function,
+  // whose address is the DLL's function's, which the entity's owner imports,
+  // so that only calls and jumps reach the image's own copy; or a constant in
+  // bitcode, until LTO has compiled it.
+  unsigned addressImported : 1;
+
 protected:
   // Symbol name length. Assume symbol lengths fit in a 32-bit integer.
   uint32_t nameSize;
@@ -212,6 +219,7 @@ public:
 // as a decomposed StringRef.
 class DefinedCOFF : public Defined {
   friend Symbol;
+  friend ObjFile;
 
 public:
   DefinedCOFF(Kind k, InputFile *f, StringRef n, const coff_symbol_generic *s)
@@ -418,13 +426,20 @@ public:
     return s->kind() == DefinedImportDataKind;
   }
 
-  uint64_t getRVA() { return getChunk()->getRVA(); }
+  uint64_t getRVA() { return getChunk()->getRVA() + file->offset; }
   Chunk *getChunk() { return location; }
   void setLocation(Chunk *addressTable) { location = addressTable; }
 
   StringRef getDLLName() { return file->dllName; }
   StringRef getExternalName() { return file->externalName; }
   uint16_t getOrdinal() { return file->hdr->OrdinalHint; }
+
+  // The entry that names the import in a lookup table, which a word that the
+  // loader binds in place holds too. It is never zero.
+  uint64_t getLookupEntry() {
+    return file->hintName ? file->hintName->getRVA()
+                          : (1ULL << 63) | getOrdinal();
+  }
 
   ImportFile *file;
   Chunk *&location;

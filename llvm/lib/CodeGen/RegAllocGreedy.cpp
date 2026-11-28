@@ -55,6 +55,7 @@
 #include "llvm/CodeGen/SpillPlacement.h"
 #include "llvm/CodeGen/Spiller.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
@@ -661,11 +662,24 @@ void RAGreedy::evictInterference(const LiveInterval &VirtReg,
   }
 }
 
+/// Whether \p Reg holds only the thread pointer, \p PhysReg's value on entry,
+/// which leaves \p PhysReg unmodified wherever it holds it there.
+static bool isThreadPointerOf(const MachineFunction &MF, Register Reg,
+                              MCRegister PhysReg) {
+  return PhysReg == MF.getSubtarget()
+                        .getTargetLowering()
+                        ->getThreadPointerRegister() &&
+         all_of(MF.getRegInfo().def_instructions(Reg),
+                [](const MachineInstr &MI) {
+                  return MI.getOpcode() == TargetOpcode::LOAD_THREAD_POINTER;
+                });
+}
+
 MCRegister
 RegAllocEvictionAdvisor::getUnusedCalleeSavedReg(const LiveInterval &VirtReg,
                                                  MCRegister PhysReg) const {
   // A callee-saved register is unused while it holds nothing but its own
-  // incoming value, which leaves it unmodified.
+  // value on entry.
   auto IsUnusedCSR = [&](MCRegUnit Unit) {
     MCRegister CSR = RegClassInfo.getCalleeSavedAlias(Unit);
     if (!CSR)
@@ -674,7 +688,7 @@ RegAllocEvictionAdvisor::getUnusedCalleeSavedReg(const LiveInterval &VirtReg,
       for (LiveIntervalUnion::SegmentIter SI =
                Matrix->getLiveUnions()[static_cast<unsigned>(U)].begin();
            SI.valid(); ++SI)
-        if (MRI->getLiveInPhysReg(SI.value()->reg()) != CSR)
+        if (!isThreadPointerOf(MF, SI.value()->reg(), CSR))
           return MCRegister();
     return CSR;
   };
@@ -2852,11 +2866,11 @@ MCRegister RAGreedy::selectOrSplitImpl(const LiveInterval &VirtReg,
     // When NewVRegs is not empty, we may have made decisions such as evicting
     // a virtual register, go with the earlier decisions and use the physical
     // register.
-    // A live-in callee-saved register's own value keeps it unmodified, so
-    // holding it there costs no save.
+    // The thread pointer in its own register leaves it unmodified, so holding
+    // it there costs no save.
     if (CSRCost.getFrequency() &&
         EvictAdvisor->getUnusedCalleeSavedReg(VirtReg, PhysReg) &&
-        MRI->getLiveInPhysReg(VirtReg.reg()) != PhysReg && NewVRegs.empty()) {
+        !isThreadPointerOf(*MF, VirtReg.reg(), PhysReg) && NewVRegs.empty()) {
       MCRegister CSRReg = tryAssignCSRFirstTime(VirtReg, Order, PhysReg,
                                                 CostPerUseLimit, NewVRegs);
       if (CSRReg || !NewVRegs.empty())

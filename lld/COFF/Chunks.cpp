@@ -11,8 +11,10 @@
 #include "InputFiles.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
+#include "Walker.h"
 #include "Writer.h"
 #include "lld/Common/AArch64Instructions.h"
+#include "lld/Common/X86Instructions.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/Twine.h"
@@ -24,6 +26,8 @@
 #include "llvm/Support/EndianStream.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/Support/xxhash.h"
+#include "llvm/Transforms/Utils/KCFIHash.h"
 #include <algorithm>
 #include <iterator>
 
@@ -35,10 +39,10 @@ using namespace llvm::COFF;
 using llvm::support::ulittle32_t;
 
 namespace lld::coff {
-
 SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
-    : Chunk(k), file(f), header(h), resizable(false), movable(false),
-      keepDistinct(false), guardSuppressed(false), repl(this) {
+    : Chunk(k), file(f), header(h), keepUnique(false), resizable(false),
+      movable(false), compacts(false), keepDistinct(false),
+      guardSuppressed(false), repl(this) {
   // Initialize relocs.
   if (file)
     setRelocs(file->getCOFFObj()->getRelocations(header));
@@ -106,11 +110,46 @@ static bool checkSecRel(const SectionChunk *sec, OutputSection *os) {
   return false;
 }
 
-// A thread-local's offset is from the first TLS group, whatever output section
-// holds it; any other target's is from its output section.
+bool isSecRel(Triple::ArchType arch, uint16_t type) {
+  switch (arch) {
+  case Triple::x86:
+    return type == IMAGE_REL_I386_SECREL || type == IMAGE_REL_I386_SECREL7;
+  case Triple::x86_64:
+    return type == IMAGE_REL_AMD64_SECREL || type == IMAGE_REL_AMD64_SECREL7;
+  case Triple::aarch64:
+    return (type >= IMAGE_REL_ARM64_SECREL &&
+            type <= IMAGE_REL_ARM64_SECREL_LOW12L) ||
+           type == IMAGE_REL_LLVM_DTPOFF_LOW12A ||
+           type == IMAGE_REL_LLVM_DTPOFF_LOW12L;
+  default:
+    return false;
+  }
+}
+
+// A thread-local of the loader's template counts from the template's start,
+// whatever output section holds it; any other target from its output section,
+// which for the image's template is the template.
 static uint64_t getSecRel(const SectionChunk *sec, OutputSection *os,
                           uint64_t s) {
-  return sec->file->symtab.ctx.tlsOffset(s).value_or(s - os->getRVA());
+  return sec->file->symtab.ctx.tlsOffset(s, /*loader=*/true)
+      .value_or(s - os->getRVA());
+}
+
+// Reports, once for each, a thread-local of one template that code of the
+// other model reaches, how being the second model's.
+static void reportTlsModelMismatch(COFFLinkerContext &ctx, Symbol *sym,
+                                   bool loader, InputFile *from,
+                                   const Twine &how) {
+  {
+    std::lock_guard<std::mutex> lock(ctx.tlsMismatchMutex);
+    if (!ctx.tlsMismatched.insert(sym).second)
+      return;
+  }
+  auto *d = dyn_cast<DefinedRegular>(sym);
+  Err(ctx) << "thread-local model mismatch: " << toString(ctx, *sym)
+           << "\n>>> defined in the " << (loader ? "loader's" : "image's")
+           << " template by " << (d ? toString(d->getFile()) : "the linker")
+           << "\n>>> " << how << " by " << from;
 }
 
 static void applySecRel(const SectionChunk *sec, uint8_t *off,
@@ -160,12 +199,10 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_LLVM_MEM_CALL:
   case IMAGE_REL_LLVM_MEM_JUMP:
   case IMAGE_REL_LLVM_MEM_JUMP_P1:
-  case IMAGE_REL_LLVM_MEM_JUMP_TAIL:
-  case IMAGE_REL_LLVM_MEM_LOAD:
-  case IMAGE_REL_LLVM_MEM_LOAD_REX2:
   case IMAGE_REL_LLVM_LEA:
   case IMAGE_REL_LLVM_LEA_OFFSET:
   case IMAGE_REL_LLVM_LEA_NARROW:
+  case IMAGE_REL_LLVM_GOTTPOFF32:
   case IMAGE_REL_AMD64_REL32:    return addRel32(off, s - p - 4);
   // A fused test's field is before the byte of its immediate.
   case IMAGE_REL_LLVM_FUSED_TEST:
@@ -185,11 +222,17 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
     *off = v;
     break;
   }
-  // A fused read's field holds how its load is disposed of, not an addend.
+  // The field of a load of a pointer holds no addend: it says whether the
+  // flags are dead at the load, and a fused read's how it is disposed of. That
+  // of a jmp that may be deleted says whether a jcc jumps over it.
+  case IMAGE_REL_LLVM_MEM_JUMP_TAIL:
+  case IMAGE_REL_LLVM_MEM_LOAD:
+  case IMAGE_REL_LLVM_MEM_LOAD_REX2:
+  case IMAGE_REL_LLVM_MEM_LOAD_CALL:
   case IMAGE_REL_LLVM_FUSED_READ:
   case IMAGE_REL_LLVM_FUSED_READ_REX2:
     write32le(off, s - p - 4);
-    break;
+    return isInt<32>(int64_t(s - p - 4));
   // s is the offset from the thread pointer, which a displacement holds.
   case IMAGE_REL_LLVM_TPOFF32:
     if (s > INT32_MAX)
@@ -198,10 +241,10 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
     break;
   case IMAGE_REL_AMD64_SREL32:
   case IMAGE_REL_AMD64_EHANDLER:
-  case IMAGE_REL_LLVM_FUSED_CALL:
-  case IMAGE_REL_LLVM_FUSED_JUMP:
   case IMAGE_REL_LLVM_FUSED_ACCESS:
   case IMAGE_REL_LLVM_FUSED_INDEX:
+  case IMAGE_REL_LLVM_FUSED_BLOCK:
+  case IMAGE_REL_LLVM_FUSED_TEST_REG:
     break;
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +
@@ -340,7 +383,7 @@ void applyArm64Imm(uint8_t *off, uint64_t imm, uint32_t rangeLimit) {
 // Even if larger loads/stores have a larger range, limit the
 // effective offset to 12 bit, since it is intended to be a
 // page offset.
-static uint32_t getArm64LdrScale(uint32_t insn) {
+uint32_t getArm64LdrScale(uint32_t insn) {
   uint32_t size = insn >> 30;
   // 0x04000000 indicates SIMD/FP registers
   // 0x00800000 indicates 128 bit
@@ -349,7 +392,137 @@ static uint32_t getArm64LdrScale(uint32_t insn) {
   return size;
 }
 
-static void applyArm64Ldr(uint8_t *off, uint64_t imm) {
+int64_t getPageOffsetImm(uint32_t insn, uint16_t type) {
+  uint32_t imm = (insn >> 10) & 0xfff;
+  if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L)
+    return SignExtend64<12>(imm << getArm64LdrScale(insn));
+  return imm;
+}
+
+// The length of the LEB128 field at the start of field, or 0 if it does not
+// end in it.
+static unsigned getLEB128Size(ArrayRef<uint8_t> field) {
+  const uint8_t *last =
+      llvm::find_if(field, [](uint8_t c) { return !(c & 0x80); });
+  return last == field.end() ? 0 : last - field.begin() + 1;
+}
+
+bool spanFits(uint16_t type, int64_t v, ArrayRef<uint8_t> field,
+              bool &aligned) {
+  aligned = true;
+  switch (type) {
+  case IMAGE_REL_LLVM_SSPAN8:
+    return isInt<8>(v);
+  case IMAGE_REL_LLVM_USPAN8:
+    return isUInt<8>(v);
+  case IMAGE_REL_LLVM_SSPAN16:
+    return isInt<16>(v);
+  case IMAGE_REL_LLVM_USPAN16:
+    return isUInt<16>(v);
+  case IMAGE_REL_LLVM_SSPAN32:
+    return isInt<32>(v);
+  case IMAGE_REL_LLVM_USPAN8_W:
+    aligned = !(v & 3);
+    return isUInt<10>(v);
+  case IMAGE_REL_LLVM_USPAN16_W:
+    aligned = !(v & 3);
+    return isUInt<18>(v);
+  case IMAGE_REL_LLVM_SSPAN_WORDS18:
+    aligned = !(v & 3);
+    return isUInt<20>(v);
+  // A LEB128 keeps its assembled length.
+  case IMAGE_REL_LLVM_SSPAN_ULEB: {
+    unsigned size = getLEB128Size(field);
+    return size && v >= 0 && isUIntN(7 * size, v);
+  }
+  case IMAGE_REL_LLVM_SSPAN_SLEB: {
+    unsigned size = getLEB128Size(field);
+    return size && isIntN(7 * size, v);
+  }
+  case IMAGE_REL_LLVM_SSPAN_EPILOGV2:
+    return isUInt<12>(v);
+  // A page offset is a byte offset that stays in the page.
+  case IMAGE_REL_ARM64_PAGEOFFSET_12A:
+    return isUInt<12>(v);
+  case IMAGE_REL_ARM64_PAGEOFFSET_12L:
+    aligned = !(v & ((1 << getArm64LdrScale(read32le(field.data()))) - 1));
+    return isUInt<12>(v);
+  default:
+    return true;
+  }
+}
+
+int64_t readSpan(uint16_t type, ArrayRef<uint8_t> field) {
+  switch (type) {
+  case IMAGE_REL_LLVM_SSPAN8:
+    return int8_t(field[0]);
+  case IMAGE_REL_LLVM_USPAN8:
+    return field[0];
+  case IMAGE_REL_LLVM_SSPAN16:
+    return int16_t(read16le(field.data()));
+  case IMAGE_REL_LLVM_USPAN16:
+    return read16le(field.data());
+  case IMAGE_REL_LLVM_SSPAN64:
+    return read64le(field.data());
+  case IMAGE_REL_LLVM_SSPAN_ULEB:
+    return decodeULEB128(field.data(), nullptr, field.end());
+  case IMAGE_REL_LLVM_SSPAN_SLEB:
+    return decodeSLEB128(field.data(), nullptr, field.end());
+  case IMAGE_REL_LLVM_SSPAN_EPILOGV2:
+    return field[0] | (field[1] >> 4) << 8;
+  default:
+    return int32_t(read32le(field.data()));
+  }
+}
+
+void writeSpan(uint16_t type, uint8_t *off, int64_t v,
+               ArrayRef<uint8_t> field) {
+  uint32_t insn = read32le(off);
+  switch (type) {
+  case IMAGE_REL_AMD64_SSPAN32:
+  case IMAGE_REL_LLVM_SSPAN32:
+    write32le(off, v);
+    return;
+  case IMAGE_REL_LLVM_SSPAN8:
+  case IMAGE_REL_LLVM_USPAN8:
+    *off = v;
+    return;
+  case IMAGE_REL_LLVM_SSPAN16:
+  case IMAGE_REL_LLVM_USPAN16:
+    write16le(off, v);
+    return;
+  // The word-scaled spans count instructions.
+  case IMAGE_REL_LLVM_USPAN8_W:
+    *off = v >> 2;
+    return;
+  case IMAGE_REL_LLVM_USPAN16_W:
+    write16le(off, v >> 2);
+    return;
+  case IMAGE_REL_LLVM_SSPAN_WORDS18:
+    write32le(off, (insn & ~0x3ffff) | v >> 2);
+    return;
+  case IMAGE_REL_LLVM_SSPAN64:
+    write64le(off, v);
+    return;
+  case IMAGE_REL_LLVM_SSPAN_ULEB:
+    encodeULEB128(v, off, getLEB128Size(field));
+    return;
+  case IMAGE_REL_LLVM_SSPAN_SLEB:
+    encodeSLEB128(v, off, getLEB128Size(field));
+    return;
+  // The offset's low byte is the unwind code's first byte, and its high
+  // four bits are the top of the second.
+  case IMAGE_REL_LLVM_SSPAN_EPILOGV2:
+    off[0] = v;
+    off[1] = (off[1] & 0xf) | (v >> 8) << 4;
+    return;
+  }
+  uint32_t scale =
+      type == IMAGE_REL_ARM64_PAGEOFFSET_12L ? getArm64LdrScale(insn) : 0;
+  write32le(off, (insn & ~(0xfff << 10)) | (v >> scale) << 10);
+}
+
+void applyArm64Ldr(uint8_t *off, uint64_t imm) {
   uint32_t size = getArm64LdrScale(read32le(off));
   if ((imm & ((1 << size) - 1)) != 0)
     error("misaligned ldr/str offset");
@@ -407,10 +580,12 @@ bool SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
                                  uint64_t s, uint64_t p,
                                  uint64_t imageBase) const {
   switch (type) {
+  case IMAGE_REL_LLVM_GOTTPOFF_PAGE21:
   case IMAGE_REL_ARM64_PAGEBASE_REL21: applyArm64Addr(off, s, p, 12); break;
   case IMAGE_REL_ARM64_REL21:          applyArm64Addr(off, s, p, 0); break;
   case IMAGE_REL_ARM64_PAGEOFFSET_12A: applyArm64Imm(off, s & 0xfff, 0); break;
   case IMAGE_REL_LLVM_FUSED_READ:
+  case IMAGE_REL_LLVM_GOTTPOFF_LOW12L:
   case IMAGE_REL_ARM64_PAGEOFFSET_12L: applyArm64Ldr(off, s & 0xfff); break;
   case IMAGE_REL_LLVM_BRANCH_TAIL:
   case IMAGE_REL_ARM64_BRANCH26:       applyArm64Branch26(off, s - p); break;
@@ -465,16 +640,38 @@ bool SectionChunk::applyRelARM64(uint8_t *off, uint16_t type, OutputSection *os,
     write32le(off, (insn & ~(0xfff << 10)) | v << 10);
     break;
   }
+  // The offset from the image's base, or from the thread pointer, plus the
+  // addend in the field, checked to fit as ELF's DTPREL_LO12 and TPREL_LO12.
+  case IMAGE_REL_LLVM_DTPOFF_LOW12A:
+  case IMAGE_REL_LLVM_DTPOFF_LOW12L:
+    if (!checkSecRel(this, os))
+      break;
+    s = getSecRel(this, os, s);
+    [[fallthrough]];
   case IMAGE_REL_LLVM_TPOFF_LOW12A:
+  case IMAGE_REL_LLVM_TPOFF_LOW12L: {
+    uint32_t insn = read32le(off);
+    bool load = type == IMAGE_REL_LLVM_DTPOFF_LOW12L ||
+                type == IMAGE_REL_LLVM_TPOFF_LOW12L;
+    uint32_t scale = load ? getArm64LdrScale(insn) : 0;
+    if (s + (((insn >> 10) & 0xfff) << scale) > 0xfff)
+      return false;
+    load ? applyArm64Ldr(off, s) : applyArm64Imm(off, s, 0);
+    break;
+  }
+  case IMAGE_REL_LLVM_TPOFF_LOW12A_NC:
     applyArm64Imm(off, s & 0xfff, 0);
     break;
-  case IMAGE_REL_LLVM_TPOFF_LOW12L:
+  case IMAGE_REL_LLVM_TPOFF_LOW12L_NC:
     applyArm64Ldr(off, s & 0xfff);
     break;
   case IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL:
   case IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL:
+  case IMAGE_REL_LLVM_FUSED_INDEX:
+  case IMAGE_REL_LLVM_FUSED_BLOCK:
   case IMAGE_REL_LLVM_FUSED_CALL:
   case IMAGE_REL_LLVM_FUSED_JUMP:
+  case IMAGE_REL_LLVM_FUSED_JUMP_TAIL:
   case IMAGE_REL_LLVM_FUSED_TEST:
     break;
   default:
@@ -562,10 +759,12 @@ static void maybeReportRelocationToDiscarded(const SectionChunk *fromChunk,
 void SectionChunk::writeTo(uint8_t *buf) const {
   if (!hasData)
     return;
+  if (ScannedSection *s = getScanned())
+    return writeScanned(*this, buf, *s);
   // Copy section contents from source object file to output file.
-  ArrayRef<uint8_t> a = getContents();
+  ArrayRef<uint8_t> a = getContents().drop_front(getLeftOut());
   if (!a.empty())
-    memcpy(buf, a.data(), a.size());
+    memcpy(buf + getLeftOut(), a.data(), a.size());
 
   // Apply relocations.
   size_t inputSize = getSize();
@@ -578,9 +777,9 @@ void SectionChunk::writeTo(uint8_t *buf) const {
       error("relocation points beyond the end of its parent section");
       continue;
     }
-
-    applyRelocation(buf + rel.VirtualAddress, rel);
+    applyRelocation(buf + rel.VirtualAddress, rel, rel.VirtualAddress, nullptr);
   }
+  writeSpans(*this, buf);
 }
 
 bool SectionChunk::isPair(uint16_t type) const {
@@ -632,6 +831,10 @@ const coff_relocation *SectionChunk::getPair(const coff_relocation &rel) const {
   return rel.VirtualAddress == next->VirtualAddress ? next : nullptr;
 }
 
+Symbol *SectionChunk::getTarget(size_t i, const ScannedSection *s) const {
+  return s ? s->relocs[i].sym : getRelocTarget(getRelocs()[i]);
+}
+
 Symbol *SectionChunk::getRelocTarget(const coff_relocation &rel) const {
   if (relocationNamesNoSymbol(rel.Type) ||
       (isPair(rel.Type) && !file->forkObject))
@@ -642,8 +845,9 @@ Symbol *SectionChunk::getRelocTarget(const coff_relocation &rel) const {
 // Returns whether a relocation of the given type at off in sc, naming a
 // function override, takes the stub rather than the body: debug info and
 // unwind data describe the body, an ARM64 BRANCH26 is a site, which branches
-// to the default body as linked, and an addend points into the body. A fused
-// read's field on x86-64 holds no addend, and a JUMP8's is one byte.
+// to the default body as linked, and an addend points into the body. The
+// field of a load of a pointer on x86-64 holds no addend, and a JUMP8's is
+// one byte.
 static bool referencesStub(const SectionChunk *sc, uint16_t type,
                            const uint8_t *off) {
   StringRef name = sc->getSectionName();
@@ -651,7 +855,10 @@ static bool referencesStub(const SectionChunk *sc, uint16_t type,
       name.starts_with(".xdata"))
     return false;
   if (sc->getArch() != Triple::aarch64)
-    return type == IMAGE_REL_LLVM_FUSED_READ ||
+    return type == IMAGE_REL_LLVM_MEM_LOAD ||
+           type == IMAGE_REL_LLVM_MEM_LOAD_REX2 ||
+           type == IMAGE_REL_LLVM_MEM_LOAD_CALL ||
+           type == IMAGE_REL_LLVM_FUSED_READ ||
            type == IMAGE_REL_LLVM_FUSED_READ_REX2 ||
            (type == IMAGE_REL_AMD64_ADDR64 ? read64le(off)
             : type == IMAGE_REL_LLVM_JUMP8 ? *off
@@ -678,56 +885,18 @@ static bool referencesStub(const SectionChunk *sc, uint16_t type,
   }
 }
 
-void SectionChunk::applyRelocation(uint8_t *off,
-                                   const coff_relocation &rel) const {
+void SectionChunk::applyRelocation(uint8_t *off, const coff_relocation &rel,
+                                   uint32_t offset, const Relocation *r) const {
   // ABSOLUTE writes nothing; a PAIR is applied with the relocation before it.
+  // The scan rewrites a TLS_SCALE site, which only an object that LLVM made
+  // for Windows Itanium or NT-POSIX may hold.
   COFFLinkerContext &ctx = file->symtab.ctx;
   if (relocationNamesNoSymbol(rel.Type)) {
-    if (rel.Type != IMAGE_REL_LLVM_TLS_SCALE)
-      return;
-    // The scale site forms the image's thread-local base in one register, and
-    // LLD writes the image's scale into its immediate. On x86-64 it is imul
-    // r64, r64, imm32, then add r64, [rip+place] into the same register. On
-    // ARM64 it is adrp and ldr of the place into Xp, movz Xs, #imm16, then
-    // madd Xd, Xn, Xs, Xp.
-    size_t size = getSize() - rel.VirtualAddress;
-    std::string problem = "do not form a thread-local base";
-    if (ctx.isTlsModel("pe")) {
-      problem = "are in an image of the pe thread-local model, which has no "
-                "scale";
-    } else if (getArch() == Triple::x86_64 && size >= 14) {
-      if ((off[0] & 0xfa) == 0x48 && off[1] == 0x69 && off[2] >= 0xc0 &&
-          off[7] == (off[0] & 0xfc) && off[8] == 0x03 &&
-          off[9] == (0x05 | (off[2] & 0x38))) {
-        write32le(off + 3, ctx.tlsScale);
-        return;
-      }
-    } else if (getArch() == Triple::aarch64 && size >= 16) {
-      aarch64::Adrp adrp;
-      aarch64::Ldr ldr;
-      uint32_t movz = read32le(off + 8), madd = read32le(off + 12);
-      uint32_t xs = movz & 31;
-      if (aarch64::parseAdrp(read32le(off), adrp) &&
-          aarch64::parseLdr(read32le(off + 4), ldr) && ldr.p2Size == 3 &&
-          !ldr.isFloat && ldr.extendType == aarch64::ZeroExtend &&
-          ldr.baseRegister == adrp.destRegister &&
-          ldr.destRegister == adrp.destRegister && adrp.destRegister != 31 &&
-          (movz & 0xffe00000) == 0xd2800000 && xs != 31 &&
-          xs != adrp.destRegister && (madd & 0xffe08000) == 0x9b000000 &&
-          ((madd >> 16) & 31) == xs &&
-          ((madd >> 10) & 31) == ldr.destRegister) {
-        if (isUInt<16>(ctx.tlsScale)) {
-          write32le(off + 8, (movz & ~(0xffff << 5)) | ctx.tlsScale << 5);
-          return;
-        }
-        problem = ("cannot hold the image's scale, " + Twine(ctx.tlsScale) +
-                   ", in 16 bits")
-                      .str();
-      }
-    }
-    Err(ctx) << file << ": the instructions at the TLS_SCALE relocation at "
-             << "offset 0x" << Twine::utohexstr(rel.VirtualAddress) << " of "
-             << getSectionName() << " " << problem;
+    if (rel.Type == IMAGE_REL_LLVM_TLS_BASE && !file->forkObject)
+      Err(ctx) << file << ": IMAGE_REL_LLVM_TLS_BASE relocation in "
+               << getSectionName()
+               << " of an object that LLVM did not make for Windows Itanium "
+                  "or NT-POSIX";
     return;
   }
   if (isPair(rel.Type)) {
@@ -736,6 +905,10 @@ void SectionChunk::applyRelocation(uint8_t *off,
                << " follows no relocation it pairs with";
     return;
   }
+  // The relocation of a fused site that has no field marks it, and writes
+  // nothing whatever became of the pointer it names.
+  if (getFusedMarkerUse(getMachine(), rel.Type) != FusedUse::None)
+    return;
 
   // A symbol is discarded if it was discarded early, when it is null, or
   // late, when its chunk has no output section, unless it is an absolute or
@@ -745,27 +918,21 @@ void SectionChunk::applyRelocation(uint8_t *off,
     return !d || (!(c && ctx.getOutputSection(c)) && !isa<DefinedAbsolute>(d) &&
                   !isa<DefinedSynthetic>(d));
   };
-  auto *sym = dyn_cast_or_null<Defined>(file->getSymbol(rel.SymbolTableIndex));
-  // The adrp and ldr of a local import pointer that bindLocalImports bypassed
-  // become the adrp and add of its symbol.
-  uint16_t type = rel.Type;
-  auto *li = dyn_cast_or_null<DefinedLocalImport>(sym);
-  if (li && li->getChunk()->isBypassed() &&
-      (type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
-       type == IMAGE_REL_ARM64_PAGEOFFSET_12L)) {
-    sym = li->getTarget();
-    if (type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
-      write32le(off, 0x91000000 | (read32le(off) & 0x3ff));
-      type = IMAGE_REL_ARM64_PAGEOFFSET_12A;
-    }
-  }
+  // An initial-exec access reads the word of its thread-local's offset from
+  // the thread pointer that the link makes, where it makes one.
+  bool gotTpoff = rel.Type >= IMAGE_REL_LLVM_GOTTPOFF32 &&
+                  rel.Type <= IMAGE_REL_LLVM_GOTTPOFF_LOW12L;
+  Symbol *target = r ? r->sym : file->getSymbol(rel.SymbolTableIndex);
+  if (Symbol *word = gotTpoff ? file->symtab.tpoffWords.lookup(target) : nullptr)
+    target = word;
+  auto *sym = dyn_cast_or_null<Defined>(target);
   if (FunctionOverrideThunk *t = FunctionOverrideThunk::get(sym))
-    if (!referencesStub(this, type, off))
+    if (!referencesStub(this, rel.Type, off))
       sym = t->fo.body;
   const coff_relocation *pair = getPair(rel);
-  auto *b =
-      pair ? dyn_cast_or_null<Defined>(file->getSymbol(pair->SymbolTableIndex))
-           : nullptr;
+  auto *b = pair ? dyn_cast_or_null<Defined>(
+                       r ? r[1].sym : file->getSymbol(pair->SymbolTableIndex))
+                 : nullptr;
   if (isDiscarded(sym)) {
     maybeReportRelocationToDiscarded(this, sym, rel, ctx.config.mingw);
     return;
@@ -775,6 +942,31 @@ void SectionChunk::applyRelocation(uint8_t *off,
     return;
   }
   uint64_t s = sym->getRVA();
+
+  // A target inside a resized section, a symbol plus an addend, names the
+  // point the addend has in the object: the symbol moved, and so may have the
+  // bytes between it and the point. A PC-relative addend compensates the
+  // place instead.
+  auto *dr = dyn_cast<DefinedRegular>(sym);
+  ScannedSection *ts =
+      dr && dr->getChunk()->resizable ? dr->getChunk()->getScanned() : nullptr;
+  if (ts && ts->aux && ts->aux->resized && !pair) {
+    int64_t addend = 0;
+    if (getArch() == Triple::x86_64 ? rel.Type == IMAGE_REL_AMD64_ADDR64
+                                    : rel.Type == IMAGE_REL_ARM64_ADDR64)
+      addend = read64le(off);
+    else if (getArch() == Triple::x86_64
+                 ? rel.Type == IMAGE_REL_AMD64_ADDR32 ||
+                       rel.Type == IMAGE_REL_AMD64_ADDR32NB ||
+                       rel.Type == IMAGE_REL_AMD64_SECREL
+                 : rel.Type == IMAGE_REL_ARM64_ADDR32 ||
+                       rel.Type == IMAGE_REL_ARM64_ADDR32NB ||
+                       rel.Type == IMAGE_REL_ARM64_SECREL)
+      addend = SignExtend64<32>(read32le(off));
+    if (addend)
+      s = dr->getChunk()->getRVA() - addend +
+          dr->getChunk()->getOutputOffset(getInputOffset(*ts, dr) + addend);
+  }
 
   // Get the output section of the symbol for this relocation.  The output
   // section is needed to compute SECREL and SECTION relocations used in debug
@@ -787,89 +979,20 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // offset's immediate, a byte offset that must stay in the page.
   if (pair) {
     int64_t v = s - b->getRVA();
-    auto check = [&](bool fits, bool aligned = true) {
-      if (!fits || !aligned)
-        Err(ctx) << file << ": "
-                 << file->getCOFFObj()->getRelocationTypeName(rel.Type)
-                 << " relocation against " << toString(ctx, *sym)
-                 << " with a PAIR against " << toString(ctx, *b)
-                 << (fits ? " is misaligned" : " is out of range");
-      return fits && aligned;
-    };
-    switch (rel.Type) {
-    case IMAGE_REL_AMD64_SSPAN32:
-      write32le(off, v);
-      return;
-    case IMAGE_REL_LLVM_SSPAN8:
-      if (check(isInt<8>(v)))
-        *off = v;
-      return;
-    case IMAGE_REL_LLVM_USPAN8:
-      if (check(isUInt<8>(v)))
-        *off = v;
-      return;
-    case IMAGE_REL_LLVM_SSPAN16:
-      if (check(isInt<16>(v)))
-        write16le(off, v);
-      return;
-    case IMAGE_REL_LLVM_USPAN16:
-      if (check(isUInt<16>(v)))
-        write16le(off, v);
-      return;
-    case IMAGE_REL_LLVM_SSPAN32:
-      if (check(isInt<32>(v)))
-        write32le(off, v);
-      return;
-    // The word-scaled spans count instructions.
-    case IMAGE_REL_LLVM_USPAN8_W:
-      if (check(isUInt<10>(v), !(v & 3)))
-        *off = v >> 2;
-      return;
-    case IMAGE_REL_LLVM_USPAN16_W:
-      if (check(isUInt<18>(v), !(v & 3)))
-        write16le(off, v >> 2);
-      return;
-    case IMAGE_REL_LLVM_SSPAN_WORDS18:
-      if (check(isUInt<20>(v), !(v & 3)))
-        write32le(off, (read32le(off) & ~0x3ffff) | v >> 2);
-      return;
-    case IMAGE_REL_LLVM_SSPAN64:
-      write64le(off, v);
-      return;
-    case IMAGE_REL_LLVM_SSPAN_ULEB:
-    case IMAGE_REL_LLVM_SSPAN_SLEB: {
-      ArrayRef<uint8_t> field = getContents().drop_front(rel.VirtualAddress);
-      const uint8_t *last =
-          llvm::find_if(field, [](uint8_t c) { return !(c & 0x80); });
-      unsigned size = last - field.begin() + 1;
-      if (rel.Type == IMAGE_REL_LLVM_SSPAN_ULEB) {
-        if (check(last != field.end() && v >= 0 && isUIntN(7 * size, v)))
-          encodeULEB128(v, off, size);
-      } else if (check(last != field.end() && isIntN(7 * size, v))) {
-        encodeSLEB128(v, off, size);
-      }
+    if (rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12A ||
+        rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L)
+      v += getPageOffsetImm(read32le(off), rel.Type);
+    bool aligned;
+    ArrayRef<uint8_t> field = getContents().drop_front(rel.VirtualAddress);
+    if (!spanFits(rel.Type, v, field, aligned) || !aligned) {
+      Err(ctx) << file << ": "
+               << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+               << " relocation against " << toString(ctx, *sym)
+               << " with a PAIR against " << toString(ctx, *b)
+               << (aligned ? " is out of range" : " is misaligned");
       return;
     }
-    // The offset's low byte is the unwind code's first byte, and its high
-    // four bits are the top of the second.
-    case IMAGE_REL_LLVM_SSPAN_EPILOGV2:
-      if (check(isUInt<12>(v))) {
-        off[0] = v;
-        off[1] = (off[1] & 0xf) | (v >> 8) << 4;
-      }
-      return;
-    }
-    uint32_t insn = read32le(off);
-    uint32_t imm = (insn >> 10) & 0xfff;
-    uint32_t scale = 0;
-    if (rel.Type == IMAGE_REL_ARM64_PAGEOFFSET_12L) {
-      scale = getArm64LdrScale(insn);
-      v += SignExtend64<12>(imm << scale);
-    } else {
-      v += imm;
-    }
-    if (check(isUInt<12>(v), !(v & ((1 << scale) - 1))))
-      write32le(off, (insn & ~(0xfff << 10)) | (v >> scale) << 10);
+    writeSpan(rel.Type, off, v, field);
     return;
   }
 
@@ -898,18 +1021,41 @@ void SectionChunk::applyRelocation(uint8_t *off,
     Warn(ctx) << file << ": ADDR32 relocation against " << toString(ctx, *sym)
               << " is out of range";
 
-  // A thread-pointer offset is the target's offset in the TLS groups plus the
-  // image's place.
-  if (rel.Type >= IMAGE_REL_LLVM_TPOFF32 &&
-      rel.Type <= IMAGE_REL_LLVM_TPOFF_LOW12L) {
-    if (ctx.tlsOversize) {
-      if (!ctx.tlsOversizeReported.exchange(true))
+  // Code of the model reaches its thread-locals through the thread pointer;
+  // _tls_used's index field names _tls_index as data.
+  if (file->tlsModel && (header->Characteristics & IMAGE_SCN_CNT_CODE) &&
+      sym->getName() == "_tls_index") {
+    Err(ctx) << file << ": code of the " << ctx.tlsRuntime()
+             << " thread-local model names _tls_index; its thread-locals are "
+                "in the image's template";
+    return;
+  }
+
+  // Code reaches only its own model's template; debug data describes both.
+  bool tpoff = (rel.Type >= IMAGE_REL_LLVM_TPOFF32 &&
+                rel.Type <= IMAGE_REL_LLVM_TPOFF_LOW12L_NC) ||
+               rel.Type == IMAGE_REL_LLVM_TPOFF_LOW12A ||
+               rel.Type == IMAGE_REL_LLVM_TPOFF_LOW12L ||
+               (gotTpoff && !isa<DefinedLocalImport>(sym));
+  if ((tpoff || isSecRel(getArch(), rel.Type)) && !isCodeView() && !isDWARF() &&
+      ctx.tlsOffset(s, file->tlsModel)) {
+    reportTlsModelMismatch(ctx, sym, file->tlsModel, file,
+                           file->tlsModel ? "reached from the thread pointer"
+                                          : "reached through _tls_index");
+    return;
+  }
+
+  // A thread-pointer offset is the target's offset in the image's template
+  // plus the image's place.
+  if (tpoff) {
+    if (ctx.tlsWide && !ctx.config.dll) {
+      if (!ctx.tlsWideReported.exchange(true))
         Err(ctx) << "TPOFF relocations need a thread-local place, which an "
                  << "executable has only for thread-locals of up to "
-                 << ctx.tlsSlotSize << " bytes; it has " << ctx.tlsOversize;
+                 << TP_BLOCK << " bytes; it has " << ctx.tlsSize;
       return;
     }
-    std::optional<uint64_t> offset = ctx.tlsOffset(s, /*inclusive=*/true);
+    std::optional<uint64_t> offset = ctx.tlsOffset(s);
     if (!ctx.tlsPlace || !offset) {
       Err(ctx) << file << ": "
                << file->getCOFFObj()->getRelocationTypeName(rel.Type)
@@ -922,8 +1068,41 @@ void SectionChunk::applyRelocation(uint8_t *off,
     s = *offset + *ctx.tlsPlace;
   }
 
+  // The offset itself, as ELF relaxes initial-exec to local-exec: an x86-64
+  // mov or add of the word becomes one of an immediate, and an ARM64 adrp and
+  // load of it a movz and a movk of the load's register.
+  if (gotTpoff && tpoff) {
+    uint32_t insn = read32le(off);
+    if (getArch() == Triple::x86_64
+            ? (off[-3] & 0xfa) != 0x48 || (off[-2] != 0x8b && off[-2] != 0x03)
+            : rel.Type == IMAGE_REL_LLVM_GOTTPOFF_LOW12L &&
+                  (insn >> 5 & 31) != (insn & 31)) {
+      Err(ctx) << file << ": "
+               << file->getCOFFObj()->getRelocationTypeName(rel.Type)
+               << " relocation against " << toString(ctx, *sym) << " in "
+               << getSectionName()
+               << (getArch() == Triple::x86_64
+                       ? " is not on a 64-bit mov or add"
+                       : " is on a load into another register than its "
+                         "address's");
+      return;
+    }
+    if (getArch() == Triple::x86_64) {
+      off[-3] = 0x48 | (off[-3] >> 2 & 1);
+      off[-1] = 0xc0 | (off[-1] >> 3 & 7);
+      off[-2] = off[-2] == 0x8b ? 0xc7 : 0x81;
+      write32le(off, s);
+    } else {
+      write32le(off, (rel.Type == IMAGE_REL_LLVM_GOTTPOFF_PAGE21
+                          ? 0xd2a00000 | (s >> 16 & 0xffff) << 5
+                          : 0xf2800000 | (s & 0xffff) << 5) |
+                         (insn & 31));
+    }
+    return;
+  }
+
   // Compute the RVA of the relocation for relative relocations.
-  uint64_t p = rva + rel.VirtualAddress;
+  uint64_t p = rva + offset;
   // /force:unresolved resolves an undefined symbol to absolute zero too.
   auto reportMisfit = [&] {
     COFFSyncStream(ctx, ctx.config.forceUnresolved && isAbsoluteZero(sym)
@@ -943,8 +1122,10 @@ void SectionChunk::applyRelocation(uint8_t *off,
   // as lld/ELF resolves a branch to an undefined weak symbol for the AArch64
   // ABI.
   if (getArch() == Triple::aarch64 && isAbsoluteZero(sym) &&
-      (type == IMAGE_REL_ARM64_BRANCH26 || type == IMAGE_REL_LLVM_BRANCH_TAIL ||
-       type == IMAGE_REL_ARM64_BRANCH19 || type == IMAGE_REL_ARM64_BRANCH14)) {
+      (rel.Type == IMAGE_REL_ARM64_BRANCH26 ||
+       rel.Type == IMAGE_REL_LLVM_BRANCH_TAIL ||
+       rel.Type == IMAGE_REL_ARM64_BRANCH19 ||
+       rel.Type == IMAGE_REL_ARM64_BRANCH14)) {
     if (!file->forkObject) {
       reportMisfit();
       return;
@@ -963,7 +1144,7 @@ void SectionChunk::applyRelocation(uint8_t *off,
     applyRelARM(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::aarch64:
-    fits = applyRelARM64(off, type, os, s, p, imageBase);
+    fits = applyRelARM64(off, rel.Type, os, s, p, imageBase);
     break;
   case Triple::mipsel:
     applyRelMIPS(off, rel.Type, os, s, p, imageBase);
@@ -1012,7 +1193,8 @@ void SectionChunk::writeAndRelocateSubsection(ArrayRef<uint8_t> sec,
       continue;
     if (rel.VirtualAddress + 1 >= vaEnd)
       break;
-    applyRelocation(&buf[rel.VirtualAddress - vaBegin], rel);
+    applyRelocation(&buf[rel.VirtualAddress - vaBegin], rel, rel.VirtualAddress,
+                    nullptr);
   }
 }
 
@@ -1069,14 +1251,22 @@ static uint8_t getBaserelType(const coff_relocation &rel,
 // fixed by the loader if load-time relocation is needed.
 // Only called when base relocation is enabled.
 void SectionChunk::getBaserels(std::vector<Baserel> *res) {
-  for (const coff_relocation &rel : getRelocs()) {
+  ArrayRef<coff_relocation> rels = getRelocs();
+  ScannedSection *s = rels.empty() ? nullptr : getScanned();
+  for (size_t i = 0, e = rels.size(); i != e; ++i) {
+    const coff_relocation &rel = rels[i];
     uint8_t ty = getBaserelType(rel, getArch());
     if (ty == IMAGE_REL_BASED_ABSOLUTE)
       continue;
-    Symbol *target = file->getSymbol(rel.SymbolTableIndex);
-    if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target))
+    // The loader writes an absolute address into an in-place import slot,
+// and the image's fill into a word of its own, which nothing may then
+    // adjust.
+    Symbol *target = getTarget(i, s);
+    if (!isa_and_nonnull<Defined>(target) || isa<DefinedAbsolute>(target) ||
+        (s && (s->relocs[i].expr == R_IMPORT_SLOT ||
+               s->relocs[i].expr == R_FILL_WORD)))
       continue;
-    res->emplace_back(rva + rel.VirtualAddress, ty);
+    res->emplace_back(rva + getOutputOffset(rel.VirtualAddress), ty);
   }
 
   // Insert a 64-bit relocation for CHPEMetadataPointer in the native load
@@ -1181,9 +1371,22 @@ static int getRuntimePseudoRelocSize(uint16_t type, Triple::ArchType arch) {
 // imported from another DLL).
 void SectionChunk::getRuntimePseudoRelocs(
     std::vector<RuntimePseudoReloc> &res) {
-  for (const coff_relocation &rel : getRelocs()) {
+  // An object for Windows Itanium or NT-POSIX takes none, and the relocation
+  // scan reported each reference that would need one.
+  if (file->forkObject)
+    return;
+  ArrayRef<coff_relocation> rels = getRelocs();
+  ScannedSection *s = rels.empty() ? nullptr : getScanned();
+  for (size_t i = 0, e = rels.size(); i != e; ++i) {
+    const coff_relocation &rel = rels[i];
     auto *target = dyn_cast_or_null<Defined>(getRelocTarget(rel));
-    if (!target || !target->isRuntimePseudoReloc)
+    // The loader binds an in-place import slot, the image's fill writes a
+    // word of its own, and code that the scan made load the address reads
+    // the import's own entry.
+    if (!target || !target->isRuntimePseudoReloc ||
+        (s && (s->relocs[i].expr == R_IMPORT_SLOT ||
+               s->relocs[i].expr == R_FILL_WORD ||
+               s->relocs[i].expr == R_IMPORT_LOAD)))
       continue;
     // If the target doesn't have a chunk allocated, it may be a
     // DefinedImportData symbol which ended up unnecessary after GC.
@@ -1192,18 +1395,6 @@ void SectionChunk::getRuntimePseudoRelocs(
     // alive. Thus such dangling references in DWARF sections are expected.
     if (!target->getChunk())
       continue;
-    // An object for Windows Itanium or NT-POSIX never takes a runtime pseudo
-    // relocation, whatever -runtime-pseudo-reloc says.
-    if (file->forkObject) {
-      auto *imp = dyn_cast<DefinedImportData>(target);
-      Err(file->symtab.ctx)
-          << file << ": automatic import of " << target->getName() << " from "
-          << (imp ? imp->getDLLName().str() : toString(target->getFile()))
-          << " needs a runtime pseudo relocation; declare it dllimport, or "
-             "refer to __imp_"
-          << target->getName();
-      continue;
-    }
     int sizeInBits = getRuntimePseudoRelocSize(rel.Type, getArch());
     if (sizeInBits == 0) {
       error("unable to automatically import from " + target->getName() +
@@ -1287,6 +1478,8 @@ SectionChunk *SectionChunk::findByName(ArrayRef<SectionChunk *> sections,
 
 void SectionChunk::replace(SectionChunk *other) {
   p2Align = std::max(p2Align, other->p2Align);
+  if ((linePlacesBarred | other->linePlacesBarred) != 15)
+    linePlacesBarred |= other->linePlacesBarred;
   other->repl = repl;
   other->live = false;
 }
@@ -1355,9 +1548,28 @@ void ImportThunkChunkARM::writeTo(uint8_t *buf) const {
 
 void ImportThunkChunkARM64::writeTo(uint8_t *buf) const {
   int64_t off = impSymbol->getRVA() & 0xfff;
+  if (near()) {
+    write32le(buf, 0x58000010); // ldr  x16, the pointer
+    applyArm64Branch19(buf, impSymbol->getRVA() - rva);
+    memcpy(buf + 4, importThunkARM64 + 8, 4);
+    return;
+  }
   memcpy(buf, importThunkARM64, sizeof(importThunkARM64));
   applyArm64Addr(buf, impSymbol->getRVA(), rva, 12);
   applyArm64Ldr(buf + 4, off);
+}
+
+bool ImportThunkChunkARM64::near() const { return !far && ctx.hasForkObject; }
+
+bool ImportThunkChunkARM64::verifyRanges() {
+  return !near() || isInt<21>(impSymbol->getRVA() - rva);
+}
+
+uint32_t ImportThunkChunkARM64::extendRanges() {
+  if (verifyRanges())
+    return 0;
+  far = true;
+  return 4;
 }
 
 // A Thumb2, PIC, non-interworking range extension thunk.
@@ -1437,17 +1649,24 @@ void LocalImportChunk::writeTo(uint8_t *buf) const {
   }
 }
 
-void RVATableChunk::writeTo(uint8_t *buf) const {
+// The RVA of a point stored by its chunk and its offset there in the input.
+static uint32_t getOutputRVA(const Chunk *c, uint32_t offset) {
+  auto *sc = dyn_cast<SectionChunk>(c);
+  return c->getRVA() + (sc ? sc->getOutputOffset(offset) : offset);
+}
+
+size_t RVATableChunk::write(uint8_t *buf) const {
   ulittle32_t *begin = reinterpret_cast<ulittle32_t *>(buf);
   size_t cnt = 0;
   for (const ChunkAndOffset &co : syms)
-    begin[cnt++] = co.inputChunk->getRVA() + co.offset;
+    begin[cnt++] = getOutputRVA(co.inputChunk, co.offset);
   llvm::sort(begin, begin + cnt);
-  assert(std::unique(begin, begin + cnt) == begin + cnt &&
-         "RVA tables should be de-duplicated");
+  ulittle32_t *end = std::unique(begin, begin + cnt);
+  std::fill(end, begin + cnt, 0);
+  return end - begin;
 }
 
-void RVAFlagTableChunk::writeTo(uint8_t *buf) const {
+size_t RVAFlagTableChunk::write(uint8_t *buf) const {
   struct RVAFlag {
     ulittle32_t rva;
     uint8_t flag;
@@ -1457,15 +1676,24 @@ void RVAFlagTableChunk::writeTo(uint8_t *buf) const {
   for (auto t : zip(syms, flags)) {
     const auto &sym = std::get<0>(t);
     auto &flag = std::get<1>(t);
-    flag.rva = sym.inputChunk->getRVA() + sym.offset;
+    flag.rva = getOutputRVA(sym.inputChunk, sym.offset);
     flag.flag = this->flags.lookup(sym);
+    // An export is suppressed where it is 16-byte aligned in the image.
+    if (flag.flag == uint8_t(GuardFidFlags::EXPORT_SUPPRESSED) && flag.rva % 16)
+      flag.flag = 0;
   }
   llvm::sort(flags,
              [](const RVAFlag &a, const RVAFlag &b) { return a.rva < b.rva; });
-  assert(llvm::unique(flags, [](const RVAFlag &a,
-                                const RVAFlag &b) { return a.rva == b.rva; }) ==
-             flags.end() &&
-         "RVA tables should be de-duplicated");
+  // An address is suppressed where every symbol at it is.
+  RVAFlag *end = flags.begin();
+  for (const RVAFlag &f : flags) {
+    if (end != flags.begin() && end[-1].rva == f.rva)
+      end[-1].flag &= f.flag;
+    else
+      *end++ = f;
+  }
+  memset(static_cast<void *>(end), 0, (flags.end() - end) * sizeof(RVAFlag));
+  return end - flags.begin();
 }
 
 size_t ECCodeMapChunk::getSize() const {
@@ -1717,15 +1945,103 @@ uint32_t ImportThunkChunkARM64EC::extendRanges() {
   return sizeof(arm64Thunk) - sizeof(uint32_t);
 }
 
+TlsRecordChunk::TlsRecordChunk(SymbolTable &symtab, Symbol *sym, Symbol *var,
+                               InputFile *file)
+    : NonSectionChunk(TlsRecordKind), sym(sym), var(var), file(file),
+      live(!symtab.ctx.config.doGC), symtab(symtab) {
+  setAlignment(8);
+}
+
+TlsRecordChunk *TlsRecordChunk::get(const Symbol *s) {
+  auto *d = dyn_cast_or_null<DefinedSynthetic>(s);
+  return d ? dyn_cast_or_null<TlsRecordChunk>(d->getChunk()) : nullptr;
+}
+
+// An export, a root or an object that names X$tls sets the symbol's use.
+// Code names __imp_X$tls, whose local import pointer is read or kept as the
+// scan left it, and a load of the pointer that the scan made the address of
+// the record names the record; before LTO a reference to either name stands
+// for them.
+bool TlsRecordChunk::isNamed(bool beforeLTO) const {
+  if (sym->isUsedInRegularObj || named)
+    return true;
+  Symbol *imp = symtab.find(("__imp_" + sym->getName()).str());
+  if (beforeLTO)
+    return sym->forkReferenced || imp;
+  auto *li = dyn_cast_or_null<DefinedLocalImport>(imp);
+  return li && li->getTarget() == sym && li->getChunk()->isLive();
+}
+
+void TlsRecordChunk::getBaserels(std::vector<Baserel> *res) {
+  if (named)
+    res->emplace_back(getRVA(), symtab.ctx.config.machine);
+}
+
+void TlsRecordChunk::writeTo(uint8_t *buf) const {
+  if (!named)
+    return;
+  COFFLinkerContext &ctx = symtab.ctx;
+  // The offsets count from the start of the image's template, or in an image
+  // where no object states the model, whose records name _tls_index, of the
+  // loader's.
+  bool loader = ctx.tlsRuntime().empty();
+  auto offset = [&](Symbol *s) -> uint32_t {
+    auto *d = dyn_cast_or_null<DefinedRegular>(s ? s->getDefined() : nullptr);
+    if (std::optional<uint64_t> o =
+            d ? ctx.tlsOffset(d->getRVA(), loader) : std::nullopt)
+      return *o;
+    if (d && ctx.tlsOffset(d->getRVA(), /*loader=*/true))
+      reportTlsModelMismatch(ctx, s, true, file,
+                             "reached through its record " +
+                                 toString(ctx, *sym));
+    else
+      Err(ctx) << "thread-local record " << toString(ctx, *sym) << ": "
+               << (s ? toString(ctx, *s) + " is"
+                     : "the guard of " + toString(ctx, *var) +
+                           ", which no object states, is")
+               << " not in the thread-local data of the image";
+    return 0;
+  };
+  // The ntposix model's record names the image's place in place of the index.
+  if (TlsPlaceChunk *place = symtab.placeWord)
+    write64le(buf, place->getRVA() + ctx.config.imageBase);
+  else if (auto *index = dyn_cast_or_null<Defined>(symtab.tlsIndex))
+    write64le(buf, index->getRVA() + ctx.config.imageBase);
+  write32le(buf + 8, offset(var));
+  write32le(buf + 12, offset(guard));
+}
+
+// A wide executable's word holds its wide word's place, H, and its key until
+// the runtime writes it; a wide DLL's key is its fill's, and a direct
+// image's 0.
+void TlsPlaceChunk::writeTo(uint8_t *buf) const {
+  bool exe = ctx.tlsWide && !ctx.config.dll;
+  write64le(buf + TP_PLACE_AT,
+            exe ? TP_H : ctx.tlsPlace.value_or(TP_UNFILLED));
+  write64le(buf + TP_FORM_AT,
+            ctx.tlsWide ? TP_FORM_WIDE : TP_FORM_DIRECT);
+  write64le(buf + TP_KEY_AT, ctx.tlsWide ? TP_UNFILLED : 0);
+}
+
+FunctionOverride *FunctionOverride::get(const Symbol *s) {
+  auto *d = dyn_cast_or_null<DefinedRegular>(s);
+  SectionChunk *c = d ? d->getChunk() : nullptr;
+  return c && c->keepDistinct
+             ? c->file->symtab.ctx.functionOverrideBodies.lookup(d)
+             : nullptr;
+}
+
 FunctionOverrideThunk *FunctionOverrideThunk::get(const Symbol *s) {
   auto *d = dyn_cast_or_null<DefinedSynthetic>(s);
   return d ? dyn_cast_or_null<FunctionOverrideThunk>(d->getChunk()) : nullptr;
 }
 
 void FunctionOverrideThunk::writeTo(uint8_t *buf) const {
-  memcpy(buf, prefix.data(), prefix.size());
-  buf += prefix.size();
-  int64_t disp = fo.body->getRVA() - (getRVA() + prefix.size());
+  // Filler precedes the copy where less than a word is left out.
+  memset(buf + getLeftOut(), 0xCC, getEntry() - prefix.size() - getLeftOut());
+  buf += getEntry();
+  memcpy(buf - prefix.size(), prefix.data(), prefix.size());
+  int64_t disp = fo.body->getRVA() - (getRVA() + getEntry());
   if (machine == AMD64) {
     buf[0] = 0xe9; // jmp rel32
     write32le(buf + 1, disp - 5);
@@ -1733,6 +2049,239 @@ void FunctionOverrideThunk::writeTo(uint8_t *buf) const {
     write32le(buf, 0x14000000); // b imm26
     applyArm64Branch26(buf, disp);
   }
+}
+
+OverrideThunk::OverrideThunk(COFFLinkerContext &ctx, StringRef key,
+                             std::optional<uint32_t> typeId, Defined *target,
+                             bool moves)
+    : ctx(ctx), target(target), moves(moves) {
+  setAlignment(16);
+  // The key is the marker in hexadecimal and the number of patchable
+  // prefix nops, which follow the type ID.
+  auto [marker, nops] = key.split('.');
+  uint32_t m = 0, n = 0;
+  if (typeId && !marker.getAsInteger(16, m) && !nops.getAsInteger(10, n)) {
+    prefix.resize(12);
+    write64le(prefix.data(), getTypePrefixPattern(m, /*SecondWord=*/false));
+    write32le(prefix.data() + 8, *typeId);
+    for (; n; --n)
+      if (getMachine() == AMD64)
+        prefix.push_back(0x90);
+      else
+        prefix.append({0x1f, 0x20, 0x03, 0xd5});
+  }
+  leftOut = (getEntry() - prefix.size()) / 4;
+}
+
+size_t OverrideThunk::getSize() const {
+  bool offer = isa<DefinedImportData>(target);
+  return getEntry() +
+         (getMachine() == AMD64 ? 5 + offer + moves * 3 : 12 + moves * 4);
+}
+
+MachineTypes OverrideThunk::getMachine() const { return ctx.config.machine; }
+
+void OverrideThunk::writeTo(uint8_t *buf) const {
+  // Filler precedes the prefix where less than a word is left out.
+  memset(buf + getLeftOut(), 0xCC, getEntry() - prefix.size() - getLeftOut());
+  buf += getEntry();
+  memcpy(buf - prefix.size(), prefix.data(), prefix.size());
+  uint64_t p = getRVA() + getEntry(), s = target->getRVA();
+  if (getMachine() == AMD64) {
+    if (moves) {
+      // mov rdx, r8, or by the System V convention mov rsi, rdx.
+      memcpy(buf,
+             ctx.tlsRuntime() == "ntposix" ? "\x48\x89\xd6" : "\x4c\x89\xc2",
+             3);
+      buf += 3;
+      p += 3;
+    }
+    bool offer = isa<DefinedImportData>(target);
+    memcpy(buf, offer ? "\xff\x25" : "\xe9", 1 + offer); // jmp *, jmp
+    write32le(buf + 1 + offer, s - p - 5 - offer);
+    return;
+  }
+  if (moves) {
+    write32le(buf, 0xaa0203e1); // mov x1, x2
+    buf += 4;
+    p += 4;
+  }
+  if (!isa<DefinedImportData>(target) && isInt<28>(s - p)) {
+    write32le(buf, 0x14000000); // b target
+    applyArm64Branch26(buf, s - p);
+    write32le(buf + 4, 0xd4200000); // brk #0
+    write32le(buf + 8, 0xd4200000);
+    return;
+  }
+  // adrp x16, target; add x16, x16, :lo12:target, or for an offer ldr; br x16
+  write32le(buf, 0x90000010);
+  applyArm64Addr(buf, s, p, 12);
+  if (isa<DefinedImportData>(target)) {
+    write32le(buf + 4, 0xf9400210);
+    applyArm64Ldr(buf + 4, s & 0xfff);
+  } else {
+    write32le(buf + 4, 0x91000210);
+    applyArm64Imm(buf + 4, s & 0xfff, 0);
+  }
+  write32le(buf + 8, 0xd61f0200);
+}
+
+void OverrideAnchorChunk::getBaserels(std::vector<Baserel> *res) {
+  for (unsigned i = 0; i != count; ++i)
+    if (slots[i])
+      res->emplace_back(getRVA() + OverrideAnchorHeaderSize + i * 8,
+                        ctx.config.machine);
+}
+
+// The table's header and the anchor begin alike.
+void OverrideAnchorChunk::writeHeader(uint8_t *buf) const {
+  write32le(buf, OverrideTableMagic);
+  write16le(buf + 4, OverrideTableFormat);
+  write16le(buf + 6, count);
+}
+
+void OverrideAnchorChunk::writeTable(uint8_t *page) const {
+  for (unsigned i = 0; i != count; ++i)
+    if (slots[i]) {
+      write32le(page + getSlotOffset(i), OverrideTableSlotTag ^ i);
+      write32le(page + getSlotOffset(i) + 4, slots[i]->getRVA());
+    }
+  writeHeader(page + OverrideTableHeaderOffset);
+  write32le(page + OverrideTableHeaderOffset + 8, getRVA());
+}
+
+void OverrideAnchorChunk::writeTo(uint8_t *buf) const {
+  memset(buf, 0, getSize());
+  writeHeader(buf);
+  write32le(buf + 8, mask);
+  uint32_t offers = 0;
+  for (unsigned i = 0; i != count; ++i) {
+    if (!slots[i])
+      continue;
+    offers |= isa<DefinedImportData>(slots[i]) << i;
+    write64le(buf + OverrideAnchorHeaderSize + i * 8,
+              slots[i]->getRVA() + ctx.config.imageBase);
+    buf[OverrideAnchorHeaderSize + count * 8 + i] = calls[i];
+  }
+  write32le(buf + 20, offers);
+  if (OfferTableChunk *t = ctx.symtab.offerTable)
+    write32le(buf + 12, t->getRVA());
+}
+
+uint64_t OfferTableChunk::getKey(StringRef name) { return xxh3_64bits(name); }
+
+uint32_t OfferTableChunk::getIdentity(ArrayRef<COFFLinkImage> closure,
+                                      const COFFLinkImage &image) {
+  SmallString<0> s;
+  raw_svector_ostream os(s);
+  for (const COFFLinkImage::Entity &e : image.Kept)
+    os << e.Name << '\0' << e.Flags << ' ' << unsigned(e.Log2Align) << ' '
+       << e.Size << ' ' << e.CheckSum << '\0';
+  for (uint32_t import : image.Imports)
+    os << StringRef(closure[import / 2].Name).lower() << ' ' << import % 2
+       << '\0';
+  return xxh3_64bits(s);
+}
+
+static unsigned getLog2Buckets(size_t entries) {
+  return entries ? Log2_64_Ceil(entries) : 0;
+}
+
+uint32_t OfferTableChunk::getNamesOffset() const {
+  return 16 + 24 * entries.size() +
+         4 * ((1 << getLog2Buckets(entries.size())) + 1);
+}
+
+size_t OfferTableChunk::getSize() const {
+  return getNamesOffset() + names.size();
+}
+
+void OfferTableChunk::finalizeContents(COFFLinkerContext &ctx) {
+  // An executable's names each image whose link records its link read that
+  // the process loads as it starts, with the identity of the record, whose
+  // fill so knows that the table names every instance that it shares.
+  if (!ctx.config.dll)
+    ctx.driver.forEachImageBreadthFirst([&](const COFFLinkImage &image,
+                                            bool late,
+                                            ArrayRef<COFFLinkImage> closure) {
+      if (!late && (!image.Kept.empty() || !image.Imports.empty()))
+        entries.push_back({saver().save(image.Name.lower()), nullptr,
+                           LinkImageEntityImage, 0,
+                           getIdentity(closure, image)});
+    });
+  ArrayRef<Export> exports = ctx.symtab.exports;
+  for (Entry &e : entries) {
+    e.key = getKey(e.name);
+    auto *imp = dyn_cast_or_null<DefinedImportData>(e.at);
+    auto it = llvm::partition_point(
+        exports, [&](const Export &x) { return x.exportName < e.name; });
+    if (imp && imp->file->hintName && imp->getExternalName() == e.name) {
+      e.nameChunk = imp->file->hintName;
+      e.nameOffset = 2;
+    } else if (it != exports.end() && it->exportName == e.name &&
+               it->nameChunk) {
+      e.nameChunk = it->nameChunk;
+    } else {
+      e.nameOffset = names.size();
+      names += e.name;
+      names += '\0';
+    }
+  }
+  llvm::stable_sort(
+      entries, [](const Entry &a, const Entry &b) { return a.key < b.key; });
+  for (auto [i, e] : enumerate(entries)) {
+    if (e.at)
+      indices[e.at] = i;
+    if (i && e.key == entries[i - 1].key && e.name != entries[i - 1].name)
+      Err(ctx) << e.name << " and " << entries[i - 1].name
+               << " have one key in the offer table; rename one of the two";
+  }
+}
+
+std::pair<uint32_t, uint64_t>
+OfferTableChunk::getEntry(const Defined *at) const {
+  auto it = indices.find(at);
+  assert(it != indices.end() && "every vague cell has an entry");
+  return {getRVA() + 16 + 24 * it->second, entries[it->second].key};
+}
+
+uint32_t OfferTableChunk::getImageEntry(StringRef name) const {
+  auto it = llvm::find_if(entries, [&](const Entry &e) {
+    return (e.flags & LinkImageEntityImage) && e.name == name;
+  });
+  assert(it != entries.end() && "a DLL with a vague cell names itself");
+  return getRVA() + 16 + 24 * (it - entries.begin());
+}
+
+void OfferTableChunk::writeTo(uint8_t *buf) const {
+  unsigned log2 = getLog2Buckets(entries.size());
+  write32le(buf, OfferTableMagic);
+  write32le(buf + 4, log2);
+  write32le(buf + 8, entries.size());
+  bool descriptors = llvm::any_of(entries, [](const Entry &e) {
+    return e.flags & LinkImageEntityDescriptor;
+  });
+  write32le(buf + 12, descriptors ? OfferTableDescriptors : 0);
+  uint8_t *p = buf + 16;
+  for (const Entry &e : entries) {
+    write64le(p, e.key);
+    write32le(p + 8, (e.nameChunk ? e.nameChunk->getRVA()
+                                  : getRVA() + getNamesOffset()) +
+                         e.nameOffset);
+    write32le(p + 12, e.at ? e.at->getRVA() : 0);
+    write32le(p + 16, e.size);
+    write16le(p + 20, e.flags);
+    p[22] = e.log2Align;
+    p[23] = 0;
+    p += 24;
+  }
+  // A bucket begins at its first key whose top bits are its index or more.
+  for (size_t b = 0, i = 0, n = size_t(1) << log2; b <= n; ++b, p += 4) {
+    while (i != entries.size() && (entries[i].key >> 1 >> (63 - log2)) < b)
+      ++i;
+    write32le(p, i);
+  }
+  memcpy(p, names.data(), names.size());
 }
 
 uint64_t Arm64XRelocVal::get() const {
@@ -1834,12 +2383,12 @@ void DynamicRelocsChunk::finalize() {
         diagramOffsets.try_emplace(fo->diagram, diagrams.size());
     if (inserted)
       dos << toStringRef(fo->diagram);
-    uint8_t type = fo->stub->getMachine() == AMD64
+    uint8_t type = fo->body->getChunk()->getMachine() == AMD64
                        ? IMAGE_FUNCTION_OVERRIDE_X64_REL32
                        : IMAGE_FUNCTION_OVERRIDE_ARM64_BRANCH26;
     std::vector<Baserel> sites;
     for (auto [c, off] : fo->sites)
-      sites.emplace_back(c->getRVA() + off, type);
+      sites.emplace_back(getOutputRVA(c, off), type);
     llvm::sort(sites, [](const Baserel &x, const Baserel &y) {
       return x.rva < y.rva;
     });
@@ -1921,5 +2470,4 @@ void DynamicRelocsChunk::writeTo(uint8_t *buf) const {
   }
   memcpy(buf, functionOverrideRecord.data(), functionOverrideRecord.size());
 }
-
 } // namespace lld::coff

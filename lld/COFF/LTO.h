@@ -59,6 +59,8 @@ private:
   std::vector<Symbol *> prevailingSyms;
   // The symbols the image exports, under /lto-whole-program-visibility.
   llvm::DenseSet<Symbol *> exportedSyms;
+  // The initialization functions that a DLL offers with its records.
+  llvm::DenseSet<Symbol *> offeredInits;
 
   std::string getThinLTOOutputFile(StringRef path);
   llvm::lto::Config createConfig();

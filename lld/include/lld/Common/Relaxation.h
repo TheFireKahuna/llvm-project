@@ -11,6 +11,8 @@
 //   anchors      the symbol anchors in the section, sorted by offset;
 //   relocDeltas  for relocation i, the bytes removed up to and including it;
 //   relocTypes   for relocation i, its new type, or zero to keep its type.
+// A point at a relocation's offset lies before the bytes it removes, unless
+// `follows(i)` says that points at relocation i's offset lie after them.
 //
 //===----------------------------------------------------------------------===//
 
@@ -21,13 +23,18 @@
 #include <cstring>
 
 namespace lld {
+struct NeverFollows {
+  bool operator()(size_t) const { return false; }
+};
+
 // Run one relaxation pass over a section. `remove(i, r, delta)` returns the
 // number of bytes that relocation i removes when `delta` bytes are removed
 // before it. Set `delta` to the number of bytes removed from the section and
 // return true if a relocDeltas element changed.
-template <class AuxT, class RelocT, class RemoveFn>
+template <class AuxT, class RelocT, class RemoveFn,
+          class FollowsFn = NeverFollows>
 bool relaxSection(AuxT &aux, llvm::MutableArrayRef<RelocT> relocs,
-                  int64_t &delta, RemoveFn remove) {
+                  int64_t &delta, RemoveFn remove, FollowsFn follows = {}) {
   bool changed = false;
   llvm::ArrayRef sa(aux.anchors);
   delta = 0;
@@ -37,7 +44,9 @@ bool relaxSection(AuxT &aux, llvm::MutableArrayRef<RelocT> relocs,
 
     // For all anchors whose offsets are <= r.offset, they are preceded by
     // the previous relocation whose `relocDeltas` value equals `delta`.
-    for (; sa.size() && sa[0].offset <= r.offset; sa = sa.slice(1))
+    for (; sa.size() && (sa[0].offset < r.offset ||
+                         (sa[0].offset == r.offset && !follows(i)));
+         sa = sa.slice(1))
       sa[0].apply(sa[0].offset - delta);
     delta += removed;
     if (delta != aux.relocDeltas[i]) {

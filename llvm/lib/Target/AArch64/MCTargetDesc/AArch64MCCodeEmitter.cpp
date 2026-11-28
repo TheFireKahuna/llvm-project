@@ -788,18 +788,15 @@ void AArch64MCCodeEmitter::encodeInstruction(const MCInst &MI,
   support::endian::write<uint32_t>(CB, Binary, llvm::endianness::little);
   ++MCNumEmitted; // Keep track of the # of mi's emitted.
 
-  // On Windows Itanium and NT-POSIX the linker may delete an instruction of
-  // an adrp and the add or the load of the same address, where it binds the
-  // pair to one instruction or to none, and a b that no unwind frame covers.
-  // It may also insert instructions before such a pair. Each has one fixup.
+  // On Windows Itanium and NT-POSIX the linker may delete a fused read, where
+  // it binds it with its adrp to one instruction or to none, and a b that no
+  // unwind frame covers. Each has one fixup. The streamer states the adrp
+  // pairs that the linker may fold.
   if (!Fixups.empty() &&
       STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
     auto *SE = dyn_cast<MCSpecifierExpr>(Fixups.back().getValue());
-    unsigned FixupKind = Fixups.back().getKind();
-    if (FixupKind == AArch64::fixup_aarch64_pcrel_adrp_imm21 ||
-        FixupKind == AArch64::fixup_aarch64_pcrel_tail26 ||
-        (SE && (SE->getSpecifier() == AArch64::S_LO12 ||
-                SE->getSpecifier() == AArch64::S_FUSED_LO12)))
+    if (Fixups.back().getKind() == AArch64::fixup_aarch64_pcrel_tail26 ||
+        (SE && SE->getSpecifier() == AArch64::S_FUSED_LO12))
       Fixups.back().setLinkerRelaxable();
   }
 }

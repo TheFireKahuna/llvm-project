@@ -2168,6 +2168,19 @@ def int_threadlocal_address : DefaultAttrsIntrinsic<[llvm_anyptr_ty],
                                 [NonNull<RetIndex>, NonNull<ArgIndex<0>>,
                                  IntrNoMem, IntrSpeculatable]>;
 
+// The offset of a thread-local variable: on COFF from its image's base
+// (llvm.threadlocal.base), or from the thread pointer where the variable is
+// local-exec.
+def int_threadlocal_offset : DefaultAttrsIntrinsic<[llvm_i64_ty],
+                                [llvm_anyptr_ty],
+                                [IntrNoMem, IntrSpeculatable]>;
+
+// The base of the thread's storage of the image's thread-locals, formed from
+// the thread pointer at a site the linker writes in the image's form.
+def int_threadlocal_base : DefaultAttrsIntrinsic<[llvm_ptr_ty], [llvm_ptr_ty],
+                                [NonNull<RetIndex>, IntrNoMem,
+                                 IntrSpeculatable]>;
+
 def int_stepvector : DefaultAttrsIntrinsic<[llvm_any_vector_int_ty],
                                             [], [IntrNoMem]>;
 

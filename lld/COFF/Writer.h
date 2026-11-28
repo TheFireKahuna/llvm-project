@@ -22,6 +22,10 @@ class COFFLinkerContext;
 
 void writeResult(COFFLinkerContext &ctx);
 
+// Sets the image's thread-local form and place from the size of its template
+// as the writer lays it out.
+void setTlsForm(COFFLinkerContext &ctx);
+
 class PartialSection {
 public:
   PartialSection(StringRef n, uint32_t chars)

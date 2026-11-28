@@ -15,6 +15,7 @@
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/DWARF.h"
+#include "lld/Common/X86Instructions.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/BinaryFormat/COFF.h"
@@ -295,7 +296,31 @@ ObjFile::createCOFFObject(COFFLinkerContext &ctx, MemoryBufferRef m) {
   return obj;
 }
 
-Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols) {
+// Leaves out of the image what begins c before the type prefix that ends at
+// entry, where that is the no-operations which align the entry and the
+// prefix's marker instruction follows them. Padding as large as the alignment
+// holds something else, a function of no-operations among them.
+static void leaveOutPrefixPadding(SectionChunk *c, uint32_t entry,
+                                  bool secondWord) {
+  ArrayRef<uint8_t> b = c->getContents();
+  uint32_t size = secondWord ? 16 : 12, pad = entry - size;
+  if (entry < size || entry > b.size() || !pad || pad % 4 || pad > 28 ||
+      pad >= c->getAlignment() || memcmp(&b[entry - 12], "\x0f\x1f", 2) ||
+      b[entry - 10] != (0x80 | secondWord))
+    return;
+  b = b.take_front(pad);
+  if (c->getMachine() == AMD64)
+    while (unsigned n = x86::getNopLength(b))
+      b = b.drop_front(n);
+  else
+    while (!b.empty() && support::endian::read32le(b.data()) == 0xd503201f)
+      b = b.drop_front(4);
+  if (b.empty())
+    c->leftOut = pad / 4;
+}
+
+Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols,
+                               function_ref<bool(uint64_t)> defines) {
   for (bool apply : {false, true})
     if (Error e = readCOFFLinkFacts(
             facts,
@@ -316,6 +341,10 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols) {
                                            Twine(index) + " is out of range");
                 if (apply && sym) {
                   sym->typePrefix = 1 + secondWord;
+                  if (auto *d = dyn_cast<DefinedRegular>(sym);
+                      d && d->file == this && isa<ObjFile>(this))
+                    leaveOutPrefixPadding(d->getChunk(), d->getValue(),
+                                          secondWord);
                   if (!symtab.ctx.typePrefixFile)
                     symtab.ctx.typePrefixFile = this;
                 }
@@ -329,16 +358,22 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols) {
                 if (!c)
                   return c.takeError();
                 bool init = tag == LinkFactInit;
-                if (value > (init ? LinkFactDynamicUnordered : LinkFactHidden))
+                if (value > (init ? LinkFactTLSDynamic : LinkFactHidden))
                   return createStringError(
                       Twine(init ? "initialization" : "visibility") +
                       " of symbol " + Twine(index) + " is out of range");
                 if (!apply || !sym)
                   return Error::success();
+                // Images share a thread-local variable by its record, which
+                // the file states before this.
+                TlsRecordChunk *record = symtab.tlsRecords.empty()
+                                             ? nullptr
+                                             : symtab.tlsRecords.lookup(sym);
                 // Every copy of a symbol and every reference to it states the
                 // same symbol, which takes the most that one of them states.
                 if (init) {
-                  SymbolTable::VagueEntity &e = symtab.vagueEntities[sym];
+                  SymbolTable::VagueEntity &e =
+                      symtab.vagueEntities[record ? record->sym : sym];
                   e.init = std::max<unsigned>(e.init, value);
                 } else {
                   // A definition that the link keeps out of its exports is
@@ -349,7 +384,31 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols) {
                        driver.isExcludedLib(this)))
                     value = LinkFactHidden;
                   sym->visibility = std::max<unsigned>(sym->visibility, value);
+                  if (record)
+                    record->sym->visibility = sym->visibility;
                 }
+                return Error::success();
+              }
+              case LinkFactTlsRecord: {
+                // A discarded copy's guard is the kept copy's, through the
+                // symbol table. Bitcode's is named again by the object that
+                // LTO makes of it.
+                Symbol *guard = nullptr;
+                if (!operands.empty()) {
+                  DataExtractor data(operands, /*IsLittleEndian=*/true);
+                  DataExtractor::Cursor c(0);
+                  uint64_t g = data.getULEB128(c);
+                  if (!c)
+                    return c.takeError();
+                  if (g >= symbols.size())
+                    return createStringError("guard of symbol " + Twine(index) +
+                                             " is out of range");
+                  guard = symbols[g];
+                }
+                // No other unit names a variable that LTO made local.
+                if (apply && sym && symtab.find(sym->getName()) == sym)
+                  symtab.addTlsRecord(sym, isa<ObjFile>(this) ? guard : nullptr,
+                                      this);
                 return Error::success();
               }
               case LinkFactDescriptor:
@@ -378,6 +437,21 @@ Error InputFile::readLinkFacts(StringRef facts, ArrayRef<Symbol *> symbols) {
                     (n > 2 && slots[2] != 1))
                   return createStringError("overridable default of symbol " +
                                            Twine(index) + " is out of range");
+                if (!apply || !sym || tag == LinkFactOverridableByName)
+                  return Error::success();
+                if (n) {
+                  symtab.addOverrideDefault(
+                      slots[0],
+                      {sym->getName(),
+                       n > 1 ? int8_t(slots[1]) : int8_t(-1),
+                       n > 2 ? uint8_t(slots[2]) : uint8_t(0),
+                       {}},
+                      "", toString(this));
+                  symtab.ownOverrides |= 1u << slots[0];
+                } else if (defines(index)) {
+                  SymbolTable::VagueEntity &e = symtab.vagueEntities[sym];
+                  e.function = e.overridable = true;
+                }
                 return Error::success();
               }
               default:
@@ -454,6 +528,9 @@ void ObjFile::parse() {
   // Read section and symbol tables.
   initializeChunks();
   initializeSymbols();
+  for (uint32_t i : gotTpoffIndexes)
+    if (Symbol *s = symbols[i])
+      symtab.tpoffWords.try_emplace(s);
   initializeFlags();
   initializeDependencies();
   initializeECThunks();
@@ -470,6 +547,7 @@ void ObjFile::parse() {
   StringRef facts;
   SmallVector<SectionChunk *, 0> resizable;
   std::vector<SwitchTable> tables;
+  std::vector<RelocFact> siteFactsRead;
   Error e = readCOFFLinkRecords(
       toStringRef(contents), flags,
       [&](uint64_t kind, StringRef payload) -> Error {
@@ -556,8 +634,131 @@ void ObjFile::parse() {
                                 fields[3], uint8_t(fields[4]),
                                 uint8_t(fields[6] & SwitchTableRangeChecked)});
           }
+
+          // Then a count and that many sections with loops a cache line is
+          // to keep, each its symbol, then the places 0, 16, 32 and 48 bytes
+          // into a 64-byte line, as bits 0 to 3, at which it may not begin,
+          // plus sixteen times a count, and that many loops whose offsets the
+          // link decides: the size of each less one, plus thirty-two times
+          // the distance of its offset from the last one's.
+          for (count = c && !data.eof(c) ? data.getULEB128(c) : 0; c && count;
+               --count) {
+            uint64_t index = data.getULEB128(c), head = data.getULEB128(c);
+            uint64_t begin = c.tell(), end = 0;
+            for (uint64_t n = head >> 4, at = 0; c && n; --n) {
+              uint64_t loop = data.getULEB128(c);
+              at += loop >> 5;
+              end = at + (loop & 31) + 1;
+            }
+            if (!c)
+              break;
+            auto *d = index < coffObj->getNumberOfSymbols()
+                          ? dyn_cast_or_null<DefinedRegular>(symbols[index])
+                          : nullptr;
+            if (index >= coffObj->getNumberOfSymbols() || (head & 15) == 15 ||
+                (d && end > d->getChunk()->header->SizeOfRawData))
+              return createStringError("section " + Twine(index) +
+                                       " keeps loops within a line that it "
+                                       "cannot hold");
+            if (!d)
+              continue;
+            d->getChunk()->linePlacesBarred = head & 15;
+            lineLoops[d->getChunk()] = payload.substr(begin, c.tell() - begin);
+          }
           return c.takeError();
         }
+        case LinkRecordSpans: {
+          // Lists to the group's end, each the symbols of the section that
+          // holds its fields and of the code section they span, a count and
+          // that many spans: a kind plus sixteen times the distance of its
+          // field from the last one, and its kind's operand. A list of a
+          // section that is not part of the link is not kept.
+          DataExtractor data(payload, /*IsLittleEndian=*/true);
+          DataExtractor::Cursor c(0);
+          while (c && !data.eof(c)) {
+            SectionChunk *secs[2] = {};
+            uint32_t numbers[2], sizes[2];
+            for (int i = 0; i != 2; ++i) {
+              uint64_t index = data.getULEB128(c);
+              if (!c)
+                break;
+              if (index >= coffObj->getNumberOfSymbols())
+                return createStringError("spans of section " + Twine(index) +
+                                         ", which the file does not have");
+              COFFSymbolRef sym = check(coffObj->getSymbol(index));
+              int32_t number = sym.getSectionNumber();
+              if (!sym.isSectionDefinition() || number <= 0 ||
+                  uint32_t(number) > coffObj->getNumberOfSections() ||
+                  (i &&
+                   !(getSection(number)->Characteristics & IMAGE_SCN_CNT_CODE)))
+                return createStringError("spans of section " + Twine(index) +
+                                         ", which is no " + (i ? "code " : "") +
+                                         "section");
+              // A section without bytes holds no field.
+              const coff_section *sec = getSection(number);
+              numbers[i] = number;
+              sizes[i] = sec->Characteristics & IMAGE_SCN_CNT_UNINITIALIZED_DATA
+                             ? 0
+                             : sec->SizeOfRawData;
+              if (auto *d = dyn_cast_or_null<DefinedRegular>(symbols[index]))
+                secs[i] = d->getChunk();
+            }
+            uint64_t count = data.getULEB128(c), offset = 0;
+            if (c && count > payload.size() - c.tell())
+              return createStringError(Twine(count) +
+                                       " spans, which the group does not hold");
+            uint64_t begin = c.tell();
+            for (uint64_t n = count; c && n; --n) {
+              uint64_t head = data.getULEB128(c);
+              uint32_t kind = head & 15;
+              offset += head >> 4;
+              int64_t operand = kind == SpanAddend32 ? data.getSLEB128(c)
+                                : kind >= SpanData   ? data.getULEB128(c)
+                                                     : 0;
+              if (!c)
+                break;
+              // A LEB128 ends where its bytes say.
+              static const uint8_t widths[] = {1, 4, 4, 4, 4, 4, 1, 2,
+                                               4, 8, 1, 1, 1, 2, 2, 4};
+              if (offset > sizes[0] || widths[kind] > sizes[0] - offset ||
+                  (kind < SpanData && numbers[0] != numbers[1]) ||
+                  (kind >= SpanData && kind != SpanAddend32 &&
+                   uint64_t(operand) > sizes[1]))
+                return createStringError("span at offset 0x" +
+                                         Twine::utohexstr(offset) +
+                                         " is outside its section");
+            }
+            if (c && secs[0] && secs[1])
+              spanLists.push_back(
+                  {secs[0], secs[1], payload.substr(begin, c.tell() - begin)});
+          }
+          return c.takeError();
+        }
+        // The facts of the relocations of a section, which its symbol
+        // names. A section that is not part of the link has no chunk.
+        case LinkRecordSiteFacts:
+          return readCOFFSiteFacts(
+              payload,
+              [&](uint64_t index, uint64_t reloc, uint64_t fact,
+                  uint64_t value) -> Error {
+                COFFSymbolRef sym;
+                if (index < coffObj->getNumberOfSymbols())
+                  sym = check(coffObj->getSymbol(index));
+                int32_t number = sym.getRawPtr() ? sym.getSectionNumber() : 0;
+                if (number <= 0 ||
+                    uint32_t(number) > coffObj->getNumberOfSections() ||
+                    !sym.isSectionDefinition() ||
+                    reloc >= getSection(number)->NumberOfRelocations)
+                  return createStringError(
+                      "site fact of relocation " + Twine(reloc) +
+                      " of the section of symbol " + Twine(index) +
+                      ", which the file does not have");
+                auto *d = dyn_cast_or_null<DefinedRegular>(symbols[index]);
+                if (d && isUInt<32>(fact))
+                  siteFactsRead.push_back(
+                      {d->getChunk(), uint32_t(reloc), uint32_t(fact), value});
+                return Error::success();
+              });
         default:
           if (kind & LinkRecordCritical)
             return createStringError("unknown critical kind " + Twine(kind));
@@ -568,11 +769,24 @@ void ObjFile::parse() {
     e = createStringError("no Symbols group");
   // The facts are applied only where the whole container is valid.
   if (!e)
-    e = readLinkFacts(facts, symbols);
+    e = readLinkFacts(facts, symbols, [&](uint64_t i) {
+      return check(coffObj->getSymbol(i)).getSectionNumber() > 0;
+    });
   if (e) {
     Err(symtab.ctx) << this << ": .llvm_link_records: " << std::move(e);
     return;
   }
+  fusedChecked = forkObject && (flags & LinkRecordsFusedChecked);
+  // What a load states of itself rests on no fused type.
+  if (!fusedChecked)
+    llvm::erase_if(siteFactsRead, [&](const RelocFact &f) {
+      return !forkObject || f.fact != SiteFactValueOnly;
+    });
+  llvm::stable_sort(siteFactsRead, [](const RelocFact &a, const RelocFact &b) {
+    return a.chunk != b.chunk ? std::less<>()(a.chunk, b.chunk)
+                              : a.reloc < b.reloc;
+  });
+  siteFacts = std::move(siteFactsRead);
   for (SectionChunk *c : resizable) {
     c->resizable = true;
     c->movable = c->getArch() != Triple::x86_64 ||
@@ -580,6 +794,45 @@ void ObjFile::parse() {
                    return relocationMovesCode(rel.Type);
                  });
   }
+  // A section with a list of its own fields states its spans. The link moves
+  // code in other ways too where a relocation says so, which no span follows.
+  for (const SpanList &l : spanLists) {
+    if (l.field != l.target || !l.target->resizable)
+      continue;
+    if (l.target->movable)
+      Err(symtab.ctx) << this << ": " << l.target->getSectionName()
+                      << " states spans, and the link moves its code";
+    l.target->compacts = true;
+  }
+  llvm::stable_sort(spanLists, [](const SpanList &a, const SpanList &b) {
+    return a.field->getSectionNumber() < b.field->getSectionNumber();
+  });
+  if (!spanLists.empty()) {
+    spanStarts.resize(coffObj->getNumberOfSections() + 2);
+    for (const SpanList &l : spanLists)
+      ++spanStarts[l.field->getSectionNumber() + 1];
+    for (size_t i = 1, e = spanStarts.size(); i != e; ++i)
+      spanStarts[i] += spanStarts[i - 1];
+  }
+  // The link moves a symbol of a section it resizes by writing the value in
+  // its record, so each such symbol gets a record of its own here, before any
+  // copy of the symbol is made, and every copy follows. A symbol at the
+  // section's start stays there.
+  if (!resizable.empty())
+    for (Symbol *sym : symbols)
+      if (auto *d = dyn_cast_or_null<DefinedRegular>(sym);
+          d && d->file == this && d->data && (*d->data)->resizable) {
+        if (d->getName().starts_with("__cfi_"))
+          typePrefixes.push_back({*d->data, d->getValue()});
+        if (!d->getValue())
+          continue;
+        size_t size = coffObj->getSymbolTableEntrySize();
+        auto *record =
+            reinterpret_cast<coff_symbol_generic *>(bAlloc().Allocate(size, 1));
+        memcpy(record, d->sym, size);
+        d->sym = record;
+        movingSymbols.push_back({*d->data, record});
+      }
   llvm::stable_sort(tables, [](const SwitchTable &a, const SwitchTable &b) {
     return std::less<>()(a.branch->getChunk(), b.branch->getChunk());
   });
@@ -596,6 +849,37 @@ ArrayRef<SwitchTable> ObjFile::getSwitchTables(const SectionChunk *sc) const {
       });
   return ArrayRef(switchTables)
       .slice(first - switchTables.begin(), last - first);
+}
+
+ArrayRef<SpanList> ObjFile::getSpans(const SectionChunk *sc) const {
+  if (spanStarts.empty())
+    return {};
+  uint32_t n = sc->getSectionNumber();
+  return ArrayRef(spanLists).slice(spanStarts[n],
+                                   spanStarts[n + 1] - spanStarts[n]);
+}
+
+ArrayRef<RelocFact> ObjFile::getSiteFacts(const SectionChunk *sc) const {
+  auto [first, last] = std::equal_range(
+      siteFacts.begin(), siteFacts.end(), RelocFact{sc, 0, 0, 0},
+      [](const RelocFact &a, const RelocFact &b) {
+        return std::less<>()(a.chunk, b.chunk);
+      });
+  return ArrayRef(siteFacts).slice(first - siteFacts.begin(), last - first);
+}
+
+std::optional<uint64_t> ObjFile::getSiteFact(const SectionChunk *sc,
+                                             size_t reloc,
+                                             uint32_t fact) const {
+  if (siteFacts.empty())
+    return std::nullopt;
+  ArrayRef<RelocFact> facts = getSiteFacts(sc);
+  for (auto it = llvm::partition_point(
+           facts, [&](const RelocFact &f) { return f.reloc < reloc; });
+       it != facts.end() && it->reloc == reloc; ++it)
+    if (it->fact == fact)
+      return it->value;
+  return std::nullopt;
 }
 
 const coff_section *ObjFile::getSection(uint32_t i) {
@@ -691,6 +975,9 @@ SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
       Err(symtab.ctx) << this << ": relocation in " << name
                       << " has invalid symbol index "
                       << Twine(rel.SymbolTableIndex);
+    else if (rel.Type >= IMAGE_REL_LLVM_GOTTPOFF32 &&
+             rel.Type <= IMAGE_REL_LLVM_GOTTPOFF_LOW12L)
+      gotTpoffIndexes.push_back(rel.SymbolTableIndex);
 
   // CodeView sections are stored to a different vector because they are not
   // linked in the regular manner.
@@ -716,13 +1003,13 @@ SectionChunk *ObjFile::readSection(uint32_t sectionNumber,
     MergeChunk::addSection(symtab.ctx, c);
   else if (name == ".rsrc" || name.starts_with(".rsrc$"))
     resourceChunks.push_back(c);
-  else if (symtab.ctx.config.functionOverride &&
+  else if ((symtab.ctx.config.functionOverride || forkObject) &&
            (name.ends_with("_$fo_bdd$") || name.ends_with("_$fo_rvas$"))) {
     // A function override's diagram and candidates are read by name, never
-    // laid out.
+    // laid out. An object that LLVM made for Windows Itanium or NT-POSIX
+    // holds them in COMDAT sections, which are read once it is known as one.
     c->live = false;
-    if (name.ends_with("_$fo_bdd$"))
-      symtab.functionOverrideDiagrams.push_back(c);
+    symtab.functionOverrideSections.push_back(c);
   } else if (!(sec->Characteristics & llvm::COFF::IMAGE_SCN_LNK_INFO))
     chunks.push_back(c);
 
@@ -1030,6 +1317,12 @@ static const coff_aux_section_definition *findSectionDef(COFFObjectFile *obj,
   return nullptr;
 }
 
+uint32_t ObjFile::getComdatLength(const SectionChunk *c) {
+  const coff_aux_section_definition *def =
+      findSectionDef(coffObj.get(), c->getSectionNumber());
+  return def ? uint32_t(def->Length) : c->getSize();
+}
+
 void ObjFile::handleComdatSelection(
     COFFSymbolRef sym, COMDATType &selection, bool &prevailing,
     DefinedRegular *leader,
@@ -1046,6 +1339,10 @@ void ObjFile::handleComdatSelection(
   COFFLinkerContext &ctx = symtab.ctx;
 
   assert(leader->data && "Comdat leader without SectionChunk?");
+  // Which models a thread-local's copies are of is known once every file's
+  // directives are read.
+  if (leaderChunk->getSectionName().split('$').first == ".tls")
+    symtab.tlsCopies.push_back({leader, this});
   if (isa<BitcodeFile>(leader->file)) {
     // If the leader is only a LTO symbol, we don't know e.g. its final size
     // yet, so we can't do the full strict comdat selection checking yet.
@@ -1566,7 +1863,7 @@ ImportThunkChunk *ImportFile::makeImportThunk() {
 
 // For a reference from an object for Windows Itanium or NT-POSIX, a
 // definition in the link beats an import library's pointer, as an
-// executable's definition beats a shared object's on ELF. A vague variable
+// executable's definition beats a shared object's on ELF. A vague entity
 // keeps the import where the image takes the DLL's offer: the DLL's instance
 // then stands for the image's, whatever refers to the pointer. No other
 // image's definition is that of a hidden or protected symbol, so a weak
@@ -1577,10 +1874,12 @@ bool ImportFile::yieldsToDefinition(Symbol *imp) const {
   Symbol *x = symtab.find(imp->getName().substr(strlen("__imp_")));
   bool isProtected =
       x && x->visibility >= LinkFactProtected && !isa<DefinedImportData>(x);
-  auto *d = dyn_cast_or_null<DefinedRegular>(x);
+  DefinedRegular *d = x ? symtab.getEntityDefinition(x) : nullptr;
   if (auto it = symtab.vagueEntities.find(x);
-      d && it != symtab.vagueEntities.end() && !it->second.function)
-    return isProtected || hdr->getType() == llvm::COFF::IMPORT_CODE ||
+      d && it != symtab.vagueEntities.end())
+    return !symtab.isPreemptible(x, it->second.function) ||
+           symtab.replaces(it->second) ||
+           it->second.function != (hdr->getType() == llvm::COFF::IMPORT_CODE) ||
            !symtab.honoursOffer(this);
   return imp->forkReferenced && (isProtected || d);
 }
@@ -1639,7 +1938,10 @@ void ImportFile::parse() {
     return;
   }
 
-  bool isCode = hdr->getType() == llvm::COFF::IMPORT_CODE;
+  // An offered function that the link defines keeps its definition for its
+  // calls, so the import is of its address alone and has no thunk.
+  bool isCode = hdr->getType() == llvm::COFF::IMPORT_CODE &&
+                !symtab.vagueEntities.count(symtab.find(name));
 
   if (!symtab.isEC()) {
     impSym = symtab.addImportData(impName, this, location);
@@ -1669,6 +1971,14 @@ void ImportFile::parse() {
   // in this case, impSym is nullptr.
   if (!impSym)
     return;
+
+  // An import that only weak references name is bound by the image's fill,
+  // which leaves it null where the DLL lacks it, unless a strong reference
+  // names it too.
+  if (auto *x = dyn_cast_or_null<Undefined>(symtab.find(name));
+      x && x->weakAlias && !impSym->strongImport &&
+      (x->weakKind == Symbol::NoLibrary || x->weakKind == Symbol::Library))
+    binding = Weak;
 
   if (hdr->getType() == llvm::COFF::IMPORT_CONST)
     static_cast<void>(symtab.addImportData(name, this, location));
@@ -1830,9 +2140,14 @@ void BitcodeFile::parse() {
   // bitcode, of which obj->symbols() holds the ones that take part in the
   // link.
   std::vector<Symbol *> named;
-  for (int i : obj->getCOFFLinkFactSymbols())
+  ArrayRef<int> indices = obj->getCOFFLinkFactSymbols();
+  for (int i : indices)
     named.push_back(i < 0 ? nullptr : symbols[i]);
-  if (Error e = readLinkFacts(obj->getCOFFLinkFacts(), named))
+  if (Error e =
+          readLinkFacts(obj->getCOFFLinkFacts(), named, [&](uint64_t i) {
+            const lto::InputFile::Symbol &s = obj->symbols()[indices[i]];
+            return !s.isWeak() && !s.isUndefined();
+          }))
     Err(symtab.ctx) << this << ": link facts: " << std::move(e);
 }
 
@@ -1934,28 +2249,42 @@ MachineTypes DLLFile::getMachineType() const {
   return machine == ARM64X ? ARM64 : machine;
 }
 
-void DLLFile::makeImport(DLLFile::Symbol *s) {
-  if (!seen.insert(s->symbolName).second)
-    return;
-
-  size_t impSize = s->dllName.size() + s->symbolName.size() + 2; // +2 for NULs
+ImportFile *ImportFile::create(COFFLinkerContext &ctx, MachineTypes machine,
+                               StringRef name, StringRef dll, ImportType type,
+                               ImportNameType nameType, StringRef exportAs,
+                               uint16_t hint) {
+  // +2 for NULs, and the name to import by and its NUL.
+  size_t impSize = dll.size() + name.size() + 2 +
+                   (exportAs.empty() ? 0 : exportAs.size() + 1);
   size_t size = sizeof(coff_import_header) + impSize;
   char *buf = bAlloc().Allocate<char>(size);
   memset(buf, 0, size);
-  char *p = buf;
-  auto *imp = reinterpret_cast<coff_import_header *>(p);
-  p += sizeof(*imp);
+  auto *imp = reinterpret_cast<coff_import_header *>(buf);
   imp->Sig2 = 0xFFFF;
-  imp->Machine = static_cast<uint16_t>(getMachineType());
+  imp->Machine = static_cast<uint16_t>(machine);
   imp->SizeOfData = impSize;
-  imp->OrdinalHint = 0; // Only linking by name
-  imp->TypeInfo = (s->nameType << 2) | s->importType;
+  imp->OrdinalHint = hint;
+  imp->TypeInfo = (nameType << 2) | type;
 
   // Write symbol name and DLL name.
-  memcpy(p, s->symbolName.data(), s->symbolName.size());
-  p += s->symbolName.size() + 1;
-  memcpy(p, s->dllName.data(), s->dllName.size());
-  MemoryBufferRef mbref = MemoryBufferRef(StringRef(buf, size), s->dllName);
-  ImportFile *impFile = make<ImportFile>(symtab.ctx, mbref);
-  symtab.ctx.driver.addFile(impFile);
+  char *p = buf + sizeof(*imp);
+  memcpy(p, name.data(), name.size());
+  p += name.size() + 1;
+  memcpy(p, dll.data(), dll.size());
+  if (!exportAs.empty())
+    memcpy(p + dll.size() + 1, exportAs.data(), exportAs.size());
+  return make<ImportFile>(ctx, MemoryBufferRef(StringRef(buf, size), dll));
+}
+
+void ImportFile::makeUnnamedThunk() {
+  thunkSym = make<DefinedImportThunk>(
+      symtab.ctx, impSym->getName().substr(strlen("__imp_")), impSym,
+      makeImportThunk());
+}
+
+void DLLFile::makeImport(DLLFile::Symbol *s) {
+  if (seen.insert(s->symbolName).second)
+    symtab.ctx.driver.addFile(
+        ImportFile::create(symtab.ctx, getMachineType(), s->symbolName,
+                           s->dllName, s->importType, s->nameType));
 }

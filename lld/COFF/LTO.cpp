@@ -8,6 +8,7 @@
 
 #include "LTO.h"
 #include "COFFLinkerContext.h"
+#include "Chunks.h"
 #include "Config.h"
 #include "InputFiles.h"
 #include "SymbolTable.h"
@@ -198,6 +199,18 @@ static bool isFinalInImage(SymbolTable &symtab, Symbol *sym) {
     sym = symtab.find(name);
   }
   Defined *d = sym ? sym->getDefined() : nullptr;
+  // A constant that a DLL offers is the DLL's once LTO has compiled it, and
+  // so is a thread-local variable, which the DLL offers by its record. Code
+  // that loads a record's pointer is made direct where the record is the
+  // image's, which code that takes the record's address is not.
+  if (d && d->addressImported && !symtab.vagueEntities.find(d)->second.function)
+    return false;
+  if (TlsRecordChunk::get(d))
+    return false;
+  if (TlsRecordChunk *record =
+          symtab.tlsRecords.empty() ? nullptr : symtab.tlsRecords.lookup(d);
+      record && symtab.takesOffer(record->sym, /*function=*/false))
+    return false;
   return d && sym->canInline &&
          !isa<DefinedAbsolute, DefinedImportData, DefinedImportThunk>(d);
 }
@@ -222,6 +235,12 @@ void BitcodeCompiler::add(BitcodeFile &f) {
   // so their symbols are not LTO's to internalize.
   const auto &entities = f.symtab.vagueEntities;
   bool offers = ctx.config.dll && !entities.empty();
+  // So are the initialization functions that it offers as its own.
+  if (offers && offeredInits.empty())
+    for (auto &[sym, entity] : entities)
+      if (Symbol *init = f.symtab.findOfferedInit(sym, entity);
+          init && !f.symtab.takesOffer(sym, /*function=*/false))
+        offeredInits.insert(init);
 
   // Provide a resolution to the LTO API for each symbol.
   for (const lto::InputFile::Symbol &objSym : obj.symbols()) {
@@ -235,10 +254,22 @@ void BitcodeCompiler::add(BitcodeFile &f) {
     // Once IRObjectFile is fixed to report only one symbol this hack can
     // be removed.
     r.Prevailing = !objSym.isUndefined() && sym->getFile() == &f;
+    // A thread-local variable is its record's to name where something may
+    // reach the record.
+    TlsRecordChunk *record =
+        f.symtab.tlsRecords.empty() ? nullptr : f.symtab.tlsRecords.lookup(sym);
+    // What takes the address of a function that a DLL offers binds the
+    // DLL's by the function's name, in the code that LTO generates too. The
+    // override table names a definition that replaces an overridable
+    // default.
+    auto entity = entities.find(record ? record->sym : sym);
     r.VisibleToRegularObj =
-        sym->isUsedInRegularObj ||
+        sym->isUsedInRegularObj || sym->addressImported ||
+        (entity != entities.end() && entity->second.overridable) ||
+        f.symtab.findOverrideSlot(sym->getName()) >= 0 ||
         (offers && sym->visibility != COFF::LinkFactHidden &&
-         entities.count(sym));
+         (entity != entities.end() || offeredInits.contains(sym))) ||
+        (record && record->isNamed(/*beforeLTO=*/true));
     r.ExportDynamic = exportedSyms.contains(sym);
     r.FinalDefinitionInLinkageUnit = isFinalInImage(f.symtab, sym);
     // The object LTO generates defines the symbol again. It is undefined only

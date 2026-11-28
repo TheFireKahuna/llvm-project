@@ -156,6 +156,12 @@ HANDLE_TARGET_OPCODE(PATCHPOINT)
 /// additionally expand this pseudo after register allocation.
 HANDLE_TARGET_OPCODE(LOAD_STACK_GUARD)
 
+/// This pseudo-instruction is the thread pointer of a function that is passed
+/// one: the value its register held on entry. Where nothing has changed the
+/// register it is read there; elsewhere it is reloaded from the register's
+/// save slot, after frame lowering, and checked.
+HANDLE_TARGET_OPCODE(LOAD_THREAD_POINTER)
+
 /// These are used to support call sites that must have the stack adjusted
 /// before the call (e.g. to initialize an argument passed by value).
 /// See llvm.call.preallocated.{setup,arg} in the LangRef for more details.

@@ -6,8 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "MarkLive.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
+#include "InputFiles.h"
+#include "Relocations.h"
 #include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
@@ -38,7 +41,12 @@ void markLive(COFFLinkerContext &ctx) {
       if (sc->live && !sc->isDWARF())
         worklist.push_back(sc);
     }
+  markLive(ctx, ctx.config.gcroot, worklist);
+}
 
+void markLive(COFFLinkerContext &ctx, ArrayRef<Symbol *> roots,
+              llvm::SmallVectorImpl<SectionChunk *> &worklist) {
+  size_t next = 0;
   auto enqueue = [&](SectionChunk *c) {
     if (c->live)
       return;
@@ -74,6 +82,10 @@ void markLive(COFFLinkerContext &ctx) {
       enqueue(sym->getChunk());
     } else if (auto *sym = dyn_cast<DefinedImportData>(b)) {
       addImportFile(sym->file);
+      // A call through the pointer may reach the executable's replacement
+      // of the import.
+      if (sym->file->replacement)
+        addSym(sym->file->replacement);
     } else if (auto *sym = dyn_cast<DefinedImportThunk>(b)) {
       addImportFile(sym->wrappedSym->file);
       sym->getChunk()->live = true;
@@ -84,6 +96,17 @@ void markLive(COFFLinkerContext &ctx) {
     } else if (isa<DefinedSynthetic>(b)) {
       for (SectionChunk *c : runs.lookup(b))
         enqueue(c);
+      // A thread-local variable's record holds where it and its guard are.
+      if (TlsRecordChunk *r = TlsRecordChunk::get(b); r && !r->live) {
+        r->live = true;
+        // Code that reaches the variable through the record reads the TLS
+        // index where the link makes it direct.
+        if (r->symtab.tlsIndex)
+          addSym(r->symtab.tlsIndex);
+        addSym(r->var);
+        if (r->guard)
+          addSym(r->guard);
+      }
       // A function override's stub branches to its body or a candidate.
       if (FunctionOverrideThunk *t = FunctionOverrideThunk::get(b);
           t && !t->live) {
@@ -96,17 +119,42 @@ void markLive(COFFLinkerContext &ctx) {
   };
 
   // Add GC root chunks.
-  for (Symbol *b : ctx.config.gcroot)
+  for (Symbol *b : roots)
     addSym(b);
 
-  while (!worklist.empty()) {
-    SectionChunk *sc = worklist.pop_back_val();
+  // A function override with no stub of the link's keeps its candidates live
+  // where its default body is.
+  auto addCandidates = [&] {
+    for (auto [body, fo] : ctx.functionOverrideBodies)
+      if (!fo->live && fo->body->getChunk()->live) {
+        fo->live = true;
+        for (Defined *c : fo->candidates)
+          addSym(c);
+      }
+    return next != worklist.size();
+  };
+
+  while (next != worklist.size() || addCandidates()) {
+    SectionChunk *sc = worklist[next++];
     assert(sc->live && "We mark as live when pushing onto the worklist!");
 
-    // Mark all symbols listed in the relocation table for this section.
-    for (Symbol *b : sc->symbols())
-      if (b)
+    // Mark all symbols listed in the relocation table for this section. Of a
+    // function whose address is another image's, only a call or jump reaches
+    // the image's copy, and anything else the import of its address.
+    // A call of a function with which a DLL offers to replace an overridable
+    // default reaches the thunk of the default's import.
+    for (auto [b, rel] : zip(sc->symbols(), sc->getRelocs())) {
+      ImportFile *owner =
+          b && b->addressImported
+              ? sc->file->symtab.vagueEntities.find(b)->second.owner->file
+              : nullptr;
+      if (owner && takesAddress(*sc, rel))
+        addImportFile(owner);
+      else if (owner && owner->thunkSym && sc->file->forkObject)
+        addSym(owner->thunkSym);
+      else if (b)
         addSym(b);
+    }
 
     // Mark associative sections if any.
     for (SectionChunk &c : sc->children())

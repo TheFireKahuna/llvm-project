@@ -364,14 +364,13 @@ AArch64AsmBackend::getFixupKind(StringRef Name) const {
   // A Windows Itanium or NT-POSIX object marks its fused sites, the test of
   // an import pointer, and the sequence that forms an image's thread-local
   // base.
-  if (TheTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
-    if (const COFF::FusedMarker *Marker = COFF::findFusedMarker(
-            COFF::IMAGE_FILE_MACHINE_ARM64,
-            [&](const COFF::FusedMarker &M) { return M.Name == Name; }))
-      return getCOFFRelocFixupKind(Marker->Type);
-    if (Name == "IMAGE_REL_LLVM_TLS_SCALE")
-      return getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_TLS_SCALE);
-  }
+  if (TheTriple.isWindowsItaniumOrNTPOSIXEnvironment())
+    if (uint16_t T =
+            COFF::getLLVMRelocType(COFF::IMAGE_FILE_MACHINE_ARM64, Name);
+        T == COFF::IMAGE_REL_LLVM_TLS_BASE ||
+        COFF::getFusedMarkerUse(COFF::IMAGE_FILE_MACHINE_ARM64, T) !=
+            COFF::FusedUse::None)
+      return getCOFFRelocFixupKind(T);
   if (!TheTriple.isOSBinFormatELF())
     return std::nullopt;
 

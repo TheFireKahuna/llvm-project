@@ -272,10 +272,11 @@ void lld::coff::writeMapFile(COFFLinkerContext &ctx) {
     StringRef SectionClass = (isCodeSection ? "CODE" : "DATA");
 
     for (auto &cr : ChunkRanges) {
-      size_t size =
-          cr.second->getRVA() + cr.second->getSize() - cr.first->getRVA();
+      auto address = cr.first->getRVA() + cr.first->getLeftOut() -
+                     sec->header.VirtualAddress;
+      size_t size = cr.second->getRVA() + cr.second->getSize() -
+                    sec->header.VirtualAddress - address;
 
-      auto address = cr.first->getRVA() - sec->header.VirtualAddress;
       writeHeader(os, sec->sectionIndex, address);
       os << " " << format_hex_no_prefix(size, 8) << "H";
       os << " " << left_justify(cr.first->getSectionName(), 23);

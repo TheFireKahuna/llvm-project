@@ -548,7 +548,7 @@ void MCWinCOFFStreamer::emitRelocDirective(const MCExpr &Offset, StringRef Name,
     else if (Type == COFF::IMAGE_REL_LLVM_ALIGN)
       endResizableCode();
     else
-      SiteInsts = Type == COFF::IMAGE_REL_LLVM_TLS_SCALE ? TlsScaleInsts : 1;
+      SiteInsts = Type == COFF::IMAGE_REL_LLVM_TLS_BASE ? TlsBaseInsts : 1;
   }
   if (Use == COFF::FusedUse::None)
     return;
@@ -625,13 +625,14 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
   // A reader of a value a record chain derived reads it in its first register
   // source where the code says ViaFirst, and otherwise in its second or only
   // one; it holds what the chain derived from the marker's pointer, or for
-  // the key what an access through that pointer loaded. What it writes the
-  // chain derived as well.
+  // the place, the form and the key a word that an index or an access through
+  // that pointer loaded. What it writes the chain derived as well.
   if (Behind.Offset) {
     reportMisplacedFusedSite();
     Behind.Offset = nullptr;
   }
-  const MCSymbol *DerivedFrom = nullptr;
+  const MCSymbol *DerivedFrom = nullptr, *OffsetOf = nullptr;
+  SmallVector<MCRegister, 2> Marked;
   for (const DerivedSite &Site : DerivedSites) {
     SmallVector<unsigned, 3> Sources;
     for (unsigned I = Desc.getNumDefs(), E = Inst.getNumOperands(); I != E; ++I)
@@ -652,13 +653,17 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
           return Write != RunWrites.end() && !MRI.isArtificialRegUnit(Unit) &&
                  (Write->second.getPointer() != Site.Pointer ||
                   (Write->second.getInt() != Derived &&
-                   (Code != COFF::SiteFactIndexKey ||
+                   (Code == COFF::SiteFactIndexBase ||
+                    Code == COFF::SiteFactIndexWide ||
                     Write->second.getInt() != Word)));
         }))
       getContext().reportError(Site.Loc,
                                Twine("fused index reads ") + MRI.getName(Reg) +
                                    ", which no record chain of '" +
                                    Site.Pointer->getName() + "' derived");
+    Marked.push_back(Reg);
+    // The linker may resize the instruction, or delete it with its chain.
+    SiteInsts = 1;
     if (!DerivedFrom || Code != COFF::SiteFactIndexKey)
       DerivedFrom = Site.Pointer;
     getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
@@ -718,14 +723,17 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
                              FusedSite.Pointer->getName() + "' last wrote");
     if (Here && IsSite && Use == COFF::FusedUse::Access)
       WordOf = FusedSite.Pointer;
-    // An index of the place word's address loads the place, and on ARM64
-    // the form beside it.
+    // An index of the place word's address loads a word of what the pointer
+    // names, the place and on ARM64 the form beside it, or the loader's TLS
+    // index; an index of an offset may read the base.
+    int SiteWord = FusedSite.Index & ~int(COFF::SiteFactViaFirst);
+    if (Here && IsSite && Use == COFF::FusedUse::Index && SiteWord == 0)
+      WordOf = FusedSite.Pointer;
     if (Here && IsSite && Use == COFF::FusedUse::Index &&
-        (FusedSite.Index & ~int(COFF::SiteFactViaFirst)) == 0)
-      DerivedFrom = FusedSite.Pointer;
+        COFF::getTlsRecordWordSize(SiteWord) == 4)
+      OffsetOf = FusedSite.Pointer;
     // The linker may resize a site of one instruction with it.
-    if (Here && IsSite && Use != COFF::FusedUse::Call &&
-        Use != COFF::FusedUse::Jump &&
+    if (Here && IsSite && Use != COFF::FusedUse::Jump &&
         COFF::relocationMayResizeCode(
             getMachine(getContext()), FusedSite.Type,
             FusedSite.Pointer ? FusedSite.Pointer->getName() : ""))
@@ -735,6 +743,26 @@ MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
   }
   if (IsRead)
     getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
+  // Every reader of a value a record chain derived says so: one marker for
+  // each value, but the base that an index of an offset reads.
+  for (unsigned I = Desc.getNumDefs(), E = Inst.getNumOperands(); I != E; ++I) {
+    if (!Inst.getOperand(I).isReg() || !Inst.getOperand(I).getReg() ||
+        is_contained(Marked, Inst.getOperand(I).getReg()))
+      continue;
+    MCRegister Reg = Inst.getOperand(I).getReg();
+    for (MCRegUnit Unit : MRI.regunits(Reg)) {
+      auto Write = RunWrites.find(static_cast<unsigned>(Unit));
+      if (Write == RunWrites.end() || Write->second.getInt() != Derived ||
+          Write->second.getPointer() == OffsetOf)
+        continue;
+      getContext().reportError(Inst.getLoc(),
+                               Twine("instruction reads ") + MRI.getName(Reg) +
+                                   ", which a record chain of '" +
+                                   Write->second.getPointer()->getName() +
+                                   "' derived, with no fused index of it");
+      break;
+    }
+  }
   // A copy holds what every unit of its source does, and a marked access
   // writes a word of what its pointer names.
   Held Holds(Load, Loaded);

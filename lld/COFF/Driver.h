@@ -16,6 +16,7 @@
 #include "lld/Common/VersionScript.h"
 #include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Object/Archive.h"
@@ -35,6 +36,11 @@ namespace lld::coff {
 using llvm::COFF::MachineTypes;
 using llvm::COFF::WindowsSubsystem;
 using std::optional;
+
+// Calls markAddrsig with each symbol whose address an object of objs says
+// matters.
+void forEachAddressSignificant(COFFLinkerContext &ctx, ArrayRef<ObjFile *> objs,
+                               llvm::function_ref<void(Symbol *)> markAddrsig);
 
 class COFFOptTable : public llvm::opt::OptTable {
 public:
@@ -122,6 +128,23 @@ public:
   // false where the image's interface leaves it out.
   bool admitExport(SymbolTable &symtab, Export &e, const InputFile *file);
 
+  // What the link records of imp's import library say of the vague entity
+  // that imp offers, as its DLL keeps it, or null where they say nothing.
+  const llvm::object::COFFLinkImage::Entity *
+  getOfferedEntity(DefinedImportData *imp);
+
+  // The hint of the import of name from dll that the DLL's import library
+  // gives, where the link reads it, or 0.
+  uint16_t getImportHint(StringRef name, StringRef dll);
+  // The header of the short member of an import library that offers name
+  // from dll, or null.
+  const llvm::object::coff_import_header *findImportMember(StringRef name,
+                                                           StringRef dll);
+
+  // Whether file imports from an executable: as its import library's link
+  // records state, or by the suffix of the name where they state none.
+  bool importsFromExecutable(ImportFile *file);
+
   void enqueuePath(StringRef path, bool lazy,
                    InputOpt inputOpt = InputOpt::None);
 
@@ -169,6 +192,7 @@ private:
 
   std::string getImplibPath();
 
+public:
   // The import name is calculated as follows:
   //
   //        | LIBRARY w/ ext |   LIBRARY w/o ext   | no LIBRARY
@@ -178,6 +202,7 @@ private:
   //
   std::string getImportName(bool asLib);
 
+private:
   // Write fullly resolved path to repro file if /linkreprofullpathrsp
   // is specified.
   void handleReproFile(StringRef path, InputOpt inputOpt);
@@ -185,6 +210,57 @@ private:
   void createImportLibrary(bool asLib);
   // Returns the member of the import library that holds its link records.
   std::string createLinkRecords(StringRef libName);
+  std::vector<llvm::object::COFFLinkImage> getLoadClosure(StringRef name,
+                                                          bool live);
+
+public:
+  // Calls visit with each image that is loaded with the one that the link
+  // makes, as the import libraries which the link read state them, in
+  // breadth-first order of their imports: the images that this one imports
+  // from by their names, then those that the first of them imports from,
+  // and so on; then, with late, each image that only a late load of one of
+  // them reaches, in the same order.
+  void forEachImageBreadthFirst(
+      llvm::function_ref<void(const llvm::object::COFFLinkImage &, bool late,
+                              ArrayRef<llvm::object::COFFLinkImage> closure)>
+          visit);
+
+private:
+  // Enters the overridable defaults that the import libraries of the image's
+  // imports state and checks every default's forwarding. A DLL then exports
+  // its offers to replace a default, and an executable chooses what stands
+  // for each default in the program and makes its override table of that.
+  void resolveOverrides();
+
+  // An image loaded with this one that keeps a vague entity, and the entity
+  // as the image's record states it. A late keeper is loaded after the
+  // images that bind before it, and never owns.
+  struct Keeper {
+    StringRef image;
+    bool executable, late;
+    llvm::object::COFFLinkImage::Entity e;
+  };
+  // The vague entities that the images loaded with this one keep, by name,
+  // each with its keepers in breadth-first order. A hidden copy is no
+  // keeper: no other image shares it. With allowed, which gathers the splits
+  // that the link and the images acknowledge, this image comes first.
+  llvm::MapVector<StringRef, SmallVector<Keeper, 2>>
+  getKeepers(llvm::StringSet<> *allowed);
+  const Keeper *getOwner(ArrayRef<Keeper> keepers);
+
+  // An executable takes a copy that a DLL it loads keeps protected as it
+  // takes an offer: each name of the entity becomes that DLL's import, and
+  // the executable's own copy is dropped.
+  void takeProtectedCopies();
+
+  // Gives the image its offer table. An executable lists in it the owner it
+  // picks for each vague entity that two images it loads keep, which each
+  // DLL's fill binds its cell to.
+  void pickOwners();
+
+  // Reads a DLL's baseline, the import library of a release that it
+  // replaces: -offers-baseline, or the one that the link is about to replace.
+  void readOffersBaseline();
 
   // Used by the resolver to parse .drectve section contents.
   void parseDirectives(InputFile *file);
@@ -219,6 +295,18 @@ private:
   // names of those queued that a directive loads whole.
   std::vector<std::pair<ArchiveFile *, bool>> archives;
   llvm::StringSet<> wholeArchiveNames;
+  // The images that an import library's link records state, and the entities
+  // each keeps by the image's index and the entity's name.
+  struct LinkImages {
+    std::vector<llvm::object::COFFLinkImage> images;
+    llvm::DenseMap<std::pair<uint32_t, StringRef>,
+                   const llvm::object::COFFLinkImage::Entity *>
+        kept;
+  };
+  // The link records of the import library at path, read once, which enters
+  // the overridable defaults that they state.
+  const LinkImages &getLinkImages(StringRef path);
+  llvm::StringMap<LinkImages> linkImages;
 
   void addBuffer(std::unique_ptr<MemoryBuffer> mb, InputOpt inputOpt,
                  bool lazy);

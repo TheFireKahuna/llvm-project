@@ -1435,6 +1435,13 @@ def LOAD_STACK_GUARD : StandardPseudoInstruction {
   let hasSideEffects = false;
   bit isPseudo = true;
 }
+def LOAD_THREAD_POINTER : StandardPseudoInstruction {
+  let OutOperandList = (outs ptr_rc:$dst);
+  let InOperandList = (ins);
+  bit isReMaterializable = true;
+  let hasSideEffects = false;
+  bit isPseudo = true;
+}
 def PREALLOCATED_SETUP : StandardPseudoInstruction {
   let OutOperandList = (outs);
   let InOperandList = (ins i32imm:$a);
@@ -1637,6 +1644,7 @@ class TargetSpecializedStandardPseudoInstruction<
 // should be specialized by a target.
 defvar PseudosWithPtrOps = [
   LOAD_STACK_GUARD,
+  LOAD_THREAD_POINTER,
   PREALLOCATED_ARG,
   PATCHABLE_EVENT_CALL,
   PATCHABLE_TYPED_EVENT_CALL

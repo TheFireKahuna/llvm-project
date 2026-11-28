@@ -107,6 +107,11 @@ bool TargetLowering::parametersInCSRMatch(const MachineRegisterInfo &MRI,
     SDValue Value = OutVals[I];
     if (Value->getOpcode() == ISD::AssertZext)
       Value = Value.getOperand(0);
+    // The thread pointer is its register's value on entry.
+    if (Value->isMachineOpcode() &&
+        Value->getMachineOpcode() == TargetOpcode::LOAD_THREAD_POINTER &&
+        Reg == getThreadPointerRegister())
+      continue;
     if (Value->getOpcode() != ISD::CopyFromReg)
       return false;
     Register ArgReg = cast<RegisterSDNode>(Value->getOperand(1))->getReg();

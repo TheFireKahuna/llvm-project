@@ -27,6 +27,9 @@ class X86Subtarget;
 class TargetMachine;
 
 class LLVM_LIBRARY_VISIBILITY X86AsmPrinter : public AsmPrinter {
+  // The fast fail that the function's thread-pointer checks branch to.
+  MCSymbol *ThreadPointerCheckFail = nullptr;
+
 public:
   static char ID;
 

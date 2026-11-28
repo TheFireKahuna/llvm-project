@@ -505,6 +505,10 @@ public:
   /// AArch64 supports MachineCombiner.
   bool useMachineCombiner() const override;
 
+  void insertThreadPointerCheck(MachineBasicBlock &MBB,
+                                MachineBasicBlock::iterator MI,
+                                Register Reg) const override;
+
   bool expandPostRAPseudo(MachineInstr &MI) const override;
 
   std::pair<unsigned, unsigned>

@@ -16,6 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/ADT/PostOrderIterator.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/LiveDebugVariables.h"
@@ -28,11 +29,14 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
+#include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/MachineOperand.h"
 #include "llvm/CodeGen/MachineRegisterInfo.h"
+#include "llvm/CodeGen/RegAllocCommon.h"
 #include "llvm/CodeGen/SlotIndexes.h"
 #include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
+#include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/CodeGen/TargetOpcodes.h"
 #include "llvm/CodeGen/TargetRegisterInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
@@ -360,6 +364,8 @@ bool VirtRegRewriter::run(MachineFunction &fn) {
   rewrite();
 
   if (ClearVirtRegs) {
+    resolveThreadPointers(*MF, LIS);
+
     // Write out new DBG_VALUE instructions.
 
     // We only do this if ClearVirtRegs is specified since this should be the
@@ -526,6 +532,93 @@ void VirtRegRewriter::handleIdentityCopy(MachineInstr &MI) {
 /// subregisters are involved. Expand these into a sequence of copy instructions
 /// after processing the last in the bundle. Does not update LiveIntervals
 /// which we shouldn't need for this instruction anymore.
+// A thread pointer is its register's value on entry, which the register still
+// holds wherever no path from the entry has changed it: there it is read from
+// the register, in place or by a copy, which leaves the register unmodified.
+// Each other is left for frame lowering to reload from the register's save
+// slot.
+void llvm::resolveThreadPointers(MachineFunction &MF, LiveIntervals *LIS) {
+  const TargetSubtargetInfo &STI = MF.getSubtarget();
+  const TargetRegisterInfo *TRI = STI.getRegisterInfo();
+  MCRegister TP = STI.getTargetLowering()->getThreadPointerRegister();
+  auto IsLoad = [](const MachineInstr &MI) {
+    return MI.getOpcode() == TargetOpcode::LOAD_THREAD_POINTER;
+  };
+  if (!TP || none_of(MF, [&](const MachineBasicBlock &MBB) {
+        return any_of(MBB, IsLoad);
+      }))
+    return;
+  // Whether the register holds its entry value after MI, given whether it did
+  // before; a thread pointer loaded into it gives it that value again.
+  auto Holds = [&](const MachineInstr &MI, bool Held) {
+    if (IsLoad(MI))
+      return Held || MI.getOperand(0).getReg() == TP;
+    return Held && !MI.modifiesRegister(TP, TRI);
+  };
+  ReversePostOrderTraversal<MachineFunction *> RPOT(&MF);
+  BitVector In(MF.getNumBlockIDs(), true), Out(In);
+  for (bool Changed = true; Changed;) {
+    Changed = false;
+    for (MachineBasicBlock *MBB : RPOT) {
+      bool Held = MBB->isEntryBlock() ||
+                  (!MBB->isEHFuncletEntry() &&
+                   all_of(MBB->predecessors(), [&](MachineBasicBlock *Pred) {
+                     return Out[Pred->getNumber()];
+                   }));
+      In[MBB->getNumber()] = Held;
+      for (const MachineInstr &MI : *MBB)
+        Held = Holds(MI, Held);
+      Changed |= Out[MBB->getNumber()] != Held;
+      Out[MBB->getNumber()] = Held;
+    }
+  }
+  for (MachineBasicBlock *MBB : RPOT) {
+    bool Held = In[MBB->getNumber()];
+    for (MachineInstr &MI : make_early_inc_range(*MBB)) {
+      bool HeldAfter = Holds(MI, Held);
+      if (Held && IsLoad(MI)) {
+        if (MI.getOperand(0).getReg() != TP) {
+          MachineInstr *Copy =
+              BuildMI(*MBB, MI, MI.getDebugLoc(),
+                      STI.getInstrInfo()->get(TargetOpcode::COPY),
+                      MI.getOperand(0).getReg())
+                  .addReg(TP);
+          if (LIS)
+            LIS->InsertMachineInstrInMaps(*Copy);
+        }
+        if (LIS)
+          LIS->RemoveMachineInstrFromMaps(MI);
+        MI.eraseFromParent();
+      }
+      Held = HeldAfter;
+    }
+  }
+  // The entry value is live into each block from which a read of it is
+  // reached.
+  BitVector LiveIn(MF.getNumBlockIDs());
+  for (bool Changed = true; Changed;) {
+    Changed = false;
+    for (MachineBasicBlock *MBB : post_order(&MF)) {
+      bool Live = any_of(MBB->successors(), [&](MachineBasicBlock *Succ) {
+        return LiveIn[Succ->getNumber()];
+      });
+      for (const MachineInstr &MI : reverse(*MBB))
+        Live = MI.readsRegister(TP, TRI) ||
+               (Live && !MI.modifiesRegister(TP, TRI));
+      Live &= In[MBB->getNumber()];
+      Changed |= LiveIn[MBB->getNumber()] != Live;
+      LiveIn[MBB->getNumber()] = Live;
+    }
+  }
+  for (MachineBasicBlock &MBB : MF)
+    if (LiveIn[MBB.getNumber()] && !MBB.isLiveIn(TP)) {
+      MBB.addLiveIn(TP);
+      MBB.sortUniqueLiveIns();
+    }
+  if (LIS)
+    LIS->removeAllRegUnitsForPhysReg(TP);
+}
+
 void VirtRegRewriter::expandCopyBundle(MachineInstr &MI) const {
   if (!MI.isCopy() && !MI.isKill())
     return;

@@ -1849,7 +1849,8 @@ SDValue SelectionDAGBuilder::getCopyFromRegs(const Value *V, Type *Ty) {
 }
 
 /// In a function that is passed its thread pointer, \p V's value where it is
-/// llvm.thread.pointer: the register's on entry.
+/// llvm.thread.pointer: the register's on entry, which the allocator may
+/// keep there or take again from the register's save slot.
 SDValue SelectionDAGBuilder::getThreadPointerArgument(const Value *V) {
   const auto *II = dyn_cast<IntrinsicInst>(V);
   const TargetLowering &TLI = DAG.getTargetLoweringInfo();
@@ -1857,10 +1858,12 @@ SDValue SelectionDAGBuilder::getThreadPointerArgument(const Value *V) {
   if (!II || II->getIntrinsicID() != Intrinsic::thread_pointer || !Reg ||
       !II->getFunction()->hasFnAttribute("thread-pointer-argument"))
     return SDValue();
-  MVT VT = TLI.getPointerTy(DAG.getDataLayout());
-  return DAG.getCopyFromReg(DAG.getEntryNode(), getCurSDLoc(),
-                            FuncInfo.MF->addLiveIn(Reg, TLI.getRegClassFor(VT)),
-                            VT);
+  if (!FuncInfo.RegInfo->isLiveIn(Reg))
+    FuncInfo.RegInfo->addLiveIn(Reg);
+  return SDValue(DAG.getMachineNode(TargetOpcode::LOAD_THREAD_POINTER,
+                                    getCurSDLoc(),
+                                    TLI.getPointerTy(DAG.getDataLayout())),
+                 0);
 }
 
 /// getValue - Return an SDValue for the given Value.
@@ -6926,6 +6929,15 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     // By default, turn this into a target intrinsic node.
     visitTargetIntrinsic(I, Intrinsic);
     return;
+  case Intrinsic::threadlocal_offset: {
+    // The target lowers it from the variable alone, never its address.
+    auto *GV = cast<GlobalValue>(I.getArgOperand(0)->stripPointerCasts());
+    EVT PtrVT = TLI.getPointerTy(DAG.getDataLayout());
+    setValue(&I, DAG.getNode(ISD::INTRINSIC_WO_CHAIN, sdl, MVT::i64,
+                             DAG.getTargetConstant(Intrinsic, sdl, PtrVT),
+                             DAG.getTargetGlobalAddress(GV, sdl, PtrVT)));
+    return;
+  }
   case Intrinsic::thread_pointer:
     if (SDValue TP = getThreadPointerArgument(&I))
       setValue(&I, TP);

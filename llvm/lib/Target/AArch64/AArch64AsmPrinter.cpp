@@ -105,6 +105,8 @@ class AArch64AsmPrinter : public AsmPrinter {
   MapVector<MCSection *, std::vector<std::pair<MCSymbol *, MCSymbol *>>>
       SectionToImportedFunctionCalls;
   unsigned PAuthIFuncNextUniqueID = 1;
+  // The fast fail that the function's thread-pointer checks branch to.
+  MCSymbol *ThreadPointerCheckFail = nullptr;
 
 public:
   static char ID;
@@ -323,6 +325,7 @@ public:
       return false;
 
     SetupMachineFunction(MF);
+    OnlyNextReads.clear();
 
     // A call or a tail call through an import pointer or a COFF stub is a blr
     // or a br of the register that an ldr of the pointer wrote. An optimized
@@ -483,6 +486,39 @@ public:
                                       Fused.Use == COFF::FusedUse::Access))
             MBB.splice(Site, &MBB, MI.getIterator(), std::next(Low));
         }
+      // The add of either part of a thread-local's offset moves down to the
+      // add or access that is the next to read or write its register, where
+      // its base holds there, and states where nothing after reads what it
+      // wrote: the linker deletes the add of a zero part and gives that
+      // instruction its base. A low add moves first, then its high add.
+      // Under -mtls-size=12 there is no high part.
+      for (MachineBasicBlock &MBB : MF)
+        for (MachineInstr &MI : make_early_inc_range(reverse(MBB))) {
+          if (TM.Options.TLSSize == 12 || MI.getOpcode() != AArch64::ADDXri ||
+              !MI.getOperand(2).isGlobal() ||
+              !(MI.getOperand(2).getTargetFlags() & AArch64II::MO_TLS))
+            continue;
+          Register Reg = MI.getOperand(0).getReg();
+          Register Base = MI.getOperand(1).getReg();
+          auto After = std::next(MachineBasicBlock::iterator(MI));
+          auto Between =
+              make_range(After, std::find_if(After, MBB.end(), Touches(Reg)));
+          auto Next = Between.end();
+          if (Next == MBB.end() || !Next->readsRegister(Reg, TRI) ||
+              (!Next->mayLoadOrStore() &&
+               Next->getOpcode() != AArch64::ADDXri) ||
+              any_of(Between, [&](const MachineInstr &I) {
+                return I.modifiesRegister(Base, TRI);
+              }))
+            continue;
+          for (MachineInstr &I : Between)
+            I.clearRegisterKills(Base, TRI);
+          MBB.splice(Next, &MBB, MI.getIterator());
+          if (Next->modifiesRegister(Reg, TRI) ||
+              MBB.computeRegisterLiveness(TRI, Reg, std::next(Next)) ==
+                  MachineBasicBlock::LQR_Dead)
+            OnlyNextReads.insert(&MI);
+        }
 #ifdef EXPENSIVE_CHECKS
       MF.verify(nullptr, "After pairing addresses", &errs());
 #endif
@@ -559,6 +595,10 @@ private:
   void emitEndOfAsmFile(Module &M) override;
 
   AArch64FunctionInfo *AArch64FI = nullptr;
+
+  /// The adds of a thread-local's offset part that only the next instruction
+  /// reads (COFF::SiteFactOnlyNextReads).
+  SmallPtrSet<const MachineInstr *, 8> OnlyNextReads;
 
   /// Emit the LOHs contained in AArch64FI.
   void emitLOHs();
@@ -1486,6 +1526,15 @@ void AArch64AsmPrinter::emitBasicBlockEnd(const MachineBasicBlock &MBB) {
 }
 
 void AArch64AsmPrinter::emitFunctionBodyEnd() {
+  if (ThreadPointerCheckFail) {
+    OutStreamer->emitLabel(ThreadPointerCheckFail);
+    EmitToStreamer(MCInstBuilder(AArch64::MOVZWi)
+                       .addReg(AArch64::W0)
+                       .addImm(COFF::TP::ThreadPointerCheckFailure)
+                       .addImm(0));
+    EmitToStreamer(MCInstBuilder(AArch64::BRK).addImm(0xF003));
+    ThreadPointerCheckFail = nullptr;
+  }
   if (!AArch64FI->getLOHRelated().empty())
     emitLOHs();
 }
@@ -3772,6 +3821,9 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
   });
 #endif
 
+  if (OnlyNextReads.contains(MI))
+    OutStreamer->emitCOFFSiteFact(COFF::SiteFactOnlyNextReads, 0);
+
   // Do any auto-generated pseudo lowerings.
   if (MCInst OutInst; lowerPseudoInstExpansion(MI, OutInst)) {
     EmitToStreamer(*OutStreamer, OutInst);
@@ -4276,6 +4328,24 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
     LowerKCFI_CHECK(*MI);
     return;
 
+  case AArch64::TP_CHECK: {
+    Register Tmp = MI->getOperand(0).getReg(), TP = MI->getOperand(1).getReg();
+    EmitToStreamer(
+        MCInstBuilder(AArch64::LDRXui).addReg(Tmp).addReg(TP).addImm(0));
+    EmitToStreamer(MCInstBuilder(AArch64::SUBXrs)
+                       .addReg(Tmp)
+                       .addReg(Tmp)
+                       .addReg(TP)
+                       .addImm(0));
+    if (!ThreadPointerCheckFail)
+      ThreadPointerCheckFail = OutContext.createTempSymbol();
+    EmitToStreamer(MCInstBuilder(AArch64::CBNZX)
+                       .addReg(Tmp)
+                       .addExpr(MCSymbolRefExpr::create(ThreadPointerCheckFail,
+                                                        OutContext)));
+    return;
+  }
+
   case AArch64::HWASAN_CHECK_MEMACCESS:
   case AArch64::HWASAN_CHECK_MEMACCESS_SHORTGRANULES:
   case AArch64::HWASAN_CHECK_MEMACCESS_FIXEDSHADOW:
@@ -4376,6 +4446,50 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
   case AArch64::SEH_PrologEnd:
     TS->emitARM64WinCFIPrologEnd();
     return;
+
+  case AArch64::TLS_BASE: {
+    // adrp t, place; ldr t, [t, :lo12:place]; ldr t, [tp, t]; adrp k, key;
+    // ldr k, [k, :lo12:key]; eor t, k, t, ror #17, the key the place word's
+    // third word.
+    MCSymbol *Dot = OutContext.createTempSymbol();
+    OutStreamer->emitLabel(Dot);
+    OutStreamer->emitRelocDirective(
+        *MCSymbolRefExpr::create(Dot, OutContext),
+        COFF::getLLVMRelocName(COFF::IMAGE_FILE_MACHINE_ARM64,
+                               COFF::IMAGE_REL_LLVM_TLS_BASE),
+        nullptr, SMLoc());
+    Register T = MI->getOperand(0).getReg(), K = MI->getOperand(1).getReg(),
+             Tp = MI->getOperand(2).getReg();
+    const MCExpr *Place = MCSymbolRefExpr::create(
+        OutContext.getOrCreateSymbol(COFF::TP::RegisterImport), OutContext);
+    const MCExpr *Key = MCBinaryExpr::createAdd(
+        Place, MCConstantExpr::create(TP_KEY_AT, OutContext), OutContext);
+    for (auto [R, Expr] : {std::pair(T, Place), std::pair(K, Key)}) {
+      EmitToStreamer(MCInstBuilder(AArch64::ADRP)
+                         .addReg(R)
+                         .addExpr(MCSpecifierExpr::create(
+                             Expr, AArch64::S_ABS_PAGE, OutContext)));
+      EmitToStreamer(MCInstBuilder(AArch64::LDRXui)
+                         .addReg(R)
+                         .addReg(R)
+                         .addExpr(MCSpecifierExpr::create(Expr, AArch64::S_LO12,
+                                                          OutContext)));
+      if (R == T)
+        EmitToStreamer(MCInstBuilder(AArch64::LDRXroX)
+                           .addReg(T)
+                           .addReg(Tp)
+                           .addReg(T)
+                           .addImm(0)
+                           .addImm(0));
+    }
+    EmitToStreamer(
+        MCInstBuilder(AArch64::EORXrs)
+            .addReg(T)
+            .addReg(K)
+            .addReg(T)
+            .addImm(AArch64_AM::getShifterImm(AArch64_AM::ROR, TP_ROTATE)));
+    return;
+  }
 
   case AArch64::SEH_EpilogStart:
     TS->emitARM64WinCFIEpilogStart();
@@ -4528,14 +4642,16 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
 }
 
 void AArch64AsmPrinter::emitFusedSite(const MachineInstr *MI) {
+  auto GetPointer = [&](const MachineInstr &Load) {
+    const MachineOperand &Pointer = Load.getOperand(2);
+    return Pointer.isGlobal() ? MCInstLowering.GetGlobalAddressSymbol(Pointer)
+                              : MCInstLowering.GetExternalSymbolSymbol(Pointer);
+  };
+  emitDerivedReads(*MI, GetPointer);
   FusedSite Site = FusedSites.lookup(MI);
   if (!Site.Load)
     return;
-  const MachineOperand &Pointer = Site.Load->getOperand(2);
-  AsmPrinter::emitFusedSite(
-      Site, Pointer.isGlobal()
-                ? MCInstLowering.GetGlobalAddressSymbol(Pointer)
-                : MCInstLowering.GetExternalSymbolSymbol(Pointer));
+  AsmPrinter::emitFusedSite(Site, GetPointer(*Site.Load));
 }
 
 void AArch64AsmPrinter::recordIfImportCall(

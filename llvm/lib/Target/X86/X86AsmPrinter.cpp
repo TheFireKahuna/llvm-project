@@ -431,6 +431,15 @@ void X86AsmPrinter::emitFunctionBodyStart() {
 }
 
 void X86AsmPrinter::emitFunctionBodyEnd() {
+  if (ThreadPointerCheckFail) {
+    OutStreamer->emitLabel(ThreadPointerCheckFail);
+    EmitAndCountInstruction(
+        MCInstBuilder(X86::MOV32ri)
+            .addReg(X86::ECX)
+            .addImm(COFF::TP::ThreadPointerCheckFailure));
+    EmitAndCountInstruction(MCInstBuilder(X86::INT).addImm(0x29));
+    ThreadPointerCheckFail = nullptr;
+  }
   if (EmitFPOData) {
     auto *XTS =
         static_cast<X86TargetStreamer *>(OutStreamer->getTargetStreamer());

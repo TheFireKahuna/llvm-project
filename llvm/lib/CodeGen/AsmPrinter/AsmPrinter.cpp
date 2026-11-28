@@ -5546,35 +5546,44 @@ bool AsmPrinter::hasOnlySetters(
     Register Reg, const MachineInstr &Use,
     function_ref<bool(const MachineInstr &)> Is) const {
   const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
-  SmallVector<const MachineBasicBlock *, 8> Work;
-  SmallPtrSet<const MachineBasicBlock *, 8> Seen;
-  const MachineBasicBlock *Block = Use.getParent();
+  // A value enters an EH pad from where an exception may leave a block, at a
+  // call or at inline assembly, and a register the call clobbers holds none.
+  using Exit = PointerIntPair<const MachineBasicBlock *, 1, bool>;
+  SmallVector<Exit, 8> Work;
+  SmallDenseSet<Exit, 8> Seen;
+  Exit From(Use.getParent(), false);
   for (MachineBasicBlock::const_reverse_iterator I =
            std::next(Use.getReverseIterator());
-       ; I = Block->rbegin()) {
-    while (I != Block->rend() && !I->modifiesRegister(Reg, TRI))
-      ++I;
-    if (I != Block->rend()) {
+       ; I = From.getPointer()->rbegin()) {
+    const MachineBasicBlock *Block = From.getPointer();
+    bool AtCalls = From.getInt(), Open = !AtCalls;
+    for (; I != Block->rend() && (Open || AtCalls); ++I) {
+      Open |= AtCalls && (I->isCall() || I->isInlineAsm());
+      if (!Open || !I->modifiesRegister(Reg, TRI))
+        continue;
       if (!Is(*I))
         return false;
-    } else if (Block->pred_empty() || Block->isEHPad()) {
-      return false;
-    } else {
+      Open = false;
+    }
+    if (Open) {
+      if (Block->pred_empty())
+        return false;
       for (const MachineBasicBlock *Pred : Block->predecessors())
-        if (Seen.insert(Pred).second)
-          Work.push_back(Pred);
+        if (Seen.insert(Exit(Pred, Block->isEHPad())).second)
+          Work.push_back(Exit(Pred, Block->isEHPad()));
     }
     if (Work.empty())
       return true;
-    Block = Work.pop_back_val();
+    From = Work.pop_back_val();
   }
 }
 
-void AsmPrinter::forEachReader(
-    MachineInstr &Def, SmallVectorImpl<MachineInstr *> &DebugValues,
-    function_ref<void(MachineInstr &)> Reader) const {
+void AsmPrinter::forEachReader(MachineInstr &Def,
+                               SmallVectorImpl<MachineInstr *> &DebugValues,
+                               function_ref<void(MachineInstr &)> Reader,
+                               unsigned DefOp) const {
   const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
-  Register Reg = Def.getOperand(0).getReg();
+  Register Reg = Def.getOperand(DefOp).getReg();
   SmallVector<MachineBasicBlock *, 8> Work;
   SmallPtrSet<MachineBasicBlock *, 8> Seen;
   MachineBasicBlock *Block = Def.getParent();
@@ -5627,6 +5636,7 @@ void AsmPrinter::findFusedSites(
   // writes it, which an epilogue before a tail call may, and an exception may
   // leave a block at any of its calls.
   FusedSites.clear();
+  DerivedReads.clear();
   if (!mayFuseSites(*MF))
     return;
   const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
@@ -5788,9 +5798,166 @@ void AsmPrinter::findFusedSites(
       }
     }
   }
+  findDerivedReads(GetWord);
 #ifdef EXPENSIVE_CHECKS
   MF->verify(nullptr, "After finding fused sites", &errs());
 #endif
+}
+
+// A record chain derives, from the place word's address, the place and on
+// ARM64 the form, the thread pointer plus the place, the wide word and the
+// steps decoding it with the key, and the select of the base that the
+// accesses read: each instruction that reads one of those values carries its
+// marker, so that the linker may rewrite the chain whole. A copy holds what
+// it copies; a load from a value is the wide word; an instruction that also
+// reads the flags is the select, whose base only indexes of the variable's
+// offset or its guard's read. A chain that something else reads is stated
+// no further than its record's words.
+void AsmPrinter::findDerivedReads(
+    function_ref<int(const MachineInstr &, const MachineInstr &)> GetWord) {
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  enum : uint8_t {
+    Place = COFF::SiteFactIndexPlace,
+    Base = COFF::SiteFactIndexBase,
+    Wide = COFF::SiteFactIndexWide,
+    Key = COFF::SiteFactIndexKey,
+    Form = COFF::SiteFactIndexForm,
+    End = 0
+  };
+  struct Value {
+    MachineInstr *Def;
+    unsigned DefOp;
+    uint8_t Code;
+    const MachineInstr *Load;
+  };
+  auto IsKey = [](const MachineInstr &Load) {
+    return any_of(Load.operands(), [](const MachineOperand &MO) {
+      return MO.isGlobal() && MO.getGlobal()->getName() == COFF::TP::Key;
+    });
+  };
+  // The heads: an index of the place word's address, which loads the 64-bit
+  // place, where the loader's record has a 32-bit TLS index; and a load of
+  // the key.
+  SmallVector<std::pair<MachineInstr *, Value>, 8> Heads;
+  for (auto &[MI, Fused] : FusedSites) {
+    auto *Head = const_cast<MachineInstr *>(MI);
+    unsigned Defs = Head->getDesc().getNumDefs();
+    if (Fused.Use == COFF::FusedUse::Index && !Fused.Index &&
+        any_of(Head->memoperands(), [&](const MachineMemOperand *MMO) {
+          return MMO->getSize().hasValue() && MMO->getSize().getValue() >= 8;
+        }))
+      for (unsigned Op = 0; Op != Defs && Op != 2; ++Op)
+        Heads.push_back({Head, {Head, Op, Op ? Form : Place, Fused.Load}});
+    if (Fused.Use == COFF::FusedUse::Access && Defs == 1 && Head->mayLoad() &&
+        IsKey(*Fused.Load) &&
+        count_if(Head->explicit_uses(), [](const MachineOperand &MO) {
+          return MO.isReg() && MO.getReg();
+        }) == 1)
+      Heads.push_back({Head, {Head, 0, Key, Fused.Load}});
+  }
+  // A key is stated where it meets a chain that is.
+  std::stable_partition(Heads.begin(), Heads.end(),
+                        [&](const auto &H) { return H.second.Code != Key; });
+  SmallPtrSet<const MachineInstr *, 4> Dropped;
+  for (auto &[Head, First] : Heads) {
+    if (Dropped.contains(Head))
+      continue;
+    DenseMap<const MachineInstr *, SmallVector<DerivedRead, 2>> Reads;
+    SmallVector<Value, 8> Work{First};
+    SmallPtrSet<const MachineInstr *, 8> Seen;
+    SmallVector<MachineInstr *, 4> DebugValues;
+    // The thread pointer that the direct arm adds the place to, and the
+    // accesses that read it.
+    Register Tp;
+    SmallVector<const MachineInstr *, 4> OnTp;
+    bool Whole = true;
+    while (!Work.empty() && Whole) {
+      Value V = Work.pop_back_val();
+      Register Reg = V.Def->getOperand(V.DefOp).getReg();
+      forEachReader(
+          *V.Def, DebugValues,
+          [&](MachineInstr &I) {
+            // The base is read by indexes of the variable's offset or of its
+            // guard's, as their registers' second addend or their first, of
+            // which those that also read the thread pointer the base was
+            // formed from say so.
+            if (V.Code == End) {
+              FusedSite Fused = FusedSites.lookup(&I);
+              Whole &= Fused.Use == COFF::FusedUse::Index &&
+                       Fused.Load == V.Load &&
+                       COFF::getTlsRecordWordSize(Fused.Index &
+                                                  ~COFF::SiteFactViaFirst) == 4;
+              if (Tp && I.readsRegister(Tp, TRI))
+                OnTp.push_back(&I);
+              return;
+            }
+            SmallVector<Register, 3> Sources;
+            for (const MachineOperand &MO : I.explicit_uses())
+              if (MO.isReg() && MO.getReg())
+                Sources.push_back(MO.getReg());
+            bool ViaFirst =
+                Sources.size() > 1 && TRI->regsOverlap(Sources.front(), Reg);
+            if (V.Code == Place && !I.mayLoad() && Sources.size() == 2 && !Tp)
+              Tp = Sources[ViaFirst];
+            if (I.mayStore() || I.isCall() || I.isInlineAsm() ||
+                Sources.empty()) {
+              Whole = false;
+              return;
+            }
+            Reads[&I].push_back(
+                {V.Load,
+                 uint8_t(V.Code | (ViaFirst ? COFF::SiteFactViaFirst : 0))});
+            if (V.Code == Form || V.Code == Key || !Seen.insert(&I).second ||
+                !I.getDesc().getNumDefs())
+              return;
+            bool Select =
+                any_of(I.implicit_operands(), [](const MachineOperand &MO) {
+                  return MO.isReg() && MO.isUse();
+                });
+            uint8_t Out = I.isCopy() || I.isMoveReg() ? V.Code
+                          : Select                    ? End
+                          : V.Code == Place ? (I.mayLoad() ? Wide : Base)
+                          : V.Code == Base  ? (I.mayLoad() ? Wide : End)
+                                            : Wide;
+            Work.push_back({&I, 0, Out, V.Load});
+          },
+          V.DefOp);
+    }
+    if (!Whole) {
+      if (First.Code != Key) {
+        Dropped.insert(Head);
+        FusedSites.erase(Head);
+        for (auto &[MI, Fused] : FusedSites)
+          if (Fused.Load == First.Load && Fused.Use == COFF::FusedUse::Access &&
+              GetWord(*Fused.Load, *MI) == 0)
+            Fused.IndexedRead = false;
+      }
+      continue;
+    }
+    for (auto &[I, R] : Reads)
+      if (First.Code != Key || DerivedReads.contains(I))
+        append_range(DerivedReads[I], R);
+    for (const MachineInstr *I : OnTp)
+      FusedSites[I].ReadsThreadPointer = true;
+  }
+}
+
+void AsmPrinter::emitDerivedReads(
+    const MachineInstr &MI,
+    function_ref<const MCSymbol *(const MachineInstr &)> GetPointer) {
+  for (const DerivedRead &Read : DerivedReads.lookup(&MI)) {
+    MCSymbol *Dot = OutContext.createTempSymbol();
+    OutStreamer->emitLabel(Dot);
+    uint16_t Machine = TM.getTargetTriple().isX86_64()
+                           ? COFF::IMAGE_FILE_MACHINE_AMD64
+                           : COFF::IMAGE_FILE_MACHINE_ARM64;
+    OutStreamer->emitRelocDirective(
+        *MCSymbolRefExpr::create(Dot, OutContext),
+        COFF::getLLVMRelocName(
+            Machine, COFF::getFusedMarker(Machine, COFF::FusedUse::Index)),
+        MCSymbolRefExpr::create(GetPointer(*Read.Load), OutContext), SMLoc());
+    OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndex, Read.Code);
+  }
 }
 
 void AsmPrinter::findValueOnlySites(
@@ -5918,19 +6085,20 @@ void AsmPrinter::emitFusedSite(const FusedSite &Site, const MCSymbol *Pointer) {
   COFF::FusedUse Use = Site.Use;
   MCSymbol *Dot = OutContext.createTempSymbol();
   OutStreamer->emitLabel(Dot);
+  uint16_t Machine = TM.getTargetTriple().isX86_64()
+                         ? COFF::IMAGE_FILE_MACHINE_AMD64
+                         : COFF::IMAGE_FILE_MACHINE_ARM64;
   OutStreamer->emitRelocDirective(
       *MCSymbolRefExpr::create(Dot, OutContext),
-      COFF::findFusedMarker(
-          TM.getTargetTriple().isX86_64() ? COFF::IMAGE_FILE_MACHINE_AMD64
-                                          : COFF::IMAGE_FILE_MACHINE_ARM64,
-          [&](const COFF::FusedMarker &Marker) { return Marker.Use == Use; })
-          ->Name,
+      COFF::getLLVMRelocName(Machine, COFF::getFusedMarker(Machine, Use)),
       Pointer ? MCSymbolRefExpr::create(Pointer, OutContext) : nullptr,
       SMLoc());
   if (Use == COFF::FusedUse::Index)
     OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndex, Site.Index);
   else if (Site.IndexedRead)
     OutStreamer->emitCOFFSiteFact(COFF::SiteFactIndexedRead, 0);
+  if (Site.ReadsThreadPointer)
+    OutStreamer->emitCOFFSiteFact(COFF::SiteFactThreadPointer, 0);
   if (Site.ValueOnly && Pointer)
     OutStreamer->emitCOFFSiteFact(Site.ValueOnly, 0);
 }

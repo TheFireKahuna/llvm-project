@@ -6756,6 +6756,28 @@ SDValue AArch64TargetLowering::LowerINTRINSIC_WO_CHAIN(SDValue Op,
   SDLoc DL(Op);
   switch (IntNo) {
   default: return SDValue();    // Don't custom lower most intrinsics.
+  case Intrinsic::threadlocal_offset: {
+    // A COFF variable's offset in its image's template, or from the thread
+    // pointer where it is local-exec, added to zero as a base's access adds
+    // it (performAddThreadLocalOffsetCombine).
+    const GlobalValue *GV =
+        cast<GlobalAddressSDNode>(Op.getOperand(1))->getGlobal();
+    SDValue Hi = DAG.getTargetGlobalAddress(
+        GV, DL, MVT::i64, 0, AArch64II::MO_TLS | AArch64II::MO_HI12);
+    SDValue Lo = DAG.getTargetGlobalAddress(
+        GV, DL, MVT::i64, 0,
+        AArch64II::MO_TLS | AArch64II::MO_PAGEOFF | AArch64II::MO_NC);
+    SDValue Add =
+        SDValue(DAG.getMachineNode(AArch64::ADDXri, DL, MVT::i64,
+                                   DAG.getConstant(0, DL, MVT::i64), Hi,
+                                   DAG.getTargetConstant(0, DL, MVT::i32)),
+                0);
+    return DAG.getNode(AArch64ISD::ADDlow, DL, MVT::i64, Add, Lo);
+  }
+  case Intrinsic::threadlocal_base:
+    return SDValue(DAG.getMachineNode(AArch64::TLS_BASE, DL, MVT::i64, MVT::i64,
+                                      Op.getOperand(1)),
+                   0);
   case Intrinsic::thread_pointer: {
     // On Windows it is the thread's TLS array, through which native TLS
     // reaches the variables of every image.
@@ -25009,8 +25031,39 @@ static SDValue performConditionalSubCombine(SDNode *N, SelectionDAG &DAG) {
                      ZeroOnTrue ? Diff : X, Sel.getOperand(2), Flags);
 }
 
+// add(x, ADDlow(ADDXri(0, hi), lo)), a thread-local's offset added to a
+// base, as ADDlow(ADDXri(x, hi), lo), so that an access folds the low part.
+static SDValue performAddThreadLocalOffsetCombine(SDNode *N,
+                                                  SelectionDAG &DAG) {
+  if (N->getOpcode() != ISD::ADD || N->getValueType(0) != MVT::i64)
+    return SDValue();
+  for (unsigned I = 0; I != 2; ++I) {
+    SDValue Low = N->getOperand(I);
+    if (Low.getOpcode() != AArch64ISD::ADDlow || !Low.hasOneUse())
+      continue;
+    SDValue Hi = Low.getOperand(0);
+    auto *GA = Hi.isMachineOpcode() &&
+                       Hi.getMachineOpcode() == AArch64::ADDXri &&
+                       Hi.hasOneUse() && isNullConstant(Hi.getOperand(0))
+                   ? dyn_cast<GlobalAddressSDNode>(Hi.getOperand(1))
+                   : nullptr;
+    if (!GA || !(GA->getTargetFlags() & AArch64II::MO_TLS))
+      continue;
+    SDLoc DL(N);
+    SDValue NewHi = SDValue(
+        DAG.getMachineNode(AArch64::ADDXri, DL, MVT::i64, N->getOperand(1 - I),
+                           Hi.getOperand(1), Hi.getOperand(2)),
+        0);
+    return DAG.getNode(AArch64ISD::ADDlow, DL, MVT::i64, NewHi,
+                       Low.getOperand(1));
+  }
+  return SDValue();
+}
+
 static SDValue performAddSubCombine(SDNode *N,
                                     TargetLowering::DAGCombinerInfo &DCI) {
+  if (SDValue Val = performAddThreadLocalOffsetCombine(N, DCI.DAG))
+    return Val;
   // Try to change sum of two reductions.
   if (SDValue Val = performAddAddCombine(N, DCI.DAG))
     return Val;

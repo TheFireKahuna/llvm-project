@@ -10,6 +10,7 @@
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/raw_ostream.h"
@@ -106,33 +107,43 @@ bool llvm::COFF::isGuardCFAddressTakingRelocation(uint16_t Machine,
   default:
     return true;
   }
-  // Of the LLVM types, a load of a pointer and a lea take an address. The
-  // types up to MEM_JUMP_P1, MEM_JUMP_TAIL and MEM_LOAD_CALL branch, call,
-  // also through a pointer, whose slot they name, or span two labels. Only
-  // fused sites read the register of a fused read.
-  if (Type >= IMAGE_REL_LLVM_ADDR32NB_CALL &&
-      Type <= IMAGE_REL_LLVM_MEM_JUMP_P1)
-    return false;
+  // An LLVM type states whether it does.
+  if (uint8_t Props = getLLVMRelocProperties(Type))
+    return Props & LLVMReloc::Address;
+  return true;
+}
+
+llvm::StringRef llvm::COFF::getLLVMRelocName(uint16_t Machine, uint16_t Type) {
+  if (!(getLLVMRelocProperties(Type) & getLLVMRelocMachine(Machine)))
+    return {};
   switch (Type) {
-  case IMAGE_REL_LLVM_MEM_JUMP_TAIL:
-  case IMAGE_REL_LLVM_MEM_LOAD_CALL:
-  case IMAGE_REL_LLVM_FUSED_CALL:
-  case IMAGE_REL_LLVM_FUSED_JUMP:
-  case IMAGE_REL_LLVM_FUSED_READ:
-  case IMAGE_REL_LLVM_FUSED_READ_REX2:
-  case IMAGE_REL_LLVM_FUSED_ACCESS:
-  case IMAGE_REL_LLVM_FUSED_INDEX:
-  case IMAGE_REL_LLVM_FUSED_TEST:
-  case IMAGE_REL_LLVM_FUSED_JUMP_TAIL:
-  case IMAGE_REL_LLVM_FUSED_TEST_REG:
-  case IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL:
-  case IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL:
-  case IMAGE_REL_LLVM_TPOFF32:
-  case IMAGE_REL_LLVM_TPOFF_HIGH12A:
-  case IMAGE_REL_LLVM_TPOFF_LOW12A:
-  case IMAGE_REL_LLVM_TPOFF_LOW12L:
-    return false;
-  default:
-    return true;
+#define COFF_LLVM_RELOC(Name, Value, Props, Use)                               \
+  case Value:                                                                  \
+    return "IMAGE_REL_LLVM_" #Name;
+#include "llvm/BinaryFormat/COFFRelocs/LLVM.def"
+#undef COFF_LLVM_RELOC
   }
+  return isRel32Insn(Type) ? "IMAGE_REL_LLVM_REL32_INSN" : StringRef();
+}
+
+uint16_t llvm::COFF::getLLVMRelocType(uint16_t Machine, StringRef Name) {
+  uint16_t Type = StringSwitch<uint16_t>(Name)
+#define COFF_LLVM_RELOC(Name, Value, Props, Use)                               \
+  .Case("IMAGE_REL_LLVM_" #Name, Value)
+#include "llvm/BinaryFormat/COFFRelocs/LLVM.def"
+#undef COFF_LLVM_RELOC
+                      .Default(0);
+  return getLLVMRelocProperties(Type) & getLLVMRelocMachine(Machine) ? Type : 0;
+}
+
+uint16_t llvm::COFF::getFusedMarker(uint16_t Machine, FusedUse Use) {
+  static constexpr uint16_t Types[] = {
+#define COFF_LLVM_RELOC(Name, Value, Props, Use) Value,
+#include "llvm/BinaryFormat/COFFRelocs/LLVM.def"
+#undef COFF_LLVM_RELOC
+  };
+  for (uint16_t Type : Types)
+    if (getFusedMarkerUse(Machine, Type) == Use)
+      return Type;
+  return 0;
 }

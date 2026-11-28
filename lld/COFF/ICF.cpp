@@ -20,6 +20,9 @@
 #include "ICF.h"
 #include "COFFLinkerContext.h"
 #include "Chunks.h"
+#include "InputFiles.h"
+#include "Relocations.h"
+#include "SymbolTable.h"
 #include "Symbols.h"
 #include "lld/Common/Timer.h"
 #include "llvm/Support/Parallel.h"
@@ -35,10 +38,16 @@ namespace lld::coff {
 
 class ICF {
 public:
-  ICF(COFFLinkerContext &c) : ctx(c) {}
-  void run();
+  ICF(COFFLinkerContext &c, bool unwind) : unwind(unwind), ctx(c) {}
+  size_t run();
 
 private:
+  bool addUnwindRecord(SectionChunk *c);
+
+  ArrayRef<uint8_t> getContents(const SectionChunk *c) const {
+    return unwind ? ArrayRef(records.find(c)->second) : c->getContents();
+  }
+
   template <bool constant> void segregate(size_t begin, size_t end);
 
   bool assocEquals(const SectionChunk *a, const SectionChunk *b);
@@ -56,6 +65,12 @@ private:
   void forEachClass(std::function<void(size_t, size_t)> fn);
 
   std::vector<SectionChunk *> chunks;
+  // Whether this pass folds the unwind records of resized code, after
+  // relaxation, and each such record with its spans' values in its bytes. Two
+  // functions' records name each its own function's labels, so they are equal
+  // only in what their spans measure.
+  bool unwind;
+  llvm::DenseMap<const SectionChunk *, SmallVector<uint8_t, 0>> records;
   int cnt = 0;
   std::atomic<bool> repeat = {false};
 
@@ -166,14 +181,28 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
   };
 
   auto eqReloc = [&](const coff_relocation &r1, const coff_relocation &r2) {
+    // Fused sites bind only where the assembler checked them.
     if constexpr (constant)
       if (r1.Type != r2.Type || r1.VirtualAddress != r2.VirtualAddress ||
           (r1.Type == COFF::IMAGE_REL_LLVM_ALIGN &&
-           r1.SymbolTableIndex != r2.SymbolTableIndex))
+           r1.SymbolTableIndex != r2.SymbolTableIndex) ||
+          (COFF::getLLVMRelocProperties(r1.Type) & COFF::LLVMReloc::Fused &&
+           a->file->fusedChecked != b->file->fusedChecked))
         return false;
     return eqSym(a->getRelocTarget(r1), b->getRelocTarget(r2));
   };
-  if (!llvm::equal(a->getRelocs(), b->getRelocs(), eqReloc))
+  // The facts of a section's sites say how the link rewrites them.
+  if constexpr (constant)
+    if (a->file->getSiteFacts(a) != b->file->getSiteFacts(b))
+      return false;
+  // An unwind record's spans are in its bytes, as their values.
+  auto relocs = [&](const SectionChunk *c) {
+    return make_filter_range(c->getRelocs(), [=](const coff_relocation &r) {
+      return !unwind || !(c->isPair(r.Type) || c->getPair(r));
+    });
+  };
+  auto ra = relocs(a), rb = relocs(b);
+  if (!std::equal(ra.begin(), ra.end(), rb.begin(), rb.end(), eqReloc))
     return false;
 
   auto eqSwitch = [&](const SwitchTable &s1, const SwitchTable &s2) {
@@ -187,11 +216,25 @@ bool ICF::sectionsEqual(const SectionChunk *a, const SectionChunk *b) {
                    eqSwitch))
     return false;
 
+  // Spans are equal where they state the same of code that folds, or of the
+  // two sections themselves. An unwind record's are in its bytes.
+  auto eqSpans = [&](const SpanList &l1, const SpanList &l2) {
+    if constexpr (constant)
+      if (l1.spans != l2.spans)
+        return false;
+    return (l1.target == a && l2.target == b) ||
+           l1.target->eqClass[cnt % 2] == l2.target->eqClass[cnt % 2];
+  };
+  if (!unwind &&
+      !llvm::equal(a->file->getSpans(a), b->file->getSpans(b), eqSpans))
+    return false;
+
   if constexpr (constant) {
     return a->getOutputCharacteristics() == b->getOutputCharacteristics() &&
            a->getSectionName() == b->getSectionName() &&
            a->header->SizeOfRawData == b->header->SizeOfRawData &&
-           a->checksum == b->checksum && a->getContents() == b->getContents() &&
+           (unwind || a->checksum == b->checksum) &&
+           getContents(a) == getContents(b) &&
            a->getMachine() == b->getMachine() && a->resizable == b->resizable &&
            a->guardSuppressed == b->guardSuppressed && assocEquals(a, b);
   } else {
@@ -253,10 +296,43 @@ void ICF::forEachClass(std::function<void(size_t, size_t)> fn) {
   ++cnt;
 }
 
+// Keeps the bytes of c with its spans' values, where c is an unwind record
+// each of whose spans has a value that fits its field.
+bool ICF::addUnwindRecord(SectionChunk *c) {
+  ArrayRef<coff_relocation> rels = c->getRelocs();
+  ArrayRef<uint8_t> contents = c->getContents();
+  if (!c->file->forkObject || !isEligible(c) ||
+      c->getSectionName().split('$').first != ".xdata")
+    return false;
+  // A field is read as a word wherever it ends.
+  SmallVector<uint8_t, 0> record(contents.size() + 4);
+  memcpy(record.data(), contents.data(), contents.size());
+  ScannedSection *s = c->getScanned();
+  for (size_t i = 0, e = rels.size(); i != e; ++i) {
+    if (!c->getPair(rels[i]))
+      continue;
+    auto *a = dyn_cast_or_null<DefinedRegular>(c->getTarget(i, s));
+    auto *b = dyn_cast_or_null<DefinedRegular>(c->getTarget(i + 1, s));
+    uint32_t offset = rels[i].VirtualAddress;
+    bool aligned;
+    if (!a || !b || !a->getChunk()->live || !b->getChunk()->live ||
+        offset >= contents.size())
+      return false;
+    int64_t v = int64_t(a->getRVA()) - b->getRVA();
+    if (!spanFits(rels[i].Type, v, contents.drop_front(offset), aligned) ||
+        !aligned)
+      return false;
+    writeSpan(rels[i].Type, &record[offset], v, contents.drop_front(offset));
+  }
+  writeSpans(*c, record.data());
+  records[c] = std::move(record);
+  return true;
+}
+
 // Merge identical COMDAT sections.
 // Two sections are considered the same if their section headers,
 // contents and relocations are all the same.
-void ICF::run() {
+size_t ICF::run() {
   llvm::TimeTraceScope timeScope("ICF");
   ScopedTimer t(ctx.icfTimer);
 
@@ -264,7 +340,7 @@ void ICF::run() {
   uint32_t nextId = 1;
   for (Chunk *c : ctx.driver.getChunks()) {
     if (auto *sc = dyn_cast<SectionChunk>(c)) {
-      if (isEligible(sc))
+      if (unwind ? addUnwindRecord(sc) : isEligible(sc))
         chunks.push_back(sc);
       else
         sc->eqClass[0] = nextId++;
@@ -280,7 +356,7 @@ void ICF::run() {
 
   // Initially, we use hash values to partition sections.
   parallelForEach(chunks, [&](SectionChunk *sc) {
-    sc->eqClass[0] = xxh3_64bits(sc->getContents());
+    sc->eqClass[0] = xxh3_64bits(getContents(sc));
   });
 
   // Combine the hashes of the sections referenced by each section into its
@@ -288,9 +364,11 @@ void ICF::run() {
   for (unsigned cnt = 0; cnt != 2; ++cnt) {
     parallelForEach(chunks, [&](SectionChunk *sc) {
       uint32_t hash = sc->eqClass[cnt % 2];
-      for (Symbol *b : sc->symbols())
-        if (auto *sym = dyn_cast_or_null<DefinedRegular>(b))
-          hash += sym->getChunk()->eqClass[cnt % 2];
+      // A record's spans name labels of its own function.
+      if (!unwind)
+        for (Symbol *b : sc->symbols())
+          if (auto *sym = dyn_cast_or_null<DefinedRegular>(b))
+            hash += sym->getChunk()->eqClass[cnt % 2];
       // Set MSB to 1 to avoid collisions with non-hash classes.
       sc->eqClass[(cnt + 1) % 2] = hash | (1U << 31);
     });
@@ -322,6 +400,7 @@ void ICF::run() {
   Log(ctx) << "ICF needed " << Twine(cnt) << " iterations";
 
   // Merge sections in the same classes.
+  std::atomic<size_t> removed = 0;
   forEachClass([&](size_t begin, size_t end) {
     if (end - begin == 1)
       return;
@@ -331,10 +410,16 @@ void ICF::run() {
       Log(ctx) << "  Removed " << chunks[i]->getDebugName();
       chunks[begin]->replace(chunks[i]);
     }
+    removed += end - begin - 1;
   });
+  return removed;
 }
 
 // Entry point to ICF.
-void doICF(COFFLinkerContext &ctx) { ICF(ctx).run(); }
+void doICF(COFFLinkerContext &ctx) { ICF(ctx, /*unwind=*/false).run(); }
 
+size_t mergeUnwindRecords(COFFLinkerContext &ctx) {
+  return ctx.config.doICF == ICFLevel::None ? 0
+                                            : ICF(ctx, /*unwind=*/true).run();
+}
 } // namespace lld::coff

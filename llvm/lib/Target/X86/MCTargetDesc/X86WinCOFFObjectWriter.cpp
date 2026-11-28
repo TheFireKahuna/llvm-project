@@ -71,7 +71,7 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
       Spec != MCSymbolRefExpr::VK_COFF_IMGREL32_CALL &&
       !(Spec == X86::S_COFF_REL32_CALL && FixupKind == FK_Data_4) &&
       !((Spec == X86::S_COFF_FUSED || Spec == X86::S_COFF_LOAD_CALL ||
-         Spec == X86::S_TPOFF) &&
+         Spec == X86::S_TPOFF || Spec == X86::S_GOTTPOFF) &&
         Is64Bit &&
         Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
     Ctx.reportError(Fixup.getLoc(),
@@ -119,6 +119,20 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
       Ctx.reportError(Fixup.getLoc(), "@TPOFF is not a 32-bit absolute field");
       return COFF::IMAGE_REL_AMD64_ABSOLUTE;
     }
+    // The word that holds it, which the linker makes, is relative to rip.
+    if (Spec == X86::S_GOTTPOFF) {
+      if (FixupKind == X86::reloc_riprel_4byte_movq_load ||
+          (X86::isRipRelInsn(FixupKind) &&
+           !((FixupKind - X86::reloc_riprel_4byte_insn) & 15)))
+        return COFF::IMAGE_REL_LLVM_GOTTPOFF32;
+      Ctx.reportError(Fixup.getLoc(),
+                      "@GOTTPOFF is not a field relative to rip at the end of "
+                      "its instruction");
+      return COFF::IMAGE_REL_AMD64_ABSOLUTE;
+    }
+    if (X86::isRipRelInsn(FixupKind))
+      return COFF::IMAGE_REL_LLVM_REL32_INSN |
+             (FixupKind - X86::reloc_riprel_4byte_insn);
     switch (FixupKind) {
     case X86::reloc_riprel_4byte_imm1:
       return COFF::IMAGE_REL_AMD64_REL32_1;
@@ -134,10 +148,13 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
       return COFF::IMAGE_REL_LLVM_MEM_JUMP_P1;
     case X86::reloc_riprel_4byte_tail:
       return COFF::IMAGE_REL_LLVM_MEM_JUMP_TAIL;
+    // The target's constant is the offset less the field's four bytes.
     case X86::reloc_riprel_4byte_lea:
-      // The target's constant is the offset less the field's four bytes.
       return Target.getConstant() == -4 ? COFF::IMAGE_REL_LLVM_LEA
                                         : COFF::IMAGE_REL_LLVM_LEA_OFFSET;
+    case X86::reloc_riprel_4byte_lea_rex2:
+      return Target.getConstant() == -4 ? COFF::IMAGE_REL_LLVM_LEA_REX2
+                                        : COFF::IMAGE_REL_LLVM_LEA_OFFSET_REX2;
     case X86::reloc_riprel_4byte_narrow:
       return COFF::IMAGE_REL_LLVM_LEA_NARROW;
     case X86::reloc_jump_4byte_pcrel:
