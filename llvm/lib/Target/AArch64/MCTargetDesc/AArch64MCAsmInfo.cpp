@@ -279,8 +279,15 @@ bool AArch64MCAsmInfoMicrosoftCOFF::evaluateAsRelocatableImpl(
   return evaluate(Expr, Res, Asm);
 }
 
-AArch64MCAsmInfoGNUCOFF::AArch64MCAsmInfoGNUCOFF(const MCTargetOptions &Options)
+AArch64MCAsmInfoGNUCOFF::AArch64MCAsmInfoGNUCOFF(const Triple &T,
+                                                 const MCTargetOptions &Options)
     : MCAsmInfoGNUCOFF(Options) {
+  // Windows Itanium names COMDAT sections as MSVC does, without MinGW's
+  // per-function suffix, so its unwind data needs associative COMDATs. It
+  // links with lld-link, which handles them.
+  if (T.isWindowsItaniumEnvironment())
+    HasCOFFAssociativeComdats = true;
+
   InternalSymbolPrefix = ".L";
 
   Data16bitsDirective = "\t.hword\t";

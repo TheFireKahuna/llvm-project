@@ -42,10 +42,12 @@ struct Instruction {
                                                       : UOP_SaveNonVol,
                               L, Reg, Offset);
   }
+  /// The near form scales its offset by 16; the far form states any offset.
   static WinEH::Instruction SaveXMM(MCSymbol *L, unsigned Reg,
                                     unsigned Offset) {
-    return WinEH::Instruction(Offset > 512 * 1024 - 8 ? UOP_SaveXMM128Big
-                                                      : UOP_SaveXMM128,
+    return WinEH::Instruction(Offset > 512 * 1024 - 8 || Offset % 16
+                                  ? UOP_SaveXMM128Big
+                                  : UOP_SaveXMM128,
                               L, Reg, Offset);
   }
   static WinEH::Instruction SetFPReg(MCSymbol *L, unsigned Reg, unsigned Off) {

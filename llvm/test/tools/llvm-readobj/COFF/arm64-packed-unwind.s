@@ -216,8 +216,7 @@
 // CHECK-NEXT:     Prologue [
 // CHECK-NEXT:       mov x29, sp
 // CHECK-NEXT:       stp x29, lr, [sp, #0]
-// CHECK-NEXT:       sub sp, sp, #16
-// CHECK-NEXT:       sub sp, sp, #4080
+// CHECK-NEXT:       sub sp, sp, #4096
 // CHECK-NEXT:       stp x19, x20, [sp, #-16]!
 // CHECK-NEXT:       end
 // CHECK-NEXT:     ]
@@ -232,8 +231,7 @@
 // CHECK-NEXT:     CR: 0
 // CHECK-NEXT:     FrameSize: 4112
 // CHECK-NEXT:     Prologue [
-// CHECK-NEXT:       sub sp, sp, #16
-// CHECK-NEXT:       sub sp, sp, #4080
+// CHECK-NEXT:       sub sp, sp, #4096
 // CHECK-NEXT:       stp x19, x20, [sp, #-16]!
 // CHECK-NEXT:       end
 // CHECK-NEXT:     ]

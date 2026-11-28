@@ -137,6 +137,11 @@ void WinException::endFunction(const MachineFunction *MF) {
 
   endFuncletImpl();
 
+  if (!MF->getEHContTargets().empty()) {
+    // Copy the function's EH Continuation targets to a module-level list.
+    llvm::append_range(EHContTargets, MF->getEHContTargets());
+  }
+
   // endFunclet will emit the necessary .xdata tables for table-based SEH.
   if (Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets())
     return;
@@ -163,11 +168,6 @@ void WinException::endFunction(const MachineFunction *MF) {
       emitExceptionTable();
 
     Asm->OutStreamer->popSection();
-  }
-
-  if (!MF->getEHContTargets().empty()) {
-    // Copy the function's EH Continuation targets to a module-level list.
-    llvm::append_range(EHContTargets, MF->getEHContTargets());
   }
 }
 
@@ -292,11 +292,6 @@ void WinException::endFuncletImpl() {
       // No need to emit the EH handler data right here if nothing needs
       // writing to the .xdata section; it will be emitted for all
       // functions that need it in the end anyway.
-    }
-
-    if (!MF->getEHContTargets().empty()) {
-      // Copy the function's EH Continuation targets to a module-level list.
-      llvm::append_range(EHContTargets, MF->getEHContTargets());
     }
 
     // Switch back to the funclet start .text section now that we are done

@@ -2572,6 +2572,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   bool IsImpCall = false;
   bool IsCFGuardCall = false;
+  MachineFunction::CalledGlobalInfo CalledGlobal = {};
   if (DAG.getTarget().getCodeModel() == CodeModel::Large) {
     assert(Is64Bit && "Large code model is only legal in 64-bit mode.");
     // In the 64-bit large code model, we have to make all calls
@@ -2584,7 +2585,12 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     // ForCall to true here has the effect of removing WrapperRIP when possible
     // to allow direct calls to be selected without first materializing the
     // address into a register.
+    const auto *G = dyn_cast<GlobalAddressSDNode>(Callee);
     Callee = LowerGlobalOrExternal(Callee, DAG, /*ForCall=*/true, &IsImpCall);
+    // A call through the global's pointer names no callee, so record it.
+    if (G && Callee.getOpcode() == ISD::LOAD)
+      CalledGlobal = {G->getGlobal(), Subtarget.classifyGlobalFunctionReference(
+                                          G->getGlobal())};
   } else if (Subtarget.isTarget64BitILP32() &&
              Callee.getValueType() == MVT::i32) {
     // Zero-extend the 32-bit Callee address into a 64-bit according to x32 ABI
@@ -2717,6 +2723,9 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
     DAG.addNoMergeSiteInfo(Ret.getNode(), CLI.NoMerge);
     DAG.addCallSiteInfo(Ret.getNode(), std::move(CSInfo));
+    if (CalledGlobal.Callee)
+      DAG.addCalledGlobal(Ret.getNode(), CalledGlobal.Callee,
+                          CalledGlobal.TargetFlags);
     return Ret;
   }
 
@@ -2753,6 +2762,9 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
   InGlue = Chain.getValue(1);
   DAG.addNoMergeSiteInfo(Chain.getNode(), CLI.NoMerge);
   DAG.addCallSiteInfo(Chain.getNode(), std::move(CSInfo));
+  if (CalledGlobal.Callee)
+    DAG.addCalledGlobal(Chain.getNode(), CalledGlobal.Callee,
+                        CalledGlobal.TargetFlags);
 
   // Save heapallocsite metadata.
   if (CLI.CB)

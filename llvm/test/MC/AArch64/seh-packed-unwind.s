@@ -179,40 +179,16 @@
 // CHECK-NEXT:     ]
 // CHECK-NEXT:   }
 // CHECK-NEXT:   RuntimeFunction {
-// CHECK-NEXT:     Function: func12
-// CHECK-NEXT:     Fragment: No
-// CHECK-NEXT:     FunctionLength: 48
-// CHECK-NEXT:     RegF: 0
-// CHECK-NEXT:     RegI: 2
-// CHECK-NEXT:     HomedParameters: No
-// CHECK-NEXT:     CR: 3
-// CHECK-NEXT:     FrameSize: 4112
-// CHECK-NEXT:     Prologue [
-// CHECK-NEXT:       mov x29, sp
-// CHECK-NEXT:       stp x29, lr, [sp, #0]
-// CHECK-NEXT:       sub sp, sp, #16
-// CHECK-NEXT:       sub sp, sp, #4080
-// CHECK-NEXT:       stp x19, x20, [sp, #-16]!
-// CHECK-NEXT:       end
-// CHECK-NEXT:     ]
-// CHECK-NEXT:   }
-// CHECK-NEXT:   RuntimeFunction {
-// CHECK-NEXT:     Function: func13
-// CHECK-NEXT:     Fragment: No
-// CHECK-NEXT:     FunctionLength: 32
-// CHECK-NEXT:     RegF: 0
-// CHECK-NEXT:     RegI: 2
-// CHECK-NEXT:     HomedParameters: No
-// CHECK-NEXT:     CR: 0
-// CHECK-NEXT:     FrameSize: 4112
-// CHECK-NEXT:     Prologue [
-// CHECK-NEXT:       sub sp, sp, #16
-// CHECK-NEXT:       sub sp, sp, #4080
-// CHECK-NEXT:       stp x19, x20, [sp, #-16]!
-// CHECK-NEXT:       end
-// CHECK-NEXT:     ]
-// CHECK-NEXT:   }
-// CHECK-NEXT:   RuntimeFunction {
+// CHECK-NEXT:     Function: notpacked_func12
+// CHECK-NEXT:     ExceptionRecord:
+// CHECK-NEXT:     ExceptionData {
+// CHECK:            EpiloguePacked: Yes
+// CHECK:        RuntimeFunction {
+// CHECK-NEXT:     Function: notpacked_func13
+// CHECK-NEXT:     ExceptionRecord:
+// CHECK-NEXT:     ExceptionData {
+// CHECK:            EpiloguePacked: Yes
+// CHECK:        RuntimeFunction {
 // CHECK-NEXT:     Function: func14
 // CHECK-NEXT:     Fragment: No
 // CHECK-NEXT:     FunctionLength: 32
@@ -277,25 +253,11 @@
 // CHECK-NEXT:     ]
 // CHECK-NEXT:   }
 // CHECK-NEXT:   RuntimeFunction {
-// CHECK-NEXT:     Function: func18
-// CHECK-NEXT:     Fragment: No
-// CHECK-NEXT:     FunctionLength: 56
-// CHECK-NEXT:     RegF: 0
-// CHECK-NEXT:     RegI: 2
-// CHECK-NEXT:     HomedParameters: No
-// CHECK-NEXT:     CR: 2
-// CHECK-NEXT:     FrameSize: 4112
-// CHECK-NEXT:     Prologue [
-// CHECK-NEXT:       mov x29, sp
-// CHECK-NEXT:       stp x29, lr, [sp, #0]
-// CHECK-NEXT:       sub sp, sp, #16
-// CHECK-NEXT:       sub sp, sp, #4080
-// CHECK-NEXT:       stp x19, x20, [sp, #-16]!
-// CHECK-NEXT:       pacibsp
-// CHECK-NEXT:       end
-// CHECK-NEXT:     ]
-// CHECK-NEXT:   }
-// CHECK-NEXT:   RuntimeFunction {
+// CHECK-NEXT:     Function: notpacked_func18
+// CHECK-NEXT:     ExceptionRecord:
+// CHECK-NEXT:     ExceptionData {
+// CHECK:            EpiloguePacked: Yes
+// CHECK:        RuntimeFunction {
 // CHECK-NEXT:     Function: func19
 // CHECK-NEXT:     Fragment: No
 // CHECK-NEXT:     FunctionLength: 32
@@ -397,6 +359,11 @@
 // CHECK:            EpiloguePacked: Yes
 // CHECK:        RuntimeFunction {
 // CHECK-NEXT:     Function: nonpacked17
+// CHECK-NEXT:     ExceptionRecord:
+// CHECK-NEXT:     ExceptionData {
+// CHECK:            EpiloguePacked: Yes
+// CHECK:        RuntimeFunction {
+// CHECK-NEXT:     Function: nonpacked18
 // CHECK-NEXT:     ExceptionRecord:
 // CHECK-NEXT:     ExceptionData {
 // CHECK:            EpiloguePacked: Yes
@@ -670,8 +637,11 @@ func11:
     ret
     .seh_endproc
 
-func12:
-    .seh_proc func12
+notpacked_func12:
+    // The documentation describes this function with packed unwind info,
+    // but Windows expands it to one decrement of the locals, not two;
+    // therefore, we don't pack this case.
+    .seh_proc notpacked_func12
     stp x19, x20, [sp, #-16]!
     .seh_save_r19r20_x 16
     sub sp,  sp,  #4080
@@ -699,8 +669,9 @@ func12:
     ret
     .seh_endproc
 
-func13:
-    .seh_proc func13
+notpacked_func13:
+    // As notpacked_func12.
+    .seh_proc notpacked_func13
     stp x19, x20, [sp, #-16]!
     .seh_save_r19r20_x 16
     sub sp,  sp,  #4080
@@ -801,8 +772,9 @@ func17:
     ret
     .seh_endproc
 
-func18:
-    .seh_proc func18
+notpacked_func18:
+    // As notpacked_func12.
+    .seh_proc notpacked_func18
     pacibsp
     .seh_pac_sign_lr
     stp x19, x20, [sp, #-16]!
@@ -1263,6 +1235,31 @@ nonpacked17:
     .seh_save_lrpair x19, 0
     add sp,  sp,  #64
     .seh_stackalloc 64
+    .seh_endepilogue
+    ret
+    .seh_endproc
+
+nonpacked18:
+    .seh_proc nonpacked18
+    // Can't be packed; Windows expands a frame record with up to 512 bytes
+    // of locals to one stp x29, lr, [sp, #-LocSZ]!
+    stp x19, x20, [sp, #-16]!
+    .seh_save_r19r20_x 16
+    sub sp,  sp,  #32
+    .seh_stackalloc 32
+    stp x29, lr,  [sp, #0]
+    .seh_save_fplr 0
+    mov x29, sp
+    .seh_set_fp
+    .seh_endprologue
+    nop
+    .seh_startepilogue
+    ldp x29, lr,  [sp, #0]
+    .seh_save_fplr 0
+    add sp,  sp,  #32
+    .seh_stackalloc 32
+    ldp x19, x20, [sp], #16
+    .seh_save_r19r20_x 16
     .seh_endepilogue
     ret
     .seh_endproc

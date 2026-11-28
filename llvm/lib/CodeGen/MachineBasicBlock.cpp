@@ -1807,7 +1807,14 @@ MachineBasicBlock::computeRegisterLiveness(const TargetRegisterInfo *TRI,
 const uint32_t *
 MachineBasicBlock::getBeginClobberMask(const TargetRegisterInfo *TRI) const {
   // EH funclet entry does not preserve any registers.
-  return isEHFuncletEntry() ? TRI->getNoPreservedMask() : nullptr;
+  if (isEHFuncletEntry())
+    return TRI->getNoPreservedMask();
+  // Under asynchronous EH any instruction of a region may fault to its pad,
+  // and the unwind to the pad restores only the callee-saved registers.
+  const Function &F = getParent()->getFunction();
+  return isEHPad() && F.getParent()->getModuleFlag("eh-asynch")
+             ? TRI->getCallPreservedMask(*getParent(), F.getCallingConv())
+             : nullptr;
 }
 
 const uint32_t *

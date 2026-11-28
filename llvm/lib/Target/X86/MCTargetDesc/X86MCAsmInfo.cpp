@@ -176,6 +176,12 @@ X86MCAsmInfoGNUCOFF::X86MCAsmInfoGNUCOFF(const Triple &Triple,
     WinEHEncodingType = WinEH::EncodingType::Itanium;
   }
 
+  // Windows Itanium names COMDAT sections as MSVC does, without MinGW's
+  // per-function suffix, so its unwind data needs associative COMDATs. It
+  // links with lld-link, which handles them.
+  if (Triple.isWindowsItaniumEnvironment())
+    HasCOFFAssociativeComdats = true;
+
   AssemblerDialect = X86_MC::getCLOpts(Options).asm_syntax;
 
   AllowAtInName = true;

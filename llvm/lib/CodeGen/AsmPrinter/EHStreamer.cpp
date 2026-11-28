@@ -180,6 +180,13 @@ bool EHStreamer::callToNoUnwindFunction(const MachineInstr *MI) {
     SawFunc = true;
   }
 
+  // A call through a register has no function operand, but the function it
+  // calls may still be recorded as its called global.
+  if (!SawFunc)
+    if (const auto *F = dyn_cast_if_present<Function>(
+            MI->getMF()->tryGetCalledGlobal(MI).Callee))
+      MarkedNoUnwind = F->doesNotThrow();
+
   return MarkedNoUnwind;
 }
 

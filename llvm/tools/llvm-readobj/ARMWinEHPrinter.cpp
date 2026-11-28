@@ -1419,12 +1419,10 @@ bool Decoder::dumpPackedARM64Entry(const object::COFFObjectFile &COFF,
       SW.startLine() << "stp x29, lr, [sp, #0]\n";
     }
   }
-  if (LocSZ > 4080) {
-    SW.startLine() << format("sub sp, sp, #%d\n", LocSZ - 4080);
-    SW.startLine() << "sub sp, sp, #4080\n";
-  } else if ((RF.CR() != 3 && RF.CR() != 2 && LocSZ > 0) || LocSZ > 512) {
+  // Windows expands any size of locals to one decrement, where the
+  // documentation describes two above 4080 bytes.
+  if ((RF.CR() != 3 && RF.CR() != 2 && LocSZ > 0) || LocSZ > 512)
     SW.startLine() << format("sub sp, sp, #%d\n", LocSZ);
-  }
   if (Homing) {
     SW.startLine() << format("stp x6, x7, [sp, #%d]\n", SavSZ - 16);
     SW.startLine() << format("stp x4, x5, [sp, #%d]\n", SavSZ - 32);

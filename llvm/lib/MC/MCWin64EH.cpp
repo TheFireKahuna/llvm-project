@@ -234,10 +234,7 @@ static void EmitUnwindCode(MCStreamer &streamer, const MCSymbol *begin,
     b2 |= (inst.Register & 0x0F) << 4;
     EmitAbsDifference(streamer, inst.Label, begin);
     streamer.emitInt8(b2);
-    if (inst.Operation == Win64EH::UOP_SaveXMM128Big)
-      w = inst.Offset & 0xFFF0;
-    else
-      w = inst.Offset & 0xFFF8;
+    w = inst.Offset & 0xFFF8;
     streamer.emitInt16(w);
     w = inst.Offset >> 16;
     streamer.emitInt16(w);
@@ -988,9 +985,14 @@ static void EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info) {
 
   streamer.emitInt8(numCodes);
 
+  // A chained entry repeats its parent's frame register and offset.
+  const WinEH::FrameInfo *FrameSrc = info;
+  if (info->LastFrameInst < 0 && info->ChainedParent)
+    FrameSrc = info->ChainedParent;
   uint8_t frame = 0;
-  if (info->LastFrameInst >= 0) {
-    WinEH::Instruction &frameInst = info->Instructions[info->LastFrameInst];
+  if (FrameSrc->LastFrameInst >= 0) {
+    const WinEH::Instruction &frameInst =
+        FrameSrc->Instructions[FrameSrc->LastFrameInst];
     assert(frameInst.Operation == Win64EH::UOP_SetFPReg);
     frame = (frameInst.Register & 0x0F) | (frameInst.Offset & 0xF0);
   }
@@ -1026,13 +1028,9 @@ static void EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info) {
   if (AddPaddingEpilogCode)
     streamer.emitInt16(Win64EH::UOP_Epilog << 8);
 
-  // Emit unwind instructions (in reverse order).
-  uint8_t numInst = info->Instructions.size();
-  for (uint8_t c = 0; c < numInst; ++c) {
-    WinEH::Instruction inst = info->Instructions.back();
-    info->Instructions.pop_back();
+  // Emit unwind instructions (in reverse order); chained entries reread them.
+  for (WinEH::Instruction &inst : llvm::reverse(info->Instructions))
     EmitUnwindCode(streamer, info->Begin, inst);
-  }
 
   // For alignment purposes, the instruction array will always have an even
   // number of entries, with the final entry potentially unused (in which case
@@ -1882,9 +1880,10 @@ static bool tryARM64PackedUnwind(WinEH::FrameInfo *info, uint32_t FuncLength,
       break;
     case Win64EH::UOP_AllocSmall:
     case Win64EH::UOP_AllocMedium:
+      // Windows expands the locals of packed unwind info to one decrement of
+      // any size, not the pair of decrements the documentation describes.
       if (Location != Start2 && Location != Start3 && Location != IntRegs &&
-          Location != FloatRegs && Location != InputArgs &&
-          Location != StackAdjust)
+          Location != FloatRegs && Location != InputArgs)
         return false;
       // Becuase there's no save_lrpair_x opcode, the case of CR=01,
       // RegI=1 is handled as a special case with a pair of instructions; an
@@ -1908,14 +1907,7 @@ static bool tryARM64PackedUnwind(WinEH::FrameInfo *info, uint32_t FuncLength,
           }
         }
       }
-      // Can have either a single decrement, or a pair of decrements with
-      // 4080 and another decrement.
-      if (StackOffset == 0)
-        StackOffset = Inst.Offset;
-      else if (StackOffset != 4080)
-        return false;
-      else
-        StackOffset += Inst.Offset;
+      StackOffset = Inst.Offset;
       Location = StackAdjust;
       break;
     case Win64EH::UOP_SaveFPLRX:
@@ -1929,8 +1921,9 @@ static bool tryARM64PackedUnwind(WinEH::FrameInfo *info, uint32_t FuncLength,
       FPLRPair = true;
       break;
     case Win64EH::UOP_SaveFPLR:
-      // This can only follow after a StackAdjust
-      if (Location != StackAdjust || Inst.Offset != 0)
+      // This can only follow after a StackAdjust, of more than the 512 bytes
+      // that a save_fplr_x expands to instead.
+      if (Location != StackAdjust || Inst.Offset != 0 || StackOffset <= 512)
         return false;
       Location = FrameRecord;
       FPLRPair = true;

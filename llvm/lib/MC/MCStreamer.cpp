@@ -1124,8 +1124,8 @@ void MCStreamer::emitWinCFISaveXMM(MCRegister Register, unsigned Offset,
   WinEH::FrameInfo *CurFrame = EnsureValidWinFrameInfo(Loc);
   if (!CurFrame)
     return;
-  if (Offset & 0x0F)
-    return getContext().reportError(Loc, "offset is not a multiple of 16");
+  if (Offset & 0x07)
+    return getContext().reportError(Loc, "offset is not a multiple of 8");
 
   MCSymbol *Label = emitCFILabel();
 

@@ -258,6 +258,11 @@ void FunctionLoweringInfo::set(const Function &fn, MachineFunction &mf,
       // FIXME: SEH catchpads do not create EH scope/funclets, so we could avoid
       // setting this in such cases in order to improve frame layout.
       if (!isa<LandingPadInst>(PadInst)) {
+        // A personality known to take landing pads has no funclet pads.
+        if (Personality != EHPersonality::Unknown &&
+            !isScopedEHPersonality(Personality))
+          reportFatalUsageError("funclet pad in function '" + Fn->getName() +
+                                "' under a landing-pad personality");
         MF->setHasEHScopes(true);
         MF->setHasEHFunclets(true);
         MF->getFrameInfo().setHasOpaqueSPAdjustment(true);

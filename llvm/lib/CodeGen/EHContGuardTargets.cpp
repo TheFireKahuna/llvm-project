@@ -31,17 +31,19 @@ using namespace llvm;
 STATISTIC(EHContGuardTargetsFound, "Number of EHCont Guard targets");
 
 static bool runEHContGuardTargets(MachineFunction &MF) {
+  const Module &M = *MF.getFunction().getParent();
   // Skip modules for which the ehcontguard flag is not set.
-  if (!MF.getFunction().getParent()->getModuleFlag("ehcontguard"))
+  if (!M.getModuleFlag("ehcontguard"))
     return false;
 
-  // Skip functions that do not have targets
-  if (!MF.hasEHContTarget())
-    return false;
-
+  // Under Windows EH the unwinder enters a landing pad by restoring a context
+  // whose instruction pointer is the pad, as it enters a catchret target.
+  bool MarkLandingPads = M.getExceptionModel() == ExceptionHandling::WinEH;
   bool Result = false;
 
   for (MachineBasicBlock &MBB : MF) {
+    if (MarkLandingPads && MBB.isEHPad() && !MBB.isEHFuncletEntry())
+      MBB.setIsEHContTarget(true);
     if (MBB.isEHContTarget()) {
       MF.addEHContTarget(MBB.getEHContSymbol());
       EHContGuardTargetsFound++;

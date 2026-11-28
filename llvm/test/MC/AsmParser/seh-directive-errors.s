@@ -98,7 +98,7 @@ h:                                      # @h
         .seh_savexmm 7 44
     # CHECK: :[[@LINE-1]]:{{[0-9]+}}: error: you must specify an offset on the stack
         .seh_savexmm %xmm7, 44
-    # CHECK: :[[@LINE-1]]:{{[0-9]+}}: error: offset is not a multiple of 16
+    # CHECK: :[[@LINE-1]]:{{[0-9]+}}: error: offset is not a multiple of 8
         .seh_savexmm %xmm7, 48
         movaps  %xmm6, 32(%rsp)         # 16-byte Spill
         .seh_savexmm %xmm6, 32

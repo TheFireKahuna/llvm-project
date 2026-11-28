@@ -74,12 +74,12 @@
 // CHECK-NEXT:       Flags [
 // CHECK-NEXT:         ExceptionHandler
 // CHECK-NEXT:       ]
-// CHECK-NEXT:       PrologSize: 18
+// CHECK-NEXT:       PrologSize: 20
 // CHECK-NEXT:       FrameRegister: RBX
-// CHECK-NEXT:       FrameOffset: 0x0
+// CHECK-NEXT:       FrameOffset: 0x1
 // CHECK-NEXT:       UnwindCodeCount: 8
 // CHECK-NEXT:       UnwindCodes [
-// CHECK-NEXT:         0x12: SET_FPREG reg=RBX, offset=0x0
+// CHECK-NEXT:         0x14: SET_FPREG reg=RBX, offset=0x10
 // CHECK-NEXT:         0x0F: PUSH_NONVOL reg=RBX
 // CHECK-NEXT:         0x0E: SAVE_XMM128 reg=XMM8, offset=0x0
 // CHECK-NEXT:         0x09: SAVE_NONVOL reg=RSI, offset=0x10
@@ -99,8 +99,8 @@
 // CHECK-NEXT:         ChainInfo
 // CHECK-NEXT:       ]
 // CHECK-NEXT:       PrologSize: 0
-// CHECK-NEXT:       FrameRegister: -
-// CHECK-NEXT:       FrameOffset: -
+// CHECK-NEXT:       FrameRegister: RBX
+// CHECK-NEXT:       FrameOffset: 0x1
 // CHECK-NEXT:       UnwindCodeCount: 0
 // CHECK-NEXT:       UnwindCodes [
 // CHECK-NEXT:       ]
@@ -183,8 +183,8 @@ func:
     .seh_savexmm %xmm8, 0
     pushq %rbx
     .seh_pushreg %rbx
-    mov %rsp, %rbx
-    .seh_setframe 3, 0
+    lea 16(%rsp), %rbx
+    .seh_setframe 3, 16
     .seh_endprologue
     .seh_handler __C_specific_handler, @except
     .seh_handlerdata
@@ -194,7 +194,7 @@ func:
     .seh_splitchained
     .seh_endprologue
     .seh_startepilogue
-    lea (%rbx), %rsp
+    lea -16(%rbx), %rsp
     pop %rbx
     addq $24, %rsp
     .seh_endepilogue
