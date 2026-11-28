@@ -35,7 +35,8 @@ protected:
   /// Collected machine module information.
   MachineModuleInfo *MMI;
 
-  /// Where the function's unwind range begins, if not at its entry.
+  /// Where the unwind range that emitExceptionTable's table is for begins, if
+  /// not at the function's entry.
   MCSymbol *RegionBegin = nullptr;
 
   /// How many leading type ids two landing pads have in common.
@@ -138,7 +139,7 @@ protected:
   ///     catches in the function.  This tables is reversed indexed base 1.
   ///
   /// Returns the starting symbol of an exception table.
-  MCSymbol *emitExceptionTable();
+  MCSymbol *emitExceptionTable(const MachineBasicBlock *Part = nullptr);
 
   virtual void emitTypeInfos(unsigned TTypeEncoding, MCSymbol *TTBaseLabel);
 

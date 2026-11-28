@@ -89,8 +89,8 @@
 
 // In a section with no such site the linker keeps the length of every site,
 // so the assembler resolves its distances and states no padding. Where it
-// ends in a jmp that the linker may delete, the section is listed and only a
-// value that spans that jmp is a relocation.
+// ends in a jmp that the linker may delete, the section is listed and states
+// a value that spans that jmp as a span, with no relocation or label.
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text$k {
 // CHECK-NEXT:     0x4 IMAGE_REL_LLVM_MEM_CALL __imp_g
 // CHECK-NEXT:     0x11 IMAGE_REL_LLVM_BRANCH_TAIL ext
@@ -98,10 +98,6 @@
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text$t {
 // CHECK-NEXT:     0x4 IMAGE_REL_LLVM_MEM_CALL __imp_g
 // CHECK-NEXT:     0x9 IMAGE_REL_LLVM_BRANCH_TAIL ext
-// CHECK-NEXT:   }
-// CHECK-NEXT:   Section ({{[0-9]+}}) .rdata$t {
-// CHECK-NEXT:     0x0 IMAGE_REL_AMD64_SSPAN32 [[TEND:\$L[0-9a-f]+]]
-// CHECK-NEXT:     0x0 IMAGE_REL_AMD64_PAIR t
 // CHECK-NEXT:   }
 
 // A difference of two labels that the linker may move apart is a span, of any
@@ -159,6 +155,18 @@
 // CHECK-NEXT:     ResizableSection: .text$n ({{[0-9]+}})
 // CHECK-NEXT:     ResizableSection: .text$v ({{[0-9]+}})
 // CHECK-NEXT:     ResizableSection: .text$t ({{[0-9]+}})
+// CHECK-NEXT:   }
+// CHECK-NEXT:   Group {
+// CHECK-NEXT:     Kind: Spans (0x5)
+// CHECK-NEXT:     Spans {
+// CHECK-NEXT:       Field: .text$t ({{[0-9]+}})
+// CHECK-NEXT:       Target: .text$t ({{[0-9]+}})
+// CHECK-NEXT:     }
+// CHECK-NEXT:     Spans {
+// CHECK-NEXT:       Field: .rdata$t ({{[0-9]+}})
+// CHECK-NEXT:       Target: .text$t ({{[0-9]+}})
+// CHECK-NEXT:       0x0 IMAGE_REL_AMD64_SSPAN32 0x0
+// CHECK-NEXT:     }
 // CHECK-NEXT:   }
 
 // UNWIND: EPILOG offset=0xC

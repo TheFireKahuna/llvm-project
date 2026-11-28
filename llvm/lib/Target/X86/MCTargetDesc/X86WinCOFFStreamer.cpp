@@ -24,6 +24,7 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCWin64EH.h"
+#include "llvm/MC/MCWinCOFFObjectWriter.h"
 #include "llvm/MC/MCWinCOFFStreamer.h"
 #include "llvm/MC/TargetRegistry.h"
 
@@ -53,6 +54,8 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   // The register that the last instruction wrote, where it was the load of a
   // pointer that is no fused read.
   MCRegister LastLoad;
+  // The fragments that end with the load of a pointer for the call after it.
+  SmallPtrSet<const MCFragment *, 0> CallLoads;
   // The label that the last instruction jumps to, a jcc that no label
   // follows. Where the last instruction is a jmp through a pointer that no
   // unwind frame covers, directly after such a jcc, the jcc's label, and the
@@ -84,6 +87,7 @@ public:
     LastFrag = ReadFrag = nullptr;
     LastLoad = CallLoad = MCRegister();
     JccTarget = OverTarget = nullptr;
+    CallLoads.clear();
     PrefixRun = 0;
     AfterTest = false;
     MCWinCOFFStreamer::reset();
@@ -116,6 +120,9 @@ void X86WinCOFFStreamer::emitLabel(MCSymbol *Symbol, SMLoc Loc) {
     OverTarget = nullptr;
   }
   JccTarget = nullptr;
+  if (CallLoad)
+    getContext().reportError(Loc, "label between the load of a pointer for a "
+                                  "call and the call");
   MCWinCOFFStreamer::emitLabel(Symbol, Loc);
 }
 
@@ -160,6 +167,7 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
   };
   const MCSymbol *Load = nullptr;
   bool Read = false, Stated = false;
+  MCRegister ForCall;
   // A fused site is one unit to padding, which goes before its marker.
   unsigned Part = X86_MC::FSP_None;
   MCSymbol *Marker = nullptr;
@@ -245,11 +253,11 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
         bool Rip = Inst.getOperand(1 + X86::AddrBaseReg).getReg() == X86::RIP;
         // A load for the call after it is a site with that call.
         if (Pointer->getSpecifier() == X86::S_COFF_LOAD_CALL) {
-          CallLoad = Inst.getOperand(0).getReg();
+          ForCall = Inst.getOperand(0).getReg();
           Part = X86_MC::FSP_First;
         }
         Stated =
-            CallLoad ||
+            ForCall ||
             (Rip && COFF::isBoundPointerName(Pointer->getSymbol().getName()));
         Read = Pointer->getSpecifier() == X86::S_COFF_FUSED;
         if (Read || (Pointer->getSpecifier() == X86::S_None && Rip &&
@@ -323,6 +331,8 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
     // emitter states the other instructions it may resize; a load is stated
     // here, once the field of a fused read has been found.
     if (MCII) {
+      if (ForCall)
+        CallLoads.insert(After);
       finishInstruction(Stated || Read || (Part & X86_MC::FSP_Last), Frag);
       After = getCurrentFragment();
       End = getCurFragSize();
@@ -344,6 +354,7 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
                     : 0;
     LastFrag = After;
     LastEnd = End;
+    CallLoad = ForCall;
   });
 
   // A jmp through memory states the prefixes before it, which the linker
@@ -408,16 +419,22 @@ void X86WinCOFFStreamer::finishImpl() {
                                       "followed by the call through its "
                                       "register");
   // The linker moves the code of a section only after a site that says so.
-  // In any other it writes each site in its assembled length and may only
-  // delete a jmp to another section that ends the section. So nothing in
-  // such a section is the linker's to resize but the fragment of that jmp,
-  // and the assembler resolves every distance that does not span it.
+  // Any other it only compacts: it writes a direct call in five bytes over a
+  // load and the call through its register, deletes a jmp to another section
+  // that ends the section, and writes every other site in its assembled
+  // length. So nothing in such a section is the linker's to resize but the
+  // fragments of those loads and of that jmp. The assembler resolves every
+  // distance, chooses every width, and states as a span each value that
+  // spans one of them.
   for (MCSection &Sec : getAssembler()) {
     if (!MCII || !Sec.isLinkerRelaxable() || MovingSections.contains(&Sec))
       continue;
     MCFragment *Last = nullptr;
+    unsigned First = -1u;
     for (MCFragment &F : Sec) {
-      F.setLinkerRelaxable(false);
+      F.setLinkerRelaxable(CallLoads.contains(&F));
+      if (F.isLinkerRelaxable())
+        First = std::min(First, F.getLayoutOrder());
       if (F.getKind() != MCFragment::FT_Data || F.getSize())
         Last = &F;
     }
@@ -436,7 +453,10 @@ void X86WinCOFFStreamer::finishImpl() {
       }
     if (Tail)
       Last->setLinkerRelaxable();
-    Sec.setFirstLinkerRelaxable(Tail ? Last->getLayoutOrder() : -1u);
+    Sec.setFirstLinkerRelaxable(Tail ? std::min(First, Last->getLayoutOrder())
+                                     : First);
+    if (Sec.isLinkerRelaxable())
+      getWriter().Spans[{&Sec, &Sec}];
   }
   emitFrames();
   emitWindowsUnwindTables();

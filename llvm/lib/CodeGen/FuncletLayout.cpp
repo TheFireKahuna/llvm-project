@@ -15,6 +15,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/CodeGen/TargetFrameLowering.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/InitializePasses.h"
@@ -36,8 +37,10 @@ static bool runFuncletLayout(MachineFunction &F) {
     return false;
   // An epilogue ends its block but for a return or a jump: the unwinder takes
   // what follows one for the body's. Code that tail duplication put there is
-  // leaf code, which reads nothing the epilogue restores: ahead of a return it
-  // goes ahead of the epilogue, and elsewhere into a block outside the frame.
+  // leaf code, which reads nothing the epilogue restores, and so is a branch
+  // that may fall through, a conditional tail call among them: ahead of a
+  // return it goes ahead of the epilogue, and elsewhere into a block outside
+  // the frame.
   auto InEpilogue = [](const MachineInstr &MI) {
     return MI.getFlag(MachineInstr::FrameDestroy);
   };
@@ -46,14 +49,20 @@ static bool runFuncletLayout(MachineFunction &F) {
     auto Leaf = std::find_if_not(Epilogue, MBB.end(), [&](auto &MI) {
       return InEpilogue(MI) || MI.isDebugInstr();
     });
-    if (!Frame.count(&MBB) || Leaf == MBB.end() || Leaf->isReturn() ||
+    if (!Frame.count(&MBB) || Leaf == MBB.end() ||
+        (Leaf->isReturn() && Leaf->isBarrier()) ||
         Leaf->isUnconditionalBranch())
       continue;
-    if (MBB.isReturnBlock())
+    if (MBB.isReturnBlock() && MBB.back().isBarrier())
       MBB.splice(MBB.getFirstTerminator(), &MBB, Epilogue, Leaf);
-    else
-      FuncletMembership[MBB.splitAt(*std::prev(Leaf))] =
-          FuncletMembership.lookup(&MBB);
+    else {
+      MachineBasicBlock *Tail = MBB.splitAt(*std::prev(Leaf));
+      FuncletMembership[Tail] = FuncletMembership.lookup(&MBB);
+      // A jump table's debug info stays in its branch's block.
+      auto JT = find_if(MBB, [](auto &MI) { return MI.isJumpTableDebugInfo(); });
+      if (JT != MBB.end())
+        Tail->splice(Tail->getFirstTerminator(), &MBB, JT);
+    }
   }
   for (MachineBasicBlock &MBB : F) {
     if (!Frame.count(&MBB))
@@ -68,14 +77,22 @@ static bool runFuncletLayout(MachineFunction &F) {
     break;
   }
 
+  // Where the epilogues are stated, a block whose epilogue would fall out of
+  // the frame goes last in it, so that one does.
+  bool StatesEpilogues =
+      F.getSubtarget().getFrameLowering()->statesWindowsEpilogues(F);
+  auto FallsOut = [&](MachineBasicBlock &MBB) {
+    auto Last = MBB.getLastNonDebugInstr();
+    return StatesEpilogues && Last != MBB.end() && InEpilogue(*Last);
+  };
   DenseMap<const MachineBasicBlock *, int> Side;
   DenseMap<MachineBasicBlock *, MachineBasicBlock *> LayoutSucc;
   int Current = 0, Own = FuncletMembership.lookup(&F.front());
   for (MachineBasicBlock &MBB : F) {
     if (Frame.count(&MBB))
-      Current = 2;
+      Current = 3;
     if (FuncletMembership.lookup(&MBB) == Own)
-      Side[&MBB] = Frame.count(&MBB) ? 1 : Current;
+      Side[&MBB] = Frame.count(&MBB) ? 1 + FallsOut(MBB) : Current;
     LayoutSucc[&MBB] = MBB.getNextNode();
   }
   F.sort([&](MachineBasicBlock &X, MachineBasicBlock &Y) {
@@ -93,10 +110,11 @@ static bool runFuncletLayout(MachineFunction &F) {
         MBB.updateTerminator(LayoutSucc[&MBB]);
       // An epilogue ends in a return or a jump within the frame, the form the
       // unwinder knows: one that would fall out of it into a return ends in
-      // its own copy of the return, and into other code jumps there.
+      // its own copy of the return, and into other code jumps there. Where
+      // the epilogues are stated, one falls out.
       MachineBasicBlock *Next = MBB.getNextNode();
-      if (Frame.count(&MBB) && Next && !Frame.count(Next) && !TBB &&
-          MBB.isSuccessor(Next) &&
+      if (!StatesEpilogues && Frame.count(&MBB) && Next && !Frame.count(Next) &&
+          !TBB && MBB.isSuccessor(Next) &&
           MBB.getFirstTerminator() == MBB.end() &&
           any_of(MBB, [](const MachineInstr &MI) {
             return MI.getFlag(MachineInstr::FrameDestroy);
@@ -111,6 +129,14 @@ static bool runFuncletLayout(MachineFunction &F) {
       }
     }
   }
+
+  // Block placement aligns a loop by how often its function's own code runs,
+  // which says nothing of a cleanup, so no block of one stays aligned.
+  if (usesCalledCleanups(F.getFunction()))
+    for (MachineBasicBlock &MBB :
+         make_range(find_if(F, [](auto &MBB) { return MBB.isEHFuncletEntry(); }),
+                    F.end()))
+      MBB.setAlignment(Align(1));
 
   // Conservatively assume we changed something.
   return true;

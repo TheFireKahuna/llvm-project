@@ -1,5 +1,7 @@
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium < %s | FileCheck %s
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -O0 < %s | FileCheck %s --check-prefix=O0
+; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-itanium < %s \
+; RUN:   | FileCheck %s --check-prefix=A64 %}
 ; RUN: sed 's/"CodeView", i32 1/"Dwarf Version", i32 5/' %s \
 ; RUN:   | llc -mtriple=x86_64-unknown-windows-itanium -filetype=obj \
 ; RUN:   | llvm-dwarfdump --debug-info - | FileCheck %s --check-prefix=DWARF
@@ -10,31 +12,44 @@
 ; stack pointer in the function's code and from that register in the
 ; funclet's, at the offset the funclet's code uses. A variable that the
 ; function has in a callee-saved register is described in the funclet too,
-; which is entered with the function's callee-saved registers.
+; which is entered with the function's callee-saved registers. The funclet
+; lies in the function's cold section: a range ends with its section, and
+; each section has its line table, which begins with a location of its own.
 
 ; CHECK-LABEL: f:
 ; CHECK:         retq
-; CHECK-NEXT:  [[FUNCLET:.Ltmp[0-9]+]]:
+; CHECK-NEXT:  [[HOTEND:.LBB_END0_[0-9]+]]:
 ; CHECK-NEXT:    .seh_handlerdata
 ; CHECK:       "?dtor$2@?0?f@4HA":
-; CHECK:         leaq [[#OFF:]](%rdx), %rcx
+; CHECK-NEXT:  f.cold:
+; CHECK:         .cv_loc 0 1 4 0
+; CHECK-NEXT:    leaq [[#OFF:]](%rdx), %rcx
 ; CHECK-NEXT:    jmp dtor
-; CHECK-NEXT:  [[END:.Ltmp[0-9]+]]:
+; CHECK-NEXT:  [[END:.LBB_END0_[0-9]+]]:
 ; CHECK:         .asciz "a"
-; CHECK:         .cv_def_range .Ltmp{{[0-9]+}} [[FUNCLET]], frame_ptr_rel, [[#OFF]]
-; CHECK-NEXT:    .cv_def_range [[FUNCLET]] [[END]], reg_rel, 331, 0, [[#OFF]]
+; CHECK:         .cv_def_range .Ltmp{{[0-9]+}} [[HOTEND]], frame_ptr_rel, [[#OFF]]
+; CHECK-NEXT:    .cv_def_range f.cold [[END]], reg_rel, 331, 0, [[#OFF]]
 ; CHECK-NOT:     .cv_def_range
 ; CHECK:         .asciz "x"
-; CHECK:         .cv_def_range .Ltmp{{[0-9]+}} .Ltmp{{[0-9]+}} [[FUNCLET]] .Lfunc_end0, reg, 23
-; CHECK-NEXT:    .cv_def_range .Ltmp{{[0-9]+}} [[FUNCLET]], reg, 17
+; CHECK:         .cv_def_range .Ltmp{{[0-9]+}} .Ltmp{{[0-9]+}} f.cold [[END]], reg, 23
+; CHECK-NEXT:    .cv_def_range .Ltmp{{[0-9]+}} [[HOTEND]], reg, 17
 ; CHECK-NOT:     .cv_def_range
+; CHECK:         .cv_linetable 0, f, .Lfunc_end0
+; CHECK-NEXT:    .cv_linetable 0, f.cold, [[END]]
+
+; A64:       f.cold:
+; A64:       [[END:.LBB_END0_[0-9]+]]:
+; A64:         .asciz "a"
+; A64:         .cv_def_range .Ltmp{{[0-9]+}} .LBB_END0_{{[0-9]+}} f.cold [[END]], reg_rel
+; A64:         .cv_linetable 0, f, .Lfunc_end0
+; A64-NEXT:    .cv_linetable 0, f.cold, [[END]]
 
 ; Unoptimized code keeps the frame pointer, from which the variable is at one
-; offset in all of the function.
+; offset in all of the function, a range in each section.
 ; O0-LABEL: f:
 ; O0:         .seh_setframe %rbp
 ; O0:         .asciz "a"
-; O0:         .cv_def_range .Ltmp{{[0-9]+}} .Ltmp{{[0-9]+}}, frame_ptr_rel, -4
+; O0:         .cv_def_range .Ltmp{{[0-9]+}} .LBB_END0_{{[0-9]+}} f.cold .LBB_END0_{{[0-9]+}}, frame_ptr_rel, -4
 ; O0-NEXT:    .short
 
 ; DWARF:      DW_TAG_variable

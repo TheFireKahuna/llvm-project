@@ -1286,11 +1286,43 @@ void CodeViewDebug::emitDebugInfoForFunction(const Function *GV,
 
     // We're done with this function.
     emitEndSymbolRecord(SymbolKind::S_PROC_ID_END);
+
+    // Split-off code is the function's: the function's records describe it,
+    // and this one names the function to whoever looks up an address in it.
+    // The code is no scope of its own and does not return to the function.
+    for (auto [Begin, End] : FI.SplitRanges) {
+      MCSymbol *SepCodeEnd = beginSymbolRecord(SymbolKind::S_SEPCODE);
+      OS.AddComment("PtrParent");
+      OS.emitInt32(0);
+      OS.AddComment("PtrEnd");
+      OS.emitInt32(0);
+      OS.AddComment("Code size");
+      OS.emitAbsoluteSymbolDiff(End, Begin, 4);
+      OS.AddComment("Flags");
+      OS.emitInt32(0);
+      OS.AddComment("Section relative address");
+      OS.emitCOFFSecRel32(Begin, /*Offset=*/0);
+      OS.AddComment("Function section relative address");
+      OS.emitCOFFSecRel32(Fn, /*Offset=*/0);
+      OS.AddComment("Section index");
+      OS.emitCOFFSectionIndex(Begin);
+      OS.AddComment("Function section index");
+      OS.emitCOFFSectionIndex(Fn);
+      endSymbolRecord(SepCodeEnd);
+      emitEndSymbolRecord(SymbolKind::S_END);
+    }
   }
   endCVSubsection(SymbolsEnd);
 
-  // We have an assembler directive that takes care of the whole line table.
+  // We have an assembler directive that takes care of the whole line table,
+  // and of that of each section of split-off code.
   OS.emitCVLinetableDirective(FI.FuncId, Fn, FI.End);
+  for (auto [Begin, End] : FI.SplitRanges)
+    OS.emitCVLinetableDirective(FI.FuncId, Begin, End);
+}
+
+const MCSymbol *CodeViewDebug::getSectionEnd(const MachineInstr *MI) const {
+  return Asm->MBBSectionRanges[MI->getParent()->getSectionID()].EndLabel;
 }
 
 CodeViewDebug::LocalVarDef
@@ -1372,7 +1404,15 @@ void CodeViewDebug::collectVariableInfoFromMFTable(
     for (const InsnRange &Range : Scope->getRanges()) {
       const MCSymbol *Begin = getLabelBeforeInsn(Range.first);
       const MCSymbol *End = getLabelAfterInsn(Range.second);
-      End = End ? End : Asm->getFunctionEnd();
+      End = End ? End : getSectionEnd(Range.second);
+      // A range that runs on into another section is a range in each.
+      for (const MachineBasicBlock *MBB = Range.first->getParent();
+           !MBB->sameSection(Range.second->getParent());
+           MBB = MBB->getNextNode())
+        if (MBB->isEndSection()) {
+          Var.DefRanges[DefRange].emplace_back(Begin, MBB->getEndSymbol());
+          Begin = MBB->getNextNode()->getSymbol();
+        }
       Var.DefRanges[DefRange].emplace_back(Begin, End);
     }
 
@@ -1451,7 +1491,7 @@ void CodeViewDebug::calculateRanges(
                 ? getLabelBeforeInsn(EndingEntry.getInstr())
                 : getLabelAfterInsn(EndingEntry.getInstr());
     } else
-      End = Asm->getFunctionEnd();
+      End = getSectionEnd(Entry.getInstr());
 
     // If the last range end is our begin, just extend the last range.
     // Otherwise make a new range.
@@ -3055,7 +3095,9 @@ void CodeViewDebug::collectLexicalBlockInfo(
   // is moved to the bottom of the routine creating a single range covering
   // nearly the entire routine, then it will hide all other lexical blocks
   // and the variables they contain.
-  if (Ranges.size() != 1 || !getLabelAfterInsn(Ranges.front().second))
+  if (Ranges.size() != 1 || !getLabelAfterInsn(Ranges.front().second) ||
+      !Ranges.front().first->getParent()->sameSection(
+          Ranges.front().second->getParent()))
     IgnoreScope = true;
 
   if (IgnoreScope) {
@@ -3146,7 +3188,23 @@ void CodeViewDebug::endFunctionImpl(const MachineFunction *MF) {
 
   CurFn->Annotations = MF->getCodeViewAnnotations();
 
+  // A part of the function in its own section is the function's code, which
+  // ends where the function does, and the parts in each other section, which
+  // lie together there, are one range of split-off code.
   CurFn->End = Asm->getFunctionEnd();
+  const MCSection *Own = &CurFn->Begin->getSection();
+  for (const auto &[ID, Range] : Asm->MBBSectionRanges) {
+    const MCSection *Sec = &Range.BeginLabel->getSection();
+    if (Sec == Own)
+      continue;
+    auto Split = find_if(CurFn->SplitRanges, [&](const auto &R) {
+      return &R.first->getSection() == Sec;
+    });
+    if (Split != CurFn->SplitRanges.end())
+      Split->second = Range.EndLabel;
+    else
+      CurFn->SplitRanges.emplace_back(Range.BeginLabel, Range.EndLabel);
+  }
 
   CurFn = nullptr;
 }
@@ -3172,6 +3230,10 @@ static bool isUsableDebugLoc(DebugLoc DL) {
 
 void CodeViewDebug::beginInstruction(const MachineInstr *MI) {
   DebugHandlerBase::beginInstruction(MI);
+
+  // A section's line table begins with its first instruction's location.
+  if (PrevInstBB && !PrevInstBB->sameSection(MI->getParent()))
+    PrevInstLoc = DebugLoc();
 
   // Ignore DBG_VALUE and DBG_LABEL locations and function prologue.
   if (!Asm || !CurFn || MI->isDebugInstr() ||

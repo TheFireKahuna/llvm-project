@@ -2447,6 +2447,15 @@ static void ARM64EmitUnwindInfo(MCStreamer &streamer, WinEH::FrameInfo *info,
     return;
   }
 
+  // Unwind codes for a prologue of no instruction describe a frame that was
+  // set up before its code was entered, a fragment's: they follow end_c.
+  if (info->PrologEnd && info->Instructions.size() > 1 &&
+      GetOptionalAbsDifference(streamer, info->PrologEnd, info->Begin) == 0 &&
+      none_of(info->Instructions, [](const WinEH::Instruction &I) {
+        return I.Operation == Win64EH::UOP_EndC;
+      }))
+    info->Instructions.emplace_back(Win64EH::UOP_EndC, nullptr, -1, 0);
+
   simplifyARM64Opcodes(info->Instructions, false);
   for (auto &I : info->EpilogMap)
     simplifyARM64Opcodes(I.second.Instructions, true);

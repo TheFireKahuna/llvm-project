@@ -1,0 +1,116 @@
+; REQUIRES: x86, aarch64
+; RUN: split-file %s %t
+; DEFINE: %{arch} = x86_64
+; DEFINE: %{link} = llc -mtriple=%{arch}-unknown-windows-itanium \
+; DEFINE:     -function-sections -filetype=obj %t/a.ll -o %t/a.obj && \
+; DEFINE:   llvm-mc -triple=%{arch}-unknown-windows-itanium -filetype=obj \
+; DEFINE:     %t/b.s -o %t/b.obj && \
+; DEFINE:   lld-link -entry:live -include:caught -subsystem:console -opt:ref \
+; DEFINE:     -map:%t/a.map -out:%t/a.exe %t/a.obj %t/b.obj && \
+; DEFINE:   llvm-objdump -s -j .rdata %t/a.exe
+; DEFINE: %{parts} = cat %t/a.map > %t/parts && \
+; DEFINE:   llvm-readobj --unwind %t/a.exe >> %t/parts && \
+; DEFINE:   FileCheck %s --input-file=%t/parts
+; RUN: %{link} | FileCheck %s --check-prefix=X64
+; RUN: FileCheck %s --check-prefix=MAP --implicit-check-not=dead < %t/a.map
+; RUN: %{parts} --check-prefixes=PARTS,PARTS-X64
+; REDEFINE: %{arch} = aarch64
+; RUN: %{link} | FileCheck %s --check-prefix=A64
+; RUN: FileCheck %s --check-prefix=MAP --implicit-check-not=dead < %t/a.map
+; RUN: %{parts} --check-prefixes=PARTS,PARTS-A64
+
+; The cleanups that the unwinder calls lie in the function's cold section,
+; .text$split, which follows the image's hot code and lives and dies with the
+; function's section. The cleanup table's base, after its version and size, is
+; the cold section's start from the field: 0x1041 from 0x2013, 0x1040 from
+; 0x2013.
+; MAP:      .text  {{ *}}CODE
+; MAP-NEXT: .text$hot
+; MAP-NEXT: .text$split
+; MAP:      0001:[[COLD:[0-9a-f]+]] live.cold
+; MAP-NEXT: 0001:[[COLD]] ?dtor$2@?0?live@4HA
+; X64:      140002010 030b1b2e f0ffff01
+; A64:      140002010 030b1b2d f0ffff01
+
+; A handler lies there too, and the cold part of its function is a function of
+; its own to the unwinder: the image's unwind info for it begins at the cold
+; part's start, has no prologue and the function's unwind codes, on AArch64
+; after end_c, and names the personality.
+; PARTS:           0001:{{[0-9a-f]+}} caught.cold 00000001[[#%x,COLD:]]
+; PARTS-X64:       StartAddress: (0x1[[#%X,COLD]])
+; PARTS-X64:         Version: 2
+; PARTS-X64:         PrologSize: 0
+; PARTS-X64:           0x00: ALLOC_SMALL size=40
+; PARTS-X64-NEXT:    ]
+; PARTS-X64-NEXT:    Handler: (0x140001000)
+; PARTS-A64:       Function: 0x1[[#%X,COLD]]
+; PARTS-A64:         Prologue [
+; PARTS-A64-NEXT:      end_c
+; PARTS-A64-NEXT:      str x30, [sp, #-16]!
+; PARTS-A64-NEXT:      end
+; PARTS-A64:           Routine: 0x140001000
+
+;--- a.ll
+declare void @may_throw()
+declare void @dtor(ptr) nounwind
+declare i32 @__gxx_personality_seh0(...)
+
+define void @live() personality ptr @__gxx_personality_seh0 {
+entry:
+  %a = alloca i32
+  invoke void @may_throw() to label %cont unwind label %ehcleanup
+cont:
+  call void @dtor(ptr %a)
+  ret void
+ehcleanup:
+  %pad = cleanuppad within none []
+  call void @dtor(ptr %a) [ "funclet"(token %pad) ]
+  cleanupret from %pad unwind to caller
+}
+
+define i32 @caught() personality ptr @__gxx_personality_seh0 {
+entry:
+  invoke void @may_throw() to label %cont unwind label %cs
+cont:
+  ret i32 0
+cs:
+  %s = catchswitch within none [label %catch] unwind to caller
+catch:
+  %cp = catchpad within %s [ptr null]
+  invoke void @may_throw() [ "funclet"(token %cp) ]
+    to label %out unwind label %cs2
+out:
+  catchret from %cp to label %body
+cs2:
+  %s2 = catchswitch within %cp [label %catch2] unwind to caller
+catch2:
+  %cp2 = catchpad within %s2 [ptr null]
+  catchret from %cp2 to label %body
+body:
+  ret i32 1
+}
+
+define void @dead() personality ptr @__gxx_personality_seh0 {
+entry:
+  %a = alloca i32
+  invoke void @may_throw() to label %cont unwind label %ehcleanup
+cont:
+  call void @dtor(ptr %a)
+  ret void
+ehcleanup:
+  %pad = cleanuppad within none []
+  call void @dtor(ptr %a) [ "funclet"(token %pad) ]
+  cleanupret from %pad unwind to caller
+}
+
+define void @hot() section ".text$hot" {
+  ret void
+}
+
+;--- b.s
+.globl may_throw, dtor, __gxx_personality_seh0
+.text
+may_throw:
+dtor:
+__gxx_personality_seh0:
+  ret

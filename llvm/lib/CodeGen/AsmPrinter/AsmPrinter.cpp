@@ -2386,8 +2386,7 @@ void AsmPrinter::emitFunctionBody() {
     // We must emit temporary symbol for the end of this basic block, if either
     // we have BBLabels enabled or if this basic blocks marks the end of a
     // section.
-    if (MF->getTarget().Options.BBAddrMap ||
-        (MAI.hasDotTypeDotSizeDirective() && MBB.isEndSection()))
+    if (MF->getTarget().Options.BBAddrMap || MBB.isEndSection())
       OutStreamer->emitLabel(MBB.getEndSymbol());
 
     if (MBB.isEndSection()) {
@@ -2569,7 +2568,9 @@ void AsmPrinter::emitFunctionBody() {
   for (auto &Handler : EHHandlers)
     Handler->markFunctionEnd();
   // Update the end label of the entry block's section.
-  MBBSectionRanges[MF->front().getSectionID()].EndLabel = CurrentFnEnd;
+  if (auto &Range = MBBSectionRanges[MF->front().getSectionID()];
+      !Range.EndLabel)
+    Range.EndLabel = CurrentFnEnd;
 
   // Print out jump tables referenced by the function.
   emitJumpTableInfo();
@@ -4966,9 +4967,15 @@ void AsmPrinter::emitBasicBlockStart(const MachineBasicBlock &MBB) {
   // entry block is always placed in the function section and is handled
   // separately.
   if (MBB.isBeginSection() && !MBB.isEntryBlock()) {
-    OutStreamer->switchSection(
-        getObjFileLowering().getSectionForMachineBasicBlock(MF->getFunction(),
-                                                            MBB, TM));
+    MCSection *Section = getObjFileLowering().getSectionForMachineBasicBlock(
+        MF->getFunction(), MBB, TM);
+    // A part of the function in the function's own section follows the entry
+    // block's part, which ends there.
+    if (Section == MF->getSection() &&
+        MBB.getPrevNode()->sameSection(&MF->front()))
+      MBBSectionRanges[MF->front().getSectionID()].EndLabel =
+          MBB.getPrevNode()->getEndSymbol();
+    OutStreamer->switchSection(Section);
     CurrentSectionBeginSym = MBB.getSymbol();
   }
 

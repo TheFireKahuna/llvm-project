@@ -202,6 +202,14 @@ public:
     return false;
   }
 
+  /// Returns true if \p MF's Windows unwind info states where each epilogue
+  /// lies, so that the unwinder reads no code: an epilogue may then end its
+  /// frame's unwind range, and the code after it, outside the range, is leaf
+  /// code.
+  virtual bool statesWindowsEpilogues(const MachineFunction &MF) const {
+    return false;
+  }
+
   /// Returns true if the stack slot holes in the fixed and callee-save stack
   /// area should be used when allocating other stack locations to reduce stack
   /// size.

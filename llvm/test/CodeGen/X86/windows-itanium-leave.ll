@@ -7,13 +7,16 @@
 ; RUN: %{llc} %{v1} -filetype=obj %t/a.ll -o %t.1.o
 ; RUN: llvm-readobj -r %t.1.o | FileCheck %s --check-prefix=OBJ1
 ; RUN: %{llc} -filetype=obj %t/a.ll -o %t.2.o
-; RUN: llvm-readobj -r --unwind %t.2.o | FileCheck %s --check-prefix=OBJ2
+; RUN: llvm-readobj -r --unwind --coff-link-records %t.2.o | \
+; RUN:   FileCheck %s --check-prefix=OBJ2
 ; RUN: llc -mtriple=x86_64-pc-windows-msvc < %t/a.ll | FileCheck %s --check-prefix=MSVC \
 ; RUN:   --implicit-check-not=leave --implicit-check-not=large
 ; RUN: llc -mtriple=x86_64-pc-windows-msvc -x86-wineh-unwindv2-force-mode=2 < %t/a.ll \
 ; RUN:   | FileCheck %s --check-prefix=MSVC --implicit-check-not=leave \
 ; RUN:     --implicit-check-not=large
 ; RUN: %{llc} < %t/cleanup.ll | FileCheck %s --check-prefix=CL
+; RUN: %{llc} %{v1} < %t/nop.ll | FileCheck %s --check-prefix=NOP1
+; RUN: %{llc} < %t/nop.ll | FileCheck %s --check-prefix=NOP2
 
 ; On Windows Itanium and NT-POSIX a function with a frame register pushes it
 ; after every other callee-saved register and sets it at its own saved value,
@@ -281,12 +284,6 @@ define i64 @push(i64 %a) uwtable {
 ; OBJ2:      Section ({{[0-9]+}}) .text {
 ; OBJ2-COUNT-7: IMAGE_REL_LLVM_BRANCH_TAIL tgt
 ; OBJ2-NEXT: }
-; The distances of fp, odd, empty, dyn, big, nopush and push; even,
-; emptyret and realign end in a return at the function's end.
-; OBJ2:      Section ({{[0-9]+}}) .xdata {
-; OBJ2-COUNT-7: IMAGE_REL_LLVM_SSPAN_EPILOGV2
-; OBJ2-NEXT:   IMAGE_REL_AMD64_PAIR
-; OBJ2-NEXT: }
 ; OBJ2:      StartAddress: fp
 ; OBJ2:        EPILOG atend=no, length=0x1
 ; OBJ2-NEXT:   EPILOG offset=0x5
@@ -296,6 +293,13 @@ define i64 @push(i64 %a) uwtable {
 ; OBJ2:      StartAddress: even
 ; OBJ2:        EPILOG atend=yes, length=0x3
 ; OBJ2-NEXT:   EPILOG padding
+; The distances of fp, odd, empty, dyn, big, nopush and push are spans of the
+; section, whose last jump the linker may delete; even, emptyret and realign
+; end in a return at the function's end.
+; OBJ2:        Field: .xdata
+; OBJ2-NEXT:   Target: .text
+; OBJ2-COUNT-7: IMAGE_REL_LLVM_SSPAN_EPILOGV2
+; OBJ2-NEXT: }
 
 ;--- cleanup.ll
 declare void @ext(ptr)
@@ -320,5 +324,43 @@ ehc:
   call void @ext(ptr %b) [ "funclet"(token %p) ]
   cleanupret from %p unwind to caller
 cont:
+  ret void
+}
+
+;--- nop.ll
+declare void @ext(ptr)
+declare preserve_mostcc void @pm()
+
+; A return address in an epilogue has no handler. Version 1's scan reads one
+; that a call leaves at the epilogue's first instruction as in it, so a
+; no-operation follows such a call; version 2 places the epilogue at its first
+; pop, so only a call that the pops follow directly needs one.
+define void @release(ptr %p) uwtable {
+; NOP1-LABEL: release:
+; NOP1:         callq ext
+; NOP1-NEXT:    nop
+; NOP1-NEXT:    .seh_startepilogue
+; NOP2-LABEL: release:
+; NOP2:         callq ext
+; NOP2-NEXT:    .seh_startepilogue
+; NOP2-NEXT:    addq $40, %rsp
+; NOP2-NEXT:    .seh_unwindv2start
+  call void @ext(ptr %p)
+  ret void
+}
+
+define void @pops() uwtable {
+; NOP1-LABEL: pops:
+; NOP1:         callq pm
+; NOP1-NEXT:    nop
+; NOP1-NEXT:    .seh_startepilogue
+; NOP2-LABEL: pops:
+; NOP2:         callq pm
+; NOP2-NEXT:    nop
+; NOP2-NEXT:    .seh_startepilogue
+; NOP2-NEXT:    .seh_unwindv2start
+; NOP2-NEXT:    popq %rbx
+  call void asm sideeffect "", "~{rbx}"()
+  call preserve_mostcc void @pm()
   ret void
 }

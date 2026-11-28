@@ -2701,10 +2701,11 @@ bool X86FrameLowering::canUseLEAForSPInEpilogue(
   // We can't use LEA instructions for adjusting the stack pointer if we don't
   // have a frame pointer in the Win64 ABI.  Only ADD instructions may be used
   // to deallocate the stack.
-  // This means that we can use LEA for SP in two situations:
+  // This means that we can use LEA for SP in three situations:
   // 1. We *aren't* using the Win64 ABI which means we are free to use LEA.
   // 2. We *have* a frame pointer which means we are permitted to use LEA.
-  return !MF.usesWindowsUnwindInfo() || hasFP(MF);
+  // 3. The unwind info states the epilogues, and the unwinder reads no code.
+  return !MF.usesWindowsUnwindInfo() || hasFP(MF) || statesWindowsEpilogues(MF);
 }
 
 static bool isFuncletReturnInstr(MachineInstr &MI) {
@@ -4517,15 +4518,16 @@ bool X86FrameLowering::canUseAsEpilogue(const MachineBasicBlock &MBB) const {
   // not taking a chance at messing with them.
   // I.e., unless this block is already an exit block, we can't use
   // it as an epilogue. Where the unwind range begins at the prologue, an
-  // epilogue may end in a jump to its one successor, which is outside it.
+  // epilogue may end in a jump to its one successor, which is outside it, and
+  // where the unwind info states the epilogues, in a branch to any number.
+  const MachineFunction &MF = *MBB.getParent();
   if (STI.isTargetWin64() && !MBB.succ_empty() && !MBB.isReturnBlock() &&
-      !(MBB.succ_size() == 1 &&
-        canShrinkWrapWindowsUnwindInfo(*MBB.getParent())))
+      !((MBB.succ_size() == 1 || statesWindowsEpilogues(MF)) &&
+        canShrinkWrapWindowsUnwindInfo(MF)))
     return false;
 
   // Swift async context epilogue has a BTR instruction that clobbers parts of
   // EFLAGS.
-  const MachineFunction &MF = *MBB.getParent();
   if (MF.getInfo<X86MachineFunctionInfo>()->hasSwiftAsyncContext())
     return !flagsNeedToBePreservedBeforeTheTerminators(MBB);
 
@@ -4547,6 +4549,15 @@ bool X86FrameLowering::canShrinkWrapWindowsUnwindInfo(
   return STI.isTargetWin64() && !usesAsyncEHTables(F) &&
          !(F.hasPersonalityFn() &&
            isAsynchronousEHPersonality(classifyEHPersonality(F.getPersonalityFn())));
+}
+
+// Version 2 states each epilogue, and the unwinder takes an address for one by
+// its offset alone; version 2 best effort may fall back to version 1, which
+// reads the code.
+bool X86FrameLowering::statesWindowsEpilogues(const MachineFunction &MF) const {
+  return STI.isTargetWin64() &&
+         getWinX64EHUnwindMode(MF) == WinX64EHUnwindMode::V2Required &&
+         !requireWinX64UnwindV3(MF);
 }
 
 bool X86FrameLowering::enableShrinkWrapping(const MachineFunction &MF) const {

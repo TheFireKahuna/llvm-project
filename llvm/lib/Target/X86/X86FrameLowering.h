@@ -214,6 +214,8 @@ public:
 
   bool canShrinkWrapWindowsUnwindInfo(const MachineFunction &MF) const override;
 
+  bool statesWindowsEpilogues(const MachineFunction &MF) const override;
+
   /// Order the symbols in the local stack.
   /// We want to place the local stack objects in some sort of sensible order.
   /// The heuristic we use is to try and pack them according to static number

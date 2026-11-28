@@ -80,20 +80,22 @@ union LOCAL_DISPATCHER_CONTEXT_NONVOLREG_ARM {
 /// Returns the LSDA of the frame of \p disp. On Windows Itanium this unwinder
 /// calls a frame's cleanups and chooses the handler it lands in, and the
 /// frame's handler data leads with a table of its EH scopes: a version byte,
-/// the table's size, the number of scopes, the scopes and the call sites, as
-/// ULEB128 numbers but for a selector. A scope gives the number of the scope
-/// around it, counted from one and lower than its own, or zero for none, then
-/// the number of its handlers and, for a cleanup, which has none, the
-/// cleanup's offset in the function, or for each handler its selector and its
-/// pad's offset. A call site gives its start and its scope. \p scopes receives
-/// the table past its size; it ends at the LSDA.
+/// the table's size, the cleanups' base as an encoding and a value of it, the
+/// number of scopes, the scopes and the call sites, as ULEB128 numbers but for
+/// a selector. A scope gives the number of the scope around it, counted from
+/// one and lower than its own, or zero for none, then the number of its
+/// handlers and, for a cleanup, which has none, the cleanup's offset from the
+/// base, or for each handler its selector and its pad's offset from the
+/// LSDA's @LPStart; an omitted base or @LPStart is the function's start. A
+/// call site gives its start and its scope. \p scopes receives the table past
+/// its size; it ends at the LSDA.
 static uintptr_t getLSDA(const DISPATCHER_CONTEXT *disp,
                          uintptr_t *scopes = nullptr) {
   uintptr_t data = (uintptr_t)disp->HandlerData;
 #if defined(_WIN32_ITANIUM)
   if (!data)
     return 0;
-  if (*(const uint8_t *)data++ != 2)
+  if (*(const uint8_t *)data++ != 1)
     _LIBUNWIND_ABORT("unknown version of the scope table");
   uintptr_t size = (uintptr_t)LocalAddressSpace::getULEB128(data, UINTPTR_MAX);
   if (scopes)
@@ -105,12 +107,14 @@ static uintptr_t getLSDA(const DISPATCHER_CONTEXT *disp,
 
 #if defined(_WIN32_ITANIUM)
 /// Returns the end of the call-site table of the LSDA at \p p, with \p p moved
-/// to the table's first record and \p encoding set to that of its fields.
-static uintptr_t getCallSites(uintptr_t &p, uint8_t &encoding) {
+/// to the table's first record, \p encoding set to that of its fields and
+/// \p lpStart to its @LPStart where it states one.
+static uintptr_t getCallSites(uintptr_t &p, uint8_t &encoding,
+                              uintptr_t &lpStart) {
   LocalAddressSpace &as = LocalAddressSpace::sThisAddressSpace;
   encoding = as.get8(p++);
   if (encoding != DW_EH_PE_omit)
-    as.getEncodedP(p, UINTPTR_MAX, encoding);
+    lpStart = as.getEncodedP(p, UINTPTR_MAX, encoding);
   encoding = as.get8(p++);
   if (encoding != DW_EH_PE_omit)
     as.getULEB128(p, UINTPTR_MAX);
@@ -389,7 +393,7 @@ __unw_seh_call_cleanups:
 /// cleanups up to the pad, or all of them, goes to the routine at once.
 static uintptr_t
 callCleanups(PEXCEPTION_RECORD ms_exc, PVOID frame, DISPATCHER_CONTEXT *disp,
-             uintptr_t pc, const int64_t *selector = nullptr) {
+             const int64_t *selector = nullptr) {
   // A longjmp or a forced unwind that leaves a cleanup collides with the
   // unwind that called it, and the handler of the cleanup's function is called
   // again. An exception cannot leave a cleanup. No cleanup is entered again.
@@ -401,17 +405,21 @@ callCleanups(PEXCEPTION_RECORD ms_exc, PVOID frame, DISPATCHER_CONTEXT *disp,
   uintptr_t p = getLSDA(disp, &scopes);
   const uintptr_t scopesEnd = p;
   const uintptr_t start = disp->ImageBase + disp->FunctionEntry->BeginAddress;
+  uint8_t encoding = as.get8(scopes++);
+  const uintptr_t cleanupBase = encoding == DW_EH_PE_omit
+                                    ? start
+                                    : as.getEncodedP(scopes, scopesEnd, encoding);
   // A return address belongs to the call site ahead of it. AArch64's
   // dispatcher says whether the frame's address is one.
 #if defined(__aarch64__)
-  const uintptr_t ip = pc - disp->ControlPcIsUnwound - start;
+  const uintptr_t ip = disp->ControlPc - disp->ControlPcIsUnwound - start;
 #else
-  const uintptr_t ip = pc - 1 - start;
+  const uintptr_t ip = disp->ControlPc - 1 - start;
 #endif
 
   // Find the call site in the LSDA: the scope table's sites have its starts.
-  uint8_t encoding;
-  const uintptr_t sitesEnd = getCallSites(p, encoding);
+  uintptr_t lpStart = start;
+  const uintptr_t sitesEnd = getCallSites(p, encoding, lpStart);
   uintptr_t site = UINTPTR_MAX;
   while (p < sitesEnd && site == UINTPTR_MAX) {
     uintptr_t siteStart = as.getEncodedP(p, sitesEnd, encoding);
@@ -478,7 +486,7 @@ callCleanups(PEXCEPTION_RECORD ms_exc, PVOID frame, DISPATCHER_CONTEXT *disp,
     if (outer >= scope)
       _LIBUNWIND_ABORT("scope table is out of order");
     if (!handlers) {
-      uintptr_t cleanup = start + (uintptr_t)as.getULEB128(p, scopesEnd);
+      uintptr_t cleanup = cleanupBase + (uintptr_t)as.getULEB128(p, scopesEnd);
       if (!code.contains(cleanup))
         _LIBUNWIND_ABORT("cleanup outside the code of its function");
       _LIBUNWIND_TRACE_UNWINDING("callCleanups() calling cleanup %p(%p, %p)",
@@ -489,7 +497,7 @@ callCleanups(PEXCEPTION_RECORD ms_exc, PVOID frame, DISPATCHER_CONTEXT *disp,
     }
     for (; handlers; --handlers) {
       int64_t handled = as.getSLEB128(p, scopesEnd);
-      uintptr_t pad = start + (uintptr_t)as.getULEB128(p, scopesEnd);
+      uintptr_t pad = lpStart + (uintptr_t)as.getULEB128(p, scopesEnd);
       if (!selector || handled != *selector)
         continue;
       if (!code.contains(pad))
@@ -582,7 +590,7 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
 #endif
     } else {
       if (!IS_TARGET_UNWIND(ms_exc->ExceptionFlags))
-        callCleanups(ms_exc, frame, disp, disp->ControlPc);
+        callCleanups(ms_exc, frame, disp);
       return ExceptionContinueSearch;
     }
 #else
@@ -615,9 +623,10 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
                              (void *)pers, action, exc->exception_class,
                              (void *)exc, (void *)ctx);
 #if defined(_WIN32_ITANIUM)
-  // The frame's address, which the cursor loses to the pad a personality
-  // routine names.
-  const uintptr_t pc = disp->ControlPc;
+  // The frame's dispatcher context, which a cursor that holds it loses to the
+  // pad a personality routine names: the pad may lie in another unwind range,
+  // the cold part of the frame's function.
+  DISPATCHER_CONTEXT own = *disp;
 #endif
   urc = pers(1, action, exc->exception_class, exc, ctx);
   _LIBUNWIND_TRACE_UNWINDING("_GCC_specific_handler() personality returned %d", urc);
@@ -629,7 +638,7 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
       _LIBUNWIND_ABORT("Personality continued unwind at the target frame!");
 #if defined(_WIN32_ITANIUM)
     if (action & _UA_CLEANUP_PHASE)
-      callCleanups(ms_exc, frame, disp, pc);
+      callCleanups(ms_exc, frame, &own);
 #endif
     return ExceptionContinueSearch;
   case _URC_HANDLER_FOUND:
@@ -667,7 +676,7 @@ _GCC_specific_handler(PEXCEPTION_RECORD ms_exc, PVOID frame, PCONTEXT ms_ctx,
       __unw_get_reg((unw_cursor_t *)ctx, UNW_AARCH64_X1, &selector);
 #endif
       const int64_t handled = (int64_t)selector;
-      uintptr_t pad = callCleanups(ms_exc, frame, disp, pc, &handled);
+      uintptr_t pad = callCleanups(ms_exc, frame, &own, &handled);
       if (!pad)
         _LIBUNWIND_ABORT("no handler of the frame takes what it was chosen for");
       __unw_set_reg((unw_cursor_t *)ctx, UNW_REG_IP, pad);

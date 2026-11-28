@@ -97,9 +97,9 @@ bool UpdatedOnX86AvoidTrailingCallPass(MachineFunction &MF) {
   bool Changed = false;
   for (MachineBasicBlock &MBB : MF) {
     // Look for basic blocks that precede funclet entries or are at the end of
-    // the function.
+    // the function or of a section of it, which has unwind info of its own.
     MachineBasicBlock *NextMBB = MBB.getNextNode();
-    if (NextMBB && !NextMBB->isEHFuncletEntry())
+    if (NextMBB && !NextMBB->isEHFuncletEntry() && !MBB.isEndSection())
       continue;
 
     // Find the last real instruction in this block.

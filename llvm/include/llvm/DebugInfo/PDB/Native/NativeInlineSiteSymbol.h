@@ -23,7 +23,7 @@ class LLVM_ABI NativeInlineSiteSymbol : public NativeRawSymbol {
 public:
   NativeInlineSiteSymbol(NativeSession &Session, SymIndexId Id,
                          const codeview::InlineSiteSym &Sym,
-                         uint64_t ParentAddr);
+                         ArrayRef<uint64_t> CodeBases);
 
   ~NativeInlineSiteSymbol() override;
 
@@ -36,7 +36,9 @@ public:
 
 private:
   const codeview::InlineSiteSym Sym;
-  uint64_t ParentAddr;
+  /// The address of the function, then of each separated code of it: what the
+  /// annotations count code offsets from, the nth after a change of base to n.
+  SmallVector<uint64_t, 1> CodeBases;
 
   void getLineOffset(uint32_t OffsetInFunc, uint32_t &LineOffset,
                      uint32_t &FileOffset) const;

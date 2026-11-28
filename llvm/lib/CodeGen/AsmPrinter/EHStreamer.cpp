@@ -262,7 +262,8 @@ void EHStreamer::computeCallSiteTable(
   bool IsAsync = usesAsyncEHTables(Asm->MF->getFunction());
 
   // Funclets follow the function's own code and nothing unwinds into them, so
-  // the table ends where the first begins.
+  // the table ends where the first begins, or where the section before it
+  // does if it begins one.
   const MachineBasicBlock *FirstFunclet = nullptr;
   for (const auto &MBB : *Asm->MF)
     if (MBB.isEHFuncletEntry()) {
@@ -276,13 +277,13 @@ void EHStreamer::computeCallSiteTable(
       break;
     if (&MBB == &Asm->MF->front() || MBB.isBeginSection()) {
       // We start a call-site range upon function entry and at the beginning of
-      // every basic block section.
-      auto &Range = Asm->MBBSectionRanges[MBB.getSectionID()];
-      CallSiteRanges.push_back(
-          {RegionBegin && &MBB == &Asm->MF->front() ? RegionBegin
-                                                     : Range.BeginLabel,
-           FirstFunclet ? FirstFunclet->getSymbol() : Range.EndLabel,
-           Asm->getMBBExceptionSym(MBB), CallSites.size()});
+      // every basic block section. A section not emitted yet is named by its
+      // first block.
+      MCSymbol *Begin =
+          Asm->MBBSectionRanges.lookup(MBB.getSectionID()).BeginLabel;
+      CallSiteRanges.push_back({Begin ? Begin : MBB.getSymbol(), nullptr,
+                                Asm->getMBBExceptionSym(MBB),
+                                CallSites.size()});
       PreviousIsInvoke = false;
       SawPotentiallyThrowing = false;
       LastLabel = nullptr;
@@ -377,6 +378,11 @@ void EHStreamer::computeCallSiteTable(
     // We end the call-site range upon function exit and at the end of every
     // basic block section.
     if (MBB.getNextNode() == FirstFunclet || MBB.isEndSection()) {
+      MCSymbol *End = Asm->MBBSectionRanges.lookup(MBB.getSectionID()).EndLabel;
+      CallSiteRanges.back().FragmentEndLabel =
+          FirstFunclet && !MBB.isEndSection() ? FirstFunclet->getSymbol()
+          : End                               ? End
+                                              : MBB.getEndSymbol();
       // If some instruction between the previous try-range and the end of the
       // function may throw, create a call-site entry with no landing pad for
       // the region following the try-range.
@@ -413,7 +419,12 @@ void EHStreamer::computeCallSiteTable(
 ///     catches in the function.  This tables is reverse indexed base 1.
 ///
 /// Returns the starting symbol of an exception table.
-MCSymbol *EHStreamer::emitExceptionTable() {
+///
+/// With \p Part, a block of a function whose sections the unwinder takes each
+/// for a function, the table is that section's alone and complete: its own
+/// header, its call sites from its own start, and the actions and types they
+/// name, with @LPStart naming the section that holds the landing pads.
+MCSymbol *EHStreamer::emitExceptionTable(const MachineBasicBlock *Part) {
   const MachineFunction *MF = Asm->MF;
   const std::vector<const GlobalValue *> &TypeInfos = MF->getTypeInfos();
   const std::vector<unsigned> &FilterIds = MF->getFilterIds();
@@ -424,11 +435,24 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   SmallVector<const LandingPadInfo *, 64> LandingPads;
   LandingPads.reserve(PadInfos.size());
 
+  // A part's table is emitted ahead of the sections after it, whose labels
+  // are not emitted yet but are in the function.
+  SmallPtrSet<const MCSymbol *, 16> Labels;
+  if (Part)
+    for (const MachineBasicBlock &MBB : *MF) {
+      if (MBB.isEHPad())
+        Labels.insert(MBB.getSymbol());
+      for (const MachineInstr &MI : MBB)
+        if (MI.isEHLabel())
+          Labels.insert(MI.getOperand(0).getMCSymbol());
+    }
+
   for (const LandingPadInfo &LPI : PadInfos) {
     // If a landing-pad has an associated label, but the label wasn't ever
     // emitted, then skip it.  (This can occur if the landingpad's MBB was
     // deleted).
-    if (LPI.LandingPadLabel && !LPI.LandingPadLabel->isDefined())
+    if (LPI.LandingPadLabel && !LPI.LandingPadLabel->isDefined() &&
+        !Labels.count(LPI.LandingPadLabel))
       continue;
     LandingPads.push_back(&LPI);
   }
@@ -452,13 +476,47 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   SmallVector<CallSiteRange, 4> CallSiteRanges;
   computeCallSiteTable(CallSites, CallSiteRanges, LandingPads, FirstActions);
 
+  // The range the table is for begins where its unwind range does. The landing
+  // pads of its call sites count from there if it is the function's first and
+  // holds them, and otherwise from the start of the section that does, which
+  // no pad lies at.
+  MCSymbol *LPStart = nullptr;
+  if (Part) {
+    auto IsOwn = [&](const CallSiteRange &Range) {
+      return Range.ExceptionLabel == Asm->getMBBExceptionSym(*Part);
+    };
+    CallSiteRange Own = *find_if(CallSiteRanges, IsOwn);
+    if (RegionBegin)
+      Own.FragmentBeginLabel = RegionBegin;
+    LPStart = Own.FragmentBeginLabel;
+    CallSites.truncate(Own.CallSiteEndIdx);
+    CallSites.erase(CallSites.begin(),
+                    CallSites.begin() + Own.CallSiteBeginIdx);
+    if (any_of(CallSites, [](const CallSiteEntry &S) {
+          return S.LPad && S.LPad->LandingPadLabel;
+        }))
+      for (const CallSiteRange &Range :
+           drop_begin(CallSiteRanges, IsOwn(CallSiteRanges.front())))
+        if (Range.IsLPRange)
+          LPStart = Range.FragmentBeginLabel;
+    Own.CallSiteBeginIdx = 0;
+    Own.CallSiteEndIdx = CallSites.size();
+    CallSiteRanges.assign(1, Own);
+  }
+  const CallSiteRange &First = CallSiteRanges.front();
+
   bool IsSJLJ = Asm->getModuleExceptionModel() == ExceptionHandling::SjLj;
   bool IsWasm = Asm->getModuleExceptionModel() == ExceptionHandling::Wasm;
   bool HasLEB128Directives = Asm->MAI.hasLEB128Directives();
   unsigned CallSiteEncoding =
       IsSJLJ ? static_cast<unsigned>(dwarf::DW_EH_PE_udata4) :
                Asm->getObjFileLowering().getCallSiteEncoding();
-  bool HaveTTData = !TypeInfos.empty() || !FilterIds.empty();
+  // A range none of whose call sites has an action states no action and no
+  // type.
+  if (Part && none_of(CallSites, [](auto &S) { return S.Action; }))
+    Actions.clear();
+  bool HaveTTData =
+      (!TypeInfos.empty() || !FilterIds.empty()) && !(Part && Actions.empty());
 
   // Type infos.
   MCSection *LSDASection = Asm->getObjFileLowering().getSectionForLSDA(
@@ -519,38 +577,66 @@ MCSymbol *EHStreamer::emitExceptionTable() {
     SiteBase = Asm->createTempSymbol("eh_sites");
     Asm->OutStreamer->emitAssignment(
         SiteBase, MCBinaryExpr::createAdd(
-                      MCSymbolRefExpr::create(
-                          CallSiteRanges.front().FragmentBeginLabel, Ctx),
+                      MCSymbolRefExpr::create(First.FragmentBeginLabel, Ctx),
                       MCConstantExpr::create(1, Ctx), Ctx));
   }
 
   // Windows Itanium's unwinder calls a function's cleanups and chooses the
   // handler it lands in, from a table that leads the LSDA: a version, the
-  // table's size, the number of EH scopes, the scopes and the call sites. A
-  // scope gives the number of the scope around it, zero for none, the number
-  // of its handlers and, for a cleanup, which has none, the cleanup, or for
-  // each handler its selector and its pad. A call site gives its start and
-  // its scope. Offsets are from the start of the function's unwind range.
+  // table's size, the cleanups' base, the number of EH scopes, the scopes and
+  // the call sites. A scope gives the number of the scope around it, zero for
+  // none, the number of its handlers and, for a cleanup, which has none, the
+  // cleanup, or for each handler its selector and its pad. A call site gives
+  // its start and its scope. The table is the range's own: it holds the scopes
+  // of its call sites and those around them, numbered from one, and a site
+  // counts from the range's start. A cleanup counts from the base, the first
+  // funclet where the funclets lie in another section and otherwise the
+  // range's start, and a pad from the LSDA's @LPStart.
   if (usesCalledCleanups(MF->getFunction())) {
-    MCSymbol *FuncBegin = CallSiteRanges.front().FragmentBeginLabel;
+    MCSymbol *FuncBegin = First.FragmentBeginLabel;
+    MCSymbol *CleanupBase = FuncBegin;
+    ArrayRef<EHScopeInfo> Scopes = MF->getEHScopes();
+    SmallVector<unsigned, 8> Number(Scopes.size() + 1);
+    for (const CallSiteEntry &S : CallSites)
+      for (unsigned I = S.LPad ? S.LPad->Scope : 0; I && !Number[I];
+           I = Scopes[I - 1].Outer)
+        Number[I] = 1;
+    for (unsigned I = 1, N = 0; I != Number.size(); ++I)
+      if (Number[I])
+        Number[I] = ++N;
     MCSymbol *ScopesBegin = Asm->createTempSymbol("scopes_begin");
     MCSymbol *ScopesEnd = Asm->createTempSymbol("scopes_end");
     Asm->OutStreamer->AddComment("Scope table version");
-    Asm->emitInt8(2);
+    Asm->emitInt8(1);
     Asm->OutStreamer->AddComment("Scope table size");
     Asm->emitLabelDifferenceAsULEB128(ScopesEnd, ScopesBegin);
     Asm->OutStreamer->emitLabel(ScopesBegin);
+    auto Funclet = find_if(
+        *MF, [](const MachineBasicBlock &MBB) { return MBB.isEHFuncletEntry(); });
+    if (Funclet != MF->end() && !Funclet->sameSection(Part))
+      CleanupBase = Funclet->getSymbol();
+    if (CleanupBase != FuncBegin) {
+      Asm->emitEncodingByte(dwarf::DW_EH_PE_pcrel | dwarf::DW_EH_PE_sdata4,
+                            "Cleanup base");
+      MCSymbol *Dot = Asm->createTempSymbol("cleanup_base");
+      Asm->OutStreamer->emitLabel(Dot);
+      Asm->emitLabelDifference(CleanupBase, Dot, 4);
+    } else {
+      Asm->emitEncodingByte(dwarf::DW_EH_PE_omit, "Cleanup base");
+    }
     Asm->OutStreamer->AddComment("Scopes");
-    Asm->emitULEB128(MF->getEHScopes().size());
-    for (const EHScopeInfo &Scope : MF->getEHScopes()) {
-      Asm->emitULEB128(Scope.Outer);
+    Asm->emitULEB128(*llvm::max_element(Number));
+    for (const EHScopeInfo &Scope : Scopes) {
+      if (!Number[&Scope - Scopes.data() + 1])
+        continue;
+      Asm->emitULEB128(Number[Scope.Outer]);
       Asm->emitULEB128(Scope.Handlers.size());
       if (Scope.Cleanup)
         Asm->emitLabelDifferenceAsULEB128(Scope.Cleanup->getSymbol(),
-                                          FuncBegin);
+                                          CleanupBase);
       for (auto [Selector, Handler] : Scope.Handlers) {
         Asm->emitSLEB128(Selector);
-        Asm->emitLabelDifferenceAsULEB128(Handler->getSymbol(), FuncBegin);
+        Asm->emitLabelDifferenceAsULEB128(Handler->getSymbol(), LPStart);
       }
     }
     for (const CallSiteEntry &S : CallSites) {
@@ -558,7 +644,7 @@ MCSymbol *EHStreamer::emitExceptionTable() {
         continue;
       Asm->emitLabelDifferenceAsULEB128(S.BeginLabel,
                                         SiteBase ? SiteBase : FuncBegin);
-      Asm->emitULEB128(S.LPad->Scope);
+      Asm->emitULEB128(Number[S.LPad->Scope]);
     }
     Asm->OutStreamer->emitLabel(ScopesEnd);
   }
@@ -567,7 +653,8 @@ MCSymbol *EHStreamer::emitExceptionTable() {
   MCSymbol *GCCETSym =
     Asm->OutContext.getOrCreateSymbol(Twine("GCC_except_table")+
                                       Twine(Asm->getFunctionNumber()));
-  Asm->OutStreamer->emitLabel(GCCETSym);
+  if (!Part || Part->sameSection(&MF->front()))
+    Asm->OutStreamer->emitLabel(GCCETSym);
   MCSymbol *CstEndLabel = Asm->createTempSymbol(
       CallSiteRanges.size() > 1 ? "action_table_base" : "cst_end");
 
@@ -769,7 +856,13 @@ MCSymbol *EHStreamer::emitExceptionTable() {
       // LPStart is omitted if either we have a single call-site range (in which
       // case the function entry is treated as @LPStart) or if this function has
       // no landing pads (in which case @LPStart is undefined).
-      if (CallSiteRanges.size() == 1 || LandingPadRange == nullptr) {
+      if (LPStart && LPStart != CSRange.FragmentBeginLabel) {
+        Asm->emitEncodingByte(dwarf::DW_EH_PE_pcrel | dwarf::DW_EH_PE_sdata4,
+                              "@LPStart");
+        MCSymbol *Dot = Asm->createTempSymbol("lpstart");
+        Asm->OutStreamer->emitLabel(Dot);
+        Asm->emitLabelDifference(LPStart, Dot, 4);
+      } else if (CallSiteRanges.size() == 1 || LandingPadRange == nullptr) {
         Asm->emitEncodingByte(dwarf::DW_EH_PE_omit, "@LPStart");
       } else if (!Asm->isPositionIndependent()) {
         // For more than one call-site ranges, LPStart must be explicitly
@@ -834,7 +927,8 @@ MCSymbol *EHStreamer::emitExceptionTable() {
             Asm->OutStreamer->AddComment(Twine("    jumps to ") +
                                          S.LPad->LandingPadLabel->getName());
           Asm->emitCallSiteOffset(S.LPad->LandingPadLabel,
-                                  LandingPadRange->FragmentBeginLabel,
+                                  LPStart ? LPStart
+                                          : LandingPadRange->FragmentBeginLabel,
                                   CallSiteEncoding);
         }
 

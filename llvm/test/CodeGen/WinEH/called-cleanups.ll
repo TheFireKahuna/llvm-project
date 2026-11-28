@@ -1,5 +1,6 @@
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -verify-machineinstrs -emit-call-site-info < %s | FileCheck %s --check-prefixes=CHECK,EHCONT
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -O0 -verify-machineinstrs < %s | FileCheck %s --check-prefix=O0
+; RUN: llc -mtriple=x86_64-unknown-windows-itanium -function-sections < %s | FileCheck %s --check-prefix=SEC
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -frame-pointer=all -verify-machineinstrs < %s | FileCheck %s --check-prefix=FP
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -stop-after=finalize-isel < %s | FileCheck %s --check-prefix=MIR
 ; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-itanium -verify-machineinstrs < %s | FileCheck %s --check-prefixes=A64,EHCONT %}
@@ -7,8 +8,9 @@
 ; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-itanium -O0 -verify-machineinstrs < %s | FileCheck %s --check-prefix=A64O0 %}
 
 ; Under an Itanium personality on Windows Itanium a cleanuppad is a funclet
-; that only the unwinder calls, and a catchpad is landed: it is code of the
-; and of each call site's innermost scope; then the LSDA.
+; that only the unwinder calls, in the function's cold section, and a catchpad
+; is landed with the exception object's address in RAX (x0). The handler data
+; is a table of EH scopes and each call site's innermost one, then the LSDA.
 
 declare void @may_throw()
 declare void @free(ptr) nounwind
@@ -32,14 +34,21 @@ declare ptr @llvm.eh.exceptionpointer.p0(token)
 ; CHECK-LABEL: cleanup:
 ; CHECK:         .seh_handler __gxx_personality_seh0, @unwind, @except
 ; CHECK-NEXT:  # %bb.0:
+; CHECK-NEXT:    .seh_unwindversion 2
 ; CHECK-NEXT:    subq $40, %rsp
 ; CHECK-NEXT:    .seh_stackalloc 40
 ; CHECK-NEXT:    .seh_endprologue
 ; CHECK-NEXT:  [[BEGIN:.Ltmp[0-9]+]]:
 ; CHECK-NEXT:    callq may_throw
 ; CHECK-NEXT:  [[END:.Ltmp[0-9]+]]:
-; CHECK:         .uleb128 [[FUNCLET:.LBB0_[0-9]+]]-[[FUNC:.Lfunc_begin0]]
-; CHECK-NEXT:    .uleb128 [[BEGIN]]-[[FUNC]]
+; CHECK:         .byte 1 # Scope table version
+; CHECK-NEXT:    .uleb128 .Lscopes_end0-.Lscopes_begin0
+; CHECK-NEXT:  .Lscopes_begin0:
+; CHECK-NEXT:    .byte 27 # Cleanup base Encoding = pcrel sdata4
+; CHECK-NEXT:  [[BASE:.Lcleanup_base[0-9]+]]:
+; CHECK-NEXT:    .long cleanup.cold-[[BASE]]
+; CHECK:         .uleb128 cleanup.cold-cleanup.cold
+; CHECK-NEXT:    .uleb128 [[BEGIN]]-[[FUNC:.Lfunc_begin0]]
 ; CHECK-NEXT:    .byte 1
 ; CHECK-NEXT:  .Lscopes_end0:
 ; CHECK:         .uleb128 [[BEGIN]]-[[FUNC]]
@@ -48,16 +57,23 @@ declare ptr @llvm.eh.exceptionpointer.p0(token)
 ; CHECK-NEXT:    .byte 0
 ; CHECK-NEXT:  .Lcst_end0:
 ; CHECK:         .seh_endproc
+; CHECK-NEXT:    .section .text$split,"xr"
 ; CHECK:       "?dtor$2@?0?cleanup@4HA":
-; CHECK-NEXT:  [[FUNCLET]]:
+; CHECK-NEXT:  cleanup.cold:
 ; CHECK-NEXT:    leaq 36(%rdx), %rcx
 ; CHECK-NEXT:    jmp dtor # TAILCALL
+; CHECK-NEXT:  .LBB_END0_{{[0-9]+}}:
+; CHECK-NEXT:    .text
 ; CHECK-NEXT:  .Lfunc_end0:
+; CHECK-NEXT:    .size cleanup, .Lfunc_end0-cleanup
 ; CHECK-NOT:     .seh_
+; A64:         .section .text$split,"xr"
 ; A64:       "?dtor$2@?0?cleanup@4HA":
-; A64-NEXT:  .LBB0_2:
+; A64-NEXT:  cleanup.cold:
 ; A64-NEXT:    sub x0, x29, #4
 ; A64-NEXT:    b dtor
+; A64-NEXT:  .LBB_END0_{{[0-9]+}}:
+; A64-NEXT:    .text
 ; A64-NEXT:  .Lfunc_end0:
 ; A64-NOT:     .seh_
 ;
@@ -65,11 +81,11 @@ declare ptr @llvm.eh.exceptionpointer.p0(token)
 ; O0-LABEL: cleanup:
 ; O0:         movq %rsp, %rbp
 ; O0:       "?dtor$2@?0?cleanup@4HA":
-; O0-NEXT:  .LBB0_2:
+; O0-NEXT:  cleanup.cold:
 ; O0-NEXT:    leaq -4(%rbp), %rcx
 ; O0-NEXT:    jmp dtor # TAILCALL
 ; A64O0:      add x29, sp, #16
-; A64O0:      .LBB0_2:
+; A64O0:      cleanup.cold:
 ; A64O0-NEXT:   sub x0, x29, #4
 ; A64O0-NEXT:   b dtor
 define void @cleanup() personality ptr @__gxx_personality_seh0 {
@@ -85,57 +101,59 @@ ehcleanup:
   cleanupret from %pad unwind to caller
 }
 
-; and takes the exception object's address in RAX.
+; Try blocks with cleanups between them. Each call site's scope leads to every
+; cleanup and handler it can reach, and the LSDA gives it their types,
+; innermost first. The handlers lie in the cold section ahead of the cleanups,
+; from whose start @LPStart counts; that part has no landing pad, so no handler.
 ; CHECK-LABEL: nested:
+; CHECK:         .seh_handler __gxx_personality_seh0, @unwind, @except
+; CHECK:         .seh_unwindversion 2
 ; CHECK:       [[BEGIN1:.Ltmp[0-9]+]]:
 ; CHECK-NEXT:    callq may_throw
 ; CHECK-NEXT:  [[END1:.Ltmp[0-9]+]]:
 ; CHECK:       [[BEGIN2:.Ltmp[0-9]+]]:
 ; CHECK-NEXT:    callq may_throw
-; CHECK:       [[INT:.LBB1_[0-9]+]]: # %inner.catch
-; CHECK-NEXT:  $ehgcr_1_{{[0-9]+}}:
-; CHECK-NEXT:    movl $1, %eax
-; CHECK:       [[ALL:.LBB1_[0-9]+]]: # %outer.catch
-; CHECK-NEXT:  $ehgcr_1_{{[0-9]+}}:
-; CHECK-NEXT:    movq %rax, %rcx
-; CHECK-NEXT:    callq dtor
-; A64-LABEL: nested:
-; A64:         // %outer.catch
-; A64-NEXT:  $ehgcr_1_{{[0-9]+}}:
-; A64-NEXT:    bl dtor
-; CHECK:         .seh_handlerdata
+; CHECK:         retq
+; CHECK-NEXT:  .LBB_END1_{{[0-9]+}}:
+; CHECK-NEXT:    .seh_handlerdata
 ; CHECK-NEXT:    .p2align 2
-; CHECK-NEXT:    .byte 2 # Scope table version
+; CHECK-NEXT:    .byte 1 # Scope table version
 ; CHECK-NEXT:    .uleb128 .Lscopes_end1-.Lscopes_begin1
 ; CHECK-NEXT:  .Lscopes_begin1:
+; CHECK-NEXT:    .byte 27 # Cleanup base
+; CHECK-NEXT:  [[BASE:.Lcleanup_base[0-9]+]]:
+; CHECK-NEXT:    .long [[CLEANUPB:.LBB1_[0-9]+]]-[[BASE]]
 ; CHECK-NEXT:    .byte 4 # Scopes
 ; CHECK-NEXT:    .byte 0
 ; CHECK-NEXT:    .byte 1
 ; CHECK-NEXT:    .byte 1
-; CHECK-NEXT:    .uleb128 [[ALL]]-.Lfunc_begin1
+; CHECK-NEXT:    .uleb128 [[ALL:.LBB1_[0-9]+]]-nested.cold
 ; CHECK-NEXT:    .byte 1
 ; CHECK-NEXT:    .byte 0
-; CHECK-NEXT:    .uleb128 [[CLEANUPA:.LBB1_[0-9]+]]-.Lfunc_begin1
+; CHECK-NEXT:    .uleb128 [[CLEANUPA:.LBB1_[0-9]+]]-[[CLEANUPB]]
 ; CHECK-NEXT:    .byte 2
 ; CHECK-NEXT:    .byte 1
 ; CHECK-NEXT:    .byte 2
-; CHECK-NEXT:    .uleb128 [[INT]]-.Lfunc_begin1
+; CHECK-NEXT:    .uleb128 [[INT:.LBB1_[0-9]+]]-nested.cold
 ; CHECK-NEXT:    .byte 3
 ; CHECK-NEXT:    .byte 0
-; CHECK-NEXT:    .uleb128 [[CLEANUPB:.LBB1_[0-9]+]]-.Lfunc_begin1
+; CHECK-NEXT:    .uleb128 [[CLEANUPB]]-[[CLEANUPB]]
 ; CHECK-NEXT:    .uleb128 [[BEGIN1]]-.Lfunc_begin1
 ; CHECK-NEXT:    .byte 4
 ; CHECK-NEXT:    .uleb128 [[BEGIN2]]-.Lfunc_begin1
 ; CHECK-NEXT:    .byte 2
 ; CHECK-NEXT:  .Lscopes_end1:
+; CHECK:         .byte 27 # @LPStart Encoding = pcrel sdata4
+; CHECK-NEXT:  [[LPSTART:.Llpstart[0-9]+]]:
+; CHECK-NEXT:    .long nested.cold-[[LPSTART]]
 ; CHECK:       .Lcst_begin1:
 ; CHECK-NEXT:    .uleb128 [[BEGIN1]]-.Lfunc_begin1
 ; CHECK-NEXT:    .uleb128 [[END1]]-[[BEGIN1]]
-; CHECK-NEXT:    .uleb128 [[INT]]-.Lfunc_begin1
+; CHECK-NEXT:    .uleb128 [[INT]]-nested.cold
 ; CHECK-NEXT:    .byte 3 # On action: 2
 ; CHECK-NEXT:    .uleb128 [[BEGIN2]]-.Lfunc_begin1
 ; CHECK-NEXT:    .uleb128
-; CHECK-NEXT:    .uleb128 [[ALL]]-.Lfunc_begin1
+; CHECK-NEXT:    .uleb128 [[ALL]]-nested.cold
 ; CHECK-NEXT:    .byte 1 # On action: 1
 ; CHECK-NEXT:  .Lcst_end1:
 ; CHECK-NEXT:    .byte 1 # >> Action Record 1 <<
@@ -147,8 +165,29 @@ ehcleanup:
 ; CHECK:       [[TI:.Ltmp[0-9]+]]: # TypeInfo 2
 ; CHECK-NEXT:    .long __imp__ZTIi-[[TI]]
 ; CHECK-NEXT:    .long 0 # TypeInfo 1
+; CHECK:         .seh_endproc
+; CHECK-NEXT:    .section .text$split,"xr"
+; CHECK-NEXT:  nested.cold:
+; CHECK-NOT:     .seh_handler
+; CHECK:       [[INT]]: # %inner.catch
+; CHECK-NEXT:  $ehgcr_1_{{[0-9]+}}:
+; CHECK-NEXT:    movl $1, %eax
+; CHECK:       [[ALL]]: # %outer.catch
+; CHECK-NEXT:  $ehgcr_1_{{[0-9]+}}:
+; CHECK-NEXT:    movq %rax, %rcx
+; CHECK-NEXT:    callq dtor
+; CHECK:         retq
+; CHECK-NEXT:    .seh_endproc
 ; CHECK:       [[CLEANUPB]]: # %cleanup.b
 ; CHECK:       [[CLEANUPA]]: # %cleanup.a
+; A64-LABEL: nested:
+; A64:         .seh_endproc
+; A64-NEXT:    .section .text$split,"xr"
+; A64-NEXT:  nested.cold:
+; A64-NOT:     .seh_handler
+; A64:         // %outer.catch
+; A64-NEXT:  $ehgcr_1_{{[0-9]+}}:
+; A64-NEXT:    bl dtor
 define i32 @nested() personality ptr @__gxx_personality_seh0 {
 entry:
   %a = alloca i32
@@ -187,16 +226,12 @@ outer.body:
 ; An exception specification is a pad for the filter's selector, which calls
 ; __cxa_call_unexpected with the exception object's address.
 ; CHECK-LABEL: spec:
-; CHECK:       [[PAD:.LBB2_[0-9]+]]: # %unexpected
-; CHECK-NEXT:  $ehgcr_2_{{[0-9]+}}:
-; CHECK-NEXT:    movq %rax, %rcx
-; CHECK-NEXT:    callq __cxa_call_unexpected
 ; CHECK:       .Lscopes_begin2:
-; CHECK-NEXT:    .byte 2 # Scopes
+; CHECK:         .byte 2 # Scopes
 ; CHECK-NEXT:    .byte 0
 ; CHECK-NEXT:    .byte 1
 ; CHECK-NEXT:    .byte 127
-; CHECK-NEXT:    .uleb128 [[PAD]]-.Lfunc_begin2
+; CHECK-NEXT:    .uleb128 [[PAD:.LBB2_[0-9]+]]-spec.cold
 ; CHECK:         .byte 127 # >> Action Record 1 <<
 ; CHECK-NEXT:          # Filter TypeInfo -1
 ; CHECK:       [[TI:.Ltmp[0-9]+]]: # TypeInfo 1
@@ -205,6 +240,10 @@ outer.body:
 ; CHECK-NEXT:          # >> Filter TypeInfos <<
 ; CHECK-NEXT:    .byte 1
 ; CHECK-NEXT:    .byte 0
+; CHECK:       [[PAD]]: # %unexpected
+; CHECK-NEXT:  $ehgcr_2_{{[0-9]+}}:
+; CHECK-NEXT:    movq %rax, %rcx
+; CHECK-NEXT:    callq __cxa_call_unexpected
 define void @spec() personality ptr @__gxx_personality_seh0 {
 entry:
   %a = alloca i32
@@ -235,12 +274,13 @@ call:
 ; CHECK:         movq %rcx, %rsi
 ; CHECK-NEXT:  .Ltmp{{[0-9]+}}:
 ; CHECK-NEXT:    callq may_throw
+; CHECK:       .Lscopes_begin3:
+; CHECK-NEXT:    .byte 255 # Cleanup base Encoding = omit
+; CHECK-NEXT:    .byte 1 # Scopes
 ; CHECK:       # %catch
 ; CHECK-NEXT:  $ehgcr_3_{{[0-9]+}}:
 ; CHECK-NEXT:    incq %rsi
-; CHECK-NOT:   .seh_proc
-; CHECK:       .Lscopes_begin3:
-; CHECK-NEXT:    .byte 1 # Scopes
+; CHECK-NOT:   dtor$
 define i64 @plain(i64 %x) personality ptr @__gxx_personality_seh0 {
 entry:
   invoke void @may_throw() to label %cont unwind label %cs
@@ -263,7 +303,8 @@ body:
 ; CHECK-LABEL: frame_pointer:
 ; CHECK:         .seh_setframe %rbp, 0
 ; CHECK:       "?dtor$2@?0?frame_pointer@4HA":
-; CHECK:       .LBB4_2:
+; CHECK:       frame_pointer.cold:
+; CHECK-NEXT:    .seh_unwindversion 2
 ; CHECK-NEXT:    subq $40, %rsp
 ; CHECK-NEXT:    .seh_stackalloc 40
 ; CHECK-NEXT:    .seh_endprologue
@@ -272,6 +313,7 @@ body:
 ; CHECK-NEXT:    leaq -8(%rbp), %rcx
 ; CHECK-NEXT:    .seh_startepilogue
 ; CHECK-NEXT:    addq $40, %rsp
+; CHECK-NEXT:    .seh_unwindv2start
 ; CHECK-NEXT:    .seh_endepilogue
 ; CHECK-NEXT:    jmp dtor # TAILCALL
 define void @frame_pointer(i64 %n) personality ptr @__gxx_personality_seh0 {
@@ -301,7 +343,7 @@ ehcleanup:
 ; CHECK-NEXT:    movq %rsi, (%rcx)
 ; CHECK-NEXT:    movq c3(%rip), %rax
 ; CHECK-NEXT:    movq %rax, (%rdx)
-; CHECK:       .LBB5_2:
+; CHECK:       crossing.cold:
 ; CHECK-NEXT:    movq c3(%rip), %rax
 ; CHECK-NEXT:    movq %rax, 32(%rdx)
 ; CHECK-NEXT:    movq %rsi, 40(%rdx)
@@ -338,10 +380,12 @@ ehcleanup:
 ; unwinder's routine.
 ; CHECK-LABEL: saves:
 ; CHECK:       # %bb.0:
+; CHECK-NEXT:    .seh_unwindversion 2
 ; CHECK-NEXT:    subq $56, %rsp
 ; CHECK:       "?dtor$2@?0?saves@4HA":
 ; CHECK-NEXT:  .seh_proc "?dtor$2@?0?saves@4HA"
-; CHECK-NEXT:  .LBB6_2:
+; CHECK-NEXT:  saves.cold:
+; CHECK-NEXT:    .seh_unwindversion 2
 ; CHECK-NEXT:    subq $40, %rsp
 ; CHECK-NEXT:    .seh_stackalloc 40
 ; CHECK-NEXT:    .seh_endprologue
@@ -350,10 +394,14 @@ ehcleanup:
 ; CHECK:         callq dtor
 ; CHECK:         .seh_startepilogue
 ; CHECK-NEXT:    addq $40, %rsp
+; CHECK-NEXT:    .seh_unwindv2start
 ; CHECK-NEXT:    .seh_endepilogue
 ; CHECK-NEXT:    retq # CLEANUPRET
+; CHECK-NEXT:  .LBB_END6_{{[0-9]+}}:
+; CHECK-NEXT:    .text
 ; CHECK-NEXT:  .Lfunc_end6:
 ; CHECK-NEXT:    .size saves, .Lfunc_end6-saves
+; CHECK-NEXT:    .section .text$split,"xr"
 ; CHECK-NEXT:    .seh_endproc
 define void @saves() personality ptr @__gxx_personality_seh0 {
 entry:
@@ -384,7 +432,8 @@ done:
 ; CHECK-NEXT:    .seh_endprologue
 ; CHECK-NEXT:    andq $-64, %rsp
 ; CHECK-NEXT:    movq %rsp, %rbx
-; CHECK:       .LBB7_2:
+; CHECK:       base_register.cold:
+; CHECK-NEXT:    .seh_unwindversion 2
 ; CHECK-NEXT:    pushq %rbp
 ; CHECK-NEXT:    .seh_pushreg %rbp
 ; CHECK-NEXT:    subq $32, %rsp
@@ -519,13 +568,13 @@ body:
 ; on that path: the funclet's cleanupret is a return there too.
 ; CHECK-LABEL: conditional:
 ; CHECK:       "?dtor$2@?0?conditional@4HA":
-; CHECK-NEXT:  .LBB10_2:
+; CHECK-NEXT:  conditional.cold:
 ; CHECK-NEXT:    cmpb $0, 48(%rdx)
-; CHECK-NEXT:    je .LBB10_3
-; CHECK-NEXT:  # %bb.4:
+; CHECK-NEXT:    je [[DONE:.LBB10_[0-9]+]]
+; CHECK-NEXT:  # %bb.{{[0-9]+}}:
 ; CHECK-NEXT:    movq 40(%rdx), %rcx
 ; CHECK-NEXT:    jmp free # TAILCALL
-; CHECK-NEXT:  .LBB10_3:
+; CHECK-NEXT:  [[DONE]]:
 ; CHECK-NEXT:    retq # CLEANUPRET
 define void @conditional() personality ptr @__gxx_personality_seh0 {
 entry:
@@ -566,6 +615,78 @@ ehcleanup:
   call void @dtor(ptr %a) [ "funclet"(token %pad) ]
   cleanupret from %pad unwind to caller
 }
+
+; A cleanup's loop is not aligned, however often the function's own loops make
+; its call site run: the unwinder alone enters a cleanup.
+; CHECK-LABEL: looping:
+; CHECK:         .p2align 4
+; CHECK:       looping.cold:
+; CHECK-NOT:     .p2align
+; CHECK:         .seh_endproc
+define void @looping(i64 %n, ptr %b, ptr %e) personality ptr @__gxx_personality_seh0 {
+entry:
+  br label %outer
+outer:
+  %i = phi i64 [ 0, %entry ], [ %i.next, %outer.latch ]
+  br label %middle
+middle:
+  %j = phi i64 [ 0, %outer ], [ %j.next, %middle.latch ]
+  br label %inner
+inner:
+  %k = phi i64 [ 0, %middle ], [ %k.next, %cont ]
+  invoke void @may_throw() to label %cont unwind label %ehcleanup
+cont:
+  %k.next = add i64 %k, 1
+  %ck = icmp ult i64 %k.next, %n
+  br i1 %ck, label %inner, label %middle.latch
+middle.latch:
+  %j.next = add i64 %j, 1
+  %cj = icmp ult i64 %j.next, %n
+  br i1 %cj, label %middle, label %outer.latch
+outer.latch:
+  %i.next = add i64 %i, 1
+  %ci = icmp ult i64 %i.next, %n
+  br i1 %ci, label %outer, label %exit
+exit:
+  ret void
+ehcleanup:
+  %pad = cleanuppad within none []
+  br label %loop
+loop:
+  %p = phi ptr [ %b, %ehcleanup ], [ %next, %loop ]
+  call void @dtor(ptr %p) [ "funclet"(token %pad) ]
+  %next = getelementptr i8, ptr %p, i64 8
+  %c = icmp eq ptr %next, %e
+  br i1 %c, label %done, label %loop
+done:
+  cleanupret from %pad unwind to caller
+}
+
+; A function in a section that the source names keeps its cleanups there, and
+; the table omits their base. Elsewhere the cold section is associative to the
+; function's own.
+; CHECK-LABEL: in_section:
+; CHECK:         .byte 255 # Cleanup base Encoding = omit
+; CHECK:         .uleb128 [[FUNCLET:.LBB[0-9]+_2]]-.Lfunc_begin{{[0-9]+}}
+; CHECK:         .seh_endproc
+; CHECK-NEXT:    .def "?dtor$2@?0?in_section@4HA";
+; CHECK:       [[FUNCLET]]:
+; SEC:           .section .text$split,"xr",associative,cleanup
+; SEC:           .section .mysec,"xr"
+; SEC-NOT:       .text$split
+define void @in_section() section ".mysec" personality ptr @__gxx_personality_seh0 {
+entry:
+  %a = alloca i32
+  invoke void @may_throw() to label %cont unwind label %ehcleanup
+cont:
+  call void @dtor(ptr %a)
+  ret void
+ehcleanup:
+  %pad = cleanuppad within none []
+  call void @dtor(ptr %a) [ "funclet"(token %pad) ]
+  cleanupret from %pad unwind to caller
+}
+
 
 ; Only the handlers are EH continuation targets: a funclet is called.
 ; EHCONT:      .section .gehcont$y

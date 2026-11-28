@@ -284,8 +284,10 @@ CodeViewContext::getFunctionLineEntries(unsigned FuncId) {
         MCCVFunctionInfo::LineInfo &IA = I->second;
         // Only add the location if it differs from the previous location.
         // Large inlined calls will have many .cv_loc entries and we only need
-        // one line table entry in the parent function.
+        // one line table entry in the parent function, for each section.
         if (FilteredLines.empty() ||
+            &FilteredLines.back().getLabel()->getSection() !=
+                &MCCVLines[Idx].getLabel()->getSection() ||
             FilteredLines.back().getFileNum() != IA.File ||
             FilteredLines.back().getLine() != IA.Line ||
             FilteredLines.back().getColumn() != IA.Col) {
@@ -349,8 +351,15 @@ void CodeViewContext::emitLineTableForFunction(MCObjectStreamer &OS,
   OS.emitCOFFSecRel32(FuncBegin, /*Offset=*/0);
   OS.emitCOFFSectionIndex(FuncBegin);
 
+  if (MCCVFunctionInfo *Info = getCVFunctionInfo(FuncId))
+    Info->Chunks.emplace_back(FuncBegin, FuncEnd);
+
   // Actual line info.
+  // A function whose code is split has a table for each of its sections.
   std::vector<MCCVLoc> Locs = getFunctionLineEntries(FuncId);
+  erase_if(Locs, [&](const MCCVLoc &Loc) {
+    return &Loc.getLabel()->getSection() != &FuncBegin->getSection();
+  });
   bool HaveColumns = any_of(Locs, [](const MCCVLoc &LineEntry) {
     return LineEntry.getColumn() != 0;
   });
@@ -447,19 +456,6 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
   if (Locs.empty())
     return;
 
-  // Check that the locations are all in the same section.
-#ifndef NDEBUG
-  const MCSection *FirstSec = &Locs.front().getLabel()->getSection();
-  for (const MCCVLoc &Loc : Locs) {
-    if (&Loc.getLabel()->getSection() != FirstSec) {
-      errs() << ".cv_loc " << Loc.getFunctionId() << ' ' << Loc.getFileNum()
-             << ' ' << Loc.getLine() << ' ' << Loc.getColumn()
-             << " is in the wrong section\n";
-      llvm_unreachable(".cv_loc crosses sections");
-    }
-  }
-#endif
-
   // Make an artificial start location using the function start and the inlinee
   // lines start location information. All deltas start relative to this
   // location.
@@ -470,11 +466,15 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
   bool HaveOpenRange = false;
 
   const MCSymbol *LastLabel = Frag.getFnStartSym();
+  const MCSymbol *ChunkEnd = Frag.getFnEndSym();
   MCCVFunctionInfo::LineInfo LastSourceLoc, CurSourceLoc;
   LastSourceLoc.File = Frag.StartFileId;
   LastSourceLoc.Line = Frag.StartLineNum;
 
   MCCVFunctionInfo *SiteInfo = getCVFunctionInfo(Frag.SiteFuncId);
+  const MCCVFunctionInfo *FnInfo = SiteInfo;
+  while (FnInfo && FnInfo->isInlinedCallSite())
+    FnInfo = getCVFunctionInfo(FnInfo->getParentFuncId());
 
   SmallVector<char, 0> Buffer;
   for (const MCCVLoc &Loc : Locs) {
@@ -486,6 +486,27 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
     size_t MaxBufferSize = MaxRecordLength - InlineSiteSize - AnnotationSize;
     if (Buffer.size() >= MaxBufferSize)
       break;
+
+    // Code offsets count from the start of one chunk of the function's code:
+    // the function's own, or the nth section of its split-off code, which a
+    // change of base selects. Code that no line table covers is not described.
+    if (&Loc.getLabel()->getSection() != &LastLabel->getSection()) {
+      if (!FnInfo)
+        break;
+      const auto *Chunk = find_if(FnInfo->Chunks, [&](const auto &C) {
+        return &C.first->getSection() == &Loc.getLabel()->getSection();
+      });
+      if (Chunk == FnInfo->Chunks.end())
+        break;
+      if (HaveOpenRange) {
+        compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeLength, Buffer);
+        compressAnnotation(computeLabelDiff(Asm, LastLabel, ChunkEnd), Buffer);
+      }
+      HaveOpenRange = false;
+      compressAnnotation(BinaryAnnotationsOpCode::ChangeCodeOffsetBase, Buffer);
+      compressAnnotation(Chunk - FnInfo->Chunks.begin(), Buffer);
+      std::tie(LastLabel, ChunkEnd) = *Chunk;
+    }
 
     if (Loc.getFunctionId() == Frag.SiteFuncId) {
       CurSourceLoc.File = Loc.getFileNum();
@@ -537,10 +558,11 @@ void CodeViewContext::encodeInlineLineTable(const MCAssembler &Asm,
     LastSourceLoc = CurSourceLoc;
   }
 
-  assert(HaveOpenRange);
+  // The site's last code may lie in a section that has no line table.
+  if (!HaveOpenRange)
+    return Frag.setVarContents(Buffer);
 
-  unsigned EndSymLength =
-      computeLabelDiff(Asm, LastLabel, Frag.getFnEndSym());
+  unsigned EndSymLength = computeLabelDiff(Asm, LastLabel, ChunkEnd);
   unsigned LocAfterLength = ~0U;
   ArrayRef<MCCVLoc> LocAfter = getLinesForExtent(LocEnd, LocEnd + 1);
   if (!LocAfter.empty()) {
@@ -566,8 +588,12 @@ void CodeViewContext::encodeDefRange(const MCAssembler &Asm,
   SmallVector<std::pair<unsigned, unsigned>, 4> GapAndRangeSizes;
   const MCSymbol *LastLabel = nullptr;
   for (std::pair<const MCSymbol *, const MCSymbol *> Range : Frag.getRanges()) {
+    // A range in another section than the last begins a record of its own.
     unsigned GapSize =
-        LastLabel ? computeLabelDiff(Asm, LastLabel, Range.first) : 0;
+        !LastLabel ? 0
+        : &LastLabel->getSection() != &Range.first->getSection()
+            ? unsigned(MaxDefRange)
+            : computeLabelDiff(Asm, LastLabel, Range.first);
     unsigned RangeSize = computeLabelDiff(Asm, Range.first, Range.second);
     GapAndRangeSizes.push_back({GapSize, RangeSize});
     LastLabel = Range.second;

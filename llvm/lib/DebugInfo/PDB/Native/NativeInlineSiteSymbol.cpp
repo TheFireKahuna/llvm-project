@@ -27,9 +27,9 @@ using namespace llvm::pdb;
 
 NativeInlineSiteSymbol::NativeInlineSiteSymbol(
     NativeSession &Session, SymIndexId Id, const codeview::InlineSiteSym &Sym,
-    uint64_t ParentAddr)
+    ArrayRef<uint64_t> CodeBases)
     : NativeRawSymbol(Session, PDB_SymType::InlineSite, Id), Sym(Sym),
-      ParentAddr(ParentAddr) {}
+      CodeBases(CodeBases) {}
 
 NativeInlineSiteSymbol::~NativeInlineSiteSymbol() = default;
 
@@ -151,9 +151,17 @@ void NativeInlineSiteSymbol::getLineOffset(uint32_t OffsetInFunc,
     switch (Annot.OpCode) {
     case BinaryAnnotationsOpCode::CodeOffset:
     case BinaryAnnotationsOpCode::ChangeCodeOffset:
-    case BinaryAnnotationsOpCode::ChangeCodeOffsetBase:
       CodeOffset += Annot.U1;
       UpdateCodeOffset(Annot.U1);
+      break;
+    // The ranges that follow lie in the function's nth separated code and
+    // count from its start.
+    case BinaryAnnotationsOpCode::ChangeCodeOffsetBase:
+      if (Annot.U1 >= CodeBases.size())
+        return;
+      CodeOffset = CodeBases[Annot.U1] - CodeBases[0];
+      CodeOffsetBase = CodeOffsetEnd = std::nullopt;
+      NextLineOffset = std::nullopt;
       break;
     case BinaryAnnotationsOpCode::ChangeCodeLength:
       UpdateCodeOffset(Annot.U1);
@@ -206,7 +214,7 @@ NativeInlineSiteSymbol::findInlineeLinesByVA(uint64_t VA,
   // Get the line number offset and source file offset.
   uint32_t SrcLineOffset;
   uint32_t SrcFileOffset;
-  getLineOffset(VA - ParentAddr, SrcLineOffset, SrcFileOffset);
+  getLineOffset(VA - CodeBases[0], SrcLineOffset, SrcFileOffset);
 
   // Get line info from inlinee line table.
   std::optional<InlineeSourceLine> Inlinee =

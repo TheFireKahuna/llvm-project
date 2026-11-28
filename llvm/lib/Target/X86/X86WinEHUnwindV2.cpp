@@ -24,6 +24,7 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DiagnosticInfo.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Module.h"
 
 using namespace llvm;
@@ -40,6 +41,8 @@ namespace {
 struct EpilogInfo {
   MachineInstr *UnwindV2StartLocation;
   unsigned ApproximateInstructionPosition;
+  // Where the unwind info that covers the epilog ends: its section does.
+  unsigned ApproximateEndPosition;
 };
 
 struct FrameInfo {
@@ -125,6 +128,7 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
   unsigned ApproximatePrologCodeCount = 0;
 
   SmallVector<EpilogInfo> EpilogInfos;
+  std::optional<SmallPtrSet<const MachineBasicBlock *, 16>> Frame;
 
   // Unwind v2 requires that the epilog is no more than 4Kb away from the last
   // instruction that the current unwind info covers. If we believe that we are
@@ -156,8 +160,9 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
     bool HasStackDealloc = false;
     bool HasSetFrameBack = false;
     MachineInstr *UnwindV2StartLocation = nullptr;
+    MachineInstr *BeginEpilog = nullptr;
 
-    for (MachineInstr &MI : MBB) {
+    for (MachineInstr &MI : make_early_inc_range(MBB)) {
       // This is an *approximation* of the number of instructions that will be
       // emitted. It is not the actual number of instructions, but that doesn't
       // matter: see the comment at the declaration of
@@ -220,6 +225,7 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
         if (State != FunctionState::HasProlog)
           llvm_unreachable("SEH_BeginEpilogue in prolog or another epilog");
         State = FunctionState::InEpilog;
+        BeginEpilog = &MI;
         break;
 
       case X86::SEH_EndEpilogue:
@@ -241,7 +247,7 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
         if (!UnwindV2StartLocation)
           UnwindV2StartLocation = &MI;
         EpilogInfos.push_back(
-            {UnwindV2StartLocation, ApproximateInstructionCount});
+            {UnwindV2StartLocation, ApproximateInstructionCount, 0});
         State = FunctionState::FinishedEpilog;
         break;
 
@@ -390,6 +396,32 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
         }
       }
     }
+
+    // An epilog that ends a shrink-wrapped frame may fall out of it: the
+    // frame's unwind info ends with it, and what follows is leaf code, which
+    // has none.
+    if (State == FunctionState::FinishedEpilog && MBB.getNextNode()) {
+      if (!Frame)
+        Frame = getShrinkWrappedFrame(MF);
+      if (Frame->contains(&MBB) && !Frame->contains(MBB.getNextNode())) {
+        State = FunctionState::HasProlog;
+        // One that pops nothing is then empty, and no epilog.
+        if (EpilogInfos.back().UnwindV2StartLocation->getOpcode() ==
+            X86::SEH_EndEpilogue) {
+          EpilogInfos.pop_back_val().UnwindV2StartLocation->eraseFromParent();
+          BeginEpilog->eraseFromParent();
+        }
+      }
+    }
+
+    // Each section of the function has unwind info of its own.
+    if (MBB.isEndSection() || !MBB.getNextNode() ||
+        MBB.getNextNode()->isEHFuncletEntry())
+      for (EpilogInfo &Info : reverse(EpilogInfos)) {
+        if (Info.ApproximateEndPosition)
+          break;
+        Info.ApproximateEndPosition = ApproximateInstructionCount;
+      }
   }
 
   // The unwinder replays a push code as a pop, which `leave` is not.
@@ -404,6 +436,11 @@ runAnalysisOnFuncOrFunclet(MachineFunction &MF, MachineFunction::iterator &Iter,
 bool runX86WinEHUnwindV2(MachineFunction &MF) {
   const X86Options &CLOpts = MF.getSubtarget<X86Subtarget>().getCLOpts();
   WinX64EHUnwindMode Mode = getWinX64EHUnwindMode(MF);
+  // The unwind info of each section of a function describes its own code, and
+  // the unwinder takes a jump from one to another for an epilog unless it
+  // reads no code.
+  if (!MF.front().sameSection(&MF.back()))
+    Mode = WinX64EHUnwindMode::V2Required;
 
   // Only act on V2 modes; V1 = disabled, V3 handled by the V3 pass.
   if (Mode != WinX64EHUnwindMode::V2BestEffort &&
@@ -426,6 +463,18 @@ bool runX86WinEHUnwindV2(MachineFunction &MF) {
     if (!FI->EpilogInfos.empty())
       FrameInfos.push_back(std::move(*FI));
   }
+
+  // Where a function's exception tables count from the start of its unwind
+  // info, as an Itanium personality's do on these targets, unwind info that
+  // ends short of the function is followed by a part of the function with
+  // unwind info and tables of its own, as a section of it has, and not by
+  // chained info; a funclet's range, which has no table, is cut the same way.
+  const Function &F = MF.getFunction();
+  bool CutsParts =
+      MF.getTarget().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      !(F.hasPersonalityFn() &&
+        isFuncletEHPersonality(classifyEHPersonality(F.getPersonalityFn())));
+  SmallPtrSet<const MachineBasicBlock *, 4> PartEnds;
 
   // A frame with no epilogue takes the version as well: its unwind info names
   // none, and the unwinder then reads no code for one.
@@ -461,9 +510,14 @@ bool runX86WinEHUnwindV2(MachineFunction &MF) {
     // * If the current instruction is too far away from where the last unwind
     //   info ended OR there are too many unwind codes in the info, then add
     //   SEH_SplitChainedAtEndOfBlock to finish the current info.
-    unsigned LastUnwindInfoEndPosition = FI.ApproximateInstructionCount;
-    unsigned UnwindCodeCount = FI.ApproximatePrologCodeCount + 1;
+    unsigned LastUnwindInfoEndPosition = 0, SectionEndPosition = 0;
+    unsigned UnwindCodeCount = 0;
     for (auto &Info : llvm::reverse(FI.EpilogInfos)) {
+      if (Info.ApproximateEndPosition != SectionEndPosition) {
+        LastUnwindInfoEndPosition = SectionEndPosition =
+            Info.ApproximateEndPosition;
+        UnwindCodeCount = FI.ApproximatePrologCodeCount + 1;
+      }
       MachineBasicBlock &MBB = *Info.UnwindV2StartLocation->getParent();
       const DebugLoc &DL = Info.UnwindV2StartLocation->getDebugLoc();
       BuildMI(MBB, Info.UnwindV2StartLocation, DL,
@@ -473,9 +527,12 @@ bool runX86WinEHUnwindV2(MachineFunction &MF) {
       if ((LastUnwindInfoEndPosition - Info.ApproximateInstructionPosition >=
            CLOpts.wineh_unwindv2_instruction_count_threshold) ||
           (UnwindCodeCount >= CLOpts.wineh_unwindv2_unwind_codes_threshold)) {
-        BuildMI(MBB, MBB.begin(), DL,
-                TII->get(X86::SEH_SplitChainedAtEndOfBlock))
-            .setMIFlag(MachineInstr::FrameDestroy);
+        if (CutsParts)
+          PartEnds.insert(&MBB);
+        else
+          BuildMI(MBB, MBB.begin(), DL,
+                  TII->get(X86::SEH_SplitChainedAtEndOfBlock))
+              .setMIFlag(MachineInstr::FrameDestroy);
         LastUnwindInfoEndPosition = Info.ApproximateInstructionPosition;
         // Doesn't reset to 0, as the prolog unwind codes are now in this info.
         UnwindCodeCount = FI.ApproximatePrologCodeCount + 1;
@@ -483,6 +540,25 @@ bool runX86WinEHUnwindV2(MachineFunction &MF) {
 
       UnwindCodeCount++;
     }
+  }
+
+  // A part is a section of the function to what emits it, in the section it
+  // was cut from.
+  if (!PartEnds.empty()) {
+    MBBSectionID From = MF.front().getSectionID(), Part = From;
+    unsigned Parts = 0;
+    bool Cut = false;
+    for (MachineBasicBlock &MBB : MF) {
+      if (MBB.getSectionID() != From) {
+        From = Part = MBB.getSectionID();
+      } else if (Cut && !MBB.isEHFuncletEntry()) {
+        Part.Number = ++Parts;
+      }
+      Cut = PartEnds.count(&MBB);
+      MBB.setSectionID(Part);
+    }
+    MF.setBBSectionsType(BasicBlockSection::Preset);
+    MF.assignBeginEndSections();
   }
 
   // Note that the function is using Unwind v2, where its unwind range begins,

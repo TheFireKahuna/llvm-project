@@ -46,8 +46,8 @@ define void @scope(ptr %p) personality ptr @__gxx_personality_seha0 {
 ; The scope is the funclet's, its site is the scope's range, and the code
 ; outside the scope has entries with no landing pad.
 ; CHECK:       .Leh_sites0 = .Lfunc_begin0+1
-; CHECK-NEXT:    .byte 2 # Scope table version
-; CHECK:         .uleb128 [[FUNCLET:.LBB0_[0-9]+]]-.Lfunc_begin0
+; CHECK-NEXT:    .byte 1 # Scope table version
+; CHECK:         .uleb128 scope.cold-scope.cold
 ; CHECK-NEXT:    .uleb128 [[BEGIN]]-.Leh_sites0
 ; CHECK-NEXT:    .byte 1
 ; CHECK-NEXT:  .Lscopes_end0:
@@ -60,25 +60,20 @@ define void @scope(ptr %p) personality ptr @__gxx_personality_seha0 {
 ; CHECK-NEXT:    .byte 0 # has no landing pad
 ; CHECK-NEXT:    .byte 0 # On action: cleanup
 ; CHECK-NEXT:    .uleb128 [[END]]-.Leh_sites0 # >> Call Site 3 <<
-; CHECK-NEXT:    .uleb128 [[FUNCLET]]-[[END]]
+; CHECK-NEXT:    .uleb128 .LBB_END0_{{[0-9]+}}-[[END]]
 ; CHECK-NEXT:    .byte 0 # has no landing pad
 ; CHECK-NEXT:    .byte 0 # On action: cleanup
 ; CHECK-NEXT:  .Lcst_end0:
 ;
-; The store is at 0x19 and the funclet at 0x35. The scope table names the
-; funclet and the scope's site at 0x18, and the call sites are 0 to 0x18, six
-; bytes from 0x18 and the rest from 0x1e. The linker may resize the code, so
-; the tables' spans name labels.
+; The store is at 0x19 and the funclet in the cold section. The scope table
+; names the funclet and the scope's site at 0x18, and the call sites are 0 to
+; 0x18, six bytes from 0x18 and the rest from 0x1e. The linker moves no code
+; of a section with no site at which it removes an instruction, so the tables'
+; spans are numbers and the code has no labels.
 ; DIS-LABEL: <scope>:
 ; DIS:            18: nop
-; DIS-EMPTY:
-; DIS-NEXT:       <$L{{[0-9a-f]+}}>:
 ; DIS-NEXT:       19: movl $0x1, (%rsi)
-; DIS-EMPTY:
-; DIS-NEXT:       <$L{{[0-9a-f]+}}>:
 ; DIS-NEXT:       1f: leaq
-; DIS:            35: leaq 0x2c(%rdx), %rcx
-; DIS-NEXT:       39: jmp
 ; A64-LABEL: scope:
 ; A64:         bl ctor
 ; A64-NEXT:  // %bb.{{[0-9]+}}:
@@ -89,7 +84,7 @@ define void @scope(ptr %p) personality ptr @__gxx_personality_seha0 {
 ; A64-NEXT:  [[END:.Ltmp[0-9]+]]:
 ; A64-NEXT:    add x0, x29, #20
 ; A64-NEXT:    bl dtor
-; A64:         .uleb128 .LBB0_{{[0-9]+}}-.Lfunc_begin0
+; A64:         .uleb128 scope.cold-scope.cold
 ; A64-NEXT:    .uleb128 [[BEGIN]]-.Lfunc_begin0
 ; A64:         .uleb128 [[BEGIN]]-.Lfunc_begin0 // >> Call Site 2 <<
 ; A64-NEXT:    .uleb128 [[END]]-[[BEGIN]]
@@ -123,7 +118,9 @@ cleanup:
 ; The instructions of a try block and its call make one range of the try
 ; block's scope. The handler is outside it, and a fault may land in it between
 ; any two instructions, where only memory holds a value: the pointer is in its
-; slot from before the try block.
+; slot from before the try block. The handler lies in the function's cold
+; section, a function of its own to the unwinder, whose table covers its
+; instructions from a byte before its own start.
 define void @try(ptr %p) personality ptr @__gxx_personality_seha0 {
 ; CHECK-LABEL: try:
 ; CHECK:         movq %rcx, [[SLOT:[0-9]+]](%rsp)
@@ -135,17 +132,21 @@ define void @try(ptr %p) personality ptr @__gxx_personality_seha0 {
 ; CHECK-NEXT:    callq may_throw
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:  [[END:.Ltmp[0-9]+]]:
-; CHECK:       [[PAD:.LBB1_[0-9]+]]: # %catch
+; CHECK:         .uleb128 [[BEGIN]]-.Leh_sites1 # >> Call Site 2 <<
+; CHECK-NEXT:    .uleb128 [[END]]-[[BEGIN]]
+; CHECK-NEXT:    .uleb128 [[PAD:.LBB1_[0-9]+]]-try.cold
+; CHECK-NEXT:    .byte 1 # On action: 1
+; CHECK-NEXT:    .uleb128 [[END]]-.Leh_sites1 # >> Call Site 3 <<
+; CHECK-NEXT:    .uleb128 [[HOTEND:.LBB_END1_[0-9]+]]-[[END]]
+; CHECK-NEXT:    .byte 0 # has no landing pad
+; CHECK:       [[PAD]]: # %catch
 ; CHECK-NEXT:  $ehgcr_1_{{[0-9]+}}:
 ; CHECK-NEXT:    movq [[SLOT]](%rsp), %rax
 ; CHECK-NEXT:    movl $2, (%rax)
-; CHECK:         .uleb128 [[BEGIN]]-.Leh_sites1 # >> Call Site 2 <<
-; CHECK-NEXT:    .uleb128 [[END]]-[[BEGIN]]
-; CHECK-NEXT:    .uleb128 [[PAD]]-.Lfunc_begin1
-; CHECK-NEXT:    .byte 1 # On action: 1
-; CHECK-NEXT:    .uleb128 [[END]]-.Leh_sites1 # >> Call Site 3 <<
-; CHECK-NEXT:    .uleb128 .Lfunc_end1-[[END]]
-; CHECK-NEXT:    .byte 0 # has no landing pad
+; CHECK:       [[COLDEND:.LBB_END1_[0-9]+]]:
+; CHECK:       [[SITES:.Leh_sites[0-9]+]] = try.cold+1
+; CHECK:         .uleb128 [[SITES]]-[[SITES]] # >> Call Site 1 <<
+; CHECK-NEXT:    .uleb128 [[COLDEND]]-[[SITES]]
 entry:
   invoke void @llvm.seh.try.begin() to label %body unwind label %cs
 body:
@@ -185,7 +186,7 @@ define void @calls(ptr %p) personality ptr @__gxx_personality_seha0 {
 ; CHECK-NEXT:  [[END:.Ltmp[0-9]+]]:
 ; CHECK-NEXT:  # %bb.{{[0-9]+}}: # %out
 ; CHECK-NEXT:    leaq {{.*}}, %rcx
-; CHECK:         .uleb128 [[BEGIN]]-.Leh_sites2 # >> Call Site 2 <<
+; CHECK:         .uleb128 [[BEGIN]]-[[SITES:.Leh_sites[0-9]+]] # >> Call Site 2 <<
 ; CHECK-NEXT:    .uleb128 [[END]]-[[BEGIN]]
 entry:
   %a = alloca i32
@@ -218,18 +219,17 @@ define void @first(ptr %p) personality ptr @__gxx_personality_seha0 {
 ; CHECK-NEXT:    .seh_handler __gxx_personality_seha0, @unwind, @except
 ; CHECK-NEXT:    nop
 ; CHECK-NEXT:  # %bb.0: # %entry
+; CHECK-NEXT:    .seh_unwindversion 2
 ; CHECK-NEXT:    .seh_endprologue
 ; CHECK-NEXT:  [[BEGIN:.Ltmp[0-9]+]]:
 ; CHECK-NEXT:    movl $1, (%rcx)
 ; CHECK-NEXT:  [[END:.Ltmp[0-9]+]]:
-; CHECK:         .uleb128 [[FUNCLET:.LBB3_[0-9]+]]-.Lfunc_begin3
-; CHECK-NEXT:    .uleb128 [[BEGIN]]-.Leh_sites3
-; CHECK:         .uleb128 [[BEGIN]]-.Leh_sites3 # >> Call Site 1 <<
+; CHECK:         .uleb128 first.cold-first.cold
+; CHECK-NEXT:    .uleb128 [[BEGIN]]-[[SITES:.Leh_sites[0-9]+]]
+; CHECK:         .uleb128 [[BEGIN]]-[[SITES]] # >> Call Site 1 <<
 ; CHECK-NEXT:    .uleb128 [[END]]-[[BEGIN]]
 ; DIS-LABEL: <first>:
 ; DIS-NEXT:       nop
-; DIS-EMPTY:
-; DIS-NEXT:       <$L{{[0-9a-f]+}}>:
 ; DIS-NEXT:       movl $0x1, (%rcx)
 entry:
   invoke void @llvm.seh.scope.begin() to label %in unwind label %cleanup

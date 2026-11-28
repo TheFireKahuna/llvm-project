@@ -17,12 +17,12 @@
 // RUN:   -x86-align-branch-boundary=32 -x86-align-branch=call %s -o %t.b.o
 // RUN: llvm-objdump -d -j '.text$b' %t.b.o | FileCheck %s --check-prefix=PAD
 
-// the load's field, which holds nothing: the linker writes a direct call and
-// a no-operation over the two where it binds the pointer, so the register is
-// one that nothing reads after the call. The site keeps its length, so it
-// does not make its section one whose code the linker moves, and the
-// assembler resolves a jump across it. In a section that a fused read makes
-// such a one the linker writes the call alone, and the jump has a relocation.
+// the load's field, which holds nothing: the linker writes a direct call
+// over the two where it binds the pointer, so the register is one that
+// nothing reads after the call. The call is five bytes, so the linker deletes
+// the rest: the section is listed, and states the jump across the site as a
+// span, with no relocation or label. In a section that a fused read makes one
+// whose code the linker moves, the jump has a relocation.
 
 // CHECK:      Section ({{[0-9]+}}) .text {
 // CHECK-NEXT:   0x5 IMAGE_REL_LLVM_MEM_LOAD_CALL __imp_f
@@ -33,8 +33,19 @@
 // CHECK-NEXT:   0x5 IMAGE_REL_LLVM_MEM_LOAD_CALL __imp_f
 // CHECK-NEXT:   0xE IMAGE_REL_LLVM_FUSED_READ __imp_f
 // CHECK-NEXT: }
-// CHECK:      ResizableSection: .text$m (
-// CHECK-NOT:  ResizableSection:
+// CHECK:      ResizableSection: .text (
+// CHECK-NEXT: ResizableSection: .text$m (
+// CHECK:      Kind: Spans (0x5)
+// CHECK-NEXT: Spans {
+// CHECK-NEXT:   Field: .text (
+// CHECK-NEXT:   Target: .text (
+// CHECK-NEXT:   0x1 REL8
+// CHECK-NEXT: }
+// CHECK-NEXT: Spans {
+// CHECK-NEXT:   Field: .text$b (
+// CHECK-NEXT:   Target: .text$b (
+// CHECK-NEXT: }
+// CHECK-NEXT: }
 
 // DIS:      eb 13                  jmp
 // DIS-NEXT: 48 8b 05 00 00 00 00   movq
@@ -78,6 +89,7 @@
 .else
 // The call is through the register the load wrote, directly after it.
 // ERR-COUNT-5: error: load of a pointer for a call is not followed by the call through its register
+// ERR: error: label between the load of a pointer for a call and the call
   movq __imp_f@LOAD_CALL(%rip), %rax
   callq *%rcx
   movq __imp_f@LOAD_CALL(%rip), %rax
@@ -90,6 +102,9 @@
   jmpq *%rax
   movq __imp_f@LOAD_CALL(%rip), %rax
   notrack callq *%rax
+  movq __imp_f@LOAD_CALL(%rip), %rax
+2:
+  callq *%rax
 // The load is a mov of 64 bits through RIP with a REX prefix, of the pointer
 // itself.
 // ERR-COUNT-4: error: @LOAD_CALL is not on a 64-bit mov of a pointer into one of the first sixteen registers

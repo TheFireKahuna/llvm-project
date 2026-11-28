@@ -2985,8 +2985,22 @@ void X86AsmPrinter::maybeEmitNopAfterCallForWindowsEH(const MachineInstr *MI) {
       // We always emit a NOP before SEH_BeginEpilogue, even if there is no
       // personality function (unwind info) for this frame. This is the same
       // behavior as MSVC.
+      //
+      // Version 2 unwind info states where the epilogue begins, at its first
+      // pop, so a return address at the release of the stack is not in it.
       if (NextMI.getOpcode() == X86::SEH_BeginEpilogue) {
-        EmitAndCountInstruction(MCInstBuilder(X86::NOOP));
+        bool Released = false;
+        for (const MachineInstr &EpilogMI :
+             make_range(std::next(MBBI), MBBE)) {
+          if (EpilogMI.getOpcode() == X86::SEH_UnwindV2Start ||
+              EpilogMI.getOpcode() == X86::SEH_EndEpilogue) {
+            Released &= EpilogMI.getOpcode() == X86::SEH_UnwindV2Start;
+            break;
+          }
+          Released |= !EpilogMI.isPseudo() && !EpilogMI.isMetaInstruction();
+        }
+        if (FirstLabel || !Released)
+          EmitAndCountInstruction(MCInstBuilder(X86::NOOP));
         return;
       }
 

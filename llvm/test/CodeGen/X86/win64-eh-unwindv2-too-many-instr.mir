@@ -16,6 +16,13 @@
 # RUN:    -passes=x86-wineh-unwindv2 | FileCheck %s \
 # RUN:    -check-prefixes=ALLOWMORE,CHECK
 
+# Where a function's exception tables count from its unwind info's start, the
+# info ends with a part of the function, a section of it to what emits it.
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium -o - %s \
+# RUN:    -x86-wineh-unwindv2-instruction-count-threshold=4 \
+# RUN:    -run-pass=x86-wineh-unwindv2 | FileCheck %s \
+# RUN:    -check-prefix=PARTS --implicit-check-not=SEH_SplitChained
+
 --- |
   define dso_local void @too_many_instr() local_unnamed_addr !dbg !9 {
   entry:
@@ -102,3 +109,9 @@ body:             |
 # CHECK-NEXT:     frame-destroy SEH_UnwindV2Start
 # CHECK-NEXT:     frame-destroy SEH_EndEpilogue
 # CHECK-NEXT:     RET64 debug-location !DILocation(line: 5, column: 1, scope: !6)
+
+# PARTS-LABEL: too_many_instr
+# PARTS:         bb.0.entry:
+# PARTS:         bb.1 (bbsections 1):
+# PARTS:         bb.2 (bbsections 1):
+# PARTS:         bb.3 (bbsections 2):

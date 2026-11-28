@@ -126,6 +126,10 @@ private:
   /// info is being emitted, DebugHandlerBase::Asm may be null.
   AsmPrinter *CompilerInfoAsm = nullptr;
 
+  /// The end of the section that holds \p MI, a function's code being split
+  /// over sections.
+  const MCSymbol *getSectionEnd(const MachineInstr *MI) const;
+
   static LocalVarDef createDefRangeMem(uint16_t CVRegister, int Offset,
                                        int32_t DerefOffset);
 
@@ -207,6 +211,8 @@ private:
 
     const MCSymbol *Begin = nullptr;
     const MCSymbol *End = nullptr;
+    /// The begin and end of each section of the function's split-off code.
+    SmallVector<std::pair<const MCSymbol *, const MCSymbol *>, 0> SplitRanges;
     unsigned FuncId = 0;
     unsigned LastFileId = 0;
 

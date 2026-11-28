@@ -18,7 +18,7 @@ declare i32 @__gxx_personality_seh0(...)
 ; CHECK-NEXT:    sub x9, sp, #32
 ; CHECK-NEXT:    and sp, x9, #0xffffffffffffffc0
 ; CHECK:         mov x19, sp
-; CHECK:       .LBB0_2:
+; CHECK:       base_register.cold:
 ; CHECK-NEXT:    sub x19, x29, #40
 ; CHECK-NEXT:    and x19, x19, #0xffffffffffffffc0
 ; CHECK-NEXT:    add x0, x19, #0
@@ -44,7 +44,7 @@ ehcleanup:
 ; CHECK-NEXT:    addvl x9, x9, #-2
 ; CHECK-NEXT:    and sp, x9, #0xffffffffffffffc0
 ; CHECK:         mov x19, sp
-; CHECK:       .LBB1_2:
+; CHECK:       scalable_frame.cold:
 ; CHECK-NEXT:    str x30, [sp, #-16]!
 ; CHECK-NEXT:    .seh_save_reg_x x30, 16
 ; CHECK-NEXT:    .seh_endprologue

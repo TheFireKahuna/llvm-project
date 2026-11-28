@@ -45,6 +45,10 @@ class LLVM_LIBRARY_VISIBILITY WinException : public EHStreamer {
   /// Pointer to the current funclet entry BB.
   const MachineBasicBlock *CurrentFuncletEntry = nullptr;
 
+  /// The entry of the funclet being emitted; the funclets follow the function's
+  /// own blocks.
+  const MachineBasicBlock *LastFuncletEntry = nullptr;
+
   /// The section of the last funclet start.
   MCSection *CurrentFuncletTextSection = nullptr;
 
@@ -91,6 +95,7 @@ class LLVM_LIBRARY_VISIBILITY WinException : public EHStreamer {
   int getFrameIndexOffset(int FrameIndex, const WinEHFuncInfo &FuncInfo);
 
   void endFuncletImpl();
+  static bool hasPadSite(const MachineBasicBlock &MBB);
 public:
   //===--------------------------------------------------------------------===//
   // Main entry points.
@@ -113,6 +118,8 @@ public:
   /// Emit target-specific EH funclet machinery.
   void beginFunclet(const MachineBasicBlock &MBB, MCSymbol *Sym) override;
   void endFunclet() override;
+  void beginBasicBlockSection(const MachineBasicBlock &MBB) override;
+  void endBasicBlockSection(const MachineBasicBlock &MBB) override;
 };
 }
 

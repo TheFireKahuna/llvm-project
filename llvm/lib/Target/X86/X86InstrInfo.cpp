@@ -3690,11 +3690,10 @@ bool X86InstrInfo::canMakeTailCallConditional(
   }
 
   // A version 1 unwinder finds an epilogue by reading the code, and does not
-  // take a conditional jump for one. Version 2 states its epilogues and reads
-  // no code, so the jump unwinds as the one it replaces.
+  // take a conditional jump for one. Where the epilogues are stated, the jump
+  // unwinds as the one it replaces.
   if (Subtarget.isTargetWin64() && MF->hasWinCFI() &&
-      (getWinX64EHUnwindMode(*MF) != WinX64EHUnwindMode::V2Required ||
-       requireWinX64UnwindV3(*MF)))
+      !Subtarget.getFrameLowering()->statesWindowsEpilogues(*MF))
     return false;
 
   assert(BranchCond.size() == 1);

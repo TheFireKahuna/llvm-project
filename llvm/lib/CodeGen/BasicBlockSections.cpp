@@ -101,6 +101,7 @@
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/IR/Function.h"
+#include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/UniqueBBID.h"
@@ -207,6 +208,14 @@ updateBranches(MachineFunction &MF,
   for (auto &MBB : MF) {
     auto NextMBBI = std::next(MBB.getIterator());
     auto *FTMBB = PreLayoutFallThroughs[MBB.getNumber()];
+    // Nothing falls through into unreachable code, an empty block that leads
+    // nowhere, so no branch is owed to it.
+    if (FTMBB && FTMBB->succ_empty() &&
+        FTMBB->getFirstNonDebugInstr() == FTMBB->end() &&
+        MBB.getFirstTerminator() == MBB.end()) {
+      MBB.removeSuccessor(FTMBB);
+      FTMBB = nullptr;
+    }
     // If this block had a fallthrough before we need an explicit unconditional
     // branch to that block if either
     //     1- the block ends a section, which means its next block may be
@@ -392,7 +401,9 @@ void llvm::sortBasicBlocksAndUpdateBranches(
 // If the exception section begins with a landing pad, that landing pad will
 // assume a zero offset (relative to @LPStart) in the LSDA. However, a value of
 // zero implies "no landing pad." This function inserts a NOP just before the EH
-// pad label to ensure a nonzero offset.
+// pad label to ensure a nonzero offset. Under Windows EH a pad is entered at
+// its block's own label, the EH continuation target, which the NOP precedes in
+// a block of its own; a funclet's entry is no landing pad.
 void llvm::avoidZeroOffsetLandingPad(MachineFunction &MF) {
   std::optional<MBBSectionID> CurrentSection;
   auto IsFirstNonEmptyBBInSection = [&](const MachineBasicBlock &MBB) {
@@ -403,13 +414,25 @@ void llvm::avoidZeroOffsetLandingPad(MachineFunction &MF) {
     return true;
   };
 
-  for (auto &MBB : MF) {
-    if (IsFirstNonEmptyBBInSection(MBB) && MBB.isEHPad()) {
+  const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
+  for (auto &MBB : make_early_inc_range(MF)) {
+    if (!IsFirstNonEmptyBBInSection(MBB) || !MBB.isEHPad() ||
+        MBB.isEHFuncletEntry())
+      continue;
+    if (MF.getFunction().getParent()->getExceptionModel() !=
+        ExceptionHandling::WinEH) {
       MachineBasicBlock::iterator MI = MBB.begin();
       while (!MI->isEHLabel())
         ++MI;
-      MF.getSubtarget().getInstrInfo()->insertNoop(MBB, MI);
+      TII.insertNoop(MBB, MI);
+      continue;
     }
+    MachineBasicBlock *Nop = MF.CreateMachineBasicBlock();
+    MF.insert(MBB.getIterator(), Nop);
+    Nop->setSectionID(MBB.getSectionID());
+    TII.insertNoop(*Nop, Nop->end());
+    Nop->setIsBeginSection(MBB.isBeginSection());
+    MBB.setIsBeginSection(false);
   }
 }
 
@@ -437,6 +460,128 @@ static void setDescendantEHBlocksCold(MachineFunction &MF) {
   computeEHOnlyBlocks(MF, EHBlocks);
   for (auto Block : EHBlocks) {
     Block->setSectionID(MBBSectionID::ColdSectionID);
+  }
+}
+
+/// Tests for the targets whose every function leaves its statically cold code
+/// in its cold section, profile or none.
+static bool splitsStatically(const MachineFunction &MF) {
+  const Triple &TT = MF.getTarget().getTargetTriple();
+  return TT.isWindowsItaniumOrNTPOSIXEnvironment();
+}
+
+/// Moves to the cold section what the compiler knows without a profile to be
+/// cold. Exception handling code is what no path from the entry reaches but
+/// over an exception edge, and it moves whole or not at all, since a function's
+/// landing pads lie in one section and its funclets end it. Other code is cold
+/// where \p UseProbabilities and every path to it takes an edge less probable
+/// than any heuristic makes a path of normal operation, a loop's exit being the
+/// least of those at 1/32: an edge that ends in a call that does not return, in
+/// unreachable code, or that the source calls unlikely. So is a block that
+/// calls a function the source marks cold, and one all of whose paths lead to
+/// such a block: that probability, 1/17, is above a loop exit's.
+///
+/// Cold blocks that ordinary edges join are a region, and one that is no
+/// exception handling code moves only where the function's own section
+/// shrinks by it: a branch to another section grows, by up to four bytes on
+/// x86-64 and by a trampoline on AArch64, so its bytes exceed four for each
+/// branch that enters it. x86-64 has no instruction's size before it is
+/// assembled: one counts for four bytes. The unwind info and tables that the
+/// cold part adds are cold data, and are not weighed.
+///
+/// The funclets that the unwinder calls always move: nothing jumps to them.
+/// The handlers move with them unless \p MoveHandlers is false, where a
+/// profile shows one hot.
+static void setStaticallyColdBlocks(MachineFunction &MF, bool UseProbabilities,
+                                    bool MoveHandlers = true) {
+  const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
+  // The blocks that call a cold function, and those that only lead to them.
+  SmallPtrSet<const MachineBasicBlock *, 16> ColdCalls;
+  auto CallsCold = [&](const MachineInstr &MI) {
+    if (!MI.isCall())
+      return false;
+    const auto *Callee =
+        dyn_cast_if_present<Function>(MF.tryGetCalledGlobal(&MI).Callee);
+    for (const MachineOperand &MO : MI.operands())
+      if (MO.isGlobal())
+        Callee = dyn_cast<Function>(MO.getGlobal());
+    return Callee && Callee->hasFnAttribute(Attribute::Cold);
+  };
+  for (bool Changed = UseProbabilities; Changed;) {
+    Changed = false;
+    for (const MachineBasicBlock &MBB : drop_begin(MF))
+      if (!MBB.isEHPad() && !ColdCalls.count(&MBB) &&
+          (any_of(MBB, CallsCold) ||
+           (!MBB.succ_empty() && all_of(MBB.successors(), [&](auto *Succ) {
+             return Succ->isEHPad() || ColdCalls.count(Succ);
+           }))))
+        Changed = ColdCalls.insert(&MBB).second;
+  }
+  auto Reach = [&](BranchProbability Cold) {
+    SmallPtrSet<const MachineBasicBlock *, 16> Reached;
+    SmallVector<const MachineBasicBlock *, 16> Worklist{&MF.front()};
+    while (!Worklist.empty()) {
+      const MachineBasicBlock *MBB = Worklist.pop_back_val();
+      if (!Reached.insert(MBB).second)
+        continue;
+      for (auto SI = MBB->succ_begin(), SE = MBB->succ_end(); SI != SE; ++SI)
+        if (!(*SI)->isEHPad() && MBB->getSuccProbability(SI) >= Cold &&
+            !(!Cold.isZero() && ColdCalls.count(*SI)))
+          Worklist.push_back(*SI);
+    }
+    return Reached;
+  };
+  auto Ordinary = Reach(BranchProbability::getZero());
+  auto Hot = UseProbabilities ? Reach(BranchProbability(1, 1 << 10)) : Ordinary;
+  // Exception handling code that cannot move stays ahead of the funclets, so
+  // nothing can follow them into another section.
+  if (!all_of(MF, [&](const MachineBasicBlock &MBB) {
+        return Ordinary.count(&MBB) || TII.isMBBSafeToSplitToCold(MBB);
+      })) {
+    for (MachineBasicBlock &MBB : MF)
+      MBB.setSectionID(MF.front().getSectionID());
+    return;
+  }
+  auto IsCold = [&](const MachineBasicBlock *MBB) {
+    return !Hot.count(MBB) &&
+           (!Ordinary.count(MBB) || TII.isMBBSafeToSplitToCold(*MBB));
+  };
+  SmallPtrSet<const MachineBasicBlock *, 16> Seen;
+  for (MachineBasicBlock &First : MF) {
+    if (!IsCold(&First) || Seen.count(&First))
+      continue;
+    SmallVector<MachineBasicBlock *, 8> Region, Worklist{&First};
+    bool IsEHCode = false, IsFunclet = false;
+    int Gain = 0;
+    while (!Worklist.empty()) {
+      MachineBasicBlock *MBB = Worklist.pop_back_val();
+      if (!Seen.insert(MBB).second)
+        continue;
+      Region.push_back(MBB);
+      IsEHCode |= !Ordinary.count(MBB);
+      IsFunclet |= MBB->isEHFuncletEntry();
+      for (const MachineInstr &MI : *MBB) {
+        if (MI.isMetaInstruction())
+          continue;
+        unsigned Size = TII.getInstSizeInBytes(MI);
+        Gain += Size == ~0U ? 4 : Size;
+      }
+      // The unwinder enters a pad, and no branch does: an exception edge
+      // joins no two regions.
+      if (!MBB->isEHPad())
+        for (MachineBasicBlock *Pred : MBB->predecessors()) {
+          if (IsCold(Pred))
+            Worklist.push_back(Pred);
+          else
+            Gain -= 4;
+        }
+      for (MachineBasicBlock *Succ : MBB->successors())
+        if (!Succ->isEHPad() && IsCold(Succ))
+          Worklist.push_back(Succ);
+    }
+    if (IsEHCode ? IsFunclet || MoveHandlers : Gain > 0)
+      for (MachineBasicBlock *MBB : Region)
+        MBB->setSectionID(MBBSectionID::ColdSectionID);
   }
 }
 
@@ -472,7 +617,8 @@ bool BasicBlockSections::shouldSplitWithPGO(MachineFunction &MF) {
   // We target functions with profile data. Static information in the form
   // of exception handling code may be split to cold if user passes the
   // mfs-split-ehcode flag.
-  if (!MF.getFunction().hasProfileData() && !SplitAllEHCode)
+  if (!MF.getFunction().hasProfileData() && !SplitAllEHCode &&
+      !splitsStatically(MF))
     return false;
 
   const TargetInstrInfo &TII = *MF.getSubtarget().getInstrInfo();
@@ -510,6 +656,8 @@ void BasicBlockSections::assignColdSectionWithPGO(MachineFunction &MF) {
       // Split all EH code and it's descendant statically by default.
       if (SplitAllEHCode)
         setDescendantEHBlocksCold(MF);
+      else if (splitsStatically(MF))
+        setStaticallyColdBlocks(MF, /*UseProbabilities=*/false);
       return;
     }
   }
@@ -529,6 +677,14 @@ void BasicBlockSections::assignColdSectionWithPGO(MachineFunction &MF) {
   // Split all EH code and it's descendant statically by default.
   if (SplitAllEHCode)
     setDescendantEHBlocksCold(MF);
+  // With a profile the handlers move where it shows every one of them cold,
+  // as the landing pads below do; one that it shows hot keeps them all.
+  else if (splitsStatically(MF))
+    setStaticallyColdBlocks(
+        MF, /*UseProbabilities=*/!UseProfileData,
+        !UseProfileData || all_of(LandingPads, [&](MachineBasicBlock *LP) {
+          return LP->isEHFuncletEntry() || isColdBlock(*LP, MBFI, PSI);
+        }));
   // We only split out eh pads if all of them are cold.
   else {
     // Here we have UseProfileData == true.
@@ -588,6 +744,14 @@ bool BasicBlockSections::handleBBSections(MachineFunction &MF) {
 
   if (UsePGO) {
     assignColdSectionWithPGO(MF);
+    // A function none of whose code is cold stays as it is, with the layout
+    // block placement chose and none of a split function's section bookkeeping.
+    if (splitsStatically(MF) && all_of(MF, [&](const MachineBasicBlock &MBB) {
+          return MBB.sameSection(&MF.front());
+        })) {
+      MF.setBBSectionsType(BasicBlockSection::None);
+      return false;
+    }
   } else {
     MF.setBBSectionsType(BBSectionsType);
     assignSections(MF, FuncClusterInfo);

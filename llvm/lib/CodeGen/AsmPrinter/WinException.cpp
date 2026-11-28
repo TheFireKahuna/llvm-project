@@ -44,6 +44,13 @@ WinException::WinException(AsmPrinter *A) : EHStreamer(A) {
 
 WinException::~WinException() = default;
 
+/// Tests whether each part of \p MF, a funclet or a section, has an exception
+/// table of its own, as under an Itanium personality.
+static bool hasTablePerPart(const MachineFunction &MF, EHPersonality Per) {
+  return !isFuncletEHPersonality(Per) &&
+         (MF.hasEHFunclets() || !MF.front().sameSection(&MF.back()));
+}
+
 /// endModule - Emit all exception information that should come after the
 /// content.
 void WinException::endModule() {
@@ -65,6 +72,7 @@ void WinException::endModule() {
 void WinException::beginFunction(const MachineFunction *MF) {
   shouldEmitMoves = shouldEmitPersonality = shouldEmitLSDA = false;
   RegionBegin = nullptr;
+  CurrentFuncletEntry = LastFuncletEntry = nullptr;
 
   // If any landing pads survive, we need an EH table.
   bool hasLandingPads = !MF->getLandingPads().empty();
@@ -123,8 +131,10 @@ void WinException::beginFunction(const MachineFunction *MF) {
 
 void WinException::markFunctionEnd() {
   if (isAArch64 && CurrentFuncletEntry &&
-      (shouldEmitMoves || shouldEmitPersonality))
+      (shouldEmitMoves || shouldEmitPersonality)) {
+    Asm->OutStreamer->switchSection(CurrentFuncletTextSection);
     Asm->OutStreamer->emitWinCFIFuncletOrFuncEnd();
+  }
 }
 
 /// endFunction - Gather and emit post-function exception information.
@@ -146,9 +156,9 @@ void WinException::endFunction(const MachineFunction *MF) {
   }
 
   // endFunclet will emit the necessary .xdata tables for table-based SEH, and
-  // the exception table of a Windows Itanium function with funclets.
-  if ((Per == EHPersonality::MSVC_TableSEH || !isFuncletEHPersonality(Per)) &&
-      MF->hasEHFunclets())
+  // the exception table of each part under an Itanium personality.
+  if ((Per == EHPersonality::MSVC_TableSEH && MF->hasEHFunclets()) ||
+      hasTablePerPart(*MF, Per))
     return;
 
   if (shouldEmitPersonality || shouldEmitLSDA) {
@@ -170,7 +180,7 @@ void WinException::endFunction(const MachineFunction *MF) {
     else if (Per == EHPersonality::CoreCLR)
       emitCLRExceptionTable(MF);
     else
-      emitExceptionTable();
+      emitExceptionTable(&MF->front());
 
     Asm->OutStreamer->popSection();
   }
@@ -198,9 +208,17 @@ static MCSymbol *getMCSymbolForMBB(AsmPrinter *Asm,
 
 void WinException::beginFunclet(const MachineBasicBlock &MBB,
                                 MCSymbol *Sym) {
-  CurrentFuncletEntry = &MBB;
+  // A part of a funclet in a section of its own is the funclet's range.
+  if (MBB.isEHFuncletEntry())
+    LastFuncletEntry = &MBB;
+  CurrentFuncletEntry = LastFuncletEntry ? LastFuncletEntry : &MBB;
 
   const Function &F = Asm->MF->getFunction();
+  // A funclet that begins a section is emitted there, label and all.
+  if (MBB.isBeginSection() && !MBB.isEntryBlock())
+    Asm->OutStreamer->switchSection(
+        Asm->getObjFileLowering().getSectionForMachineBasicBlock(F, MBB,
+                                                                 Asm->TM));
   // If a symbol was not provided for the funclet, invent one.
   if (!Sym) {
     Sym = getMCSymbolForMBB(Asm, &MBB);
@@ -231,7 +249,8 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
   // A called cleanup whose prologue sets up nothing is a leaf, which Windows
   // unwinds by its return address alone: it has no unwind record, and
   // whatever unwinds out of it reaches the unwinder that called it.
-  if (usesCalledCleanups(F) && none_of(MBB, [](const MachineInstr &MI) {
+  if (MBB.isEHFuncletEntry() && usesCalledCleanups(F) &&
+      none_of(MBB, [](const MachineInstr &MI) {
         return MI.getFlag(MachineInstr::FrameSetup);
       })) {
     CurrentFuncletEntry = nullptr;
@@ -239,18 +258,37 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
   }
 
   // Mark 'Sym' as starting our funclet. A shrink-wrapped prologue begins the
-  // function's unwind range, and its tables count from there, the region
+  // function's unwind range, and a part of the function in another section
+  // has an unwind range of its own: its tables count from there, the region
   // start its personality is given.
   if (shouldEmitMoves || shouldEmitPersonality) {
-    if (&MBB != &Asm->MF->front() && !MBB.isEHFuncletEntry()) {
+    if (CurrentFuncletEntry->isEHFuncletEntry()) {
+      // A funclet has no table, so no region start.
+    } else if (MBB.isBeginSection()) {
+      RegionBegin = &MBB == &Asm->MF->front() ? nullptr : MBB.getSymbol();
+    } else if (&MBB != &Asm->MF->front()) {
       RegionBegin = Asm->createTempSymbol("unwind_begin");
       Asm->OutStreamer->emitLabel(RegionBegin);
     }
     CurrentFuncletTextSection = Asm->OutStreamer->getCurrentSectionOnly();
     Asm->OutStreamer->emitWinCFIStartProc(Sym);
+    // The frame is set up where such a part is entered, so its unwind info
+    // states the prologue's unwind codes with no instruction for them.
+    // No funclet has begun yet, so AsmPrinter's frame is whole.
+    const auto &Frame = Asm->ShrinkWrappedFrame;
+    const MachineBasicBlock &Prologue =
+        CurrentFuncletEntry->isEHFuncletEntry()
+            ? *CurrentFuncletEntry
+            : *find_if(*Asm->MF, [&](const MachineBasicBlock &B) {
+                return Frame.empty() || Frame.contains(&B);
+              });
+    if (!MBB.isEHFuncletEntry() && !MBB.isEntryBlock() && &MBB != &Prologue)
+      for (const MachineInstr &MI : Prologue)
+        if (MI.getFlag(MachineInstr::FrameSetup) && MI.isPseudo())
+          Asm->emitInstruction(&MI);
   }
 
-  if (shouldEmitPersonality) {
+  if (shouldEmitPersonality && hasPadSite(*CurrentFuncletEntry)) {
     const TargetLoweringObjectFile &TLOF = Asm->getObjFileLowering();
     const Function *PerFn = nullptr;
 
@@ -270,6 +308,46 @@ void WinException::beginFunclet(const MachineBasicBlock &MBB,
     if (!CurrentFuncletEntry->isCleanupFuncletEntry())
       Asm->OutStreamer->emitWinEHHandler(PersHandlerSym, true, true);
   }
+}
+
+/// Tests whether the part of the function that begins at \p MBB has a call
+/// with a landing pad. A part that has none, of a function in sections under
+/// an Itanium personality, has neither handler nor table: an exception that
+/// one of its calls raises passes the frame, as its personality would have
+/// the unwinder do at a call site with no pad.
+bool WinException::hasPadSite(const MachineBasicBlock &MBB) {
+  const MachineFunction &MF = *MBB.getParent();
+  const Function &F = MF.getFunction();
+  if (MBB.isEHFuncletEntry() || MF.front().sameSection(&MF.back()) ||
+      usesAsyncEHTables(F) ||
+      isFuncletEHPersonality(classifyEHPersonality(F.getPersonalityFn())))
+    return true;
+  SmallPtrSet<const MCSymbol *, 16> Begins;
+  for (const LandingPadInfo &LPI : MF.getLandingPads())
+    Begins.insert(LPI.BeginLabels.begin(), LPI.BeginLabels.end());
+  for (auto I = MBB.getIterator();
+       I != MF.end() && I->sameSection(&MBB) && !I->isEHFuncletEntry(); ++I)
+    for (const MachineInstr &MI : *I)
+      if (MI.isEHLabel() && Begins.count(MI.getOperand(0).getMCSymbol()))
+        return true;
+  return false;
+}
+
+/// A part of the function's frame or of a funclet's ends with its section, and
+/// the next section begins another: each has unwind info of its own. The
+/// function's last is ended with the function.
+void WinException::endBasicBlockSection(const MachineBasicBlock &MBB) {
+  if (&MBB != &Asm->MF->back())
+    endFunclet();
+}
+
+void WinException::beginBasicBlockSection(const MachineBasicBlock &MBB) {
+  if (CurrentFuncletEntry || MBB.isEHFuncletEntry() ||
+      !Asm->MF->usesWindowsUnwindInfo())
+    return;
+  if (LastFuncletEntry || Asm->ShrinkWrappedFrame.empty() ||
+      Asm->ShrinkWrappedFrame.count(&MBB))
+    beginFunclet(MBB, Asm->CurrentFnSym);
 }
 
 void WinException::endFunclet() {
@@ -314,15 +392,17 @@ void WinException::endFuncletImpl() {
       emitCSpecificHandlerTable(MF);
     } else if ((shouldEmitPersonality || shouldEmitLSDA) &&
                !(CurrentFuncletEntry->isEHFuncletEntry() &&
-                 usesCalledCleanups(F))) {
+                 usesCalledCleanups(F)) &&
+               hasPadSite(*CurrentFuncletEntry)) {
       // Emit an UNWIND_INFO struct describing the prologue.
       Asm->OutStreamer->emitWinEHHandlerData();
       // In these cases, no further info is written to the .xdata section
       // right here, but is written by e.g. emitExceptionTable in endFunction()
       // above. A Windows Itanium function's exception table is its handler
-      // data, so it goes ahead of the funclets' UNWIND_INFOs, which have none.
-      if (!isFuncletEHPersonality(Per) && MF->hasEHFunclets())
-        emitExceptionTable();
+      // data, so it goes ahead of the funclets' UNWIND_INFOs, which have none,
+      // and each part of a function in sections has its own.
+      if (hasTablePerPart(*MF, Per))
+        emitExceptionTable(CurrentFuncletEntry);
     } else {
       // No need to emit the EH handler data right here if nothing needs
       // writing to the .xdata section; it will be emitted for all

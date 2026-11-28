@@ -1047,17 +1047,16 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   // The linker may resize the code at such a type, so the assembler must
   // have ended a fragment with it; a marker's site is the streamer's to end.
   // It keeps the length of an AMD64 site in a section whose code it does not
-  // move, where at most the last fragment is its to resize.
-  if (!IsLiteral && !Target.getSubSym() && !F.isLinkerRelaxable() &&
-      (Header.Machine != COFF::IMAGE_FILE_MACHINE_AMD64 ||
-       F.getLayoutOrder() > MCSec->firstLinkerRelaxable()) &&
-      getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
-      COFF::relocationMayResizeCode(Header.Machine, Reloc.Data.Type,
-                                    A.getName()))
-    getContext().reportError(
-        Fixup.getLoc(),
-        "internal error: the linker may resize code that the assembler did "
-        "not state as resizable");
+  // move, which is one that it does not resize or that states spans.
+  assert(
+      !(!IsLiteral && !Target.getSubSym() && !F.isLinkerRelaxable() &&
+        (Header.Machine != COFF::IMAGE_FILE_MACHINE_AMD64 ||
+         (MCSec->isLinkerRelaxable() && !OWriter.statesSpans(*MCSec))) &&
+        getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        COFF::relocationMayResizeCode(Header.Machine, Reloc.Data.Type,
+                                      A.getName())) &&
+      "the linker may resize code that the assembler did not state as "
+      "resizable");
 
   bool IsArm64SecRel12 = false;
   if (COFF::isAnyArm64(Header.Machine)) {
@@ -1072,6 +1071,21 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
 
   bool NeedsSecRelSymbol = false;
   bool UseSectionSymbol = A.isTemporary() && !SymbolMap.lookup(&A);
+  // In a section the linker only compacts, an offset from the section's
+  // symbol names its point: the linker maps the offset that an absolute field
+  // holds, and a span states the one in any other field of 32 bits.
+  bool IsAbsolute =
+      Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
+      is_contained({COFF::IMAGE_REL_AMD64_ADDR64, COFF::IMAGE_REL_AMD64_ADDR32,
+                    COFF::IMAGE_REL_AMD64_ADDR32NB,
+                    COFF::IMAGE_REL_AMD64_SECREL,
+                    COFF::IMAGE_REL_AMD64_SECTION},
+                   Reloc.Data.Type);
+  bool ByOffset =
+      UseSectionSymbol && !IsLiteral && A.isInSection() &&
+      OWriter.statesSpans(A.getSection()) &&
+      (IsAbsolute ||
+       Asm->getBackend().getFixupKindInfo(Fixup.getKind()).TargetSize == 32);
   uint64_t SecRelSymbolOffset = 0;
   if (IsArm64SecRel12 && A.isInSection()) {
     uint64_t SecRelFixedValue = FixedValue;
@@ -1089,7 +1103,8 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
     }
     Reloc.Symb = getOrCreateSecRelSymbol(A, SecRelSymbolOffset);
     FixedValue = 0;
-  } else if (A.isInSection() && A.getSection().isLinkerRelaxable() &&
+  } else if (!ByOffset && A.isInSection() &&
+             A.getSection().isLinkerRelaxable() &&
              (UseSectionSymbol || IsLiteral ||
               (Fixup.isPCRel() &&
                OWriter.isSymbolRefDifferenceFullyResolvedImpl(A, F, false,
@@ -1209,6 +1224,10 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   if (Fixup.getKind() == FK_SecRel_2)
     FixedValue = 0;
 
+  if (ByOffset && !IsAbsolute)
+    OWriter.addSpan(F, Fixup, A.getSection(), COFF::SpanAddend32,
+                    FixedValue - Asm->getSymbolOffset(A));
+
   if (OWriter.TargetObjectWriter->recordRelocation(Fixup)) {
     Sec->Relocations.push_back(Reloc);
     if (Header.Machine == COFF::IMAGE_FILE_MACHINE_R4000 &&
@@ -1302,6 +1321,16 @@ void WinCOFFWriter::recordSpan(const MCFragment &F, const MCFixup &Fixup,
     return getContext().reportError(
         Fixup.getLoc(),
         "cross-section difference puts its labels outside their sections");
+  // A section the linker only compacts states a distance in it by B's
+  // offset, without labels.
+  if (const uint16_t *T = find(COFF::SpanTypes, Type);
+      T != std::end(COFF::SpanTypes) && &A.getSection() == &B.getSection() &&
+      OWriter.statesSpans(A.getSection())) {
+    OWriter.addSpan(F, Fixup, A.getSection(),
+                    COFF::SpanData + (T - COFF::SpanTypes), OffsetOfB);
+    FixedValue = OffsetOfA - OffsetOfB;
+    return;
+  }
   auto Label = [&](const MCSymbol &S, uint64_t Offset) {
     COFFSymbol *Sym = SymbolMap.lookup(&S);
     Sym = Sym && Offset == Asm->getSymbolOffset(S) && !IsExternal(S)
@@ -1563,6 +1592,31 @@ uint64_t WinCOFFWriter::writeObject() {
       }
       Group(COFF::LinkRecordSections, Payload);
     }
+    // The Spans group: each list is the symbols of its two sections, a count
+    // and the spans, by their fields' offsets.
+    SmallString<0> Payload;
+    raw_svector_ostream PayloadOS(Payload);
+    for (auto &[Key, List] : OWriter.Spans) {
+      if (!Key.second->isLinkerRelaxable())
+        continue;
+      llvm::stable_sort(List, [](const auto &A, const auto &B) {
+        return A.Offset < B.Offset;
+      });
+      for (const MCSection *S : {Key.first, Key.second})
+        encodeULEB128(SectionMap[S]->Symbol->getIndex(), PayloadOS);
+      encodeULEB128(List.size(), PayloadOS);
+      uint32_t Last = 0;
+      for (const WinCOFFObjectWriter::Span &S : List) {
+        encodeULEB128(uint64_t(S.Offset - Last) << 4 | S.Kind, PayloadOS);
+        Last = S.Offset;
+        if (S.Kind == COFF::SpanAddend32)
+          encodeSLEB128(S.Operand, PayloadOS);
+        else if (S.Kind >= COFF::SpanData)
+          encodeULEB128(S.Operand, PayloadOS);
+      }
+    }
+    if (!Payload.empty())
+      Group(COFF::LinkRecordSpans, Payload);
     auto *Sec = getContext().getCOFFSection(".llvm_link_records",
                                             COFF::IMAGE_SCN_LNK_INFO);
     Sec->curFragList()->Tail->setVarContents(OS.str());
@@ -1645,11 +1699,23 @@ void WinCOFFObjectWriter::reset() {
   LinkFacts.clear();
   FixedSizeSections.clear();
   SwitchTables.clear();
+  Spans.clear();
   LinkRecordsFlags = 0;
   ObjWriter->reset();
   if (DwoWriter)
     DwoWriter->reset();
   MCObjectWriter::reset();
+}
+
+bool WinCOFFObjectWriter::statesSpans(const MCSection &Sec) const {
+  return Sec.isLinkerRelaxable() && Spans.count({&Sec, &Sec});
+}
+
+void WinCOFFObjectWriter::addSpan(const MCFragment &F, const MCFixup &Fixup,
+                                  const MCSection &Code, unsigned Kind,
+                                  int64_t Operand) {
+  Spans[{F.getParent(), &Code}].push_back(
+      {uint32_t(Asm->getFragmentOffset(F) + Fixup.getOffset()), Kind, Operand});
 }
 
 void WinCOFFObjectWriter::setAssembler(MCAssembler *Asm) {

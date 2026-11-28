@@ -308,16 +308,6 @@ bool MCStreamer::checkCVLocSection(unsigned FuncId, SMLoc Loc) {
         Loc, "function id not introduced by .cv_func_id or .cv_inline_site_id");
     return false;
   }
-
-  // Track the section
-  if (FI->Section == nullptr)
-    FI->Section = getCurrentSectionOnly();
-  else if (FI->Section != getCurrentSectionOnly()) {
-    getContext().reportError(
-        Loc,
-        "all .cv_loc directives for a function must be in the same section");
-    return false;
-  }
   return true;
 }
 

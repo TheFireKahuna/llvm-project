@@ -60,8 +60,8 @@ uint64_t NativeFunctionSymbol::getVirtualAddress() const {
   return Session.getVAFromSectOffset(Sym.Segment, Sym.CodeOffset);
 }
 
-static bool inlineSiteContainsAddress(InlineSiteSym &IS,
-                                      uint32_t OffsetInFunc) {
+static bool inlineSiteContainsAddress(InlineSiteSym &IS, uint32_t OffsetInFunc,
+                                      ArrayRef<uint64_t> CodeBases) {
   // Returns true if inline site contains the offset.
   bool Found = false;
   uint32_t CodeOffset = 0;
@@ -84,6 +84,14 @@ static bool inlineSiteContainsAddress(InlineSiteSym &IS,
       CodeOffset += Annot.U2;
       if (OffsetInFunc >= CodeOffset && OffsetInFunc < CodeOffset + Annot.U1)
         return true;
+      Found = false;
+      break;
+    // The ranges that follow lie in the function's nth separated code and
+    // count from its start.
+    case BinaryAnnotationsOpCode::ChangeCodeOffsetBase:
+      if (Annot.U1 >= CodeBases.size())
+        return false;
+      CodeOffset = CodeBases[Annot.U1] - CodeBases[0];
       Found = false;
       break;
     default:
@@ -112,6 +120,13 @@ NativeFunctionSymbol::findInlineFramesByVA(uint64_t VA) const {
   uint32_t CodeOffset = VA - getVirtualAddress();
   auto Start = Syms.at(RecordOffset);
   auto End = Syms.at(Sym.End);
+  // The S_SEPCODE records of the function's separated code follow its end.
+  SmallVector<uint64_t, 1> CodeBases{getVirtualAddress()};
+  for (auto I = std::next(End); I != Syms.end() && I->kind() == S_SEPCODE;) {
+    auto SC = cantFail(SymbolDeserializer::deserializeAs<SepCodeSym>(*I));
+    CodeBases.push_back(Session.getVAFromSectOffset(SC.Segment, SC.CodeOffset));
+    I = std::next(Syms.at(SC.End));
+  }
   while (Start != End) {
     bool Found = false;
     // Find matching inline site within Start and End.
@@ -121,10 +136,10 @@ NativeFunctionSymbol::findInlineFramesByVA(uint64_t VA) const {
 
       InlineSiteSym IS =
           cantFail(SymbolDeserializer::deserializeAs<InlineSiteSym>(*Start));
-      if (inlineSiteContainsAddress(IS, CodeOffset)) {
+      if (inlineSiteContainsAddress(IS, CodeOffset, CodeBases)) {
         // Insert frames in reverse order.
         SymIndexId Id = Session.getSymbolCache().getOrCreateInlineSymbol(
-            IS, getVirtualAddress(), Modi, Start.offset());
+            IS, CodeBases, Modi, Start.offset());
         Frames.insert(Frames.begin(), Id);
 
         // Update offsets to search within this inline site.

@@ -302,14 +302,14 @@ SymIndexId SymbolCache::getOrCreateGlobalSymbolByOffset(uint32_t Offset) {
 }
 
 SymIndexId SymbolCache::getOrCreateInlineSymbol(InlineSiteSym Sym,
-                                                uint64_t ParentAddr,
+                                                ArrayRef<uint64_t> CodeBases,
                                                 uint16_t Modi,
                                                 uint32_t RecordOffset) const {
   auto Iter = SymTabOffsetToSymbolId.find({Modi, RecordOffset});
   if (Iter != SymTabOffsetToSymbolId.end())
     return Iter->second;
 
-  SymIndexId Id = createSymbol<NativeInlineSiteSymbol>(Sym, ParentAddr);
+  SymIndexId Id = createSymbol<NativeInlineSiteSymbol>(Sym, CodeBases);
   SymTabOffsetToSymbolId.insert({{Modi, RecordOffset}, Id});
   return Id;
 }
@@ -391,7 +391,19 @@ std::unique_ptr<PDBSymbol> SymbolCache::findFunctionSymbolByVA(uint64_t VA) {
 
   // Decode symbols in this module.
   CVSymbolArray Syms = ExpectedModS->getSymbolArray();
+  SymIndexId LastId = 0;
   for (auto I = Syms.begin(), E = Syms.end(); I != E; ++I) {
+    // Separated code belongs to the procedure whose end its record follows.
+    if (I->kind() == S_SEPCODE && LastId) {
+      auto SC = cantFail(SymbolDeserializer::deserializeAs<SepCodeSym>(*I));
+      uint64_t Start = Session.getVAFromSectOffset(SC.Segment, SC.CodeOffset);
+      for (auto [RangeStart, RangeStop] :
+           getInsertRanges(Start, Start + SC.CodeSize))
+        AddressToSymbolId.insert(RangeStart, RangeStop, LastId);
+      I = Syms.at(SC.End);
+      continue;
+    }
+    LastId = 0;
     if (I->kind() != S_LPROC32 && I->kind() != S_GPROC32)
       continue;
 
@@ -412,9 +424,9 @@ std::unique_ptr<PDBSymbol> SymbolCache::findFunctionSymbolByVA(uint64_t VA) {
 
     auto Ranges = getInsertRanges(SymStart, SymStop);
     if (!Ranges.empty()) {
-      SymIndexId Id = createSymbol<NativeFunctionSymbol>(PS, I.offset());
+      LastId = createSymbol<NativeFunctionSymbol>(PS, I.offset());
       for (auto [Start, Stop] : Ranges)
-        AddressToSymbolId.insert(Start, Stop, Id);
+        AddressToSymbolId.insert(Start, Stop, LastId);
     }
 
     // Jump to the end of this ProcSym.

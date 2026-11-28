@@ -30,6 +30,7 @@
 #include "llvm/CodeGen/TargetSchedule.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/EHPersonalities.h"
 #include "llvm/IR/Module.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCInstrItineraries.h"
@@ -1867,6 +1868,13 @@ bool TargetInstrInfo::isFunctionSafeToSplit(const MachineFunction &MF) const {
   // be more beneficial to augment the linker to ensure contiguous layout of
   // split functions within the same section as specified by the attribute.
   if (MF.getFunction().hasSection())
+    return false;
+
+  // The tables of a funclet personality describe the function whole, where
+  // each part of a split function has unwind info and a table of its own.
+  if (MF.getFunction().hasPersonalityFn() &&
+      isFuncletEHPersonality(
+          classifyEHPersonality(MF.getFunction().getPersonalityFn())))
     return false;
 
   // We don't want to proceed further for cold functions

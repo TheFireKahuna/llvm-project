@@ -9,6 +9,7 @@
 #ifndef LLVM_MC_MCWINCOFFOBJECTWRITER_H
 #define LLVM_MC_MCWINCOFFOBJECTWRITER_H
 
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/MC/MCFixup.h"
 #include "llvm/MC/MCObjectWriter.h"
@@ -88,6 +89,25 @@ public:
     uint64_t Count, Type, Flags;
   };
   std::vector<SwitchTable> SwitchTables;
+
+  /// A value that the Spans group of the object's link records states: the
+  /// offset of its field, its COFF::SpanKind and that kind's operand.
+  struct Span {
+    uint32_t Offset;
+    unsigned Kind;
+    int64_t Operand;
+  };
+  /// The spans by the section of their fields and the code section they
+  /// depend on. A code section with a list of its own fields is one the
+  /// linker only compacts: no label or relocation states a value in or of it
+  /// that a span can.
+  MapVector<std::pair<const MCSection *, const MCSection *>,
+            SmallVector<Span, 0>>
+      Spans;
+  bool statesSpans(const MCSection &Sec) const;
+  /// States the field of \p Fixup in \p F as a span over \p Code.
+  void addSpan(const MCFragment &F, const MCFixup &Fixup, const MCSection &Code,
+               unsigned Kind, int64_t Operand = 0);
 
   /// Sections with a value that depends on their layout and that no
   /// relocation states. The link records do not list them as resizable.

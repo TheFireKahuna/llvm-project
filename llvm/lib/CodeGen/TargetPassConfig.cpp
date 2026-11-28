@@ -1116,8 +1116,11 @@ void TargetPassConfig::addMachinePasses() {
     addPass(createMIRAddFSDiscriminatorsPass(
         sampleprof::FSDiscriminatorPass::PassLast));
 
+  // Windows Itanium and NT-POSIX split every function, by its profile or
+  // statically.
   const bool SplitFunctionsWithPGO =
-      TM->Options.FunctionSplitting == FunctionSplittingMode::All;
+      TM->Options.FunctionSplitting == FunctionSplittingMode::All ||
+      TM->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
 
   if (SplitFunctionsWithPGO || Opts.split_static_data ||
       TM->Options.EnableStaticDataPartitioning) {

@@ -788,8 +788,36 @@ void X86AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
   // label at the end of its instruction, so that no opcode need be read. Any
   // other field keeps its value under a marker that names a label at its
   // target.
+  // In a section the linker only compacts, a span states the field instead:
+  // its instruction ends with it, or with the immediate after it. There a
+  // jump in a fragment that is the linker's to resize is one whose width the
+  // linker chooses, whatever its distance spans: the fragment of a jmp that
+  // may be deleted is the linker's too, but that jmp is in no such section.
+  bool States = F.getParent()->isLinkerRelaxable() &&
+                static_cast<WinCOFFObjectWriter &>(Asm->getWriter())
+                    .statesSpans(*F.getParent());
+  bool IsJump = States && F.isLinkerRelaxable() &&
+                F.getKind() == MCFragment::FT_Relaxable &&
+                (Fixup.getKind() == X86::reloc_jump_4byte_pcrel ||
+                 Fixup.getKind() == X86::reloc_tail_4byte_pcrel);
+  auto StatesSpan = [&] {
+    auto &W = static_cast<WinCOFFObjectWriter &>(Asm->getWriter());
+    unsigned Size = getFixupKindSize(Fixup.getKind());
+    if (!States || (Size != 1 && Size != 4))
+      return false;
+    unsigned After = Fixup.getKind() == X86::reloc_riprel_4byte_imm1   ? 1
+                     : Fixup.getKind() == X86::reloc_riprel_4byte_imm2 ? 2
+                     : Fixup.getKind() == X86::reloc_riprel_4byte_imm4 ? 4
+                                                                       : 0;
+    W.addSpan(F, Fixup, *F.getParent(),
+              IsJump      ? COFF::SpanJump32
+              : Size == 1 ? COFF::SpanRel8
+                          : COFF::SpanRel32 + After);
+    return true;
+  };
   if (IsResolved && Fixup.isPCRel() &&
-      !isPCRelFixupResolved(Target.getAddSym(), F)) {
+      (IsJump || !isPCRelFixupResolved(Target.getAddSym(), F)) &&
+      !StatesSpan()) {
     switch (Fixup.getKind()) {
     case X86::reloc_jump_1byte_pcrel:
     case X86::reloc_jump_4byte_pcrel:
@@ -876,8 +904,56 @@ bool X86AsmBackend::fixupNeedsRelaxationAdvanced(const MCFragment &F,
                             isRelaxableBranch(F.getOpcode())
                         ? Asm->getBundleAlign().value()
                         : 0;
-    return !isInt<8>(int64_t(Value) + Slack) ||
-           !isInt<8>(int64_t(Value) - Slack) || Target.getSpecifier();
+    // In a section that states spans, a jump within it is short where it
+    // reaches in every link: the linker redoes the padding of an ALIGN
+    // relocation where bytes before it went, which may add what the padding
+    // lacks of its most to a distance across it. One that reaches in some
+    // link is long and the linker's to narrow: between it and its target the
+    // linker may take all padding, five bytes at the load of a pointer for a
+    // call, and four at such a jump.
+    const MCSymbol *To = Target.getAddSym();
+    MCSection *Sec = F.getParent();
+    bool States =
+        Sec->isLinkerRelaxable() && To && To->getFragment() &&
+        To->getFragment()->getParent() == Sec &&
+        isRelaxableBranch(F.getOpcode()) &&
+        static_cast<WinCOFFObjectWriter &>(Asm->getWriter()).statesSpans(*Sec);
+    int64_t Least = 0;
+    if (States) {
+      bool Back = To->getFragment()->getLayoutOrder() <= F.getLayoutOrder();
+      const MCFragment *I = Back ? To->getFragment() : F.getNext(),
+                       *E = Back ? &F : To->getFragment();
+      // The bytes that stay between the two in every link put the target out
+      // of reach once they are more than a short jump spans.
+      for (int64_t Stay = Back ? -int64_t(To->getOffset()) : To->getOffset();
+           I != E && Stay <= 128; I = I->getNext()) {
+        int64_t Goes = 0;
+        if (I->getKind() == MCFragment::FT_Align) {
+          if (I->isLinkerRelaxable())
+            Slack += std::min<uint64_t>(I->getAlignment().value() - 1,
+                                        I->getAlignMaxBytesToEmit()) -
+                     I->getVarSize();
+          if (I->isLinkerRelaxable() || !Back)
+            Goes = I->getVarSize();
+        } else if (I->getKind() == MCFragment::FT_BoundaryAlign) {
+          Goes = I->getSize();
+        } else if (I->isLinkerRelaxable()) {
+          Goes = I->getKind() == MCFragment::FT_Relaxable ? 4 : 5;
+        }
+        Least += Goes;
+        Stay += int64_t(Asm->computeFragmentSize(*I)) - Goes;
+      }
+    }
+    bool Long = !isInt<8>(int64_t(Value) + Slack) ||
+                !isInt<8>(int64_t(Value) - Slack) || Target.getSpecifier();
+    if (Long && States && !Target.getSpecifier() &&
+        isInt<8>(int64_t(Value) < 0 ? int64_t(Value) + Least
+                                    : std::max<int64_t>(Value - Least, 0))) {
+      const_cast<MCFragment &>(F).setLinkerRelaxable();
+      Sec->setFirstLinkerRelaxable(
+          std::min(Sec->firstLinkerRelaxable(), F.getLayoutOrder()));
+    }
+    return Long;
   }
 
   // Otherwise, relax unless there is a @ABS8 specifier.

@@ -272,11 +272,12 @@ COMPILER_RT_ABI _Unwind_Reason_Code __gcc_personality_v0(
       (uintptr_t)_Unwind_GetRegionStart(context);
   uintptr_t pcOffset = pc - funcStart;
 
-  // Parse LSDA header.
+  // Parse LSDA header. Landing pads count from @LPStart, which defaults to the
+  // start of the function.
   uint8_t lpStartEncoding = *lsda++;
-  if (lpStartEncoding != DW_EH_PE_omit) {
-    readEncodedPointer(&lsda, lpStartEncoding);
-  }
+  uintptr_t lpStart = funcStart;
+  if (lpStartEncoding != DW_EH_PE_omit)
+    lpStart = readEncodedPointer(&lsda, lpStartEncoding);
   uint8_t ttypeEncoding = *lsda++;
   if (ttypeEncoding != DW_EH_PE_omit) {
     readULEB128(&lsda);
@@ -306,7 +307,7 @@ COMPILER_RT_ABI _Unwind_Reason_Code __gcc_personality_v0(
                     (uintptr_t)exceptionObject);
       _Unwind_SetGR(context, __builtin_eh_return_data_regno(1), 0);
       size_t __ptrauth_gcc_personality_lpad landingPad =
-          funcStart + landingPadOffset;
+          lpStart + landingPadOffset;
 #if __has_feature(ptrauth_calls)
       uintptr_t stackPointer = _Unwind_GetGR(context, -2);
       const uintptr_t existingDiscriminator = ptrauth_blend_discriminator(

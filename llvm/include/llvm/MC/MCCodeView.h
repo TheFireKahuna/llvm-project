@@ -113,15 +113,16 @@ struct MCCVFunctionInfo {
 
   LineInfo InlinedAt;
 
-  /// The section of the first .cv_loc directive used for this function, or null
-  /// if none has been seen yet.
-  MCSection *Section = nullptr;
-
   /// Map from inlined call site id to the inlined at location to use for that
   /// call site. Call chains are collapsed, so for the call chain 'f -> g -> h',
   /// the InlinedAtMap of 'f' will contain entries for 'g' and 'h' that both
   /// list the line info for the 'g' call site.
   DenseMap<unsigned, LineInfo> InlinedAtMap;
+
+  /// The begin and end of each .cv_linetable of this function: its own code,
+  /// then each section of its split-off code, as its S_SEPCODE records follow
+  /// it. An inline site's annotations number them so.
+  SmallVector<std::pair<const MCSymbol *, const MCSymbol *>, 1> Chunks;
 
   /// Returns true if this is function info has not yet been used in a
   /// .cv_func_id or .cv_inline_site_id directive.

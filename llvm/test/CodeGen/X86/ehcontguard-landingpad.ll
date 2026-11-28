@@ -1,12 +1,21 @@
 ; RUN: llc -mtriple=x86_64-w64-windows-gnu < %s | FileCheck %s
 ; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-w64-windows-gnu < %s | FileCheck %s %}
+; DEFINE: %{split} = -function-splitting=all -mfs-split-ehcode
+; RUN: llc -mtriple=x86_64-w64-windows-gnu %{split} < %s \
+; RUN:   | FileCheck %s --check-prefixes=CHECK,SPLIT
+; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-w64-windows-gnu %{split} < %s \
+; RUN:   | FileCheck %s --check-prefixes=CHECK,SPLIT %}
 
 ; Under Windows EH the unwinder enters a landing pad by restoring a context
 ; whose instruction pointer is the pad, so with ehcontguard the pad is listed
-; as an EH continuation target, once.
+; as an EH continuation target, once: the address the exception table names,
+; also at the start of the cold section, which a nop keeps the pad off.
 
 ; CHECK-LABEL: f:
+; SPLIT:       .uleb128 [[LP:.Ltmp[0-9]+]]-f.cold {{.*}} jumps to
+; SPLIT:     f.cold:
 ; CHECK:       [[PAD:\$ehgcr_[0-9_]+]]:
+; SPLIT-NEXT:  [[LP]]:
 ; CHECK:       .section .gehcont$y,"dr"
 ; CHECK-NEXT:  .symidx [[PAD]]
 ; CHECK-NOT:   .symidx

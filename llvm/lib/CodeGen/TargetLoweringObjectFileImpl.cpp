@@ -1944,6 +1944,29 @@ MCSection *TargetLoweringObjectFileCOFF::getSectionForJumpTable(
                                      UniqueID);
 }
 
+/// Returns the section of a function's split-off code: `.text$split`, as
+/// ELF's `.text.split`, which the linker lays after the hot groups, and which
+/// lives and dies with the function's section where that is a COMDAT. Other
+/// parts of a function stay in its section.
+MCSection *TargetLoweringObjectFileCOFF::getSectionForMachineBasicBlock(
+    const Function &F, const MachineBasicBlock &MBB,
+    const TargetMachine &TM) const {
+  auto *Sec = static_cast<const MCSectionCOFF *>(MBB.getParent()->getSection());
+  if (MBB.getSectionID().Type != MBBSectionID::Cold)
+    return const_cast<MCSectionCOFF *>(Sec);
+  if (MCSymbol *Comdat = Sec->getCOMDATSymbol())
+    return getContext().getCOFFSection(".text$split", Sec->getCharacteristics(),
+                                       Comdat->getName(),
+                                       COFF::IMAGE_COMDAT_SELECT_ASSOCIATIVE);
+  return getContext().getCOFFSection(".text$split", Sec->getCharacteristics());
+}
+
+MCSection *TargetLoweringObjectFileCOFF::getUniqueSectionForFunction(
+    const Function &F, const TargetMachine &TM) const {
+  // A section without COMDAT is always live, so none is made for the function.
+  return SectionForGlobal(&F, TM);
+}
+
 bool TargetLoweringObjectFileCOFF::shouldPutJumpTableInFunctionSection(
     bool UsesLabelDifference, const Function &F) const {
   if (TM->getTargetTriple().getArch() == Triple::x86_64) {

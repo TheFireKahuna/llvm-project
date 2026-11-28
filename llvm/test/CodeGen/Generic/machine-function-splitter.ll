@@ -8,6 +8,10 @@
 ; RUN: llc < %s -mtriple=x86_64-unknown-linux-gnu -function-splitting=all -mfs-split-ehcode | FileCheck %s -check-prefixes=MFS-EH-SPLIT,MFS-EH-SPLIT-X86
 ; RUN: llc < %s -mtriple=x86_64 -function-splitting=all -O0 -mfs-psi-cutoff=0 -mfs-count-threshold=10000 | FileCheck %s -check-prefixes=MFS-O0,MFS-O0-X86
 
+; COM: Machine function splitting with FDO profiles on COFF, where Windows Itanium needs no option
+; RUN: llc < %s -mtriple=x86_64-unknown-windows-itanium | FileCheck %s -check-prefix=MFS-COFF
+; RUN: llc < %s -mtriple=aarch64-unknown-windows-itanium | FileCheck %s -check-prefix=MFS-COFF
+
 ; COM: Machine function splitting along with -basic-block-sections profile
 ; RUN: echo 'v1' > %t
 ; RUN: echo 'ffoo21' >> %t
@@ -40,6 +44,9 @@ define void @foo1(i1 zeroext %0) nounwind !prof !14 !section_prefix !15 {
 ; MFS-DEFAULTS-X86-NEXT:      callq   baz
 ; MFS-DEFAULTS-AARCH64-NOT:   bl      bar
 ; MFS-DEFAULTS-AARCH64-NEXT:  bl      baz
+; MFS-COFF-LABEL:             foo1:
+; MFS-COFF:                   .section        .text$split,"xr"
+; MFS-COFF-NEXT:              foo1.cold:
 ;; Check that with a basic-block-sections profile, a function outside the
 ;; profile is still split using PGO with -function-splitting=all.
 ; MFS-BBSECTIONS-ALL-LABEL:   foo1:

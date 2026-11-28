@@ -176,7 +176,7 @@ public:
 
   LLVM_ABI SymIndexId getOrCreateGlobalSymbolByOffset(uint32_t Offset);
   LLVM_ABI SymIndexId getOrCreateInlineSymbol(codeview::InlineSiteSym Sym,
-                                              uint64_t ParentAddr,
+                                              ArrayRef<uint64_t> CodeBases,
                                               uint16_t Modi,
                                               uint32_t RecordOffset) const;
 
