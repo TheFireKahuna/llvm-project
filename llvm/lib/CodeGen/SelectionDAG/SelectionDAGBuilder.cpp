@@ -3313,7 +3313,11 @@ void SelectionDAGBuilder::visitSPDescriptorParent(StackProtectorDescriptor &SPD,
   }
 
   // Now both Guard (fresh cookie) and GuardVal (unmixed from stored value)
-  // contain unmixed cookie values that can be compared directly.
+  // contain unmixed cookie values that can be compared directly. Unmixed, the
+  // stored value is no load, so the fresh cookie goes on the right, where a
+  // target folds a load into the comparison.
+  if (TLI.useStackGuardMixFP())
+    std::swap(Guard, GuardVal);
 
   // Perform the comparison via a getsetcc.
   SDValue Cmp = DAG.getSetCC(
@@ -7941,7 +7945,8 @@ void SelectionDAGBuilder::visitIntrinsicCall(const CallInst &I,
     const Module &M = *MF.getFunction().getParent();
     SDValue Src, Chain = getRoot();
 
-    if (TLI.useLoadStackGuardNode(M))
+    if (TLI.useLoadStackGuardNode(M) &&
+        !isThreadPointerStackGuard(I.getArgOperand(0)))
       Src = getLoadStackGuard(DAG, sdl, Chain);
     else
       Src = getValue(I.getArgOperand(0));   // The guard's value.

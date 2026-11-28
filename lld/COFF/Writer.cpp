@@ -1826,6 +1826,20 @@ void Writer::placeImportSlotSections() {
     if (!iatStart)
       iatStart = start.front();
     iatEnd = start.back();
+    // The loader writes the security cookie as it maps the image, and the
+    // tables' pages as it binds the imports, so the cookie's chunk goes on a
+    // page of theirs, which one private copy then serves: just after them,
+    // or before them where they end a page.
+    if (auto *cookie = dyn_cast_or_null<DefinedRegular>(
+            ctx.symtab.findUnderscore("__security_cookie")))
+      if (auto it = llvm::find(rdataSec->chunks, cookie->getChunk());
+          it != rdataSec->chunks.end()) {
+        uint64_t size = 0;
+        for (Chunk *c : start)
+          size = alignTo(size, c->getAlignment()) + c->getSize();
+        std::rotate(rdataSec->chunks.begin() + (size % 4096 ? start.size() : 0),
+                    it, std::next(it));
+      }
   }
 
   // A section merged into a writable one holds writable slots.

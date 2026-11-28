@@ -33,7 +33,7 @@ define void @stackguard(ptr %g) sspreq {
 ; CHECK-NEXT:     adrp    x10, __security_cookie
 ; CHECK-NEXT:     ldr     x10, [x10, :lo12:__security_cookie]
 ; CHECK-NEXT:     sub     x8, x29, x8
-; CHECK-NEXT:     cmp     x10, x8
+; CHECK-NEXT:     cmp     x8, x10
 ; CHECK-NEXT:     b.ne    .LBB1_2
 ; CHECK-NEXT: // %bb.1:
 ; CHECK-NEXT:     fmov    d0, #1.00000000

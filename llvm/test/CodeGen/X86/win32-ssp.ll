@@ -1,6 +1,5 @@
 ; RUN: llc -mtriple=x86_64-w64-mingw32        < %s -o - | FileCheck --check-prefix=MINGW %s
 ; RUN: llc -mtriple=x86_64-pc-cygwin          < %s -o - | FileCheck --check-prefix=MINGW %s
-; RUN: llc -mtriple=x86_64-pc-windows-itanium < %s -o - | FileCheck --check-prefix=MSVC  %s
 ; RUN: llc -mtriple=x86_64-pc-windows-msvc    < %s -o - | FileCheck --check-prefix=MSVC  %s
 ; RUN: llc -mtriple=i686-w64-mingw32          < %s -o - | FileCheck --check-prefix=MINGW %s
 ; RUN: llc -mtriple=i686-pc-cygwin            < %s -o - | FileCheck --check-prefix=MINGW %s
@@ -15,7 +14,7 @@ entry:
 ; MINGW: mov{{l|q}}  .refptr.[[PREFIX:_?]]__stack_chk_guard{{(\(%rip\))?}}, [[REG:%[a-z]+]]
 ; MINGW: mov{{l|q}}  ([[REG]])
 ; MINGW: call{{l|q}} [[PREFIX]]other
-; MINGW: mov{{l|q}}  ([[REG]])
+; MINGW: {{mov|cmp}}{{l|q}} ([[REG]])
 ; MINGW: call{{l|q}} [[PREFIX]]__stack_chk_fail
 
 ; MSVC-LABEL: func:

@@ -91,6 +91,13 @@
 // INVALID-REG-AARCH64: error: invalid value 'foo' in 'mstack-protector-guard-reg=', expected one of: {sp_el0, tpidrro_el0, tpidr_el[012], far_el[12]}
 // CHECK-AARCH64-TPIDR: "-cc1" {{.*}}"-mstack-protector-guard=sysreg" "-mstack-protector-guard-offset=0" "-mstack-protector-guard-reg=tpidr_el0"
 
+// On Windows Itanium and NT-POSIX tls names the thread pointer, on AArch64 too.
+// RUN: %clang -### --target=aarch64-unknown-windows-itanium -mstack-protector-guard=tls %s 2>&1 | \
+// RUN:   FileCheck -check-prefix=CHECK-TLS-AARCH64 %s
+// RUN: %clang -### --target=aarch64-pc-windows-ntposix -mstack-protector-guard=tls %s 2>&1 | \
+// RUN:   FileCheck -check-prefix=CHECK-TLS-AARCH64 %s
+// CHECK-TLS-AARCH64: "-cc1" {{.*}}"-mstack-protector-guard=tls"
+
 // RUN: %clang -### -target riscv64-unknown-elf -mstack-protector-guard=tls -mstack-protector-guard-offset=24 -mstack-protector-guard-reg=tp %s 2>&1 | \
 // RUN:   FileCheck -v -check-prefix=CHECK-TLS-RISCV %s
 // RUN: %clang -### -target riscv64-unknown-elf -mstack-protector-guard=global %s 2>&1 | \

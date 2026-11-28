@@ -3759,8 +3759,11 @@ static void RenderSSPOptions(const Driver &D, const ToolChain &TC,
       CmdArgs.push_back("-target-feature");
       CmdArgs.push_back("+read-tp-tpidruro");
     }
+    // On Windows Itanium and NT-POSIX, tls names the thread pointer.
     if (EffectiveTriple.isAArch64() && GuardValue != "sysreg" &&
-        GuardValue != "global") {
+        GuardValue != "global" &&
+        !(GuardValue == "tls" &&
+          EffectiveTriple.isWindowsItaniumOrNTPOSIXEnvironment())) {
       D.Diag(diag::err_drv_invalid_value_with_suggestion)
           << A->getOption().getName() << GuardValue << "sysreg global";
       return;

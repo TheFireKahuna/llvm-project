@@ -17,11 +17,8 @@ set(WINCRT_SOURCES
   entry_wmain.cpp
   entry_wwinmain.cpp
   winmain_main.cpp
-  gshandler.cpp
   init.cpp
-  loadconfig.S
   purecall.cpp
-  security.cpp
   tls.cpp
   tls_tail.cpp
   tlregdtor.cpp

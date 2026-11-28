@@ -8,6 +8,10 @@
 
 #include "wincrt.h"
 
+// Every table of .CRT is read-only, like .rdata, so it needs no section of its
+// own.
+#pragma comment(linker, "/merge:.CRT=.rdata")
+
 struct _exception;
 
 extern "C" {

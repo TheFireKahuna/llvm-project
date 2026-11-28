@@ -385,6 +385,10 @@ public:
 
   bool useLoadStackGuardNode(const Module &M) const override;
   bool useStackGuardMixFP() const override;
+  /// The register the stack guard is mixed with: the frame pointer, or on
+  /// Windows Itanium and NT-POSIX the stack pointer where no variable-sized
+  /// object moves it.
+  MCRegister getStackGuardMixReg(const MachineFunction &MF) const;
   SDValue emitStackGuardMixFP(SelectionDAG &DAG, SDValue Val,
                               const SDLoc &DL) const override;
   TargetLoweringBase::LegalizeTypeAction

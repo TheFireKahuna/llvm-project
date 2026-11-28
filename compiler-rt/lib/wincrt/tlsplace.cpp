@@ -839,8 +839,8 @@ static const uint64_t *drawKey() {
   unsigned Draw[2] = {};
   if (__wrap_rand_s(&Draw[0]) || __wrap_rand_s(&Draw[1]))
     return nullptr;
-  uint64_t Key = ((uint64_t(Draw[1]) << 32 | Draw[0]) | TP_KEY_SET) &
-                 ~TP_KEY_CLEAR;
+  uint64_t Key =
+      ((uint64_t(Draw[1]) << 32 | Draw[0]) | TP_KEY_SET) & ~TP_KEY_CLEAR;
   HANDLE Section;
   LARGE_INTEGER Size = {{Page}};
   if (NtCreateSection(&Section, SECTION_ALL_ACCESS, nullptr, &Size,

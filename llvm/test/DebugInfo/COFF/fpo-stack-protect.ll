@@ -25,8 +25,7 @@
 
 ; CHECK:         calll   _escape
 
-; CHECK:         movl    ___security_cookie, %ecx
-; CHECK:         cmpl    %eax, %ecx
+; CHECK:         cmpl    ___security_cookie, %eax
 
 ; CHECK:         movl    %esi, %eax
 ; CHECK:         addl    $20, %esp

@@ -16,7 +16,7 @@
 // The security cookie is a read-only word holding MSVC's default, the only
 // value the loader replaces, which it does before any code of the image runs.
 // The directory follows it, so it is never in the image's last eight bytes,
-// where the loader refuses it.
+// where the loader refuses it. It is also the stack protector's guard.
 //
 // The Control Flow Guard pointers are here too. Code built with the guard
 // checks the target of an indirect call through __guard_check_icall_fptr,
@@ -31,9 +31,10 @@
 //===----------------------------------------------------------------------===//
 
         .section .rdata,"dr"
-        .globl __security_cookie, _load_config_used
+        .globl __security_cookie, __stack_chk_guard, _load_config_used
         .p2align 3
 __security_cookie:
+__stack_chk_guard:
         .quad 0x00002B992DDFA232
 _load_config_used:
         .long 1f - _load_config_used    // Size
@@ -63,26 +64,48 @@ _load_config_used:
         .globl __guard_check_icall_fptr, __guard_dispatch_icall_fptr
         .p2align 3
 __guard_check_icall_fptr:
-        .quad __wincrt_guard_check_nop
+        .quad __guard_check_icall_nop
 __guard_dispatch_icall_fptr:
-        .quad __wincrt_guard_dispatch_nop
+        .quad __guard_dispatch_icall_nop
 
 // Each stub has a 16-byte unit of the guard's bitmap to itself. The dispatch
 // jumps to the target with the arguments untouched.
         .text
         .p2align 4
-__wincrt_guard_check_nop:
+__guard_check_icall_nop:
         ret
         .p2align 4
-__wincrt_guard_dispatch_nop:
+__guard_dispatch_icall_nop:
 #if defined(__x86_64__)
         jmp *%rax
 #else
         br x15
 #endif
-        .p2align 4
 
-// Every table of .CRT is read-only, like .rdata, so it needs no section of its
-// own.
-        .section .drectve,"yni"
-        .ascii " /merge:.CRT=.rdata"
+// Objects that MSVC built check the cookie through __security_check_cookie,
+// changing no register but the flags (and X16 on AArch64), since a caller may
+// hold its return value across the call; they also call
+// __security_init_cookie, which has nothing to do. Every failed stack check
+// ends the process at once, reading no thread pointer.
+        .globl __security_check_cookie, __security_init_cookie, __stack_chk_fail
+        .p2align 4
+__security_check_cookie:
+#if defined(__x86_64__)
+        cmpq __security_cookie(%rip), %rcx
+        jne 1f
+__security_init_cookie:
+        ret
+__stack_chk_fail:
+1:      movl $2, %ecx                   // FAST_FAIL_STACK_COOKIE_CHECK_FAILURE
+        int $0x29
+#else
+        adrp x16, __security_cookie
+        ldr x16, [x16, :lo12:__security_cookie]
+        cmp x0, x16
+        b.ne 1f
+__security_init_cookie:
+        ret
+__stack_chk_fail:
+1:      mov x0, #2                      // FAST_FAIL_STACK_COOKIE_CHECK_FAILURE
+        brk #0xf003
+#endif

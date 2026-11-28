@@ -2799,10 +2799,18 @@ bool AArch64InstrInfo::expandPostRAPseudo(MachineInstr &MI) const {
   // we use sub instruction to mix the cookie on aarch64.
   // The mixing happens here in expandPostRAPseudo (after RA) to ensure we use
   // the final frame pointer value.
-  if (Subtarget.getTargetTriple().isOSMSVCRT())
-    BuildMI(MBB, MI, DL, get(AArch64::SUBXrr), Reg)
-        .addReg(AArch64::FP)
-        .addReg(Reg, RegState::Kill);
+  if (const AArch64TargetLowering *TLI = Subtarget.getTargetLowering();
+      TLI->useStackGuardMixFP()) {
+    MCRegister Mix = TLI->getStackGuardMixReg(*MBB.getParent());
+    auto MIB =
+        BuildMI(MBB, MI, DL,
+                get(Mix == AArch64::FP ? AArch64::SUBXrr : AArch64::SUBXrx64),
+                Reg)
+            .addReg(Mix)
+            .addReg(Reg, RegState::Kill);
+    if (Mix != AArch64::FP)
+      MIB.addImm(AArch64_AM::getArithExtendImm(AArch64_AM::UXTX, 0));
+  }
 
   MBB.erase(MI);
 

@@ -1970,10 +1970,13 @@ static bool InstrBreaksThreadPointerUnused(
     Instruction &I, const SCCNodeSet &SCCNodes,
     function_ref<BlockFrequencyInfo &(Function &)> GetBFI,
     DenseMap<const Function *, BlockFrequency> &Calls) {
-  // Safe stack lowering reaches the unsafe stack through a thread-local.
+  // Safe stack lowering reaches the unsafe stack through a thread-local, and
+  // the stack protector of a unit that takes the thread's guard reads it.
   Function &F = *I.getFunction();
   if (&I == &F.getEntryBlock().front() &&
-      F.hasFnAttribute(Attribute::SafeStack))
+      (F.hasFnAttribute(Attribute::SafeStack) ||
+       (F.hasStackProtectorFnAttr() &&
+        F.getParent()->getStackProtectorGuard() == "tls")))
     return true;
   if (needsThreadPointer(I))
     return true;

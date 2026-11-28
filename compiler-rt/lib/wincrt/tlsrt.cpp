@@ -623,11 +623,29 @@ static void check(Record &Self) {
   }
 }
 
+#ifndef COMPILER_RT_SHARED_LIB
+// Under -static the executable holds the runtime, founded by its first TLS
+// callback, before its entry point and the fill's callback in .CRT$XLAF, or
+// before that by the first cold call of its code that a DLL's initialiser
+// runs. Both run on the thread that initialises the process, which no other
+// thread of the loader's runs beside.
+static WINCRT_NO_TP void NTAPI foundStatic(void *, DWORD Reason, void *) {
+  if (Reason == DLL_PROCESS_ATTACH && !__tp_map && !found())
+    wincrt::fatal("the thread-local runtime cannot be founded");
+}
+#pragma section(".CRT$XLAA", read)
+extern "C" __declspec(allocate(".CRT$XLAA"))
+const PIMAGE_TLS_CALLBACK __wincrt_tls_found = foundStatic;
+#endif
+
 // The cold calls' one body, which the assembly entries call having saved
 // every register but the answer's: How is 0 for __tp_slow, 1 for __tp_try and
 // 2 for __tp_probe, which never adopts.
 extern "C" WINCRT_NO_TP uintptr_t __wincrt_tp_cold(const uintptr_t *Map,
                                                    unsigned How) {
+#ifndef COMPILER_RT_SHARED_LIB
+  foundStatic(nullptr, DLL_PROCESS_ATTACH, nullptr);
+#endif
   uint32_t Entry = lookup(currentTid());
   if (Entry & TP_SLOT_TEST)
     return reinterpret_cast<uintptr_t>(blockAt(Entry & TP_MASK));
@@ -837,7 +855,7 @@ static int rendezvous() {
   MEMORY_BASIC_INFORMATION Info;
   bool Trusted = VirtualQuery(Other, &Info, sizeof(Info)) &&
                  Info.Type == MEM_IMAGE && Info.AllocationBase == Other;
-#define TP_EXPORT(Id, Name, Sealed)                                        \
+#define TP_EXPORT(Id, Name, Sealed)                                            \
   Trusted = Trusted && GetProcAddress(Other, #Name);
 #include "tls/ThreadPointer.inc"
   UnmapViewOfFile(View);
@@ -873,16 +891,3 @@ bool wincrt::tls::found() {
   return AddVectoredExceptionHandler(1, recoverProbe) && foundImages() &&
          (findTail(), true);
 }
-
-#ifndef COMPILER_RT_SHARED_LIB
-// Under -static the executable holds the runtime, founded by its first TLS
-// callback, before its entry point and before the fill's callback, which
-// .CRT$XLAF holds.
-static WINCRT_NO_TP void NTAPI foundStatic(void *, DWORD Reason, void *) {
-  if (Reason == DLL_PROCESS_ATTACH && !found())
-    wincrt::fatal("the thread-local runtime cannot be founded");
-}
-#pragma section(".CRT$XLAA", read)
-extern "C" __declspec(allocate(".CRT$XLAA"))
-const PIMAGE_TLS_CALLBACK __wincrt_tls_found = foundStatic;
-#endif

@@ -3233,7 +3233,8 @@ bool IRTranslatorImpl::translateKnownIntrinsic(const CallInst &CI,
   case Intrinsic::stackprotector: {
     LLT PtrTy = getLLTForType(*CI.getArgOperand(0)->getType(), *DL);
     Register GuardVal;
-    if (TLI->useLoadStackGuardNode(*CI.getModule())) {
+    if (TLI->useLoadStackGuardNode(*CI.getModule()) &&
+        !isThreadPointerStackGuard(CI.getArgOperand(0))) {
       GuardVal = MRI->createGenericVirtualRegister(PtrTy);
       getStackGuard(GuardVal, MIRBuilder);
     } else

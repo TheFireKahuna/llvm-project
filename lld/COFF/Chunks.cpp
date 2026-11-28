@@ -2031,10 +2031,8 @@ void TlsRecordChunk::writeTo(uint8_t *buf) const {
 // image's 0.
 void TlsPlaceChunk::writeTo(uint8_t *buf) const {
   bool exe = ctx.tlsWide && !ctx.config.dll;
-  write64le(buf + TP_PLACE_AT,
-            exe ? TP_H : ctx.tlsPlace.value_or(TP_UNFILLED));
-  write64le(buf + TP_FORM_AT,
-            ctx.tlsWide ? TP_FORM_WIDE : TP_FORM_DIRECT);
+  write64le(buf + TP_PLACE_AT, exe ? TP_H : ctx.tlsPlace.value_or(TP_UNFILLED));
+  write64le(buf + TP_FORM_AT, ctx.tlsWide ? TP_FORM_WIDE : TP_FORM_DIRECT);
   write64le(buf + TP_KEY_AT, ctx.tlsWide ? TP_UNFILLED : 0);
 }
 

@@ -487,7 +487,7 @@ enum : uint8_t {
 /// The owned thread-local model's names: each one's symbol, and for an export
 /// of the runtime, Id##Import, the import symbol an image reads it through.
 namespace TP {
-#define TP_EXPORT(Id, Name, Sealed)                                        \
+#define TP_EXPORT(Id, Name, Sealed)                                            \
   inline constexpr char Id[] = #Name, Id##Import[] = "__imp_" #Name Sealed;
 #define TP_SYMBOL(Id, Name) inline constexpr char Id[] = #Name;
 #include "llvm/BinaryFormat/ThreadPointer.inc"

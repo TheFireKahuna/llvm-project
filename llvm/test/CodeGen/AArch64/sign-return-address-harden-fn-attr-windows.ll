@@ -245,7 +245,7 @@ define void @stackprotector() sspreq "sign-return-address"="all" "sign-return-ad
 ; WINCFI-NO-PAUTH-NEXT:    ldr x8, [sp, #8]
 ; WINCFI-NO-PAUTH-NEXT:    ldr x9, [x9, :lo12:__security_cookie]
 ; WINCFI-NO-PAUTH-NEXT:    sub x8, x29, x8
-; WINCFI-NO-PAUTH-NEXT:    cmp x9, x8
+; WINCFI-NO-PAUTH-NEXT:    cmp x8, x9
 ; WINCFI-NO-PAUTH-NEXT:    b.ne .LBB5_2
 ; WINCFI-NO-PAUTH-NEXT:  // %bb.1:
 ; WINCFI-NO-PAUTH-NEXT:    .seh_startepilogue
@@ -291,7 +291,7 @@ define void @stackprotector() sspreq "sign-return-address"="all" "sign-return-ad
 ; WINCFI-PAUTH-NEXT:    ldr x8, [sp, #8]
 ; WINCFI-PAUTH-NEXT:    ldr x9, [x9, :lo12:__security_cookie]
 ; WINCFI-PAUTH-NEXT:    sub x8, x29, x8
-; WINCFI-PAUTH-NEXT:    cmp x9, x8
+; WINCFI-PAUTH-NEXT:    cmp x8, x9
 ; WINCFI-PAUTH-NEXT:    b.ne .LBB5_2
 ; WINCFI-PAUTH-NEXT:  // %bb.1:
 ; WINCFI-PAUTH-NEXT:    .seh_startepilogue

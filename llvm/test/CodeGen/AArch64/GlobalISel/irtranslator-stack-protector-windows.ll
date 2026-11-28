@@ -24,7 +24,7 @@ define void @caller() sspreq {
 ; CHECK-NEXT:    adrp x9, __security_cookie
 ; CHECK-NEXT:    ldr x9, [x9, :lo12:__security_cookie]
 ; CHECK-NEXT:    sub x8, x29, x8
-; CHECK-NEXT:    cmp x9, x8
+; CHECK-NEXT:    cmp x8, x9
 ; CHECK-NEXT:    b.ne .LBB0_2
 ; CHECK-NEXT:  // %bb.1: // %entry
 ; CHECK-NEXT:    .seh_startepilogue

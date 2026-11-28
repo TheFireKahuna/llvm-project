@@ -1,4 +1,5 @@
 ; RUN: opt -passes=function-attrs -S < %s | FileCheck %s
+; RUN: sed 's/^;TLS //' %s | opt -passes=function-attrs -S | FileCheck %s --check-prefix=TLS
 
 ; A function that is passed its thread pointer holds none, and is
 ; "thread-pointer-unused", where it never reads it and its calls to readers
@@ -120,7 +121,17 @@ define void @safestack() safestack "thread-pointer-argument" {
   ret void
 }
 
+; A protected function reads no thread pointer for its guard, unless its unit
+; takes the thread's guard.
+; CHECK: define void @protected() #[[P:[0-9]+]]
+; TLS:   define void @protected() #[[TP:[0-9]+]]
+define void @protected() sspstrong "thread-pointer-argument" {
+  ret void
+}
+
 !0 = !{!"branch_weights", i32 1, i32 99}
+;TLS !llvm.module.flags = !{!1}
+;TLS !1 = !{i32 1, !"stack-protector-guard", !"tls"}
 
 ; CHECK-DAG: attributes #[[U]] = { "thread-pointer-argument" "thread-pointer-unused" }
 ; CHECK-DAG: attributes #[[U2]] = { {{.*}}"thread-pointer-argument" "thread-pointer-unused" }
@@ -130,3 +141,5 @@ define void @safestack() safestack "thread-pointer-argument" {
 ; CHECK-DAG: attributes #[[U3]] = { {{.*}}"thread-pointer-argument" "thread-pointer-unused" }
 ; CHECK-DAG: attributes #[[R]] = { "thread-pointer-argument" }
 ; CHECK-DAG: attributes #[[S]] = { {{.*}}safestack {{.*}}"thread-pointer-argument" }
+; CHECK-DAG: attributes #[[P]] = { {{.*}}sspstrong {{.*}}"thread-pointer-argument" "thread-pointer-unused" }
+; TLS-DAG:   attributes #[[TP]] = { {{.*}}sspstrong {{.*}}"thread-pointer-argument" }

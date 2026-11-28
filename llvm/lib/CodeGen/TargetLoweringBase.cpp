@@ -2202,17 +2202,31 @@ bool TargetLoweringBase::isLegalAddressingMode(const DataLayout &DL,
 //  Stack Protector
 //===----------------------------------------------------------------------===//
 
-// For OpenBSD return its special guard variable. Otherwise return nullptr,
-// so that SelectionDAG handle SSP.
+// For OpenBSD return its special guard variable, and on Windows Itanium and
+// NT-POSIX the thread's guard where the unit asks for it or the function's
+// thread pointer is pinned. Otherwise return nullptr, so that SelectionDAG
+// handle SSP.
 Value *
 TargetLoweringBase::getIRStackGuard(IRBuilderBase &IRB,
                                     const LibcallLoweringInfo &Libcalls) const {
+  Module &M = *IRB.getModule();
+  StringRef Mode = M.getStackProtectorGuard();
+  if (TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      (Mode == "tls" ||
+       (Mode.empty() && IRB.GetInsertBlock()->getParent()->hasFnAttribute(
+                            "pin-thread-pointer")))) {
+    int Offset = M.getStackProtectorGuardOffset();
+    return IRB.CreateConstGEP1_32(
+        IRB.getInt8Ty(),
+        IRB.CreateIntrinsic(Intrinsic::thread_pointer, IRB.getPtrTy(), {}),
+        Offset == INT_MAX ? TP_STACK_GUARD : Offset);
+  }
+
   RTLIB::LibcallImpl GuardLocalImpl =
       Libcalls.getLibcallImpl(RTLIB::STACK_CHECK_GUARD);
   if (GuardLocalImpl != RTLIB::impl___guard_local)
     return nullptr;
 
-  Module &M = *IRB.getModule();
   const DataLayout &DL = M.getDataLayout();
   PointerType *PtrTy =
       PointerType::get(M.getContext(), DL.getDefaultGlobalsAddressSpace());
@@ -2250,9 +2264,9 @@ void TargetLoweringBase::insertSSPDeclarations(
         return GV;
       });
 
-  // Every Windows Itanium image defines its own security cookie, so it is
-  // read directly, a declaration the module already made included.
-  if (M.getTargetTriple().isGenericWindowsItaniumEnvironment() &&
+  // Every Windows Itanium and NT-POSIX image defines its own stack guard, so
+  // it is read directly, a declaration the module already made included.
+  if (M.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
       !Guard->hasDLLImportStorageClass())
     Guard->setDSOLocal(true);
 }

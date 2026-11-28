@@ -1,4 +1,4 @@
-//===-- crt_windows.c - CRT table bounds for Windows Itanium images -------===//
+//===-- crt_windows.c - CRT table bounds for Windows images ---------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.

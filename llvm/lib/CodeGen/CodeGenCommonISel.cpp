@@ -13,6 +13,7 @@
 
 #include "llvm/CodeGen/CodeGenCommonISel.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
+#include "llvm/Analysis/ValueTracking.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
@@ -20,6 +21,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Instruction.h"
+#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Metadata.h"
 #include "llvm/Support/Casting.h"
@@ -192,6 +194,13 @@ llvm::findSplitPointForStackProtector(MachineBasicBlock *BB,
   }
 
   return SplitPoint;
+}
+
+bool llvm::isThreadPointerStackGuard(const Value *Guard) {
+  const auto *Load = dyn_cast<LoadInst>(Guard);
+  const auto *TP = dyn_cast_or_null<IntrinsicInst>(
+      Load ? getUnderlyingObject(Load->getPointerOperand()) : nullptr);
+  return TP && TP->getIntrinsicID() == Intrinsic::thread_pointer;
 }
 
 FPClassTest llvm::invertFPClassTestIfSimpler(FPClassTest Test, bool UseFCmp) {

@@ -2945,8 +2945,11 @@ bool X86TargetLowering::useLoadStackGuardNode(const Module &M) const {
 }
 
 bool X86TargetLowering::useStackGuardMixFP() const {
-  // Currently only MSVC CRTs mix the frame pointer into the stack guard value.
-  return Subtarget.getTargetTriple().isOSMSVCRT() && !Subtarget.isTargetMachO();
+  // MSVC CRTs, and NT-POSIX as Windows Itanium, mix the frame pointer into the
+  // stack guard value.
+  const Triple &TT = Subtarget.getTargetTriple();
+  return (TT.isOSMSVCRT() || TT.isWindowsNTPOSIXEnvironment()) &&
+         !Subtarget.isTargetMachO();
 }
 
 SDValue X86TargetLowering::emitStackGuardMixFP(SelectionDAG &DAG, SDValue Val,

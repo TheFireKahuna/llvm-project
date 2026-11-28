@@ -14,16 +14,16 @@
 
 // The load configuration names the security cookie, a read-only word that the
 // loader replaces with a 48-bit value before main, and protected frames check
-// against it. It names wincrt's Control Flow Guard pointers, also read-only. In an image
-// the loader does not guard they hold wincrt's stubs, which check nothing, so
-// instrumented code runs as it would without the guard, and the fields of the
-// absent features are zero. In a guarded image the loader installs its
-// validators, and an indirect call to an invalid target fails fast. Neither
-// stub is itself a valid target.
+// against it. It names the Control Flow Guard pointers, also read-only. In an
+// image the loader does not guard they hold the builtins' stubs, which check
+// nothing, so instrumented code runs as it would without the guard, and the
+// fields of the absent features are zero. In a guarded image the loader
+// installs its validators, and an indirect call to an invalid target fails
+// fast. Neither stub is itself a valid target.
 
 // CHECK-DAG:      [[#%x,COOKIE:]] R __security_cookie
-// CHECK-DAG:      [[#%x,NOP:]] t __wincrt_guard_check_nop
-// CHECK-DAG:      [[#%x,DISPATCH:]] t __wincrt_guard_dispatch_nop
+// CHECK-DAG:      [[#%x,NOP:]] t __guard_check_icall_nop
+// CHECK-DAG:      [[#%x,DISPATCH:]] t __guard_dispatch_icall_nop
 // CHECK:          LoadConfig [
 // CHECK-NEXT:       Size: 0x148
 // CHECK:            SecurityCookie: 0x[[#%X,COOKIE]]

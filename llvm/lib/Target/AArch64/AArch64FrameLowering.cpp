@@ -545,8 +545,9 @@ bool AArch64FrameLowering::hasFPImpl(const MachineFunction &MF) const {
   // required so the guard value remains stable in the presence of dynamic
   // stack allocations (e.g. _alloca on MSVCRT).
   if (MFI.hasStackProtectorIndex()) {
-    const auto &Subtarget = MF.getSubtarget<AArch64Subtarget>();
-    if (Subtarget.getTargetLowering()->useStackGuardMixFP())
+    const auto *TLI = MF.getSubtarget<AArch64Subtarget>().getTargetLowering();
+    if (TLI->useStackGuardMixFP() &&
+        TLI->getStackGuardMixReg(MF) == AArch64::FP)
       return true;
   }
 

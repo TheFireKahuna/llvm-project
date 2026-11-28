@@ -21,6 +21,7 @@ namespace llvm {
 class BasicBlock;
 class Instruction;
 class MDNode;
+class Value;
 enum FPClassTest : unsigned;
 
 /// Encapsulates all of the information needed to generate a stack protector
@@ -215,6 +216,11 @@ private:
 LLVM_ABI MachineBasicBlock::iterator
 findSplitPointForStackProtector(MachineBasicBlock *BB,
                                 const TargetInstrInfo &TII);
+
+/// Whether \p Guard, the guard llvm.stackprotector stores, is one the IR read
+/// at an offset from the thread pointer, which a target that loads its own
+/// guard in place of the IR's cannot read.
+LLVM_ABI bool isThreadPointerStackGuard(const Value *Guard);
 
 /// Evaluates if the specified FP class test is better performed as the inverse
 /// (i.e. fewer instructions should be required to lower it).  An example is the

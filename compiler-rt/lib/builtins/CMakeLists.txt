@@ -356,20 +356,22 @@ if(NOT FUCHSIA AND NOT COMPILER_RT_BAREMETAL_BUILD AND NOT COMPILER_RT_GPU_BUILD
   )
 endif()
 
-# Windows Itanium's thread-local variables are native and its stacks are never
-# executable, and __eprintf, which only the assert.h of GCC before 4.0 calls,
-# would tie the builtins to stdio. Its images link no MSVC start-up objects,
-# which would define the CRT table bounds, __dso_handle and _fltused.
-if(WIN32_ITANIUM)
+# Windows Itanium's and NT-POSIX's thread-local variables are native and their
+# stacks are never executable, and __eprintf, which only the assert.h of GCC
+# before 4.0 calls, would tie the builtins to stdio.
+if(WIN32_ITANIUM OR WIN32_NTPOSIX)
   list(REMOVE_ITEM GENERIC_SOURCES emutls.c enable_execute_stack.c eprintf.c)
-  list(APPEND GENERIC_SOURCES crt_windows.c)
 endif()
 
 # A Windows Itanium or NT-POSIX image binds the addresses of its delay-loaded
-# functions, and writes the words that only it can compute, itself.
+# functions, and writes the words that only it can compute, itself. It links
+# no MSVC start-up objects, so it takes from here too what they would define:
+# its load configuration, the stack checks and the /GS handlers of MSVC
+# objects, the CRT table bounds, __dso_handle and _fltused.
 if(COMPILER_RT_DEFAULT_TARGET_TRIPLE MATCHES "-windows-(itanium|ntposix)$")
   set(WINDOWS_FILL TRUE)
-  list(APPEND GENERIC_SOURCES fill_windows.c)
+  list(APPEND GENERIC_SOURCES crt_windows.c fill_windows.c gshandler_windows.c
+    gshandler_seh_windows.c loadconfig.S)
 endif()
 
 option(COMPILER_RT_LIBATOMIC_USE_PTHREAD
@@ -894,7 +896,7 @@ foreach(pat cas swp ldadd ldclr ldeor ldset)
   endforeach(size)
 endforeach(pat)
 
-if (MINGW OR WIN32_ITANIUM)
+if (MINGW OR WIN32_ITANIUM OR WIN32_NTPOSIX)
   set(aarch64_SOURCES
     ${aarch64_SOURCES}
     aarch64/chkstk.S

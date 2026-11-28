@@ -33545,8 +33545,18 @@ bool AArch64TargetLowering::useLoadStackGuardNode(const Module &M) const {
 }
 
 bool AArch64TargetLowering::useStackGuardMixFP() const {
-  // Currently only MSVC CRTs mix the frame pointer into the stack guard value.
-  return Subtarget->getTargetTriple().isOSMSVCRT();
+  // MSVC CRTs, and NT-POSIX as Windows Itanium, mix the frame pointer into the
+  // stack guard value.
+  const Triple &TT = Subtarget->getTargetTriple();
+  return TT.isOSMSVCRT() || TT.isWindowsNTPOSIXEnvironment();
+}
+
+MCRegister
+AArch64TargetLowering::getStackGuardMixReg(const MachineFunction &MF) const {
+  return Subtarget->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+                 !MF.getFrameInfo().hasVarSizedObjects()
+             ? AArch64::SP
+             : AArch64::FP;
 }
 
 SDValue AArch64TargetLowering::emitStackGuardMixFP(SelectionDAG &DAG,
@@ -33554,10 +33564,18 @@ SDValue AArch64TargetLowering::emitStackGuardMixFP(SelectionDAG &DAG,
                                                    const SDLoc &DL) const {
   // Mix the cookie value with FP to create a position-dependent guard.
   // Both prologue (stores FP - Cookie) and epilogue (compares FP - Cookie)
-  // use the same mixing operation: FP - Val.
-  return DAG.getNode(
-      ISD::SUB, DL, Val.getValueType(),
-      DAG.getCopyFromReg(DAG.getEntryNode(), DL, AArch64::FP, MVT::i64), Val);
+  // use the same mixing operation: FP - Val. SP is an operand only of the
+  // extended-register form.
+  MCRegister Reg = getStackGuardMixReg(DAG.getMachineFunction());
+  SDValue Base = DAG.getCopyFromReg(DAG.getEntryNode(), DL, Reg, MVT::i64);
+  if (Reg == AArch64::FP)
+    return DAG.getNode(ISD::SUB, DL, Val.getValueType(), Base, Val);
+  return SDValue(
+      DAG.getMachineNode(AArch64::SUBXrx64, DL, MVT::i64, Base, Val,
+                         DAG.getTargetConstant(
+                             AArch64_AM::getArithExtendImm(AArch64_AM::UXTX, 0),
+                             DL, MVT::i32)),
+      0);
 }
 
 unsigned AArch64TargetLowering::combineRepeatedFPDivisors() const {

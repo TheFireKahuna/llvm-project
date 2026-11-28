@@ -23,9 +23,11 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCParser/AsmLexer.h"
 #include "llvm/MC/MCParser/MCAsmParser.h"
@@ -1320,6 +1322,7 @@ private:
   /// Wrapper around MCStreamer::emitInstruction(). Possibly adds
   /// instrumentation around Inst.
   void emitInstruction(MCInst &Inst, OperandVector &Operands, MCStreamer &Out);
+  bool rewriteStackGuardAccess(MCInst &Inst, const OperandVector &Operands);
 
   bool matchAndEmitInstruction(SMLoc IDLoc, unsigned &Opcode,
                                OperandVector &Operands, MCStreamer &Out,
@@ -4339,6 +4342,51 @@ void X86AsmParser::applyLVILoadHardeningMitigation(MCInst &Inst,
   }
 }
 
+// On NT-POSIX Linux's stack guard, %fs:0x28, is the image's __stack_chk_guard,
+// which the loader writes and code never does: a read of it reads that word,
+// and a write is an error. movabs's moffs form, which has only the
+// displacement and the segment, reads it as mov does.
+bool X86AsmParser::rewriteStackGuardAccess(MCInst &Inst,
+                                           const OperandVector &Operands) {
+  const MCInstrDesc &Desc = MII.get(Inst.getOpcode());
+  bool Offs = (Desc.TSFlags & X86II::FormMask) == X86II::RawFrmMemOffs;
+  int Mem =
+      Offs ? -int(X86::AddrDisp) : X86II::getMemoryOperandNo(Desc.TSFlags);
+  if (!Offs && Mem < 0)
+    return true;
+  if (!Offs)
+    Mem += X86II::getOperandBias(Desc);
+  const MCOperand &Disp = Inst.getOperand(Mem + X86::AddrDisp);
+  if (Inst.getOperand(Mem + X86::AddrSegmentReg).getReg() != X86::FS ||
+      !Disp.isImm() || Disp.getImm() != TP_STACK_GUARD ||
+      (!Offs && (Inst.getOperand(Mem + X86::AddrBaseReg).getReg() ||
+                 Inst.getOperand(Mem + X86::AddrIndexReg).getReg())))
+    return true;
+  if (Desc.mayStore())
+    return !Error(Operands[0]->getStartLoc(),
+                  "the stack guard, %fs:0x28, is read-only on NT-POSIX");
+  const MCExpr *Guard = MCSymbolRefExpr::create(
+      getContext().getOrCreateSymbol("__stack_chk_guard"), getContext());
+  if (Offs) {
+    MCRegister Dst = Desc.implicit_defs()[0];
+    Inst = MCInstBuilder(Dst == X86::RAX   ? X86::MOV64rm
+                         : Dst == X86::EAX ? X86::MOV32rm
+                         : Dst == X86::AX  ? X86::MOV16rm
+                                           : X86::MOV8rm)
+               .addReg(Dst)
+               .addReg(X86::RIP)
+               .addImm(1)
+               .addReg(0)
+               .addExpr(Guard)
+               .addReg(0);
+  } else if (Desc.mayLoad()) {
+    Inst.getOperand(Mem + X86::AddrBaseReg).setReg(X86::RIP);
+    Inst.getOperand(Mem + X86::AddrDisp) = MCOperand::createExpr(Guard);
+    Inst.getOperand(Mem + X86::AddrSegmentReg).setReg(MCRegister());
+  }
+  return true;
+}
+
 void X86AsmParser::emitInstruction(MCInst &Inst, OperandVector &Operands,
                                    MCStreamer &Out) {
   // On Windows Itanium and NT-POSIX, X's import pointer __imp_X is its GOT
@@ -4352,6 +4400,11 @@ void X86AsmParser::emitInstruction(MCInst &Inst, OperandVector &Operands,
         Op.setExpr(MCSymbolRefExpr::create(
             getContext().getOrCreateSymbol("__imp_" + E->getSymbol().getName()),
             getContext(), E->getLoc()));
+
+  if (getSTI().getTargetTriple().isWindowsNTPOSIXEnvironment() &&
+      getSTI().getTargetTriple().isOSBinFormatCOFF() &&
+      !rewriteStackGuardAccess(Inst, Operands))
+    return;
 
   if (CLOpts.experimental_lvi_inline_asm_hardening &&
       getSTI().hasFeature(X86::FeatureLVIControlFlowIntegrity))

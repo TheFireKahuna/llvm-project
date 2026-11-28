@@ -26,6 +26,8 @@ def IsMacOSX : LibcallPredicate<[{TT.isMacOSX()}]>;
 def IsWindowsMSVCEnv : LibcallPredicate<[{TT.isWindowsMSVCEnvironment()}]>;
 def IsWindowsItaniumEnv
   : LibcallPredicate<[{TT.isWindowsItaniumEnvironment()}]>;
+def IsGenericWindowsItaniumEnv
+  : LibcallPredicate<[{TT.isGenericWindowsItaniumEnvironment()}]>;
 def IsWindowsArm64EC : LibcallPredicate<[{TT.isWindowsArm64EC()}]>;
 
 def IsAndroid : LibcallPredicate<[{TT.isAndroid()}]>;
@@ -158,14 +160,15 @@ def isNotOSAIXAndNotOSOpenBSD
 
 def isNotPS : RuntimeLibcallAvailability<(not IsPS)>;
 
-// OpenBSD uses __guard_local. AIX uses __ssp_canary_word, MSVC/Windows
-// Itanium uses __security_cookie
+// OpenBSD uses __guard_local. AIX uses __ssp_canary_word, MSVC and Windows
+// Itanium other than the generic target use __security_cookie
 def hasStackChkFail : RuntimeLibcallAvailability<
   (all_of (not IsOSOpenBSD), (not IsWindowsMSVCEnv),
-          (not IsWindowsItaniumEnv))>;
+          (any_of (not IsWindowsItaniumEnv), IsGenericWindowsItaniumEnv))>;
 
 def isWindowsMSVCOrItaniumEnvironment
-  : RuntimeLibcallAvailability<(any_of IsWindowsMSVCEnv, IsWindowsItaniumEnv)>;
+  : RuntimeLibcallAvailability<(any_of IsWindowsMSVCEnv,
+      (all_of IsWindowsItaniumEnv, (not IsGenericWindowsItaniumEnv)))>;
 
 def isAndroid : RuntimeLibcallAvailability<(all_of IsAndroid)>;
 

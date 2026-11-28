@@ -15,8 +15,7 @@ define tailcc void @tailcall_frame(ptr %0, i64 %1) sspreq {
 ; WINDOWS-NEXT:    movq %rax, {{[0-9]+}}(%rsp)
 ; WINDOWS-NEXT:    movq {{[0-9]+}}(%rsp), %rax
 ; WINDOWS-NEXT:    xorq %rsp, %rax
-; WINDOWS-NEXT:    movq __security_cookie(%rip), %rcx
-; WINDOWS-NEXT:    cmpq %rax, %rcx
+; WINDOWS-NEXT:    cmpq __security_cookie(%rip), %rax
 ; WINDOWS-NEXT:    jne .LBB0_1
 ; WINDOWS-NEXT:  # %bb.2:
 ; WINDOWS-NEXT:    xorl %ecx, %ecx
@@ -69,8 +68,7 @@ define void @tailcall_unrelated_frame() sspreq {
 ; WINDOWS-NEXT:    callq bar
 ; WINDOWS-NEXT:    movq {{[0-9]+}}(%rsp), %rax
 ; WINDOWS-NEXT:    xorq %rsp, %rax
-; WINDOWS-NEXT:    movq __security_cookie(%rip), %rcx
-; WINDOWS-NEXT:    cmpq %rax, %rcx
+; WINDOWS-NEXT:    cmpq __security_cookie(%rip), %rax
 ; WINDOWS-NEXT:    jne .LBB1_1
 ; WINDOWS-NEXT:  # %bb.2:
 ; WINDOWS-NEXT:    .seh_startepilogue
@@ -122,8 +120,7 @@ define void @caller() sspreq {
 ; WINDOWS-NEXT:    callq callee
 ; WINDOWS-NEXT:    movq {{[0-9]+}}(%rsp), %rax
 ; WINDOWS-NEXT:    xorq %rsp, %rax
-; WINDOWS-NEXT:    movq __security_cookie(%rip), %rcx
-; WINDOWS-NEXT:    cmpq %rax, %rcx
+; WINDOWS-NEXT:    cmpq __security_cookie(%rip), %rax
 ; WINDOWS-NEXT:    jne .LBB2_2
 ; WINDOWS-NEXT:  # %bb.1:
 ; WINDOWS-NEXT:    .seh_startepilogue
