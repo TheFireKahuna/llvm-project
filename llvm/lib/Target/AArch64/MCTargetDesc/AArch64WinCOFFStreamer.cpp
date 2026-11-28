@@ -10,6 +10,7 @@
 #include "AArch64MCAsmInfo.h"
 #include "AArch64MCTargetDesc.h"
 #include "TargetInfo/AArch64TargetInfo.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
@@ -40,8 +41,16 @@ public:
       : MCWinCOFFStreamer(C, std::move(AB), std::move(CE), std::move(OW)) {
     if (C.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
       MCII.reset(getTheAArch64leTarget().createMCInstrInfo());
-      FusedForms[0] = "blr";
-      FusedForms[1] = "br";
+      // adrp and ldr, then movz and madd.
+      TlsScaleInsts = 4;
+      FusedForms[size_t(COFF::FusedUse::Call)] = "blr";
+      FusedForms[size_t(COFF::FusedUse::Jump)] = "br";
+      FusedForms[size_t(COFF::FusedUse::Access)] =
+          "load or store with an offset that is a number";
+      FusedForms[size_t(COFF::FusedUse::Test)] =
+          "cbz or cbnz of a 64-bit register";
+      FusedForms[size_t(COFF::FusedUse::Add)] =
+          "64-bit add of an unshifted immediate";
     }
   }
 
@@ -58,24 +67,38 @@ void AArch64WinCOFFStreamer::emitInstruction(const MCInst &Inst,
   // A section that holds an instruction is aligned as one, wherever the
   // linker lays it.
   getCurrentSectionOnly()->ensureMinAlignment(Align(4));
+  // The code emitter states the instructions that the linker may resize; a
+  // fused jump that it may delete has no relocation of the emitter's.
+  bool Tail = false;
+  scope_exit Emitted([&] {
+    if (MCII)
+      finishInstruction(Tail);
+  });
   if (MCII) {
-    // A fused read is a 64-bit ldr of a pointer.
-    const MCSymbol *Read = nullptr;
+    // A 64-bit ldr of a pointer loads it, and is a fused read where its
+    // relocation states so.
+    const MCSymbol *Load = nullptr;
+    bool Read = false;
     for (const MCOperand &MO : Inst) {
       auto *SE =
           MO.isExpr() ? dyn_cast<MCSpecifierExpr>(MO.getExpr()) : nullptr;
-      if (!SE || SE->getSpecifier() != AArch64::S_FUSED_LO12)
+      if (!SE || (SE->getSpecifier() != AArch64::S_FUSED_LO12 &&
+                  SE->getSpecifier() != AArch64::S_LO12))
         continue;
       auto *Pointer = dyn_cast<MCSymbolRefExpr>(SE->getSubExpr());
+      Read = SE->getSpecifier() == AArch64::S_FUSED_LO12;
       if (Inst.getOpcode() == AArch64::LDRXui && Pointer)
-        Read = &Pointer->getSymbol();
-      else
+        Load = &Pointer->getSymbol();
+      else if (Read)
         getContext().reportError(Inst.getLoc(),
                                  "fused read is not a 64-bit ldr of a pointer");
     }
-    checkFused(Inst, Read,
-               Inst.getOpcode() ==
-                   (FusedSite.IsJump ? AArch64::BR : AArch64::BLR));
+    // A br that no unwind frame covers may be deleted, as a b there may.
+    unsigned RegOp;
+    COFF::FusedUse Use = AArch64_MC::getFusedUse(Inst, RegOp);
+    Tail = FusedSite.Offset && FusedSite.Use == COFF::FusedUse::Jump &&
+           Use == FusedSite.Use && !getCurrentWinFrameInfo();
+    checkFused(Inst, Use, RegOp, Load, Read, Tail);
   }
 
   // On Windows Itanium and NT-POSIX the relocation type of a b states whether

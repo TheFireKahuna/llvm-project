@@ -1,0 +1,399 @@
+# RUN: llc -mtriple=x86_64-unknown-windows-itanium -start-after=unpack-mi-bundles \
+# RUN:   %s -o - | FileCheck %s --check-prefixes=CHECK,FUSED
+# RUN: llc -mtriple=x86_64-pc-windows-ntposix -start-after=unpack-mi-bundles \
+# RUN:   %s -o - | FileCheck %s --check-prefixes=CHECK,FUSED
+# RUN: llc -mtriple=x86_64-pc-windows-msvc -start-after=unpack-mi-bundles \
+# RUN:   %s -o - | FileCheck %s --check-prefixes=CHECK,PLAIN \
+# RUN:   --implicit-check-not=FUSED
+
+# On Windows Itanium and NT-POSIX the instructions of a fused read and its
+# sites are settled before any is emitted or described to a debugger.
+
+--- |
+  declare dllimport void @imported()
+  define void @fold_call() !dbg !4 { ret void }
+  define void @fold_jump() { ret void }
+  define void @variable() !dbg !10 { ret void }
+  define void @block_end() { ret void }
+  define void @too_long() { ret void }
+  define void @written() { ret void }
+  define void @long_next() { ret void }
+  define void @adds() { ret void }
+  define void @accesses() { ret void }
+  define void @tests() { ret void }
+  define void @pads() { ret void }
+
+  !llvm.dbg.cu = !{!0}
+  !llvm.module.flags = !{!2, !3}
+
+  !0 = distinct !DICompileUnit(language: DW_LANG_C11, file: !1, producer: "clang", isOptimized: true, runtimeVersion: 0, emissionKind: FullDebug)
+  !1 = !DIFile(filename: "t.c", directory: "/")
+  !2 = !{i32 2, !"Dwarf Version", i32 5}
+  !3 = !{i32 2, !"Debug Info Version", i32 3}
+  !4 = distinct !DISubprogram(name: "fold_call", scope: !1, file: !1, line: 1, type: !5, scopeLine: 1, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+  !5 = !DISubroutineType(types: !6)
+  !6 = !{null}
+  !7 = !DILocalVariable(name: "fp", scope: !4, file: !1, line: 2, type: !8)
+  !8 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: null, size: 64)
+  !9 = !DILocation(line: 3, column: 3, scope: !4)
+  !10 = distinct !DISubprogram(name: "variable", scope: !1, file: !1, line: 5, type: !5, scopeLine: 5, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition | DISPFlagOptimized, unit: !0)
+  !11 = !DILocalVariable(name: "fp", scope: !10, file: !1, line: 6, type: !8)
+  !12 = !DILocation(line: 7, column: 3, scope: !10)
+...
+
+# A load that serves one call in its own block is folded into the call, which
+# loads it directly before it and is no fused site, and a variable said to be
+# in its register is nowhere.
+# CHECK-LABEL: fold_call:
+# FUSED:         movl $1, %ecx
+# FUSED:         #DEBUG_VALUE: fold_call:fp <- undef
+# FUSED-NEXT:    .loc
+# FUSED-NEXT:    movq __imp_imported@LOAD_CALL(%rip), %rax
+# FUSED-NEXT:    callq *%rax
+# PLAIN:         movq __imp_imported(%rip), %rax
+# PLAIN-NEXT:    movl $1, %ecx
+# PLAIN:         #DEBUG_VALUE: fold_call:fp <- $rax
+# PLAIN-NEXT:    .loc
+# PLAIN-NEXT:    callq *%rax
+---
+name:            fold_call
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+    $ecx = MOV32ri 1
+    DBG_VALUE $rax, $noreg, !7, !DIExpression(), debug-location !9
+    CALL64r killed renamable $rax, csr_win64, implicit $rsp, implicit $ssp, implicit $ecx, implicit-def $rsp, implicit-def $ssp, debug-location !9
+    RET64 debug-location !9
+...
+
+# So is one that serves one tail call, a jmp that needs no REX.W.
+# CHECK-LABEL: fold_jump:
+# FUSED-NOT:     movq
+# FUSED:         jmpq *__imp_imported(%rip)
+# PLAIN:         movq __imp_imported(%rip), %rax
+# PLAIN-NEXT:    rex64 jmpq *%rax
+---
+name:            fold_jump
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+    TAILJMPr64_REX killed renamable $rax, csr_win64, implicit $rsp, implicit $ssp
+...
+
+# The linker may drop a fused read, so a variable said to be in its register
+# is nowhere while the read's value is there, and is where it is said to be
+# once the register holds another. The instructions are those without it.
+# CHECK-LABEL: variable:
+# FUSED:         movq __imp_imported@FUSED(%rip), %rsi
+# FUSED:         #DEBUG_VALUE: variable:fp <- undef
+# PLAIN:         movq __imp_imported(%rip), %rsi
+# PLAIN:         #DEBUG_VALUE: variable:fp <- $rsi
+# CHECK:         movl (%rsi), %eax
+# CHECK:         movl (%rsi), %eax
+# CHECK-NEXT:    movq $7, %rsi
+# CHECK:         #DEBUG_VALUE: variable:fp <- $rsi
+---
+name:            variable
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    renamable $rsi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+    DBG_VALUE $rsi, $noreg, !11, !DIExpression(), debug-location !12
+    renamable $eax = MOV32rm renamable $rsi, 1, $noreg, 0, $noreg, debug-location !12
+    renamable $eax = MOV32rm killed renamable $rsi, 1, $noreg, 0, $noreg, debug-location !12
+    $rsi = MOV64ri32 7
+    DBG_VALUE $rsi, $noreg, !11, !DIExpression(), debug-location !12
+    RET64 debug-location !12
+...
+
+# In code that the linker does not resize, the instruction after a read that
+# it drops takes the read's bytes where the two are at most 15, so a fused
+# read that ends its block before padding moves back over an instruction that
+# does not touch its register.
+# CHECK-LABEL: block_end:
+# FUSED:         movq __imp_imported@FUSED(%rip), %rdi
+# FUSED-NEXT:    movl %ecx, %esi
+# PLAIN:         movl %ecx, %esi
+# PLAIN-NEXT:    movq __imp_imported(%rip), %rdi
+# CHECK-NEXT:    .p2align 4
+---
+name:            block_end
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $ecx
+    $esi = MOV32rr $ecx
+    renamable $rdi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+
+  bb.1 (align 16):
+    liveins: $esi, $rdi
+    renamable $eax = MOV32rm renamable $rdi, 1, $noreg, 0, $noreg
+    renamable $esi = DEC32r killed renamable $esi, implicit-def $eflags
+    JCC_1 %bb.1, 5, implicit killed $eflags
+
+  bb.2:
+    RET64
+...
+
+# It stays behind an instruction that is too long to take its bytes,
+# CHECK-LABEL: too_long:
+# CHECK:         movq $0, 32(%rsp)
+# CHECK-NEXT:    movq __imp_imported{{.*}}(%rip), %rdi
+# CHECK-NEXT:    .p2align 4
+---
+name:            too_long
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    MOV64mi32 $rsp, 1, $noreg, 32, $noreg, 0
+    renamable $rdi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+
+  bb.1 (align 16):
+    liveins: $rdi
+    renamable $eax = MOV32rm renamable $rdi, 1, $noreg, 0, $noreg
+    JCC_1 %bb.1, 5, implicit undef $eflags
+
+  bb.2:
+    RET64
+...
+
+# and behind one that writes its register.
+# CHECK-LABEL: written:
+# CHECK:         movl %ecx, %edi
+# CHECK-NEXT:    movq __imp_imported{{.*}}(%rip), %rdi
+# CHECK-NEXT:    .p2align 4
+---
+name:            written
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $ecx
+    $edi = MOV32rr $ecx
+    renamable $rdi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+
+  bb.1 (align 16):
+    liveins: $rdi
+    renamable $eax = MOV32rm renamable $rdi, 1, $noreg, 0, $noreg
+    JCC_1 %bb.1, 5, implicit undef $eflags
+
+  bb.2:
+    RET64
+...
+
+# A read before an instruction that is too long moves back likewise, and one
+# that an instruction short enough follows stays, also where that begins the
+# next block with no padding.
+# CHECK-LABEL: long_next:
+# FUSED:         movq __imp_imported@FUSED(%rip), %rdi
+# FUSED-NEXT:    movl %ecx, %esi
+# FUSED-NEXT:    movabsq
+# CHECK:         movl %esi, %ecx
+# CHECK-NEXT:    movq __imp_imported{{.*}}(%rip), %rbx
+# CHECK-NEXT:  .LBB{{[0-9]+}}_1:
+# CHECK-NEXT:    movl %ecx, %edx
+---
+name:            long_next
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $ecx
+    $esi = MOV32rr $ecx
+    renamable $rdi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+    $rax = MOV64ri 1311768467463790320
+    $ecx = MOV32rr $esi
+    renamable $rbx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg :: (load (s64) from got)
+
+  bb.1:
+    liveins: $rdi, $rbx, $ecx
+    $edx = MOV32rr $ecx
+    renamable $eax = MOV32rm renamable $rdi, 1, $noreg, 0, $noreg
+    renamable $eax = MOV32rm renamable $rbx, 1, $noreg, 0, $noreg
+    JCC_1 %bb.1, 5, implicit undef $eflags
+
+  bb.2:
+    RET64
+...
+
+# The constant that a sub adds is the lea's too, and a lea is stated as it
+# is, one into another register with its load writing that register: but not
+# one whose constant the marker has no room for, which then stays the add it
+# was, or one that something lies before.
+# CHECK-LABEL: adds:
+# CHECK:         movq __imp_imported(%rip), %rax
+# FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ADD
+# FUSED-NEXT:    leaq -8(%rax), %rax
+# PLAIN-NEXT:    subq $8, %rax
+# CHECK-NEXT:    movq __imp_imported(%rip), %rcx
+# FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ADD
+# CHECK-NEXT:    leaq 8(%rcx), %rcx
+# FUSED-NEXT:    movq __imp_imported(%rip), %r8
+# FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ADD
+# FUSED-NEXT:    leaq 8(%r8), %r8
+# PLAIN-NEXT:    movq __imp_imported(%rip), %rdx
+# PLAIN-NEXT:    leaq 8(%rdx), %r8
+# CHECK-NEXT:    movq __imp_imported(%rip), %rdx
+# CHECK-NEXT:    leaq 134217728(%rdx), %rdx
+# CHECK-NEXT:    movq __imp_imported(%rip), %r9
+# CHECK-NEXT:    addq $134217728, %r9
+# CHECK-NEXT:    movq __imp_imported(%rip), %r10
+# CHECK-NEXT:    movl %eax, %r11d
+# CHECK-NEXT:    addq $8, %r10
+# CHECK-NEXT:    movq __imp_imported(%rip), %r14
+# CHECK-NEXT:    movl %eax, %r11d
+# CHECK-NEXT:    leaq 8(%r14), %r14
+---
+name:            adds
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $rax = SUB64ri32 killed renamable $rax, 8, implicit-def dead $eflags
+    renamable $rcx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $rcx = LEA64r killed renamable $rcx, 1, $noreg, 8, $noreg
+    renamable $rdx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $r8 = LEA64r killed renamable $rdx, 1, $noreg, 8, $noreg
+    renamable $rdx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $rdx = LEA64r killed renamable $rdx, 1, $noreg, 134217728, $noreg
+    renamable $r9 = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $r9 = ADD64ri32 killed renamable $r9, 134217728, implicit-def dead $eflags
+    renamable $r10 = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $r11d = MOV32rr renamable $eax
+    renamable $r10 = ADD64ri32 killed renamable $r10, 8, implicit-def dead $eflags
+    renamable $r14 = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $r11d = MOV32rr renamable $eax
+    renamable $r14 = LEA64r killed renamable $r14, 1, $noreg, 8, $noreg
+    RET64 implicit $rax, implicit $rcx, implicit $rdx, implicit $r8, implicit $r9, implicit $r10, implicit $r11d, implicit $r14
+...
+
+# A copy of the pointer is no reader where accesses alone read it, and one
+# that anything else reads keeps the load and states nothing. An instruction
+# that reads the register in another operand too is no access, and keeps the
+# load, whose accesses in other blocks are then none.
+# CHECK-LABEL: accesses:
+# FUSED:         movq __imp_imported@FUSED(%rip), %rax
+# CHECK:         movq %rax, %rcx
+# FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ACCESS, __imp_imported
+# CHECK-NEXT:    movl (%rcx), %edx
+# CHECK-NEXT:    movq __imp_imported(%rip), %rsi
+# CHECK-NEXT:    movq %rsi, %rdi
+# CHECK-NEXT:    movl (%rdi), %r8d
+# CHECK-NEXT:    movq __imp_imported(%rip), %rax
+# CHECK-NEXT:    movq %rax, 8(%rax)
+# CHECK-NEXT:  # %bb.1:
+# CHECK-NEXT:    movl (%rax), %ecx
+---
+name:            accesses
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $rcx = MOV64rr killed renamable $rax
+    renamable $edx = MOV32rm killed renamable $rcx, 1, $noreg, 0, $noreg
+    renamable $rsi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $rdi = MOV64rr killed renamable $rsi
+    renamable $r8d = MOV32rm renamable $rdi, 1, $noreg, 0, $noreg
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    MOV64mr renamable $rax, 1, $noreg, 8, $noreg, renamable $rax
+  bb.1:
+    liveins: $rax, $edx, $rdi, $r8d
+    renamable $ecx = MOV32rm killed renamable $rax, 1, $noreg, 0, $noreg
+    RET64 implicit $ecx, implicit $edx, implicit $rdi, implicit $r8d
+...
+
+# A test whose flags a second jump reads, one that a jump on another
+# condition follows, and one whose flags live on into a block are no fused
+# tests. A test in another block than its load keeps the register.
+# CHECK-LABEL: tests:
+# CHECK:         movq __imp_imported(%rip), %rax
+# CHECK-NEXT:    testq %rax, %rax
+# CHECK-NEXT:    je
+# CHECK-NEXT:    jb
+# CHECK:         movq __imp_imported(%rip), %rcx
+# CHECK-NEXT:    testq %rcx, %rcx
+# CHECK-NEXT:    jb
+# CHECK:         movq __imp_imported(%rip), %rsi
+# CHECK-NEXT:    testq %rsi, %rsi
+# CHECK-NEXT:    jne
+# CHECK:         setb %al
+# FUSED:         movq __imp_imported@FUSED(%rip), %rdx
+# FUSED-NEXT:  # %bb.5:
+# FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_TEST_REG, __imp_imported
+# CHECK:         testq %rdx, %rdx
+# CHECK-NEXT:    je
+---
+name:            tests
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.6, %bb.1
+    renamable $rax = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    TEST64rr killed renamable $rax, renamable $rax, implicit-def $eflags
+    JCC_1 %bb.6, 4, implicit $eflags
+    JCC_1 %bb.6, 2, implicit killed $eflags
+  bb.1:
+    successors: %bb.6, %bb.2
+    renamable $rcx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    TEST64rr killed renamable $rcx, renamable $rcx, implicit-def $eflags
+    JCC_1 %bb.6, 2, implicit killed $eflags
+  bb.2:
+    successors: %bb.6, %bb.3
+    renamable $rsi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    TEST64rr killed renamable $rsi, renamable $rsi, implicit-def $eflags
+    JCC_1 %bb.6, 5, implicit $eflags
+  bb.3:
+    liveins: $eflags
+    renamable $al = SETCCr 2, implicit killed $eflags
+  bb.4:
+    renamable $rdx = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+  bb.5:
+    successors: %bb.6, %bb.7
+    liveins: $rdx
+    TEST64rr killed renamable $rdx, renamable $rdx, implicit-def $eflags
+    JCC_1 %bb.6, 4, implicit killed $eflags
+  bb.7:
+    RET64
+  bb.6:
+    RET64
+...
+
+# An exception leaves a block at a call. A landing pad reads what a register
+# held there: not a load that an instruction before the block's first call
+# wrote over, which its lea alone reads, but one that a call found.
+# CHECK-LABEL: pads:
+# CHECK:         movq __imp_imported(%rip), %rsi
+# FUSED-NEXT:  [[SITE:.Ltmp[0-9]+]]:
+# FUSED-NEXT:    .reloc [[SITE]], IMAGE_REL_LLVM_FUSED_ADD
+# CHECK-NEXT:    leaq 8(%rsi), %rsi
+# CHECK-NEXT:    callq imported
+# CHECK-NEXT:  # %bb.1:
+# CHECK-NEXT:    movq __imp_imported(%rip), %rdi
+# CHECK:         callq *%rdi
+# CHECK-NEXT:    movl $0, %edi
+---
+name:            pads
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.3
+    renamable $rsi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    renamable $rsi = LEA64r killed renamable $rsi, 1, $noreg, 8, $noreg
+    CALL64pcrel32 @imported, csr_win64, implicit $rsp, implicit $ssp
+  bb.1:
+    successors: %bb.2, %bb.3
+    liveins: $rsi
+    renamable $rdi = MOV64rm $rip, 1, $noreg, target-flags(x86-dllimport) @imported, $noreg
+    CALL64r renamable $rdi, csr_win64, implicit $rsp, implicit $ssp
+    renamable $edi = MOV32ri 0, implicit-def $rdi
+  bb.2:
+    RET64
+  bb.3 (landing-pad):
+    liveins: $rsi, $rdi
+    RET64 implicit $rsi, implicit $rdi
+...

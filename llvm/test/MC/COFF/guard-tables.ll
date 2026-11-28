@@ -8,7 +8,6 @@
 ; RUN: %if aarch64-registered-target %{ llvm-objdump -t %t.a64.o > %t.a64.txt %}
 ; RUN: %if aarch64-registered-target %{ llvm-readobj -x '.gfids$y' -x '.giats$y' %t.a64.o >> %t.a64.txt %}
 ; RUN: %if aarch64-registered-target %{ FileCheck %s --input-file=%t.a64.txt %}
-; RUN: FileCheck %s --input-file=%t.a64.txt
 
 ; Without Control Flow Guard's checks, a compiled object for Windows Itanium
 ; or NT-POSIX lists the functions and the import pointers whose address its

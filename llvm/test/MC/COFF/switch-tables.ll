@@ -3,15 +3,15 @@
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -O0 < %s | FileCheck %s --check-prefix=X64-O0
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -relocation-model=static < %s | \
 ; RUN:   FileCheck %s --check-prefix=STATIC
-; RUN: llc -mtriple=aarch64-unknown-windows-itanium -aarch64-min-jump-table-entries=4 < %s | \
-; RUN:   FileCheck %s --check-prefix=A64
-; RUN: llc -mtriple=aarch64-unknown-windows-itanium -aarch64-min-jump-table-entries=4 -O0 < %s | \
-; RUN:   FileCheck %s --check-prefix=A64-O0
+; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-itanium -aarch64-min-jump-table-entries=4 < %s | \
+; RUN:   FileCheck %s --check-prefix=A64 %}
+; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-itanium -aarch64-min-jump-table-entries=4 -O0 < %s | \
+; RUN:   FileCheck %s --check-prefix=A64-O0 %}
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -filetype=obj < %s -o %t.o
 ; RUN: llvm-readobj -r --coff-link-records %t.o | FileCheck %s --check-prefix=OBJ
 ; RUN: llvm-objdump -d --no-show-raw-insn --no-leading-addr %t.o | FileCheck %s --check-prefix=DIS
-; RUN: llc -mtriple=aarch64-unknown-windows-itanium -aarch64-min-jump-table-entries=4 -filetype=obj < %s -o %t.a.o
-; RUN: llvm-readobj --coff-link-records %t.a.o | FileCheck %s --check-prefix=A64-OBJ
+; RUN: %if aarch64-registered-target %{ llc -mtriple=aarch64-unknown-windows-itanium -aarch64-min-jump-table-entries=4 -filetype=obj < %s -o %t.a.o %}
+; RUN: %if aarch64-registered-target %{ llvm-readobj --coff-link-records %t.a.o | FileCheck %s --check-prefix=A64-OBJ %}
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -x86-speculative-load-hardening < %s | \
 ; RUN:   FileCheck %s --check-prefix=SLH
 ; RUN: llc -mtriple=x86_64-unknown-windows-itanium -x86-speculative-load-hardening \
@@ -133,25 +133,25 @@
 ; A64-O0:         .switch_table [[BRANCH]], .LJTI0_0, [[BASE]], 5, 4, [[LOAD]], 1
 
 ; The object names each place by a label, in the Sections group of its link
-; records after the sections that the linker may resize, and each entry of
-; the table names a label.
-; DIS:      <$L{{[0-9a-f]+}}>:
+; records after the sections that the linker may resize, of which this x86-64
+; object has none: the linker moves no code of its section, so each entry of
+; the table is an offset from the section's start.
+; DIS:      <$L{{.+}}>:
 ; DIS-NEXT:   movslq (%rcx,%rax,4), %rax
 ; DIS-NEXT:   addq %rcx, %rax
 ; DIS-EMPTY:
-; DIS-NEXT: <$L{{[0-9a-f]+}}>:
+; DIS-NEXT: <$L{{.+}}>:
 ; DIS-NEXT:   jmpq *%rax
 ; OBJ:        Section ({{[0-9]+}}) .rdata {
-; OBJ-NEXT:     0x0 IMAGE_REL_AMD64_REL32 $L{{[0-9a-f]+}}
+; OBJ-NEXT:     0x0 IMAGE_REL_AMD64_REL32 .text
 ; OBJ:          Kind: Sections (0x2)
-; OBJ-NEXT:     ResizableSection: .text ({{[0-9]+}})
 ; OBJ-NEXT:     SwitchTable {
-; OBJ-NEXT:       Branch: $L{{[0-9a-f]+}} ({{[0-9]+}})
+; OBJ-NEXT:       Branch: $L{{.+}} ({{[0-9]+}})
 ; OBJ-NEXT:       Table: .LJTI0_0 ({{[0-9]+}})
 ; OBJ-NEXT:       Base: .LJTI0_0 ({{[0-9]+}})
 ; OBJ-NEXT:       Count: 5
 ; OBJ-NEXT:       Type: Int32 (0x4)
-; OBJ-NEXT:       Load: $L{{[0-9a-f]+}} ({{[0-9]+}})
+; OBJ-NEXT:       Load: $L{{.+}} ({{[0-9]+}})
 ; OBJ-NEXT:       Flags: 1
 ; OBJ-NEXT:     }
 ; OBJ-NEXT:     SwitchTable {

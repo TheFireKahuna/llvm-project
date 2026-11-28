@@ -6451,10 +6451,9 @@ void Clang::ConstructJob(Compilation &C, const JobAction &JA,
   if (Triple.isOSBinFormatELF() && (Triple.isAArch64() || Triple.isX86()))
     Args.addOptOutFlag(CmdArgs, options::OPT_fplt, options::OPT_fno_plt);
   // On Windows Itanium and NT-POSIX the linker's thunk for an imported
-  // function is the PLT entry, which x86-64 avoids by default.
+  // function is the PLT entry, which they avoid by default.
   else if (Triple.isWindowsItaniumOrNTPOSIXEnvironment() &&
-           !Args.hasFlag(options::OPT_fplt, options::OPT_fno_plt,
-                         !Triple.isX86()))
+           !Args.hasFlag(options::OPT_fplt, options::OPT_fno_plt, false))
     CmdArgs.push_back("-fno-plt");
 
   // -fhosted is default.

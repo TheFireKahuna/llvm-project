@@ -5,7 +5,8 @@
 // RUN: llvm-dwarfdump --debug-line --debug-frame %t.o 2>/dev/null | \
 // RUN:   FileCheck %s --check-prefix=DWARF
 
-// What describes code that the linker may resize follows its layout. Each
+// What describes code that the linker may resize, which the fused read after
+// the function makes its section, follows its layout. Each
 // distance that such an instruction lies in is a span from one label to
 // another, which holds the distance as assembled, and each address names a
 // label.
@@ -23,6 +24,7 @@
 // The second entry's distance holds no such instruction, so it is a number.
 // CHECK-NEXT:     0x27 IMAGE_REL_AMD64_SSPAN32 [[T1:\$L[0-9a-f]+]]
 // CHECK-NEXT:     0x27 IMAGE_REL_AMD64_PAIR [[INTEXT]]
+// CHECK-NEXT:     0x32 IMAGE_REL_LLVM_FUSED_READ __imp_g
 // CHECK-NEXT:   }
 
 // The prologue of this function holds a call through a pointer, so its size
@@ -77,7 +79,7 @@
 // CHECK-NEXT:     0x28 IMAGE_REL_AMD64_ADDR64 [[BEGIN]]
 // CHECK-NEXT:     0x34 IMAGE_REL_LLVM_USPAN16 [[BODY]]
 // CHECK-NEXT:     0x34 IMAGE_REL_AMD64_PAIR [[BEGIN]]
-// CHECK-NEXT:     0x39 IMAGE_REL_LLVM_USPAN16 [[END]]
+// CHECK-NEXT:     0x39 IMAGE_REL_LLVM_USPAN16 $L{{[0-9a-f]+}}
 // CHECK-NEXT:     0x39 IMAGE_REL_AMD64_PAIR [[SITE]]
 // CHECK-NEXT:   }
 // CHECK-NEXT: ]
@@ -113,7 +115,7 @@
 // DWARF:      0x0000000000000000 1
 // DWARF-NEXT: 0x0000000000000007 2
 // DWARF-NEXT: 0x0000000000000008 3
-// DWARF-NEXT: 0x000000000000002f 3 {{.*}} end_sequence
+// DWARF-NEXT: 0x0000000000000036 3 {{.*}} end_sequence
 
   .text
   .cv_file 1 "a.c"
@@ -162,6 +164,7 @@ $ehgcr_0_1:
   .long .Lt2 - .Lbegin
   .text
   .seh_endproc
+  movq __imp_g@FUSED(%rip), %rax
   .cfi_sections .debug_frame
 
   .section .rdata,"dr"

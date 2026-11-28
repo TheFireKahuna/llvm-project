@@ -43,6 +43,8 @@
 # X64-NEXT: 1054: jmp 0x140001060
 # X64-NEXT: 1056: nopw %cs:(%rax,%rax)
 # X64-NEXT: 1060: retq
+# X64-NEXT: 1051: retq
+# X64-NEXT: leal {{.*}} # 0x140002000
 
 # A64:      Contents of section .data:
 # A64-NEXT: 140003000 30100000 2ce0ffff 30300030 00000030
@@ -100,6 +102,7 @@ main:
   retq
 g:
   retq
+  leal __imp_g(%rip), %eax
 
   .data
   .long g@IMGREL_CALL

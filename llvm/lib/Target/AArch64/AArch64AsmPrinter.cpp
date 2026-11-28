@@ -322,6 +322,156 @@ public:
 
     SetupMachineFunction(MF);
 
+    // A call or a tail call through an import pointer or a COFF stub is a blr
+    // or a br of the register that an ldr of the pointer wrote. An optimized
+    // function states more: the cbz or cbnz of the register, and what else
+    // reads it where the ldr writes its own base, which then holds what the
+    // adrp gave it once the linker has dropped the ldr.
+    auto IsPointerLoad = [](const MachineInstr &Load) {
+      if (Load.getOpcode() != AArch64::LDRXui)
+        return false;
+      const MachineOperand &Pointer = Load.getOperand(2);
+      return ((Pointer.isGlobal() &&
+               (Pointer.getTargetFlags() &
+                (AArch64II::MO_DLLIMPORT | AArch64II::MO_COFFSTUB))) ||
+              (Pointer.isSymbol() &&
+               (Pointer.getTargetFlags() & AArch64II::MO_GOT))) &&
+             !Pointer.getOffset();
+    };
+    findFusedSites(
+        IsPointerLoad,
+        [&](const MachineInstr &Load, const MachineInstr &MI, unsigned &Op) {
+          COFF::FusedUse Use = AArch64_MC::getFusedUse(MI, Op);
+          if (Use == COFF::FusedUse::Call || Use == COFF::FusedUse::Jump)
+            return Use;
+          if (!optimizesFusedSites() ||
+              (Use != COFF::FusedUse::Test &&
+               Load.getOperand(0).getReg() != Load.getOperand(1).getReg()))
+            return COFF::FusedUse::None;
+          return Use;
+        },
+        /*AccessNeedsRead=*/true, /*SharesSites=*/true);
+
+    // The linker proves that an adrp and the instruction with the low part
+    // of its address pair where they are adjacent on one register, and may
+    // then drop the adrp of a fused read with it, make the two of any load
+    // of a pointer one instruction, and make the address of a function that
+    // turns out another image's a load of its pointer. An optimized function
+    // has the adrp that only such a load, or the add of the address of a
+    // function that the module only declares or defines weakly, or that a
+    // program replaces, reads, in its block, directly before it and on its
+    // register. Where tail merging left such a load in a block of its own,
+    // the adrp that each block entering it ends with is one adrp before the
+    // load. The linker makes one instruction of an adrp, a fused read and
+    // the add or the access that alone reads it where the three follow one
+    // another, so the pair moves to such a site in its block.
+    if (optimizesFusedSites()) {
+      const TargetRegisterInfo *TRI = STI->getRegisterInfo();
+      auto Touches = [&](Register Reg) {
+        return [=](const MachineInstr &I) {
+          return !I.isDebugInstr() &&
+                 (I.readsRegister(Reg, TRI) || I.modifiesRegister(Reg, TRI));
+        };
+      };
+      // A write of Wn writes all of Xn, so Xn holds nothing live where Wn
+      // does not.
+      auto IsDead = [&](MachineBasicBlock &MBB, Register Reg,
+                        MachineBasicBlock::iterator After) {
+        return MBB.computeRegisterLiveness(
+                   TRI, TRI->getSubReg(Reg, AArch64::sub_32), After) ==
+               MachineBasicBlock::LQR_Dead;
+      };
+      auto IsPageOf = [](const MachineOperand &Page,
+                         const MachineOperand &Offset) {
+        return Offset.getType() == Page.getType() &&
+               (Page.isGlobal()
+                    ? Offset.getGlobal() == Page.getGlobal()
+                    : Page.isSymbol() && StringRef(Offset.getSymbolName()) ==
+                                             Page.getSymbolName()) &&
+               Offset.getOffset() == Page.getOffset();
+      };
+      for (MachineBasicBlock &MBB : MF)
+        for (MachineInstr &Low : MBB) {
+          if (!IsPointerLoad(Low) || MBB.isEHPad() || MBB.pred_empty())
+            continue;
+          Register Reg = Low.getOperand(1).getReg();
+          if (any_of(make_range(MBB.begin(), MachineBasicBlock::iterator(Low)),
+                     Touches(Reg)))
+            continue;
+          SmallVector<MachineInstr *, 2> Pages;
+          if (!all_of(MBB.predecessors(), [&](MachineBasicBlock *Pred) {
+                auto Page = find_if(reverse(*Pred), Touches(Reg));
+                if (Pred == &MBB || Page == Pred->rend() ||
+                    Page->getOpcode() != AArch64::ADRP ||
+                    Page->getOperand(0).getReg() != Reg ||
+                    !IsPageOf(Page->getOperand(1), Low.getOperand(2)) ||
+                    any_of(Pred->successors(), [&](MachineBasicBlock *Succ) {
+                      return Succ != &MBB &&
+                             any_of(Succ->liveins(), [&](const auto &LiveIn) {
+                               return TRI->regsOverlap(LiveIn.PhysReg, Reg);
+                             });
+                    }))
+                  return false;
+                if (!is_contained(Pages, &*Page))
+                  Pages.push_back(&*Page);
+                return true;
+              }))
+            continue;
+          MBB.splice(Low.getIterator(), Pages[0]->getParent(),
+                     Pages[0]->getIterator());
+          for (MachineInstr *Page : drop_begin(Pages))
+            Page->eraseFromParent();
+          MBB.removeLiveIn(Reg);
+        }
+      SmallDenseMap<const MachineInstr *, unsigned> NumSites;
+      for (const auto &[Site, Fused] : FusedSites)
+        NumSites[Fused.Load] += Site != Fused.Load;
+      // Last first, so that a pair moving down to its site passes over no
+      // adrp still to be visited.
+      for (MachineBasicBlock &MBB : MF)
+        for (MachineInstr &MI : make_early_inc_range(reverse(MBB))) {
+          if (MI.getOpcode() != AArch64::ADRP)
+            continue;
+          Register Reg = MI.getOperand(0).getReg();
+          MachineBasicBlock::iterator Low =
+              std::find_if(std::next(MachineBasicBlock::iterator(MI)),
+                           MBB.end(), Touches(Reg));
+          if (Low == MBB.end())
+            continue;
+          const MachineOperand &Page = MI.getOperand(1);
+          const auto *F = Page.isGlobal()
+                              ? dyn_cast_or_null<Function>(
+                                    Page.getGlobal()->getAliaseeObject())
+                              : nullptr;
+          bool IsTake = Low->getOpcode() == AArch64::ADDXri && F &&
+                        Page.getTargetFlags() == AArch64II::MO_PAGE &&
+                        (!Page.getGlobal()->isStrongDefinitionForLinker() ||
+                         !F->isStrongDefinitionForLinker() ||
+                         F->hasMetadata("overridable"));
+          if (!IsTake && !IsPointerLoad(*Low))
+            continue;
+          const MachineOperand &Offset = Low->getOperand(2);
+          Register To = Low->getOperand(0).getReg();
+          if (Low->getOperand(1).getReg() != Reg || !IsPageOf(Page, Offset) ||
+              (To != Reg && !IsDead(MBB, Reg, std::next(Low))))
+            continue;
+          MBB.splice(Low, &MBB, MI.getIterator());
+          MI.getOperand(0).setReg(To);
+          Low->getOperand(1).setReg(To);
+          MachineBasicBlock::iterator Site =
+              std::find_if(std::next(Low), MBB.end(), Touches(To));
+          if (IsTake || Site == MBB.end() || NumSites.lookup(&*Low) != 1)
+            continue;
+          FusedSite Fused = FusedSites.lookup(&*Site);
+          if (Fused.Load == &*Low && (Fused.Use == COFF::FusedUse::Add ||
+                                      Fused.Use == COFF::FusedUse::Access))
+            MBB.splice(Site, &MBB, MI.getIterator(), std::next(Low));
+        }
+#ifdef EXPENSIVE_CHECKS
+      MF.verify(nullptr, "After pairing addresses", &errs());
+#endif
+    }
+
     if (STI->isTargetCOFF()) {
       bool Local = MF.getFunction().hasLocalLinkage();
       COFF::SymbolStorageClass Scl =
@@ -363,7 +513,6 @@ private:
 
   void PrintDebugValueComment(const MachineInstr *MI, raw_ostream &OS);
 
-  void emitFunctionBodyStart() override;
   void emitFunctionBodyEnd() override;
   void emitBasicBlockEnd(const MachineBasicBlock &MBB) override;
   void emitGlobalAlias(const Module &M, const GlobalAlias &GA) override;
@@ -1282,24 +1431,6 @@ void AArch64AsmPrinter::emitBasicBlockEnd(const MachineBasicBlock &MBB) {
   }
 
   AsmPrinter::emitBasicBlockEnd(MBB);
-}
-
-void AArch64AsmPrinter::emitFunctionBodyStart() {
-  // A call or a tail call through an import pointer is a blr or a br of the
-  // register that an ldr of the pointer wrote.
-  findFusedSites(
-      [](const MachineInstr &Load) {
-        if (Load.getOpcode() != AArch64::LDRXui)
-          return false;
-        const MachineOperand &Pointer = Load.getOperand(2);
-        return ((Pointer.isGlobal() &&
-                 (Pointer.getTargetFlags() & AArch64II::MO_DLLIMPORT)) ||
-                (Pointer.isSymbol() &&
-                 (Pointer.getTargetFlags() & AArch64II::MO_GOT))) &&
-               !Pointer.getOffset();
-      },
-      {AArch64::BLR, AArch64::TCRETURNri, AArch64::TCRETURNrix16x17,
-       AArch64::TCRETURNrix17, AArch64::TCRETURNrinotx16});
 }
 
 void AArch64AsmPrinter::emitFunctionBodyEnd() {
@@ -4333,22 +4464,26 @@ void AArch64AsmPrinter::emitInstruction(const MachineInstr *MI) {
   // Finally, do the automated lowerings for everything else.
   MCInst TmpInst;
   MCInstLowering.Lower(MI, TmpInst);
-  // A fused read states so in the type of its relocation.
-  if (FusedSites.contains(MI))
+  // A fused read states so in the type of its relocation, and any other
+  // fused site in a marker.
+  if (FusedSites.lookup(MI).Load == MI)
     TmpInst.getOperand(2) = MCOperand::createExpr(MCSpecifierExpr::create(
         cast<MCSpecifierExpr>(TmpInst.getOperand(2).getExpr())->getSubExpr(),
         AArch64::S_FUSED_LO12, OutContext));
+  else
+    emitFusedSite(MI);
   EmitToStreamer(*OutStreamer, TmpInst);
 }
 
 void AArch64AsmPrinter::emitFusedSite(const MachineInstr *MI) {
-  const MachineInstr *Load = FusedSites.lookup(MI);
-  if (!Load)
+  FusedSite Site = FusedSites.lookup(MI);
+  if (!Site.Load)
     return;
-  const MachineOperand &Pointer = Load->getOperand(2);
+  const MachineOperand &Pointer = Site.Load->getOperand(2);
   AsmPrinter::emitFusedSite(
-      MI, Pointer.isGlobal() ? MCInstLowering.GetGlobalAddressSymbol(Pointer)
-                             : MCInstLowering.GetExternalSymbolSymbol(Pointer));
+      Site.Use, Pointer.isGlobal()
+                    ? MCInstLowering.GetGlobalAddressSymbol(Pointer)
+                    : MCInstLowering.GetExternalSymbolSymbol(Pointer));
 }
 
 void AArch64AsmPrinter::recordIfImportCall(

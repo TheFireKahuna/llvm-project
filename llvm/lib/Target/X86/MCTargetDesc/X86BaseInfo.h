@@ -17,6 +17,7 @@
 #define LLVM_LIB_TARGET_X86_MCTARGETDESC_X86BASEINFO_H
 
 #include "X86MCTargetDesc.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCInstrDesc.h"
 #include "llvm/Support/DataTypes.h"
 #include "llvm/Support/ErrorHandling.h"
@@ -1413,5 +1414,60 @@ inline bool needSIB(MCRegister BaseReg, MCRegister IndexReg, bool In64BitMode) {
 }
 
 } // namespace X86II
+
+namespace X86 {
+/// How \p I, an MCInst or a MachineInstr that \p Desc describes, reads a
+/// register that holds a pointer, in a form that an object for Windows
+/// Itanium or NT-POSIX states as a fused site, with the operand that reads it
+/// in \p RegOp. That no other operand of \p I reads the register is the
+/// caller's to check.
+template <class InstT>
+COFF::FusedUse getFusedUse(const InstT &I, const MCInstrDesc &Desc,
+                           unsigned &RegOp) {
+  RegOp = 0;
+  switch (I.getOpcode()) {
+  case X86::MOV64rr:
+    RegOp = 1;
+    return COFF::FusedUse::Copy;
+  // The lea of a register plus a constant into itself changes no flag. The
+  // constant is one that the index of a marker has room for.
+  case X86::LEA64r:
+    RegOp = 1 + X86::AddrBaseReg;
+    return I.getOperand(RegOp).getReg() == I.getOperand(0).getReg() &&
+                   !I.getOperand(1 + X86::AddrIndexReg).getReg() &&
+                   !I.getOperand(1 + X86::AddrSegmentReg).getReg() &&
+                   I.getOperand(1 + X86::AddrDisp).isImm() &&
+                   isInt<28>(I.getOperand(1 + X86::AddrDisp).getImm())
+               ? COFF::FusedUse::Add
+               : COFF::FusedUse::None;
+  case X86::TEST64rr:
+    return I.getOperand(1).getReg() == I.getOperand(0).getReg()
+               ? COFF::FusedUse::Test
+               : COFF::FusedUse::None;
+  case X86::CALL64r:
+    return COFF::FusedUse::Call;
+  // The unwinder takes a jmp through a register only with REX.W.
+  case X86::JMP64r_REX:
+  case X86::TAILJMPr64_REX:
+    return COFF::FusedUse::Jump;
+  // An instruction that loads or stores through a memory operand whose base
+  // is the register, with no index and no segment and a constant as its
+  // displacement. A transfer of control through memory is none: the unwinder
+  // may read its form.
+  default: {
+    int Mem = X86II::getMemoryOperandIdx(Desc);
+    if (Mem < 0 || !(Desc.mayLoad() || Desc.mayStore()) || Desc.isCall() ||
+        Desc.isBranch() || Desc.isReturn())
+      return COFF::FusedUse::None;
+    RegOp = Mem + X86::AddrBaseReg;
+    return !I.getOperand(Mem + X86::AddrIndexReg).getReg() &&
+                   !I.getOperand(Mem + X86::AddrSegmentReg).getReg() &&
+                   I.getOperand(Mem + X86::AddrDisp).isImm()
+               ? COFF::FusedUse::Access
+               : COFF::FusedUse::None;
+  }
+  }
+}
+} // namespace X86
 } // namespace llvm
 #endif

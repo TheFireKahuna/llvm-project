@@ -7,11 +7,9 @@
 
 ; Under Windows unwind info a shrink-wrapped function's unwind range is its
 ; personality is given, and the handler lies within the range. The linker may
-; resize the code, so the range starts at a label, and its prologue's codes
-; count from there. AArch64 unwind info records each epilogue's extent, so an
-; epilogue that would fall out of the range into a return ends in its own copy
-; of it. The object RUN lines have MC check each prologue's codes against its
-; instructions.
+; frame, from a label at the prologue to after the epilogue, from which the
+; exception tables count; code outside it is leaf code with no unwind info.
+; The object RUN lines have MC check each prologue's codes against it.
 
 declare void @may_throw()
 declare void @use(ptr)

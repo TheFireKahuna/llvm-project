@@ -199,6 +199,13 @@ public:
   }
 
   bool runOnMachineFunction(MachineFunction &MF) override;
+  void fuseImportCalls();
+  /// The pointer that the memory operand of \p MI at \p Op reads whole,
+  /// through RIP alone, where it is an import pointer or a COFF stub.
+  static const MachineOperand *getImportPointer(const MachineInstr &MI,
+                                                unsigned Op);
+  unsigned getCarriedLength(const MachineInstr &MI);
+  COFF::FusedUse getLoweredFusedUse(const MachineInstr &MI, unsigned &RegOp);
   void emitFunctionBodyStart() override;
   void emitFunctionBodyEnd() override;
   void emitKCFITypeId(const MachineFunction &MF) override;

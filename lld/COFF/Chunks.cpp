@@ -37,8 +37,8 @@ using llvm::support::ulittle32_t;
 namespace lld::coff {
 
 SectionChunk::SectionChunk(ObjFile *f, const coff_section *h, Kind k)
-    : Chunk(k), file(f), header(h), resizable(false), keepDistinct(false),
-      guardSuppressed(false), repl(this) {
+    : Chunk(k), file(f), header(h), resizable(false), movable(false),
+      keepDistinct(false), guardSuppressed(false), repl(this) {
   // Initialize relocs.
   if (file)
     setRelocs(file->getCOFFObj()->getRelocations(header));
@@ -165,7 +165,10 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_LLVM_MEM_LOAD_REX2:
   case IMAGE_REL_LLVM_LEA:
   case IMAGE_REL_LLVM_LEA_OFFSET:
+  case IMAGE_REL_LLVM_LEA_NARROW:
   case IMAGE_REL_AMD64_REL32:    return addRel32(off, s - p - 4);
+  // A fused test's field is before the byte of its immediate.
+  case IMAGE_REL_LLVM_FUSED_TEST:
   case IMAGE_REL_AMD64_REL32_1:  return addRel32(off, s - p - 5);
   case IMAGE_REL_AMD64_REL32_2:  return addRel32(off, s - p - 6);
   case IMAGE_REL_AMD64_REL32_3:  return addRel32(off, s - p - 7);
@@ -199,7 +202,6 @@ bool SectionChunk::applyRelX64(uint8_t *off, uint16_t type, OutputSection *os,
   case IMAGE_REL_LLVM_FUSED_JUMP:
   case IMAGE_REL_LLVM_FUSED_ACCESS:
   case IMAGE_REL_LLVM_FUSED_INDEX:
-  case IMAGE_REL_LLVM_FUSED_TEST:
     break;
   default:
     error("unsupported relocation type 0x" + Twine::utohexstr(type) + " in " +

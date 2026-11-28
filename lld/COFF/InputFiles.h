@@ -398,6 +398,8 @@ public:
   ImportThunkChunkARM64EC *impchkThunk = nullptr;
   ImportFile *hybridFile = nullptr;
   std::string dllName;
+  // Whether the link delay-loads the DLL.
+  bool delayLoaded = false;
 
 private:
   void parse() override;

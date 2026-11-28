@@ -360,6 +360,21 @@ public:
 
   bool isTargetWin32() const { return !Is64Bit && isOSWindows(); }
 
+  /// On Windows Itanium and NT-POSIX a call whose target is in memory loads
+  /// it into a register directly before it, whatever the processor: a call
+  /// through memory is microcode on some, and slower again under shadow
+  /// stacks, which no compiler knows of the process its code runs in. The
+  /// call stays one instruction with a memory operand until it is emitted,
+  /// so that no register holds its target and nothing parts the two.
+  bool loadsCallTargets() const {
+    return Is64Bit && TargetTriple.isWindowsItaniumOrNTPOSIXEnvironment();
+  }
+
+  /// Whether the load of a call's target folds into the call.
+  bool favorMemIndirectCall() const {
+    return loadsCallTargets() || (!slowTwoMemOps() && !slowIndirectCall());
+  }
+
   bool isPICStyleGOT() const { return PICStyle == PICStyles::Style::GOT; }
   bool isPICStyleRIPRel() const { return PICStyle == PICStyles::Style::RIPRel; }
 

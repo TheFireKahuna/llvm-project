@@ -473,6 +473,8 @@ enum RelocationTypesLLVM : unsigned {
   IMAGE_REL_LLVM_LEA = 0x8028,                     // AMD64
   IMAGE_REL_LLVM_LEA_OFFSET = 0x8029,              // AMD64
   IMAGE_REL_LLVM_MEM_JUMP_TAIL = 0x802A,           // AMD64
+  IMAGE_REL_LLVM_LEA_NARROW = 0x802B,              // AMD64
+  IMAGE_REL_LLVM_MEM_LOAD_CALL = 0x802C,           // AMD64
   IMAGE_REL_LLVM_MOVW_UABS_G0 = 0x8030,            // ARM64
   IMAGE_REL_LLVM_MOVW_UABS_G0_NC = 0x8031,         // ARM64
   IMAGE_REL_LLVM_MOVW_UABS_G1 = 0x8032,            // ARM64
@@ -486,19 +488,192 @@ enum RelocationTypesLLVM : unsigned {
   IMAGE_REL_LLVM_FUSED_ACCESS = 0x8044,    // AMD64
   IMAGE_REL_LLVM_FUSED_INDEX = 0x8045,     // AMD64
   IMAGE_REL_LLVM_FUSED_TEST = 0x8046,
-  IMAGE_REL_LLVM_TPOFF32 = 0x8050,       // AMD64
-  IMAGE_REL_LLVM_TPOFF_HIGH12A = 0x8051, // ARM64
-  IMAGE_REL_LLVM_TPOFF_LOW12A = 0x8052,  // ARM64
-  IMAGE_REL_LLVM_TPOFF_LOW12L = 0x8053,  // ARM64
+  IMAGE_REL_LLVM_FUSED_JUMP_TAIL = 0x8047,
+  IMAGE_REL_LLVM_FUSED_ADD = 0x8048,      // AMD64
+  IMAGE_REL_LLVM_FUSED_TEST_REG = 0x8049, // AMD64
+  IMAGE_REL_LLVM_TPOFF32 = 0x8050,        // AMD64
+  IMAGE_REL_LLVM_TPOFF_HIGH12A = 0x8051,  // ARM64
+  IMAGE_REL_LLVM_TPOFF_LOW12A = 0x8052,   // ARM64
+  IMAGE_REL_LLVM_TPOFF_LOW12L = 0x8053,   // ARM64
   IMAGE_REL_LLVM_TLS_SCALE = 0x8054,
 };
 
 /// Returns true for a relocation type whose SymbolTableIndex names no symbol
 /// and must not be resolved: ABSOLUTE, type 0 on every machine, ALIGN, whose
-/// index is its parameters, and TLS_SCALE.
+/// index is its parameters, TLS_SCALE, and FUSED_ADD, whose index is the
+/// length of its lea in bits 0 to 3 and above them what the lea adds, with
+/// its sign in the lowest of those bits.
 inline bool relocationNamesNoSymbol(uint16_t Type) {
   return Type == 0 || Type == IMAGE_REL_LLVM_ALIGN ||
-         Type == IMAGE_REL_LLVM_TLS_SCALE;
+         Type == IMAGE_REL_LLVM_TLS_SCALE || Type == IMAGE_REL_LLVM_FUSED_ADD;
+}
+
+/// How an instruction reads the register that a load of a pointer wrote,
+/// where an object that LLVM writes for Windows Itanium or NT-POSIX states it
+/// as a fused site.
+enum class FusedUse : uint8_t {
+  None,
+  /// A copy of the whole register into another.
+  Copy,
+  /// A call through the register.
+  Call,
+  /// A jump through the register.
+  Jump,
+  /// The add of a constant to the register.
+  Add,
+  /// An access to memory at the register plus a constant.
+  Access,
+  /// A test of the register for zero that one conditional jump alone reads.
+  Test,
+};
+
+/// A relocation type that marks a fused site, which has no field of its own,
+/// with how its instruction reads the register. Machine is AMD64 or ARM64
+/// where that machine alone has the type, and zero where both do.
+struct FusedMarker {
+  StringLiteral Name;
+  uint16_t Type;
+  FusedUse Use;
+  uint16_t Machine;
+};
+inline constexpr FusedMarker FusedMarkers[] = {
+    {"IMAGE_REL_LLVM_FUSED_CALL", IMAGE_REL_LLVM_FUSED_CALL, FusedUse::Call,
+     IMAGE_FILE_MACHINE_ARM64},
+    {"IMAGE_REL_LLVM_FUSED_JUMP", IMAGE_REL_LLVM_FUSED_JUMP, FusedUse::Jump,
+     IMAGE_FILE_MACHINE_ARM64},
+    {"IMAGE_REL_LLVM_FUSED_JUMP_TAIL", IMAGE_REL_LLVM_FUSED_JUMP_TAIL,
+     FusedUse::Jump, IMAGE_FILE_MACHINE_ARM64},
+    {"IMAGE_REL_LLVM_FUSED_TEST_REG", IMAGE_REL_LLVM_FUSED_TEST_REG,
+     FusedUse::Test, IMAGE_FILE_MACHINE_AMD64},
+    {"IMAGE_REL_LLVM_FUSED_TEST", IMAGE_REL_LLVM_FUSED_TEST, FusedUse::Test,
+     IMAGE_FILE_MACHINE_ARM64},
+    {"IMAGE_REL_LLVM_FUSED_ADD", IMAGE_REL_LLVM_FUSED_ADD, FusedUse::Add,
+     IMAGE_FILE_MACHINE_AMD64},
+    {"IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL",
+     IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL, FusedUse::Add,
+     IMAGE_FILE_MACHINE_ARM64},
+    {"IMAGE_REL_LLVM_FUSED_ACCESS", IMAGE_REL_LLVM_FUSED_ACCESS,
+     FusedUse::Access, IMAGE_FILE_MACHINE_AMD64},
+    {"IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL",
+     IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL, FusedUse::Access,
+     IMAGE_FILE_MACHINE_ARM64},
+};
+
+/// Returns the first fused marker of \p Machine that \p Is holds for, or null.
+template <class PredT>
+const FusedMarker *findFusedMarker(uint16_t Machine, PredT Is) {
+  bool IsAMD64 = Machine == IMAGE_FILE_MACHINE_AMD64;
+  if (IsAMD64 || isAnyArm64(Machine))
+    for (const FusedMarker &Marker : FusedMarkers)
+      if ((!Marker.Machine ||
+           (Marker.Machine == IMAGE_FILE_MACHINE_AMD64) == IsAMD64) &&
+          Is(Marker))
+        return &Marker;
+  return nullptr;
+}
+
+/// Returns how the instruction that a relocation of \p Type marks on
+/// \p Machine reads the register of its pointer, or None for a type that
+/// marks no fused site.
+inline FusedUse getFusedMarkerUse(uint16_t Machine, uint16_t Type) {
+  const FusedMarker *Marker = findFusedMarker(
+      Machine, [&](const FusedMarker &M) { return M.Type == Type; });
+  return Marker ? Marker->Use : FusedUse::None;
+}
+
+/// The field of an AMD64 MEM_LOAD, MEM_LOAD_REX2, FUSED_READ or
+/// FUSED_READ_REX2 relocation holds no addend. This bit of it says that the
+/// flags are dead at the load, so that the linker may write a zero in the
+/// load's place with an instruction that changes them.
+enum : uint32_t { LoadFlagsDead = 0x20 };
+
+/// The field of an AMD64 MEM_JUMP_TAIL relocation holds no addend. This bit
+/// of it says that a jcc with an 8-bit displacement directly before the jmp
+/// jumps over it and that nothing else reaches the jmp, so that the linker
+/// may write the two as one jcc, of the opposite condition, to the function
+/// the pointer names.
+enum : uint32_t { JumpOverJcc = 1 };
+
+/// Returns true if \p Name is that of a pointer the linker may bind: the
+/// import pointer of a symbol, or the cell a compiler keeps for one.
+inline bool isBoundPointerName(StringRef Name) {
+  return Name.starts_with("__imp_") || Name.starts_with(".refptr.");
+}
+
+/// Returns true if the linker may change the size of the code at a relocation
+/// of \p Type against \p Symbol in an object that LLVM writes for Windows
+/// Itanium or NT-POSIX on \p Machine, AMD64 or ARM64: a jump whose width it
+/// chooses or which it deletes, a call or jump through a pointer that it
+/// binds, a 64-bit load of such a pointer, which it may write as a shorter
+/// zero or constant, such a load with the call through its register, a fused
+/// site, a test whose outcome it knows, a thread-local base, alignment
+/// padding, and an ARM64 adrp with the add or load of the same address. A load
+/// of any other symbol keeps its size. The assembler resolves no distance
+/// across such code, and the linker resizes code at no other relocation. On
+/// AMD64 both hold only in a section with a relocation that relocationMovesCode
+/// names.
+inline bool relocationMayResizeCode(uint16_t Machine, uint16_t Type,
+                                    StringRef Symbol = {}) {
+  switch (Type) {
+  case IMAGE_REL_LLVM_BRANCH_TAIL:
+  case IMAGE_REL_LLVM_ALIGN:
+  case IMAGE_REL_LLVM_TLS_SCALE:
+  case IMAGE_REL_LLVM_FUSED_READ:
+  case IMAGE_REL_LLVM_FUSED_TEST:
+  case IMAGE_REL_LLVM_FUSED_JUMP_TAIL:
+    return true;
+  }
+  if (Machine != IMAGE_FILE_MACHINE_AMD64)
+    return Type == IMAGE_REL_ARM64_PAGEBASE_REL21 ||
+           Type == IMAGE_REL_ARM64_PAGEOFFSET_12A ||
+           Type == IMAGE_REL_ARM64_PAGEOFFSET_12L;
+  switch (Type) {
+  case IMAGE_REL_LLVM_JUMP32:
+  case IMAGE_REL_LLVM_JUMP8:
+  case IMAGE_REL_LLVM_MEM_CALL:
+  case IMAGE_REL_LLVM_MEM_LOAD_CALL:
+  case IMAGE_REL_LLVM_MEM_JUMP:
+  case IMAGE_REL_LLVM_MEM_JUMP_P1:
+  case IMAGE_REL_LLVM_MEM_JUMP_TAIL:
+  case IMAGE_REL_LLVM_FUSED_CALL:
+  case IMAGE_REL_LLVM_FUSED_JUMP:
+  case IMAGE_REL_LLVM_FUSED_READ_REX2:
+  case IMAGE_REL_LLVM_FUSED_ACCESS:
+  case IMAGE_REL_LLVM_FUSED_INDEX:
+  case IMAGE_REL_LLVM_FUSED_ADD:
+  case IMAGE_REL_LLVM_FUSED_TEST_REG:
+    return true;
+  case IMAGE_REL_LLVM_MEM_LOAD:
+  case IMAGE_REL_LLVM_MEM_LOAD_REX2:
+    return isBoundPointerName(Symbol);
+  default:
+    return false;
+  }
+}
+
+/// Returns true if the linker moves the code after a relocation of the AMD64
+/// \p Type: its rewrite removes an instruction or changes the length of one
+/// that no other form replaces in place, which a fused site and a
+/// thread-local base do. A load and the call through its
+/// register are one site, which a direct call and a no-operation replace in
+/// place. The linker moves the code of an AMD64 section only where the
+/// section has such a relocation. In any other it
+/// writes each site in its assembled length, so the assembler resolves the
+/// distances there, and may only delete a jump that ends the section.
+inline bool relocationMovesCode(uint16_t Type) {
+  switch (Type) {
+  case IMAGE_REL_LLVM_TLS_SCALE:
+  case IMAGE_REL_LLVM_FUSED_READ:
+  case IMAGE_REL_LLVM_FUSED_READ_REX2:
+  case IMAGE_REL_LLVM_FUSED_ACCESS:
+  case IMAGE_REL_LLVM_FUSED_INDEX:
+  case IMAGE_REL_LLVM_FUSED_ADD:
+  case IMAGE_REL_LLVM_FUSED_TEST:
+  case IMAGE_REL_LLVM_FUSED_TEST_REG:
+    return true;
+  default:
+    return false;
+  }
 }
 
 /// Returns true if the relocations in section \p SectionName may take the

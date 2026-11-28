@@ -21,10 +21,13 @@
 ; The compiler reaches a function that the module only declares through its
 ; import pointer. Where the function turns out to be in the image, the linker
 ; makes the call and the tail call direct and the load of the address the
-; address itself, so that no instruction reads a pointer.
+; address itself, so that no instruction reads a pointer. Each of two calls
+; reads the pointer for itself, so both are direct and no register is saved.
 
 ; X64-LABEL: <call>:
-; X64:         callq {{.*}} <called>
+; X64-NEXT:    subq
+; X64-NEXT:    callq {{.*}} <called>
+; X64-NEXT:    callq {{.*}} <called>
 ; X64-LABEL: <tail>:
 ; X64-NEXT:    jmp {{.*}} <called>
 ; X64-LABEL: <address>:
@@ -48,6 +51,7 @@ declare void @called() nonlazybind
 declare void @addressed()
 
 define void @call() {
+  call void @called()
   call void @called()
   ret void
 }

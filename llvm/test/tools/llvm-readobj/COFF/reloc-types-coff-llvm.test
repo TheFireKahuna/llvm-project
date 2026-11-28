@@ -1,7 +1,7 @@
 ## The relocation types of Windows Itanium and NT-POSIX objects take one number
 ## from 0x8000 up on both machines, and a type one machine alone has is not
-## named on the other. ABSOLUTE, ALIGN and TLS_SCALE name no symbol: no tool
-## resolves their index, and yaml keeps it.
+## named on the other. ABSOLUTE, ALIGN, TLS_SCALE and FUSED_ADD name no symbol:
+## no tool resolves their index, and yaml keeps it.
 
 # RUN: yaml2obj --docnum=1 -DM=AMD64 %s -o %t.x1
 # RUN: yaml2obj --docnum=2 %s -o %t.x2
@@ -42,6 +42,7 @@
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_JUMP (32833)
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_READ (32834)
 # CHECK:      Type: IMAGE_REL_LLVM_FUSED_TEST (32838)
+# CHECK:      Type: IMAGE_REL_LLVM_FUSED_JUMP_TAIL (32839)
 # CHECK:      Type: IMAGE_REL_LLVM_TLS_SCALE (32852)
 # CHECK-NEXT: Symbol: -
 # CHECK-NEXT: SymbolIndex: 7
@@ -61,9 +62,15 @@
 # X64:        Type: IMAGE_REL_LLVM_LEA (32808)
 # X64:        Type: IMAGE_REL_LLVM_LEA_OFFSET (32809)
 # X64:        Type: IMAGE_REL_LLVM_MEM_JUMP_TAIL (32810)
+# X64:        Type: IMAGE_REL_LLVM_LEA_NARROW (32811)
+# X64:        Type: IMAGE_REL_LLVM_MEM_LOAD_CALL (32812)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_READ_REX2 (32835)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_ACCESS (32836)
 # X64:        Type: IMAGE_REL_LLVM_FUSED_INDEX (32837)
+# X64:        Type: IMAGE_REL_LLVM_FUSED_ADD (32840)
+# X64-NEXT:   Symbol: -
+# X64-NEXT:   SymbolIndex: 516
+# X64:        Type: IMAGE_REL_LLVM_FUSED_TEST_REG (32841)
 # X64:        Type: IMAGE_REL_LLVM_TPOFF32 (32848)
 
 # A64:        Type: IMAGE_REL_LLVM_SSPAN32 (32786)
@@ -102,6 +109,7 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_TEST }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_JUMP_TAIL }
       - { VirtualAddress: 0, SymbolTableIndex: 7, Type: IMAGE_REL_LLVM_TLS_SCALE }
 symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]
 
@@ -125,9 +133,13 @@ sections:
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA_OFFSET }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_JUMP_TAIL }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_LEA_NARROW }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_MEM_LOAD_CALL }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_READ_REX2 }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_ACCESS }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_INDEX }
+      - { VirtualAddress: 0, SymbolTableIndex: 516, Type: IMAGE_REL_LLVM_FUSED_ADD }
+      - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_FUSED_TEST_REG }
       - { VirtualAddress: 0, Type: IMAGE_REL_LLVM_TPOFF32 }
 symbols: [ { Name: .text, Value: 0, SectionNumber: 1, SimpleType: IMAGE_SYM_TYPE_NULL, ComplexType: IMAGE_SYM_DTYPE_NULL, StorageClass: IMAGE_SYM_CLASS_STATIC } ]
 

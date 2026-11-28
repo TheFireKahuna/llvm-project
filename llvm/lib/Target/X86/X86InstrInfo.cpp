@@ -7689,13 +7689,11 @@ MachineInstr *X86InstrInfo::foldMemoryOperandImpl(
     unsigned Size, Align Alignment, bool AllowCommute, MachineInstr *&CopyMI,
     VirtRegMap *VRM) const {
   bool isSlowTwoMemOps = Subtarget.slowTwoMemOps();
-  bool isSlowIndirectCall = Subtarget.slowIndirectCall();
   unsigned Opc = MI.getOpcode();
 
   // For CPUs that favor the register form of a call,
   // do not fold loads into calls, unless optimizing for size aggressively.
-  if ((isSlowTwoMemOps || isSlowIndirectCall) &&
-      !MF.getFunction().hasMinSize() &&
+  if (!Subtarget.favorMemIndirectCall() && !MF.getFunction().hasMinSize() &&
       (Opc == X86::CALL32r || Opc == X86::CALL64r ||
        Opc == X86::CALL64r_ImpCall))
     return nullptr;
@@ -9084,6 +9082,10 @@ X86InstrInfo::getOpcodeAfterMemoryUnfold(unsigned Opc, bool UnfoldLoad,
                                          unsigned *LoadRegIndex) const {
   const X86FoldTableEntry *I = lookupUnfoldTable(Opc);
   if (I == nullptr)
+    return 0;
+  // A call that loads its target directly before it holds it in no register,
+  // in a loop or out of one.
+  if (Subtarget.loadsCallTargets() && get(Opc).isCall())
     return 0;
   bool FoldedLoad = I->Flags & TB_FOLDED_LOAD;
   bool FoldedStore = I->Flags & TB_FOLDED_STORE;

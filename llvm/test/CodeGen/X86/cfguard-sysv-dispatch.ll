@@ -1,15 +1,21 @@
 ; RUN: llc < %s -mtriple=x86_64-pc-windows-msvc | FileCheck %s --check-prefixes=CHECK,MSVC --implicit-check-not=__guard_
-; RUN: llc < %s -mtriple=x86_64-pc-windows-ntposix | FileCheck %s --check-prefixes=CHECK,NTPOSIX --implicit-check-not=__guard_
+; RUN: llc < %s -mtriple=x86_64-pc-windows-ntposix | FileCheck %s --check-prefixes=CHECK,NTPOSIX --implicit-check-not=__guard_ \
+; RUN:   -DDISPATCH='movq __guard_dispatch_icall_fptr(%rip), %rcx' \
+; RUN:   -DCHECK='movq __guard_check_icall_fptr(%rip), %rax'
 
 ; The guard dispatch function takes the target in RAX, whichever convention
 ; the call uses, and R10 and R11 as scratch. A call that passes something else
 ; in RAX, such as a System V variadic call's vector count in AL or a System V
 ; Swift call's sret pointer, or that keeps R10 or R11 across the call, takes
-; the check function instead.
+; the check function instead. NT-POSIX loads the address of either into a
+; register that the call leaves free, as it does for every call through
+; memory where the function is not optimized for minimum size or cold.
 
 ; CHECK-LABEL: sysv:
 ; CHECK:         movq %rdi, %rax
-; CHECK:         callq *__guard_dispatch_icall_fptr(%rip)
+; MSVC:          callq *__guard_dispatch_icall_fptr(%rip)
+; NTPOSIX:       [[DISPATCH]]
+; NTPOSIX-NEXT:  callq *%rcx
 define x86_64_sysvcc i32 @sysv(ptr %p, i32 %a) nounwind {
 entry:
   %r = call x86_64_sysvcc i32 %p(i32 %a, i32 %a)
@@ -17,7 +23,9 @@ entry:
 }
 
 ; CHECK-LABEL: sysv_varargs:
-; CHECK:         callq *__guard_check_icall_fptr(%rip)
+; MSVC:          callq *__guard_check_icall_fptr(%rip)
+; NTPOSIX:       [[CHECK]]
+; NTPOSIX-NEXT:  callq *%rax
 ; CHECK:         movb $1, %al
 ; CHECK-NEXT:    callq *%rcx
 define x86_64_sysvcc i32 @sysv_varargs(ptr %p, double %x) nounwind {
@@ -27,7 +35,9 @@ entry:
 }
 
 ; CHECK-LABEL: preserve_most:
-; CHECK:         callq *__guard_check_icall_fptr(%rip)
+; MSVC:          callq *__guard_check_icall_fptr(%rip)
+; NTPOSIX:       [[CHECK]]
+; NTPOSIX-NEXT:  callq *%rax
 ; CHECK-NEXT:    callq *%r{{cx|di}}
 define void @preserve_most(ptr %p) nounwind {
 entry:
@@ -39,12 +49,39 @@ entry:
 ; MSVC:          movq %rcx, %rax
 ; MSVC-NEXT:     movq %rdx, %rcx
 ; MSVC-NEXT:     callq *__guard_dispatch_icall_fptr(%rip)
-; NTPOSIX:       callq *__guard_check_icall_fptr(%rip)
+; NTPOSIX:       [[CHECK]]
+; NTPOSIX-NEXT:  callq *%rax
 ; NTPOSIX-NEXT:  movq %rsi, %rax
 ; NTPOSIX-NEXT:  callq *%rdi
 define void @swift_sret(ptr %p, ptr %r) nounwind {
 entry:
   call swiftcc void %p(ptr sret(i64) %r)
+  ret void
+}
+
+; CHECK-LABEL: sized:
+; MSVC:          callq *__guard_dispatch_icall_fptr(%rip)
+; NTPOSIX:       [[DISPATCH]]
+; NTPOSIX-NEXT:  callq *%rcx
+define void @sized(ptr %p) nounwind optsize {
+entry:
+  call void %p()
+  ret void
+}
+
+; CHECK-LABEL: smallest:
+; CHECK:         callq *__guard_dispatch_icall_fptr(%rip)
+define void @smallest(ptr %p) nounwind minsize {
+entry:
+  call void %p()
+  ret void
+}
+
+; CHECK-LABEL: rare:
+; CHECK:         callq *__guard_dispatch_icall_fptr(%rip)
+define void @rare(ptr %p) nounwind cold {
+entry:
+  call void %p()
   ret void
 }
 

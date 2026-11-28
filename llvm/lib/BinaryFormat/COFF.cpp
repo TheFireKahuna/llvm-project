@@ -96,14 +96,15 @@ bool llvm::COFF::isGuardCFAddressTakingRelocation(uint16_t Machine,
     return true;
   }
   // Of the LLVM types, a load of a pointer and a lea take an address. The
-  // types up to MEM_JUMP_P1, and MEM_JUMP_TAIL, branch, call, also through a
-  // pointer, whose slot they name, or span two labels. Only fused sites read
-  // the register of a fused read.
+  // types up to MEM_JUMP_P1, MEM_JUMP_TAIL and MEM_LOAD_CALL branch, call,
+  // also through a pointer, whose slot they name, or span two labels. Only
+  // fused sites read the register of a fused read.
   if (Type >= IMAGE_REL_LLVM_ADDR32NB_CALL &&
       Type <= IMAGE_REL_LLVM_MEM_JUMP_P1)
     return false;
   switch (Type) {
   case IMAGE_REL_LLVM_MEM_JUMP_TAIL:
+  case IMAGE_REL_LLVM_MEM_LOAD_CALL:
   case IMAGE_REL_LLVM_FUSED_CALL:
   case IMAGE_REL_LLVM_FUSED_JUMP:
   case IMAGE_REL_LLVM_FUSED_READ:
@@ -111,6 +112,10 @@ bool llvm::COFF::isGuardCFAddressTakingRelocation(uint16_t Machine,
   case IMAGE_REL_LLVM_FUSED_ACCESS:
   case IMAGE_REL_LLVM_FUSED_INDEX:
   case IMAGE_REL_LLVM_FUSED_TEST:
+  case IMAGE_REL_LLVM_FUSED_JUMP_TAIL:
+  case IMAGE_REL_LLVM_FUSED_TEST_REG:
+  case IMAGE_REL_LLVM_PAGEOFFSET_12L_IF_LOCAL:
+  case IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL:
   case IMAGE_REL_LLVM_TPOFF32:
   case IMAGE_REL_LLVM_TPOFF_HIGH12A:
   case IMAGE_REL_LLVM_TPOFF_LOW12A:

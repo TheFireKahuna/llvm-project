@@ -70,7 +70,9 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
       Spec != MCSymbolRefExpr::VK_COFF_IMGREL32 &&
       Spec != MCSymbolRefExpr::VK_COFF_IMGREL32_CALL &&
       !(Spec == X86::S_COFF_REL32_CALL && FixupKind == FK_Data_4) &&
-      !((Spec == X86::S_COFF_FUSED || Spec == X86::S_TPOFF) && Is64Bit &&
+      !((Spec == X86::S_COFF_FUSED || Spec == X86::S_COFF_LOAD_CALL ||
+         Spec == X86::S_TPOFF) &&
+        Is64Bit &&
         Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())) {
     Ctx.reportError(Fixup.getLoc(),
                     "relocation specifier @" +
@@ -84,14 +86,27 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
     bool HasSiteTypes =
         Ctx.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment();
     // A fused read is the load of a pointer that MEM_LOAD or MEM_LOAD_REX2
-    // would state.
+    // would state, and a fused test its 64-bit compare with an 8-bit zero.
     if (Spec == X86::S_COFF_FUSED) {
       if (FixupKind == X86::reloc_riprel_4byte_movq_load)
         return COFF::IMAGE_REL_LLVM_FUSED_READ;
       if (FixupKind == X86::reloc_riprel_4byte_movq_load_rex2)
         return COFF::IMAGE_REL_LLVM_FUSED_READ_REX2;
+      if (FixupKind == X86::reloc_riprel_4byte_test)
+        return COFF::IMAGE_REL_LLVM_FUSED_TEST;
       Ctx.reportError(Fixup.getLoc(),
-                      "fused read is not a 64-bit mov of a pointer");
+                      "@FUSED is on neither a 64-bit mov of a pointer nor "
+                      "its 64-bit compare with zero");
+      return COFF::IMAGE_REL_AMD64_ABSOLUTE;
+    }
+    // The load of a pointer directly before the call through its register is
+    // one that MEM_LOAD would state.
+    if (Spec == X86::S_COFF_LOAD_CALL) {
+      if (FixupKind == X86::reloc_riprel_4byte_movq_load)
+        return COFF::IMAGE_REL_LLVM_MEM_LOAD_CALL;
+      Ctx.reportError(Fixup.getLoc(),
+                      "@LOAD_CALL is not on a 64-bit mov of a pointer into "
+                      "one of the first sixteen registers");
       return COFF::IMAGE_REL_AMD64_ABSOLUTE;
     }
     // A thread-local's offset from the thread pointer is a displacement or
@@ -123,6 +138,8 @@ unsigned X86WinCOFFObjectWriter::getRelocType(MCContext &Ctx,
       // The target's constant is the offset less the field's four bytes.
       return Target.getConstant() == -4 ? COFF::IMAGE_REL_LLVM_LEA
                                         : COFF::IMAGE_REL_LLVM_LEA_OFFSET;
+    case X86::reloc_riprel_4byte_narrow:
+      return COFF::IMAGE_REL_LLVM_LEA_NARROW;
     case X86::reloc_jump_4byte_pcrel:
       return COFF::IMAGE_REL_LLVM_JUMP32;
     case X86::reloc_jump_1byte_pcrel:

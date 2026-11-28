@@ -507,8 +507,13 @@ void ObjFile::parse() {
     Err(symtab.ctx) << this << ": .llvm_link_records: " << std::move(e);
     return;
   }
-  for (SectionChunk *c : resizable)
+  for (SectionChunk *c : resizable) {
     c->resizable = true;
+    c->movable = c->getArch() != Triple::x86_64 ||
+                 llvm::any_of(c->getRelocs(), [](const coff_relocation &rel) {
+                   return relocationMovesCode(rel.Type);
+                 });
+  }
   llvm::stable_sort(tables, [](const SwitchTable &a, const SwitchTable &b) {
     return std::less<>()(a.branch->getChunk(), b.branch->getChunk());
   });

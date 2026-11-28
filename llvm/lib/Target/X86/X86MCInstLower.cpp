@@ -1000,6 +1000,44 @@ void X86AsmPrinter::LowerASAN_CHECK_MEMACCESS(const MachineInstr &MI) {
               OutContext.getOrCreateSymbol(SymName), OutContext)));
 }
 
+// The bytes that \p MI encodes to, where it is an instruction of its own that
+// can take CS overrides before it: one with an encoding and with no other
+// segment override. A jump counts at the length the assembler may give it.
+unsigned X86AsmPrinter::getCarriedLength(const MachineInstr &MI) {
+  const MCInstrInfo &MCII = *Subtarget->getInstrInfo();
+  auto HasEncoding = [&](unsigned Opcode) {
+    return (MCII.get(Opcode).TSFlags & X86II::FormMask) != X86II::Pseudo;
+  };
+  if (MI.isMetaInstruction() || MI.isPseudo() || MI.isInlineAsm() ||
+      MI.isBundled() || !HasEncoding(MI.getOpcode()))
+    return 0;
+  X86MCInstLower MCIL(*MF, *this);
+  MCInst Inst;
+  MCIL.Lower(&MI, Inst);
+  if (!HasEncoding(Inst.getOpcode()) ||
+      X86_MC::determinePaddingPrefix(Inst, MCII, getSubtargetInfo()) !=
+          X86::CS_Encoding)
+    return 0;
+  if (Inst.getOpcode() == X86::JMP_1 || Inst.getOpcode() == X86::JCC_1)
+    return Inst.getOpcode() == X86::JMP_1 ? 5 : 6;
+  SmallString<16> Code;
+  SmallVector<MCFixup, 4> Fixups;
+  CodeEmitter->encodeInstruction(Inst, Code, Fixups, getSubtargetInfo());
+  return Code.size();
+}
+
+// How the instruction that the assembler is given for \p MI reads a register
+// that holds a pointer, with the operand that reads it in \p RegOp, as the
+// assembler will see it.
+COFF::FusedUse X86AsmPrinter::getLoweredFusedUse(const MachineInstr &MI,
+                                                 unsigned &RegOp) {
+  X86MCInstLower MCIL(*MF, *this);
+  MCInst Inst;
+  MCIL.Lower(&MI, Inst);
+  return X86::getFusedUse(
+      Inst, Subtarget->getInstrInfo()->get(Inst.getOpcode()), RegOp);
+}
+
 void X86AsmPrinter::LowerPATCHABLE_OP(const MachineInstr &MI,
                                       X86MCInstLower &MCIL) {
   // PATCHABLE_OP minsize
@@ -2676,11 +2714,62 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
   }
 
   case X86::CALL64m:
-    if (EnableImportCallOptimization && isCallToCFGuardFunction(MI)) {
-      emitLabelAndRecordForImportCallOptimization(
-          IMAGE_RETPOLINE_AMD64_CFG_CALL);
+  case X86::CALL64m_NT: {
+    if (EnableImportCallOptimization) {
+      if (MI->getOpcode() == X86::CALL64m && isCallToCFGuardFunction(MI))
+        emitLabelAndRecordForImportCallOptimization(
+            IMAGE_RETPOLINE_AMD64_CFG_CALL);
+      break;
     }
-    break;
+    // A call that loads its target for itself does so into the first
+    // register that it clobbers and that carries nothing into it, which its
+    // address may be in; a function optimized for minimum size, or cold,
+    // calls through memory. The linker makes the load of an import pointer
+    // and its call one direct call where the function is in the image, so the
+    // load says that the call follows it.
+    MCRegister Reg;
+    const Function &F = MF->getFunction();
+    if (getSubtarget().loadsCallTargets() && !F.hasMinSize() &&
+        !F.hasFnAttribute(Attribute::Cold))
+      if (const MachineOperand *Mask =
+              find_if(MI->operands(),
+                      [](const MachineOperand &MO) { return MO.isRegMask(); });
+          Mask != MI->operands_end())
+        for (MCRegister R : {X86::RAX, X86::RCX, X86::RDX, X86::RSI, X86::RDI,
+                             X86::R8, X86::R9, X86::R10, X86::R11})
+          if (!Reg && Mask->clobbersPhysReg(R) &&
+              none_of(MI->implicit_operands(), [&](const MachineOperand &MO) {
+                return MO.isReg() && MO.isUse() &&
+                       getSubtarget().getRegisterInfo()->regsOverlap(
+                           MO.getReg(), R);
+              }))
+            Reg = R;
+    if (!Reg)
+      break;
+    MCInst Call;
+    MCInstLowering.Lower(MI, Call);
+    MCInst Load = MCInstBuilder(X86::MOV64rm).addReg(Reg);
+    for (const MCOperand &Op : Call)
+      Load.addOperand(Op);
+    // FastISel names the import pointer of a library call itself.
+    const MachineOperand &Disp = MI->getOperand(X86::AddrDisp);
+    const MachineOperand *Pointer = getImportPointer(*MI, 0);
+    if (Pointer ||
+        (Disp.isMCSymbol() && Disp.getTargetFlags() == X86II::MO_DLLIMPORT))
+      Load.getOperand(1 + X86::AddrDisp) =
+          MCOperand::createExpr(MCSymbolRefExpr::create(
+              Pointer ? MCInstLowering.GetSymbolFromOperand(*Pointer)
+                      : Disp.getMCSymbol(),
+              X86::S_COFF_LOAD_CALL, OutContext));
+    SMShadowTracker.emitShadowPadding(*OutStreamer, getSubtargetInfo());
+    EmitAndCountInstruction(Load);
+    emitCallInstruction(MCInstBuilder(MI->getOpcode() == X86::CALL64m
+                                          ? X86::CALL64r
+                                          : X86::CALL64r_NT)
+                            .addReg(Reg));
+    maybeEmitNopAfterCallForWindowsEH(MI);
+    return;
+  }
 
   case X86::JCC_1:
     // Two instruction prefixes (2EH for branch not-taken and 3EH for branch
@@ -2712,33 +2801,26 @@ void X86AsmPrinter::emitInstruction(const MachineInstr *MI) {
   MCInst TmpInst;
   MCInstLowering.Lower(MI, TmpInst);
 
-  // A fused read states so in the type of its relocation. A fused call has
-  // the CS overrides that make it six bytes, and a fused jump the int3 that
-  // make it seven, so that the linker may write a direct one over it.
-  unsigned Int3s = 0;
-  if (const MachineInstr *Load = FusedSites.lookup(MI)) {
-    const MCSymbol *Pointer = MCInstLowering.GetSymbolFromOperand(
-        Load->getOperand(1 + X86::AddrDisp));
-    if (MI == Load) {
-      TmpInst.getOperand(1 + X86::AddrDisp) = MCOperand::createExpr(
+  // A fused read states so in the type of its relocation, as does the compare
+  // of a fused test, and any other fused site in a marker.
+  if (FusedSite Site = FusedSites.lookup(MI); Site.Load) {
+    // A load reads the pointer in the operands after the register it
+    // writes, and the compare of a fused test in its first ones.
+    unsigned Disp = X86::AddrDisp + (Site.Load->getOpcode() == X86::MOV64rm);
+    const MCSymbol *Pointer =
+        MCInstLowering.GetSymbolFromOperand(Site.Load->getOperand(Disp));
+    if (MI == Site.Load) {
+      TmpInst.getOperand(Disp) = MCOperand::createExpr(
           MCSymbolRefExpr::create(Pointer, X86::S_COFF_FUSED, OutContext));
     } else {
-      unsigned Reg = getSubtarget().getRegisterInfo()->getEncodingValue(
-          MI->getOperand(0).getReg());
       SMShadowTracker.emitShadowPadding(*OutStreamer, getSubtargetInfo());
-      emitFusedSite(MI, Pointer);
-      if (IsTailJump)
-        Int3s = 4 - (Reg >= 16);
-      else
-        for (unsigned I = 2 + (Reg >= 8) + (Reg >= 16); I != 6; ++I)
-          EmitAndCountInstruction(MCInstBuilder(X86::CS_PREFIX));
+      emitFusedSite(Site.Use,
+                    Site.Use == COFF::FusedUse::Add ? nullptr : Pointer);
     }
   }
 
   if (MI->isCall()) {
     emitCallInstruction(TmpInst);
-    for (; Int3s; --Int3s)
-      EmitAndCountInstruction(MCInstBuilder(X86::INT3));
     // Since tail calls transfer control without leaving a stack frame, there is
     // never a need for NOP padding tail calls.
     if (!IsTailJump)

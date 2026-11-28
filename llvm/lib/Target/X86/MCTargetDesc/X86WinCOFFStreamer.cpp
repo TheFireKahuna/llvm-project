@@ -8,10 +8,12 @@
 
 #include "TargetInfo/X86TargetInfo.h"
 #include "X86BaseInfo.h"
+#include "X86FixupKinds.h"
 #include "X86MCAsmInfo.h"
 #include "X86MCTargetDesc.h"
 #include "X86TargetStreamer.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCAsmBackend.h"
 #include "llvm/MC/MCAssembler.h"
 #include "llvm/MC/MCCodeEmitter.h"
@@ -34,15 +36,30 @@ class X86WinCOFFStreamer : public MCWinCOFFStreamer {
   // Where the last instruction ended.
   const MCFragment *LastFrag = nullptr;
   size_t LastEnd;
-  // The segment overrides of the fused call whose marker is pending, and the
-  // int3 that the last fused jump still lacks.
-  unsigned Pads = 0, Int3s = 0;
+  // Whether the last instruction was a fused test, whose je or jne is due.
+  bool AfterTest = false;
+  // The register that the last instruction loaded a pointer into for the call
+  // through it, which is due.
+  MCRegister CallLoad;
   // The prefix-only instructions that end where the last instruction ended.
   unsigned PrefixRun = 0;
-  // The last fused read's fragment, the fixup of its field and its end, until
-  // the instruction after it is emitted.
+  // The fragment of the last load of a pointer that the linker binds, the
+  // fixup of its field and the bytes of the prefix-only instructions after
+  // it, until the instruction after it is emitted, and whether the load is a
+  // fused read.
   MCFragment *ReadFrag = nullptr;
-  size_t ReadFixup, ReadEnd;
+  size_t ReadFixup, ReadPrefixes;
+  bool ReadIsFused;
+  // The register that the last instruction wrote, where it was the load of a
+  // pointer that is no fused read.
+  MCRegister LastLoad;
+  // The label that the last instruction jumps to, a jcc that no label
+  // follows. Where the last instruction is a jmp through a pointer that no
+  // unwind frame covers, directly after such a jcc, the jcc's label, and the
+  // fragment and fixup of the jmp's field.
+  const MCSymbol *JccTarget = nullptr, *OverTarget = nullptr;
+  MCFragment *OverFrag;
+  size_t OverFixup;
 
 public:
   X86WinCOFFStreamer(MCContext &C, std::unique_ptr<MCAsmBackend> AB,
@@ -52,17 +69,27 @@ public:
     if (C.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
         C.getTargetTriple().isX86_64()) {
       MCII.reset(getTheX86_64Target().createMCInstrInfo());
-      FusedForms[0] = "six-byte call through a register";
-      FusedForms[1] = "seven-byte jmp through a register";
+      // imul, then add.
+      TlsScaleInsts = 2;
+      FusedForms[size_t(COFF::FusedUse::Add)] =
+          "lea of a constant directly after the load of a pointer";
+      FusedForms[size_t(COFF::FusedUse::Access)] =
+          "load or store through a register alone";
+      FusedForms[size_t(COFF::FusedUse::Test)] =
+          "test of a 64-bit register against itself";
     }
   }
 
   void reset() override {
     LastFrag = ReadFrag = nullptr;
-    Pads = Int3s = PrefixRun = 0;
+    LastLoad = CallLoad = MCRegister();
+    JccTarget = OverTarget = nullptr;
+    PrefixRun = 0;
+    AfterTest = false;
     MCWinCOFFStreamer::reset();
   }
   void emitInstruction(const MCInst &Inst, const MCSubtargetInfo &STI) override;
+  void emitLabel(MCSymbol *Symbol, SMLoc Loc = SMLoc()) override;
   void emitWinEHHandlerData(SMLoc Loc) override;
   void emitWindowsUnwindTables(WinEH::FrameInfo *Frame) override;
   void emitWindowsUnwindTables() override;
@@ -70,96 +97,247 @@ public:
   void finishImpl() override;
 };
 
+// A jcc that jumps over the jmp through a pointer directly after it, to the
+// label directly after that, is a conditional tail call the other way round:
+// the field of the jmp says so, and the linker writes the two as one jcc to
+// a function in the image. A label between the two is another way to the
+// jmp, which the linker could not keep.
+void X86WinCOFFStreamer::emitLabel(MCSymbol *Symbol, SMLoc Loc) {
+  if (Symbol == OverTarget && getCurrentFragment() == LastFrag &&
+      getCurFragSize() == LastEnd) {
+    MCFixup &Field = OverFrag->getFixups()[OverFixup];
+    Field = MCFixup::create(
+        Field.getOffset(),
+        MCBinaryExpr::createAdd(
+            Field.getValue(),
+            MCConstantExpr::create(COFF::JumpOverJcc, getContext()),
+            getContext(), Field.getLoc()),
+        Field.getKind(), Field.isPCRel());
+    OverTarget = nullptr;
+  }
+  JccTarget = nullptr;
+  MCWinCOFFStreamer::emitLabel(Symbol, Loc);
+}
+
 void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
                                          const MCSubtargetInfo &STI) {
   unsigned Opcode = Inst.getOpcode();
   bool Follows =
       getCurrentFragment() == LastFrag && getCurFragSize() == LastEnd;
-  const MCSymbol *Read = nullptr;
+  const MCSymbol *Over = Follows ? JccTarget : nullptr;
+  JccTarget = OverTarget = nullptr;
+  // On Windows Itanium and NT-POSIX the relocation type of a jmp, direct,
+  // through a pointer or fused, states what the linker may do to it, which
+  // the unwind data covering it decides. A jmp outside a frame may be deleted,
+  // as may one that ends an epilogue where the unwinder is right at every
+  // address with the jmp gone. Version 2's is, every distance it reads being
+  // a relocation. Version 1's reads the code, and is where the epilogue is
+  // one instruction that leaves the frame whole before it: the stack
+  // adjustment of a frame without a push, or `leave`.
+  auto MayDelete = [&] {
+    const WinEH::FrameInfo *Frame = getCurrentWinFrameInfo();
+    if (!Frame)
+      return true;
+    if (Frame->EpilogMap.empty() || Frame->Version > 2)
+      return false;
+    const WinEH::FrameInfo::Epilog &Epilog = Frame->EpilogMap.back().second;
+    const MCFragment *F = getCurrentFragment();
+    if (!isInEpilogCFI() && (Epilog.End->getFragment() != F ||
+                             Epilog.End->getOffset() != getCurFragSize()))
+      return false;
+    if (Frame->Version == 2)
+      return true;
+    if (Epilog.Start->getFragment() == F &&
+        Epilog.Start->getOffset() + 1 == getCurFragSize() &&
+        F->getContents()[Epilog.Start->getOffset()] == '\xc9')
+      return true;
+    for (const WinEH::FrameInfo *I = Frame; I; I = I->ChainedParent)
+      if (any_of(I->Instructions, [](const WinEH::Instruction &Code) {
+            return Code.Operation == Win64EH::UOP_PushNonVol;
+          }))
+        return false;
+    return true;
+  };
+  const MCSymbol *Load = nullptr;
+  bool Read = false, Stated = false;
   // A fused site is one unit to padding, which goes before its marker.
   unsigned Part = X86_MC::FSP_None;
   MCSymbol *Marker = nullptr;
   if (MCII) {
-    // A fused call is a call through a register behind the CS overrides that
-    // make it six bytes. A fused jump is a jmp with REX.W through a register
-    // before the int3 that make it seven. The linker writes a direct call or
-    // jump over either.
-    if (Int3s && (Opcode != X86::INT3 || !Follows)) {
-      reportMisplacedFusedSite();
-      Int3s = 0;
-    } else if (Int3s) {
-      Part = X86_MC::FSP_Inside | (--Int3s ? 0 : X86_MC::FSP_Last);
+    // The je or jne that alone reads the result of a fused test follows it
+    // directly, so that the linker finds it, and the two are one unit to
+    // padding.
+    if (AfterTest) {
+      if (Opcode == X86::JCC_1 && Follows &&
+          (Inst.getOperand(1).getImm() == X86::COND_E ||
+           Inst.getOperand(1).getImm() == X86::COND_NE))
+        Part = X86_MC::FSP_Last;
+      else
+        getContext().reportError(Inst.getLoc(),
+                                 "fused test is not followed by a je or jne");
+      AfterTest = false;
     }
-    bool IsSite = false, IsPad = false;
-    if (FusedSite.Offset) {
-      unsigned Reg = Inst.getNumOperands() && Inst.getOperand(0).isReg()
-                         ? getContext().getRegisterInfo()->getEncodingValue(
-                               Inst.getOperand(0).getReg())
-                         : 0;
-      if (FusedSite.IsJump) {
-        IsSite =
-            Opcode == X86::JMP64r_REX ||
-            (Opcode == X86::JMP64r && (Inst.getFlags() & X86::IP_HAS_REX_W));
-        Int3s = IsSite ? 4 - (Reg >= 16) : 0;
-      } else {
-        IsPad = Opcode == X86::CS_PREFIX && (!Pads || Follows);
-        IsSite = Opcode == X86::CALL64r && Follows &&
-                 Pads + 2 + (Reg >= 8) + (Reg >= 16) == 6;
+    // The call through the register that a load of a pointer wrote for it
+    // follows the load directly: the linker writes a direct call over the
+    // two, which are one unit to padding.
+    if (CallLoad) {
+      if (Opcode == X86::CALL64r && Follows && !Inst.getFlags() &&
+          Inst.getOperand(0).getReg() == CallLoad)
+        Part = X86_MC::FSP_Last;
+      else
+        getContext().reportError(Inst.getLoc(),
+                                 "load of a pointer for a call is not "
+                                 "followed by the call through its register");
+      CallLoad = MCRegister();
+    }
+    unsigned RegOp;
+    COFF::FusedUse Use = X86::getFusedUse(Inst, MCII->get(Opcode), RegOp);
+    // A fused add is the lea of a constant to the register that the load of
+    // a pointer directly before it wrote, which the linker makes the lea of
+    // what the pointer names plus the constant. The index of its marker
+    // states the length of the lea and what it adds.
+    if (Use == COFF::FusedUse::Add) {
+      int64_t Addend = Inst.getOperand(1 + X86::AddrDisp).getImm();
+      if (!Follows || LastLoad != Inst.getOperand(0).getReg()) {
+        Use = COFF::FusedUse::None;
+      } else if (FusedSite.Offset && FusedSite.Use == Use) {
+        SmallString<16> Code;
+        SmallVector<MCFixup, 1> Fixups;
+        getAssembler().getEmitter().encodeInstruction(Inst, Code, Fixups, STI);
+        MCObjectStreamer::emitRelocDirective(
+            *FusedSite.Offset, "IMAGE_REL_LLVM_FUSED_ADD",
+            MCConstantExpr::create(
+                Code.size() | (uint32_t(Addend) << 1 ^ uint32_t(Addend >> 63))
+                                  << 4,
+                getContext()),
+            FusedSite.Loc);
       }
     }
-    if (IsPad || IsSite)
-      Part = X86_MC::FSP_Inside |
-             ((IsPad ? !Pads : FusedSite.IsJump) ? X86_MC::FSP_First : 0) |
-             (IsSite && !FusedSite.IsJump ? X86_MC::FSP_Last : 0);
-    Pads = IsPad ? Pads + 1 : 0;
-    // A fused read is a mov of a pointer, whose form its relocation states.
+    // A marked site is one instruction, and with the jcc after it two where
+    // it is a test.
+    if (FusedSite.Offset && Use == FusedSite.Use) {
+      AfterTest = Use == COFF::FusedUse::Test;
+      Part = X86_MC::FSP_First | (AfterTest ? 0 : X86_MC::FSP_Last);
+    }
+    // The compare of a pointer with zero is a fused test where its relocation
+    // states so.
+    bool IsTest = false;
+    if ((Opcode == X86::CMP64mi8 || Opcode == X86::CMP64mi32) &&
+        Inst.getOperand(X86::AddrDisp).isExpr() &&
+        Inst.getOperand(X86::AddrBaseReg).getReg() == X86::RIP &&
+        !Inst.getOperand(X86::AddrSegmentReg).getReg() &&
+        Inst.getOperand(X86::AddrNumOperands).isImm() &&
+        !Inst.getOperand(X86::AddrNumOperands).getImm())
+      if (auto *Pointer = dyn_cast<MCSymbolRefExpr>(
+              Inst.getOperand(X86::AddrDisp).getExpr()))
+        IsTest = Pointer->getSpecifier() == X86::S_COFF_FUSED;
+    if (IsTest) {
+      AfterTest = true;
+      Part = X86_MC::FSP_First;
+    }
+    // The linker may resize a 64-bit load through RIP of a pointer that it
+    // binds, which only the pointer's name tells an assembler; a load of any
+    // other symbol keeps its size. A mov of a pointer through RIP alone loads
+    // it, and is a fused read where its relocation states so.
     if (Opcode == X86::MOV64rm && Inst.getOperand(1 + X86::AddrDisp).isExpr())
       if (auto *Pointer = dyn_cast<MCSymbolRefExpr>(
-              Inst.getOperand(1 + X86::AddrDisp).getExpr());
-          Pointer && Pointer->getSpecifier() == X86::S_COFF_FUSED)
-        Read = &Pointer->getSymbol();
-    Marker = checkFused(Inst, Read, IsSite, IsPad);
+              Inst.getOperand(1 + X86::AddrDisp).getExpr())) {
+        bool Rip = Inst.getOperand(1 + X86::AddrBaseReg).getReg() == X86::RIP;
+        // A load for the call after it is a site with that call.
+        if (Pointer->getSpecifier() == X86::S_COFF_LOAD_CALL) {
+          CallLoad = Inst.getOperand(0).getReg();
+          Part = X86_MC::FSP_First;
+        }
+        Stated =
+            CallLoad ||
+            (Rip && COFF::isBoundPointerName(Pointer->getSymbol().getName()));
+        Read = Pointer->getSpecifier() == X86::S_COFF_FUSED;
+        if (Read || (Pointer->getSpecifier() == X86::S_None && Rip &&
+                     !Inst.getOperand(1 + X86::AddrSegmentReg).getReg()))
+          Load = &Pointer->getSymbol();
+      }
+    if (Read || IsTest)
+      MovingSections.insert(getCurrentSectionOnly());
+    Marker = checkFused(Inst, Use, RegOp, Load, Read || IsTest);
   }
   // The field of a fused read holds twice the length of the instruction after
   // it, with its prefixes, plus one where that transfers control or may fuse
   // with a branch that does: zero unless the instruction is seen to follow
   // the read and to have that length, and where it has a segment override
-  // other than CS, which the linker's CS overrides would contradict.
-  scope_exit Emitted([&] {
+  // other than CS, which the linker's CS overrides would contradict. The
+  // field of a load of a pointer that the linker binds says that the flags
+  // are dead at the load where the instruction seen to follow it writes them
+  // all and reads none.
+  scope_exit Emitted([&, Frag = getCurrentFragment(),
+                      Begin = getCurFragSize()] {
     MCFragment *After = getCurrentFragment();
     size_t End = getCurFragSize();
     if (ReadFrag) {
       const MCInstrDesc &Desc = MCII->get(Opcode);
       bool IsPrefix = X86II::isPrefix(Desc.TSFlags);
-      if (!Follows || After != ReadFrag ||
-          (IsPrefix
-               ? is_contained({X86::SS_PREFIX, X86::DS_PREFIX, X86::ES_PREFIX,
-                               X86::FS_PREFIX, X86::GS_PREFIX},
-                              Opcode)
-               : X86_MC::determinePaddingPrefix(Inst, *MCII, STI) !=
-                     X86::CS_Encoding)) {
+      if (!Follows || After != Frag ||
+          (IsPrefix &&
+           is_contained({X86::SS_PREFIX, X86::DS_PREFIX, X86::ES_PREFIX,
+                         X86::FS_PREFIX, X86::GS_PREFIX},
+                        Opcode))) {
         ReadFrag = nullptr;
-      } else if (!IsPrefix) {
+      } else if (IsPrefix) {
+        ReadPrefixes += End - Begin;
+      } else {
         MCFixup &Field = ReadFrag->getFixups()[ReadFixup];
+        X86::FirstMacroFusionInstKind Fuses =
+            X86::classifyFirstOpcodeInMacroFusion(Opcode);
         bool Transfers = Desc.isBranch() || Desc.isCall() || Desc.isReturn() ||
-                         X86::classifyFirstOpcodeInMacroFusion(Opcode) !=
-                             X86::FirstMacroFusionInstKind::Invalid;
-        Field = MCFixup::create(
-            Field.getOffset(),
-            MCBinaryExpr::createAdd(
-                Field.getValue(),
-                MCConstantExpr::create((End - ReadEnd) << 1 | Transfers,
-                                       getContext()),
-                getContext(), Field.getLoc()),
-            Field.getKind(), Field.isPCRel());
+                         Fuses != X86::FirstMacroFusionInstKind::Invalid;
+        uint64_t States = 0;
+        if (ReadIsFused && X86_MC::determinePaddingPrefix(Inst, *MCII, STI) ==
+                               X86::CS_Encoding)
+          States = (ReadPrefixes + End - Begin) << 1 | Transfers;
+        // A test, a compare, an and, an add and a sub write every flag.
+        if (is_contained({X86::FirstMacroFusionInstKind::Test,
+                          X86::FirstMacroFusionInstKind::Cmp,
+                          X86::FirstMacroFusionInstKind::And,
+                          X86::FirstMacroFusionInstKind::AddSub},
+                         Fuses))
+          States |= COFF::LoadFlagsDead;
+        if (States)
+          Field =
+              MCFixup::create(Field.getOffset(),
+                              MCBinaryExpr::createAdd(
+                                  Field.getValue(),
+                                  MCConstantExpr::create(States, getContext()),
+                                  getContext(), Field.getLoc()),
+                              Field.getKind(), Field.isPCRel());
         ReadFrag = nullptr;
       }
     }
-    if (Read && !After->getFixups().empty() &&
+    if ((Read || Stated) && !After->getFixups().empty() &&
         After->getFixups().back().getOffset() + 4 == End) {
       ReadFrag = After;
       ReadFixup = After->getFixups().size() - 1;
-      ReadEnd = End;
+      ReadPrefixes = 0;
+      ReadIsFused = Read;
+    }
+    // The linker may resize a 64-bit load of a pointer, a fused read among
+    // them, and a site of several instructions ends with its last. The code
+    // emitter states the other instructions it may resize; a load is stated
+    // here, once the field of a fused read has been found.
+    if (MCII) {
+      finishInstruction(Stated || Read || (Part & X86_MC::FSP_Last), Frag);
+      After = getCurrentFragment();
+      End = getCurFragSize();
+    }
+    LastLoad = Load && !Read ? Inst.getOperand(0).getReg() : MCRegister();
+    if (MCII && Opcode == X86::JCC_1 && Inst.getOperand(0).isExpr()) {
+      if (auto *To = dyn_cast<MCSymbolRefExpr>(Inst.getOperand(0).getExpr()))
+        JccTarget = &To->getSymbol();
+    } else if (Over && !getCurrentWinFrameInfo() &&
+               !Frag->getFixups().empty() &&
+               Frag->getFixups().back().getKind() ==
+                   X86::reloc_riprel_4byte_tail) {
+      OverTarget = Over;
+      OverFrag = Frag;
+      OverFixup = Frag->getFixups().size() - 1;
     }
     PrefixRun = MCII && X86II::isPrefix(MCII->get(Opcode).TSFlags)
                     ? (Follows ? PrefixRun : 0) + 1
@@ -180,42 +358,11 @@ void X86WinCOFFStreamer::emitInstruction(const MCInst &Inst,
       Flags |= X86::IP_AFTER_PREFIXES;
   }
 
-  // On Windows Itanium and NT-POSIX the relocation type of a jmp, direct or
-  // through a pointer, states what the linker may do to it, which the unwind
-  // data covering it decides. A jmp outside a frame may be deleted, as may one
-  // that ends an epilogue where the unwinder is right at every address with
-  // the jmp gone. Version 2's is, every distance it reads being a relocation.
-  // Version 1's reads the code, and is where the epilogue is one instruction
-  // that leaves the frame whole before it: the stack adjustment of a frame
-  // without a push, or `leave`.
   if ((Opcode == X86::JMP_1 || Opcode == X86::JMP64m) &&
       STI.hasFeature(X86::Is64Bit) &&
-      STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
-    const WinEH::FrameInfo *Frame = getCurrentWinFrameInfo();
-    auto EndsDeletableEpilog = [&] {
-      if (Frame->EpilogMap.empty() || Frame->Version > 2)
-        return false;
-      const WinEH::FrameInfo::Epilog &Epilog = Frame->EpilogMap.back().second;
-      const MCFragment *F = getCurrentFragment();
-      if (!isInEpilogCFI() && (Epilog.End->getFragment() != F ||
-                               Epilog.End->getOffset() != getCurFragSize()))
-        return false;
-      if (Frame->Version == 2)
-        return true;
-      if (Epilog.Start->getFragment() == F &&
-          Epilog.Start->getOffset() + 1 == getCurFragSize() &&
-          F->getContents()[Epilog.Start->getOffset()] == '\xc9')
-        return true;
-      for (const WinEH::FrameInfo *I = Frame; I; I = I->ChainedParent)
-        if (any_of(I->Instructions, [](const WinEH::Instruction &Code) {
-              return Code.Operation == Win64EH::UOP_PushNonVol;
-            }))
-          return false;
-      return true;
-    };
-    if (!Frame || EndsDeletableEpilog())
-      Flags |= X86::IP_TAIL_JUMP;
-  }
+      STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      MayDelete())
+    Flags |= X86::IP_TAIL_JUMP;
   if (Flags != Inst.getFlags()) {
     MCInst Jump(Inst);
     Jump.setFlags(Flags);
@@ -253,8 +400,44 @@ void X86WinCOFFStreamer::emitCVFPOData(const MCSymbol *ProcSym, SMLoc Loc) {
 }
 
 void X86WinCOFFStreamer::finishImpl() {
-  if (Int3s)
-    reportMisplacedFusedSite();
+  if (AfterTest)
+    getContext().reportError(SMLoc(),
+                             "fused test is not followed by a je or jne");
+  if (CallLoad)
+    getContext().reportError(SMLoc(), "load of a pointer for a call is not "
+                                      "followed by the call through its "
+                                      "register");
+  // The linker moves the code of a section only after a site that says so.
+  // In any other it writes each site in its assembled length and may only
+  // delete a jmp to another section that ends the section. So nothing in
+  // such a section is the linker's to resize but the fragment of that jmp,
+  // and the assembler resolves every distance that does not span it.
+  for (MCSection &Sec : getAssembler()) {
+    if (!MCII || !Sec.isLinkerRelaxable() || MovingSections.contains(&Sec))
+      continue;
+    MCFragment *Last = nullptr;
+    for (MCFragment &F : Sec) {
+      F.setLinkerRelaxable(false);
+      if (F.getKind() != MCFragment::FT_Data || F.getSize())
+        Last = &F;
+    }
+    bool Tail = Last && any_of(Last->getFixups(), [](const MCFixup &Fixup) {
+                  return Fixup.getKind() == X86::reloc_tail_4byte_pcrel ||
+                         Fixup.getKind() == X86::reloc_riprel_4byte_tail;
+                });
+    // A jmp whose width the assembler has yet to choose.
+    if (Last && Last->getKind() == MCFragment::FT_Relaxable)
+      if (MCInst Jump = Last->getInst(); Jump.getFlags() & X86::IP_TAIL_JUMP) {
+        const MCOperand &To = Jump.getOperand(0);
+        auto *Ref =
+            To.isExpr() ? dyn_cast<MCSymbolRefExpr>(To.getExpr()) : nullptr;
+        Tail = !Ref || !Ref->getSymbol().isInSection() ||
+               &Ref->getSymbol().getSection() != &Sec;
+      }
+    if (Tail)
+      Last->setLinkerRelaxable();
+    Sec.setFirstLinkerRelaxable(Tail ? Last->getLayoutOrder() : -1u);
+  }
   emitFrames();
   emitWindowsUnwindTables();
 

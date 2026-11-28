@@ -1455,8 +1455,8 @@ void X86DAGToDAGISel::PreprocessISelDAG() {
         // Only do this when the target can fold the load into the call or
         // jmp.
         !Subtarget->useIndirectThunkCalls() &&
-        ((N->getOpcode() == X86ISD::CALL && !Subtarget->slowTwoMemOps() &&
-          !Subtarget->slowIndirectCall()) ||
+        ((N->getOpcode() == X86ISD::CALL &&
+          Subtarget->favorMemIndirectCall()) ||
          (N->getOpcode() == X86ISD::TC_RETURN &&
           (Subtarget->is64Bit() ||
            !getTargetMachine().isPositionIndependent())))) {
@@ -3457,6 +3457,19 @@ bool X86DAGToDAGISel::selectLEAAddr(SDValue N,
 
   if (AM.Disp)
     Complexity++;
+
+  // On Windows Itanium and NT-POSIX the sum of an import pointer and a
+  // constant is a value of its own, which the register allocator computes
+  // again from the pointer's load where it would otherwise hold it across a
+  // call, and not a second definition of the load's register.
+  if (AM.Disp && AM.BaseType == X86ISelAddressMode::RegBase &&
+      Subtarget->getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
+    if (auto *Load = dyn_cast_or_null<LoadSDNode>(AM.Base_Reg.getNode());
+        Load && Load->getBasePtr().getOpcode() == X86ISD::WrapperRIP)
+      if (auto *GA = dyn_cast<GlobalAddressSDNode>(
+              Load->getBasePtr().getOperand(0));
+          GA && GA->getTargetFlags() == X86II::MO_DLLIMPORT)
+        Complexity = 3;
 
   // If it isn't worth using an LEA, reject it.
   if (Complexity <= 2)

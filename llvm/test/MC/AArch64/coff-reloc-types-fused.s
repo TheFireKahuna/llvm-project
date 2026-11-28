@@ -21,8 +21,11 @@
 // CHECK-NEXT:   0xC IMAGE_REL_LLVM_FUSED_CALL __imp_f
 // CHECK-NEXT:   0x14 IMAGE_REL_ARM64_PAGEBASE_REL21 __imp_f
 // CHECK-NEXT:   0x18 IMAGE_REL_LLVM_FUSED_READ __imp_f
-// CHECK-NEXT:   0x1C IMAGE_REL_LLVM_FUSED_JUMP __imp_f
+// CHECK-NEXT:   0x1C IMAGE_REL_LLVM_FUSED_JUMP_TAIL __imp_f
 // CHECK-NEXT:   0x20 IMAGE_REL_LLVM_FUSED_TEST __imp_f
+// CHECK-NEXT:   0x24 IMAGE_REL_ARM64_PAGEBASE_REL21 __imp_f
+// CHECK-NEXT:   0x28 IMAGE_REL_ARM64_PAGEOFFSET_12L __imp_f
+// CHECK-NEXT:   0x30 IMAGE_REL_LLVM_FUSED_CALL __imp_f
 // CHECK-NEXT: }
 // CHECK:      Flags: 0x8
 
@@ -46,6 +49,14 @@
   .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_f
   cbz x16, .
 
+// A load of the pointer that another instruction reads too is no fused read,
+// and is still what a fused call through its register goes by.
+  adrp x8, __imp_f
+  ldr x8, [x8, :lo12:__imp_f]
+  cbz x8, .
+  .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_f
+  blr x8
+
 .ifdef ERR
 // A fused read is a 64-bit load of the pointer itself, a fused call a blr and
 // a fused jump a br, and a write of the register's lower half ends the read.
@@ -61,7 +72,11 @@
   blr x8
   ldr x8, [x8, :fused_lo12:__imp_f]
   mov w8, w9
-// ERR: [[#@LINE+1]]:{{[0-9]+}}: error: fused call reads X8, which no fused read of '__imp_f' last wrote
+// ERR: [[#@LINE+1]]:{{[0-9]+}}: error: fused call reads X8, which no load of '__imp_f' last wrote
+  .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_f
+  blr x8
+  ldr x8, [x8, :lo12:__imp_g]
+// ERR: [[#@LINE+1]]:{{[0-9]+}}: error: fused call reads X8, which no load of '__imp_f' last wrote
   .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_f
   blr x8
 .endif

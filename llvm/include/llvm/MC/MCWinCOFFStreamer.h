@@ -10,6 +10,9 @@
 #define LLVM_MC_MCWINCOFFSTREAMER_H
 
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/SmallPtrSet.h"
+#include "llvm/BinaryFormat/COFF.h"
 #include "llvm/MC/MCDirectives.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCObjectStreamer.h"
@@ -20,6 +23,7 @@ class MCAsmBackend;
 class MCContext;
 class MCCodeEmitter;
 class MCInst;
+class MCRegisterInfo;
 class MCSection;
 class MCSubtargetInfo;
 class MCSymbol;
@@ -37,6 +41,7 @@ public:
   void reset() override {
     CurSymbol = nullptr;
     RunWrites.clear();
+    MovingSections.clear();
     FusedSite.Offset = nullptr;
     MCObjectStreamer::reset();
   }
@@ -83,38 +88,74 @@ public:
 
   /// \}
 
+  /// Returns whether \p Inst, which \p Desc describes, reads the register of
+  /// its operand \p RegOp in that operand alone, or as a test in the two it
+  /// tests against each other, as a fused site of \p Use does.
+  static bool readsFusedRegisterOnce(const MCInst &Inst,
+                                     const MCInstrDesc &Desc,
+                                     const MCRegisterInfo &MRI,
+                                     COFF::FusedUse Use, unsigned RegOp);
+
 protected:
   MCSymbol *CurSymbol;
 
   /// A Windows Itanium or NT-POSIX object's fused relocation types are checked
   /// against its instructions, whose descriptions these are, with what the
-  /// target calls the instruction of a fused call and of a fused jump.
+  /// target calls the instruction of a fused site, by how it reads its
+  /// register.
   std::unique_ptr<const MCInstrInfo> MCII;
-  StringRef FusedForms[2];
+  StringRef FusedForms[size_t(COFF::FusedUse::Test) + 1];
   /// What each register unit that the current run wrote holds: the pointer a
-  /// fused read loaded, or null. A run is the instructions of one section
-  /// since the last that execution does not fall through.
-  DenseMap<unsigned, const MCSymbol *> RunWrites;
+  /// load of one read, or null, and whether as a copy of the register that
+  /// the load wrote. A copy of what the run did not write holds any pointer.
+  /// A run is the instructions of one section since the last that execution
+  /// does not fall through.
+  DenseMap<unsigned, PointerIntPair<const MCSymbol *, 1, bool>> RunWrites;
   MCSectionSubPair RunSection;
-  /// The marker of a fused call or jump, until the instruction of its site is
-  /// emitted. Placed says that the site began at the marker.
+  /// The marker of a fused site, until the instruction of its site is
+  /// emitted, with how that reads its register. A jump's relocation is
+  /// recorded with its site, whose unwind frame decides its type, and Expr
+  /// is the pointer it names.
+  /// So is that of a type that names none, whose index its site gives.
   struct {
     const MCExpr *Offset = nullptr;
     const MCSymbol *Pointer;
     SMLoc Loc;
-    bool IsJump;
-    bool Placed;
+    uint16_t Type;
+    COFF::FusedUse Use;
+    const MCExpr *Expr;
   } FusedSite;
+
+  /// The instructions still to come of the site at a marker of code that the
+  /// linker may resize, and the instructions of a thread-local base's site.
+  unsigned SiteInsts = 0;
+  unsigned TlsScaleInsts = 0;
+  /// The sections with a site after which the linker moves the code, as
+  /// COFF::relocationMovesCode says.
+  SmallPtrSet<const MCSection *, 0> MovingSections;
+  /// Ends the current fragment as code the linker may resize, as an
+  /// instruction with a linker-relaxable fixup ends it, so that the assembler
+  /// resolves no distance across it. The fragments from \p From on hold the
+  /// code where padding came between.
+  void endResizableCode(MCFragment *From = nullptr);
+  /// A target calls this once it has emitted an instruction, which began in
+  /// \p From. \p Resizable says that the linker may resize it or the site it
+  /// ends.
+  void finishInstruction(bool Resizable, MCFragment *From = nullptr);
 
   void reportMisplacedFusedSite();
   /// Checks the fused relocation types against \p Inst, which is emitted
-  /// next. \p Read is the pointer it loads as a fused read. \p IsSite says
-  /// that it is the call or the jump of the pending marker's form, through its
-  /// first operand, and \p IsPad that it is a part of that form before it.
+  /// next. \p Use says how it reads the register of its operand \p RegOp in
+  /// the form of a fused site, as the target describes one, which the pending
+  /// marker is to state. \p Load is the pointer it loads whole into the
+  /// register it writes, and \p IsRead says that it does as a fused read.
+  /// \p Tail says that the linker may
+  /// delete a jump there once it has made it direct, which makes a fused jump
+  /// a FUSED_JUMP_TAIL.
   /// Returns the label that is the pending marker where the site begins at
   /// \p Inst, which a target may move with the site.
-  MCSymbol *checkFused(const MCInst &Inst, const MCSymbol *Read, bool IsSite,
-                       bool IsPad = false);
+  MCSymbol *checkFused(const MCInst &Inst, COFF::FusedUse Use, unsigned RegOp,
+                       const MCSymbol *Load, bool IsRead, bool Tail = false);
 
   void finalizeCGProfileEntry(const MCSymbolRefExpr *&S);
 

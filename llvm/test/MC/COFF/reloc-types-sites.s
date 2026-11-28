@@ -15,8 +15,10 @@
 // The types of branches are pinned in reloc-types-tail-jump.s.
 // The form is stated for a reference to a symbol through RIP with no segment
 // register, and for a call, jump or load only where it has no offset. A
-// call's prefixes are not part of its form, and an lea has any operand size.
-// Any other field in code is REL32, as every one is elsewhere.
+// call's prefixes are not part of its form. An lea of 64 bits is LEA, or
+// LEA_OFFSET where it has an offset, and one of 16 or 32 bits LEA_NARROW,
+// which the bytes before its opcode would not tell the linker. Any other
+// field in code is REL32, as every one is elsewhere.
 
 // MSVC: IMAGE_REL_AMD64_REL32 __imp_g
 
@@ -30,22 +32,23 @@
 // CHECK-NEXT:   0x2C IMAGE_REL_LLVM_LEA g
 // CHECK-NEXT:   0x34 IMAGE_REL_LLVM_LEA g
 // CHECK-NEXT:   0x3B IMAGE_REL_LLVM_LEA_OFFSET g
-// CHECK-NEXT:   0x41 IMAGE_REL_LLVM_LEA g
-// CHECK-NEXT:   0x48 IMAGE_REL_LLVM_LEA g
-// CHECK-NEXT:   0x4F IMAGE_REL_LLVM_MEM_CALL __imp_g
-// CHECK-NEXT:   0x56 IMAGE_REL_LLVM_MEM_CALL __imp_g
-// CHECK-NEXT:   0x5D IMAGE_REL_AMD64_REL32 __imp_g
-// CHECK-NEXT:   0x64 IMAGE_REL_AMD64_REL32_1 __imp_g
-// CHECK-NEXT:   0x6C IMAGE_REL_AMD64_REL32 __imp_g
-// CHECK-NEXT:   0x74 IMAGE_REL_AMD64_REL32 __imp_g
-// CHECK-NEXT:   0x7C IMAGE_REL_AMD64_REL32 __imp_g
-// CHECK-NEXT:   0x83 IMAGE_REL_AMD64_REL32 __imp_g
-// CHECK-NEXT:   0x8A IMAGE_REL_AMD64_REL32 __imp_g
-// CHECK-NEXT:   0x92 IMAGE_REL_AMD64_REL32 __imp_g
-// CHECK-NEXT:   0x9A IMAGE_REL_AMD64_REL32 g
-// CHECK-NEXT:   0x9F IMAGE_REL_LLVM_BRANCH32 g
-// CHECK-NEXT:   0xA3 IMAGE_REL_AMD64_REL32 g
-// CHECK-NEXT:   0xA7 IMAGE_REL_AMD64_ADDR64 h
+// CHECK-NEXT:   0x41 IMAGE_REL_LLVM_LEA_NARROW g
+// CHECK-NEXT:   0x48 IMAGE_REL_LLVM_LEA_NARROW g
+// CHECK-NEXT:   0x4E IMAGE_REL_LLVM_LEA_NARROW g
+// CHECK-NEXT:   0x55 IMAGE_REL_LLVM_MEM_CALL __imp_g
+// CHECK-NEXT:   0x5C IMAGE_REL_LLVM_MEM_CALL __imp_g
+// CHECK-NEXT:   0x63 IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT:   0x6A IMAGE_REL_AMD64_REL32_1 __imp_g
+// CHECK-NEXT:   0x72 IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT:   0x7A IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT:   0x82 IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT:   0x89 IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT:   0x90 IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT:   0x98 IMAGE_REL_AMD64_REL32 __imp_g
+// CHECK-NEXT:   0xA0 IMAGE_REL_AMD64_REL32 g
+// CHECK-NEXT:   0xA5 IMAGE_REL_LLVM_BRANCH32 g
+// CHECK-NEXT:   0xA9 IMAGE_REL_AMD64_REL32 g
+// CHECK-NEXT:   0xAD IMAGE_REL_AMD64_ADDR64 h
 // CHECK-NEXT: }
 // CHECK:      Section ({{[0-9]+}}) .text$p {
 // CHECK-NEXT:   0x3 IMAGE_REL_LLVM_MEM_JUMP_P1 __imp_g
@@ -67,6 +70,7 @@ f:
   leaq g+16(%rip), %rcx
   leal g(%rip), %eax
   leaw g(%rip), %ax
+  leal g+16(%rip), %eax
   notrack callq *__imp_g(%rip)
   rex64 callq *__imp_g(%rip)
 

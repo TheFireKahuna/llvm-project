@@ -361,14 +361,14 @@ static uint64_t adjustFixupValue(const MCFixup &Fixup, const MCValue &Target,
 
 std::optional<MCFixupKind>
 AArch64AsmBackend::getFixupKind(StringRef Name) const {
-  // A Windows Itanium or NT-POSIX object marks a call or a jump through a
-  // register that holds an import pointer, the test of one, and the sequence
-  // that forms an image's thread-local base.
+  // A Windows Itanium or NT-POSIX object marks its fused sites, the test of
+  // an import pointer, and the sequence that forms an image's thread-local
+  // base.
   if (TheTriple.isWindowsItaniumOrNTPOSIXEnvironment()) {
-    if (Name == "IMAGE_REL_LLVM_FUSED_CALL")
-      return getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_FUSED_CALL);
-    if (Name == "IMAGE_REL_LLVM_FUSED_JUMP")
-      return getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_FUSED_JUMP);
+    if (const COFF::FusedMarker *Marker = COFF::findFusedMarker(
+            COFF::IMAGE_FILE_MACHINE_ARM64,
+            [&](const COFF::FusedMarker &M) { return M.Name == Name; }))
+      return getCOFFRelocFixupKind(Marker->Type);
     if (Name == "IMAGE_REL_LLVM_TLS_SCALE")
       return getCOFFRelocFixupKind(COFF::IMAGE_REL_LLVM_TLS_SCALE);
   }

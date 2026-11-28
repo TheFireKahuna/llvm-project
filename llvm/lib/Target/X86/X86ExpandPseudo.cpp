@@ -984,7 +984,7 @@ bool X86ExpandPseudoImpl::dropProvenCallGuards(MachineFunction &MF) {
           Load->getOperand(0).getReg() != Reg ||
           prev_nodbg(MachineBasicBlock::iterator(MI), MBB.begin()) != Load ||
           !(IsTailCall ||
-            (MI.modifiesRegister(Reg, TRI) && !STI->slowTwoMemOps())) ||
+            (MI.modifiesRegister(Reg, TRI) && STI->favorMemIndirectCall())) ||
           any_of(MI.implicit_operands(), [&](const MachineOperand &MO) {
             return MO.isReg() && MO.isUse() &&
                    TRI->regsOverlap(MO.getReg(), Reg);

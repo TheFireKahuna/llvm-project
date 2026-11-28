@@ -2576,6 +2576,7 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
 
   // Build a sequence of copy-to-reg nodes chained together with token chain
   // and glue operands which copy the outgoing args into registers.
+  SDValue ArgsChain = Chain;
   SDValue InGlue;
   for (const auto &[Reg, N] : RegsToPass) {
     Chain = DAG.getCopyToReg(Chain, dl, Reg, N, InGlue);
@@ -2609,6 +2610,27 @@ X86TargetLowering::LowerCall(TargetLowering::CallLoweringInfo &CLI,
     if (G && Callee.getOpcode() == ISD::LOAD)
       CalledGlobal = {G->getGlobal(), Subtarget.classifyGlobalFunctionReference(
                                           G->getGlobal())};
+    // On Windows Itanium and NT-POSIX the linker makes a call through an
+    // import pointer direct where the callee is in the image, so each call
+    // loads the pointer for itself, on its own chain, and the load folds into
+    // it. One load on the entry chain would serve every call in the block
+    // from a register held across them. Where instruction selection folds
+    // no load, in a function that is not optimized, a load on the call's
+    // chain would lie between the call and the copies glued to it, so it
+    // goes before the copies and is folded where the call is emitted.
+    if (Callee.getOpcode() == ISD::LOAD &&
+        Subtarget.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+        !Subtarget.useIndirectThunkCalls() &&
+        Subtarget.favorMemIndirectCall()) {
+      bool Folds = DAG.getOptLevel() != CodeGenOptLevel::None &&
+                   !MF.getFunction().hasOptNone();
+      Callee = DAG.getLoad(
+          Callee.getValueType(), dl, Folds ? Chain : ArgsChain,
+          Callee.getOperand(1),
+          MachinePointerInfo::getGOT(DAG.getMachineFunction()));
+      if (Folds)
+        Chain = Callee.getValue(1);
+    }
   } else if (Subtarget.isTarget64BitILP32() &&
              Callee.getValueType() == MVT::i32) {
     // Zero-extend the 32-bit Callee address into a 64-bit according to x32 ABI

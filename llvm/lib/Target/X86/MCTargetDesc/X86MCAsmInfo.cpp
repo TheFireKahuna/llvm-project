@@ -34,6 +34,7 @@ constexpr EnumStringDef<MCAsmInfo::AtSpecifierKind> AtSpecifierDefs[] = {
     {{"INDNTPOFF"}, X86::S_INDNTPOFF},
     {{"IMGREL"}, MCSymbolRefExpr::VK_COFF_IMGREL32},
     {{"IMGREL_CALL"}, MCSymbolRefExpr::VK_COFF_IMGREL32_CALL},
+    {{"LOAD_CALL"}, X86::S_COFF_LOAD_CALL},
     {{"NTPOFF"}, X86::S_NTPOFF},
     {{"PCREL"}, X86::S_PCREL},
     {{"PLT"}, X86::S_PLT},

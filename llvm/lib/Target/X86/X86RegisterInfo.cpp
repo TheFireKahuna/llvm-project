@@ -14,9 +14,11 @@
 
 #include "X86RegisterInfo.h"
 #include "X86FrameLowering.h"
+#include "X86InstrInfo.h"
 #include "X86MachineFunctionInfo.h"
 #include "X86Subtarget.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/SCCIterator.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/CodeGen/LiveRegMatrix.h"
@@ -1170,6 +1172,62 @@ static ShapeT getTileShape(Register VirtReg, VirtRegMap *VRM,
   }
 }
 
+// Whether the value in \p Reg is read behind a call more than twice on one
+// path, or in a loop that contains a call: where computing it again is an
+// instruction, that costs more than the push and pop of a register that holds
+// it. Where the value is the load of a pointer, \p IsLoad, a copy of it is no
+// such read, since the load takes the copy's place, and where the pointer is
+// that of a variable, \p IsVariable, a load or a store through it is none
+// either: the linker makes it direct, and the load of the pointer goes.
+static bool isCheaperHeldAcrossCalls(Register Reg, bool IsLoad, bool IsVariable,
+                                     const MachineRegisterInfo &MRI,
+                                     const MachineFunction &MF) {
+  SmallDenseMap<const MachineBasicBlock *, unsigned, 4> Reads;
+  for (const MachineInstr &Use : MRI.use_nodbg_instructions(Reg)) {
+    if (IsLoad && Use.isFullCopy())
+      continue;
+    if (unsigned Op;
+        IsLoad && IsVariable && Use.mayLoadOrStore() &&
+        X86::getFusedUse(Use, Use.getDesc(), Op) == COFF::FusedUse::Access &&
+        Use.getOperand(Op).isReg() && Use.getOperand(Op).getReg() == Reg &&
+        none_of(Use.operands(), [&](const MachineOperand &MO) {
+          return MO.getOperandNo() != Op && MO.isReg() && MO.getReg() == Reg;
+        }))
+      continue;
+    // A use that a definition in its block reaches with no call between is
+    // not behind one.
+    const MachineBasicBlock *MBB = Use.getParent();
+    auto I = std::next(Use.getReverseIterator());
+    while (I != MBB->rend() && !I->isCall() &&
+           !I->definesRegister(Reg, nullptr))
+      ++I;
+    if (I == MBB->rend() || I->isCall())
+      ++Reads[MBB];
+  }
+  if (Reads.empty())
+    return false;
+  // The components come with those that a component leads to before it, so
+  // each takes the most reads of a path that leaves it. The blocks of a cycle
+  // count as one.
+  auto HasCall = [](const MachineBasicBlock *MBB) {
+    return any_of(*MBB, [](const MachineInstr &MI) { return MI.isCall(); });
+  };
+  DenseMap<const MachineBasicBlock *, unsigned> OnPath;
+  for (auto I = scc_begin(&MF); !I.isAtEnd(); ++I) {
+    unsigned Here = 0, Below = 0;
+    for (const MachineBasicBlock *MBB : *I) {
+      Here += Reads.lookup(MBB);
+      for (const MachineBasicBlock *Succ : MBB->successors())
+        Below = std::max(Below, OnPath.lookup(Succ));
+    }
+    if (Here + Below > 2 || (Here && I.hasCycle() && any_of(*I, HasCall)))
+      return true;
+    for (const MachineBasicBlock *MBB : *I)
+      OnPath[MBB] = Here + Below;
+  }
+  return false;
+}
+
 bool X86RegisterInfo::getRegAllocationHints(
     Register VirtReg, ArrayRef<MCPhysReg> Order,
     SmallSetVector<MCPhysReg, 16> &Hints, const MachineFunction &MF,
@@ -1185,6 +1243,80 @@ bool X86RegisterInfo::getRegAllocationHints(
 
   if (!VRM)
     return BaseImplRetVal;
+
+  // On Windows Itanium and NT-POSIX the linker makes the load of an import
+  // pointer that the compiler chose the address itself where the symbol is
+  // in the image, and each access through it direct, so loading the pointer
+  // again after a call costs little or nothing there and a callee-saved
+  // register that holds it does. A symbol declared dllimport is another
+  // image's, and the load of its pointer stays, so that pointer is held as
+  // elsewhere. The chosen pointer is kept to the other registers: a live
+  // range that crosses a call is not assigned,
+  // and is rematerialized. Splitting copies the value, back and forth around a
+  // call, so the copies of one load are looked through, and so is the lea of a
+  // constant to the pointer, which the linker folds into the load: the sum is
+  // computed again from it.
+  if (ST.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+    // The value's one definition that is no copy, if every other is a copy
+    // of it.
+    SmallSet<Register, 8> Seen;
+    const MachineInstr *Def = nullptr;
+    auto FindDef = [&](auto &Self, Register Reg) -> bool {
+      if (!Reg.isVirtual())
+        return false;
+      if (!Seen.insert(Reg).second)
+        return true;
+      for (const MachineInstr &MI : MRI->def_instructions(Reg)) {
+        // Splitting computes the value again where a part of its range
+        // begins, so a part may have several definitions that are the same.
+        if (MI.isFullCopy()
+                ? !Self(Self, MI.getOperand(1).getReg())
+                : Def && !Def->isIdenticalTo(MI, MachineInstr::IgnoreDefs))
+          return false;
+        if (!MI.isFullCopy())
+          Def = &MI;
+      }
+      return true;
+    };
+    if (!FindDef(FindDef, VirtReg))
+      Def = nullptr;
+    // The load of a variable's pointer goes where the linker makes the
+    // accesses through it direct. Any other value is an instruction again
+    // wherever it is computed again.
+    bool IsReloaded = false;
+    if (Def && Def->getOpcode() == X86::LEA64r &&
+        Def->getOperand(1 + X86::AddrBaseReg).isReg() &&
+        !Def->getOperand(1 + X86::AddrIndexReg).getReg() &&
+        Def->getOperand(1 + X86::AddrDisp).isImm()) {
+      Register Base = Def->getOperand(1 + X86::AddrBaseReg).getReg();
+      Seen.clear();
+      Def = nullptr;
+      if (!FindDef(FindDef, Base))
+        Def = nullptr;
+      IsReloaded = true;
+    }
+    if (Def && Def->getOpcode() == X86::MOV64rm) {
+      const MachineOperand &Disp = Def->getOperand(1 + X86::AddrDisp);
+      // A call through a thunk cannot take the load of its target as its
+      // operand, so such calls share one.
+      if (Disp.isGlobal() &&
+          isRelaxableImportReference(Disp.getGlobal(),
+                                     Disp.getTargetFlags()) &&
+          !(isa<Function>(Disp.getGlobal()) && ST.useIndirectThunkCalls()) &&
+          !isCheaperHeldAcrossCalls(VirtReg, !IsReloaded,
+                                    !isa<Function>(Disp.getGlobal()), *MRI,
+                                    MF)) {
+        auto IsCalleeSaved = [&](MCPhysReg Reg) {
+          return isCalleeSavedPhysReg(Reg, MF);
+        };
+        Hints.remove_if(IsCalleeSaved);
+        for (MCPhysReg Reg : Order)
+          if (!IsCalleeSaved(Reg))
+            Hints.insert(Reg);
+        return true;
+      }
+    }
+  }
 
   if (ID != X86::TILERegClassID) {
     if (ST.getCLOpts().disable_regalloc_hints_for_ndd || !ST.hasNDD() ||

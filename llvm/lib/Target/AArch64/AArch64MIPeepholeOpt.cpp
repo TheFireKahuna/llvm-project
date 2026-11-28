@@ -67,6 +67,10 @@
 // 9. Replace UBFMXri with UBFMWri if the instruction is equivalent to a 32 bit
 //    LSR or LSL alias of UBFM.
 //
+// 10. On Windows Itanium and NT-POSIX, give a call through an import pointer
+//     its own load of the pointer where the load it has reaches it past
+//     another call, unless that load was hoisted out of the call's loop.
+//
 //===----------------------------------------------------------------------===//
 
 #include "AArch64ExpandImm.h"
@@ -142,6 +146,7 @@ private:
   bool visitINSvi64lane(MachineInstr &MI);
   bool visitFMOVDr(MachineInstr &MI);
   bool visitUBFMXri(MachineInstr &MI);
+  bool visitLOADgot(MachineInstr &MI);
   bool visitCopy(MachineInstr &MI);
 };
 
@@ -977,6 +982,66 @@ bool AArch64MIPeepholeOptImpl::visitCopy(MachineInstr &MI) {
   return true;
 }
 
+// The linker makes a call through an import pointer direct where the callee
+// is in the image, and the pointer's load then goes. A register that holds
+// the pointer over another call is one that calls preserve, and its save
+// stays, so a call that the load reaches only past another call takes a load
+// of its own. So does a call in a loop that the load was hoisted out of,
+// unless the callee is declared imported: its load then stays, and the one
+// before the loop serves every iteration.
+bool AArch64MIPeepholeOptImpl::visitLOADgot(MachineInstr &MI) {
+  MachineFunction &MF = *MI.getMF();
+  Register Reg = MI.getOperand(0).getReg();
+  const Triple &TT = MF.getTarget().getTargetTriple();
+  const MachineOperand &Pointer = MI.getOperand(1);
+  bool Imported =
+      Pointer.isGlobal() && Pointer.getGlobal()->hasDLLImportStorageClass();
+  if (!TT.isWindowsItaniumOrNTPOSIXEnvironment() ||
+      (Imported && MRI->hasOneNonDBGUse(Reg)))
+    return false;
+
+  // The load reaches a call in its block, or in a block that only its block
+  // enters, with no call between them.
+  MachineBasicBlock *MBB = MI.getParent();
+  auto IsCall = [](const MachineInstr &I) { return I.isCall(); };
+  auto ReachesDirectly = [&](MachineInstr &Call) {
+    MachineBasicBlock *CallMBB = Call.getParent();
+    MachineBasicBlock::iterator Load = MI, Site = Call;
+    if (CallMBB == MBB)
+      return none_of(make_range(Load, Site), IsCall);
+    return CallMBB->pred_size() == 1 && *CallMBB->pred_begin() == MBB &&
+           none_of(make_range(Load, MBB->end()), IsCall) &&
+           none_of(make_range(CallMBB->begin(), Site), IsCall);
+  };
+
+  bool Changed = false;
+  MachineLoop *L = MLI->getLoopFor(MBB);
+  for (MachineOperand &Use :
+       make_early_inc_range(MRI->use_nodbg_operands(Reg))) {
+    MachineInstr &Call = *Use.getParent();
+    if (!Call.isCall() || ReachesDirectly(Call) ||
+        (Imported && MLI->getLoopFor(Call.getParent()) != L))
+      continue;
+    MachineInstr *Load = MF.CloneMachineInstr(&MI);
+    Load->getOperand(0).setReg(MRI->cloneVirtualRegister(Reg));
+    Call.getParent()->insert(Call.getIterator(), Load);
+    Use.setReg(Load->getOperand(0).getReg());
+    Changed = true;
+  }
+  // A load that every call has left loads nothing that is read.
+  if (Changed && MRI->use_nodbg_empty(Reg)) {
+    MRI->markUsesInDebugValueAsUndef(Reg);
+    MI.eraseFromParent();
+    return true;
+  }
+  if (Changed) {
+    // A tail call that has left no longer keeps the register caller-saved.
+    MRI->setRegClass(Reg, &AArch64::GPR64commonRegClass);
+    MRI->recomputeRegClass(Reg);
+  }
+  return Changed;
+}
+
 bool AArch64MIPeepholeOptImpl::run(MachineFunction &MF) {
   TII = static_cast<const AArch64InstrInfo *>(MF.getSubtarget().getInstrInfo());
   TRI = static_cast<const AArch64RegisterInfo *>(
@@ -991,6 +1056,9 @@ bool AArch64MIPeepholeOptImpl::run(MachineFunction &MF) {
     for (MachineInstr &MI : make_early_inc_range(MBB)) {
       switch (MI.getOpcode()) {
       default:
+        break;
+      case AArch64::LOADgot:
+        Changed |= visitLOADgot(MI);
         break;
       case AArch64::INSERT_SUBREG:
         Changed |= visitINSERT(MI);

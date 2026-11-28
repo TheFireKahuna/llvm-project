@@ -5355,104 +5355,214 @@ void AsmPrinter::emitJumpTableLoadLabel(int JTI) {
   OutStreamer->emitLabel(JumpTableLoads.back().second);
 }
 
+/// Whether the object states the fused sites of \p MF: on Windows Itanium and
+/// NT-POSIX, in a function whose register liveness is known.
+static bool mayFuseSites(const MachineFunction &MF) {
+  // The caller of an outlined function reads the registers it wrote, and a
+  // call to one names the registers it reads only where liveness is tracked.
+  return MF.getTarget()
+             .getTargetTriple()
+             .isWindowsItaniumOrNTPOSIXEnvironment() &&
+         !MF.isOutlined() && MF.getProperties().hasTracksLiveness();
+}
+
+bool AsmPrinter::optimizesFusedSites() const {
+  return mayFuseSites(*MF) && TM.getOptLevel() != CodeGenOptLevel::None &&
+         !MF->getFunction().hasOptNone();
+}
+
+bool AsmPrinter::isOnlySetter(const MachineInstr &Load, const MachineInstr &Use,
+                              bool OrItsLike, bool InItsSection) const {
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register Reg = Load.getOperand(0).getReg();
+  SmallVector<const MachineBasicBlock *, 8> Work;
+  SmallPtrSet<const MachineBasicBlock *, 8> Seen;
+  const MachineBasicBlock *Block = Use.getParent();
+  for (MachineBasicBlock::const_reverse_iterator I =
+           std::next(Use.getReverseIterator());
+       ; I = Block->rbegin()) {
+    while (I != Block->rend() && !I->modifiesRegister(Reg, TRI))
+      ++I;
+    if (I != Block->rend()) {
+      if (&*I != &Load &&
+          !(OrItsLike && I->isIdenticalTo(Load) &&
+            (!InItsSection || I->getParent()->getSectionID() ==
+                                  Load.getParent()->getSectionID())))
+        return false;
+    } else if (Block->pred_empty() || Block->isEHPad()) {
+      return false;
+    } else {
+      for (const MachineBasicBlock *Pred : Block->predecessors())
+        if (Seen.insert(Pred).second)
+          Work.push_back(Pred);
+    }
+    if (Work.empty())
+      return true;
+    Block = Work.pop_back_val();
+  }
+}
+
+void AsmPrinter::forEachReader(
+    MachineInstr &Def, SmallVectorImpl<MachineInstr *> &DebugValues,
+    function_ref<void(MachineInstr &)> Reader) const {
+  const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
+  Register Reg = Def.getOperand(0).getReg();
+  SmallVector<MachineBasicBlock *, 8> Work;
+  SmallPtrSet<MachineBasicBlock *, 8> Seen;
+  MachineBasicBlock *Block = Def.getParent();
+  for (MachineBasicBlock::iterator I = std::next(Def.getIterator());;
+       I = Block->begin()) {
+    bool Written = false, Called = false;
+    for (; I != Block->end() && !Written; ++I) {
+      if (I->isDebugInstr()) {
+        if (I->isDebugValue() &&
+            any_of(I->debug_operands(), [&](const MachineOperand &MO) {
+              return MO.isReg() && MO.getReg() &&
+                     TRI->regsOverlap(MO.getReg(), Reg);
+            }))
+          DebugValues.push_back(&*I);
+        continue;
+      }
+      // An undef use, as of a zeroing idiom, reads no value.
+      if (any_of(I->operands(), [&](const MachineOperand &MO) {
+            return MO.isReg() && MO.readsReg() && MO.getReg() &&
+                   TRI->regsOverlap(MO.getReg(), Reg);
+          }))
+        Reader(*I);
+      Called |= I->isCall();
+      Written = I->modifiesRegister(Reg, TRI);
+    }
+    for (MachineBasicBlock *Succ : Block->successors())
+      if ((!Written || (Called && Succ->isEHPad())) && Seen.insert(Succ).second)
+        Work.push_back(Succ);
+    if (Work.empty())
+      break;
+    Block = Work.pop_back_val();
+  }
+}
+
 void AsmPrinter::findFusedSites(
     function_ref<bool(const MachineInstr &)> IsPointerLoad,
-    ArrayRef<unsigned> SiteOpcodes) {
+    function_ref<COFF::FusedUse(const MachineInstr &, const MachineInstr &,
+                                unsigned &)>
+        GetUse,
+    bool AccessNeedsRead, bool SharesSites,
+    function_ref<bool(MachineInstr &, const FusedSiteList &)> Place) {
   // The linker may make a call or a tail call through an import pointer
-  // direct and drop the pointer's load, where the object states that only
-  // such sites read the load's register, in the load's section, and that the
-  // load alone reaches each. Every path counts: the register holds a value
-  // until an instruction writes it, which an epilogue before a tail call may,
-  // and an exception may leave a block at any of its instructions. The caller
-  // of an outlined function reads the registers it wrote, and a call to one
-  // names the registers it reads only where liveness is tracked.
+  // direct, an access through one an access to what it names, and the jump
+  // on a test of one unconditional or none, where the object states that the
+  // load of the pointer alone reaches it, and drop the load where it states
+  // that only such sites read the load's register, in the load's section.
+  // Every path counts: the register holds a value until an instruction
+  // writes it, which an epilogue before a tail call may, and an exception may
+  // leave a block at any of its calls.
   FusedSites.clear();
-  if (!TM.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() ||
-      MF->isOutlined() || !MF->getProperties().hasTracksLiveness())
+  if (!mayFuseSites(*MF))
     return;
   const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
-  for (const MachineBasicBlock &MBB : *MF)
-    for (const MachineInstr &Load : MBB) {
-      if (!IsPointerLoad(Load))
-        continue;
-      Register Reg = Load.getOperand(0).getReg();
-      SmallVector<const MachineInstr *, 4> Sites;
-      SmallVector<const MachineBasicBlock *, 8> Work;
-      SmallPtrSet<const MachineBasicBlock *, 8> Seen;
-      bool Fused = true;
-      // The instructions that read what the load wrote are calls and tail
-      // calls through it.
-      const MachineBasicBlock *Block = &MBB;
-      for (MachineBasicBlock::const_iterator I = std::next(Load.getIterator());;
-           I = Block->begin()) {
-        bool Written = false;
-        for (; I != Block->end() && !Written; ++I) {
-          if (I->isDebugInstr())
-            continue;
-          if (I->readsRegister(Reg, TRI)) {
-            Fused &= is_contained(SiteOpcodes, I->getOpcode()) &&
-                     I->getOperand(0).getReg() == Reg &&
-                     none_of(drop_begin(I->operands()),
+  SmallVector<MachineInstr *, 8> Loads;
+  for (MachineBasicBlock &MBB : *MF)
+    for (MachineInstr &MI : MBB)
+      if (IsPointerLoad(MI))
+        Loads.push_back(&MI);
+  for (MachineInstr *Load : Loads) {
+    FusedSiteList Sites;
+    SmallVector<MachineInstr *, 4> DebugValues;
+    // How an instruction reads what Def wrote, the load or a copy of its
+    // register, where the target describes that as a site, the instruction
+    // reads the register in no other operand, but a test against itself, and
+    // Def alone reaches it. An instruction identical to Def may reach it as
+    // well where the target says so: one of Def's section only, whose sites
+    // the linker binds as one, unless the site is a call, a jump or a test,
+    // which reads its register no more once the linker has bound it.
+    auto GetSiteUse = [&](const MachineInstr &Def, const MachineInstr &I) {
+      Register Reg = Def.getOperand(0).getReg();
+      unsigned Op;
+      COFF::FusedUse Use = GetUse(*Load, I, Op);
+      return Use != COFF::FusedUse::None && I.getOperand(Op).getReg() == Reg &&
+                     none_of(I.operands(),
                              [&](const MachineOperand &MO) {
-                               return MO.isReg() && MO.readsReg() &&
+                               return MO.getOperandNo() != Op &&
+                                      (Use != COFF::FusedUse::Test ||
+                                       MO.getOperandNo() != Op + 1) &&
+                                      MO.isReg() && MO.readsReg() &&
                                       MO.getReg() &&
                                       TRI->regsOverlap(MO.getReg(), Reg);
                              }) &&
-                     Block->getSectionID() == MBB.getSectionID();
-            Sites.push_back(&*I);
-          }
-          Written = I->modifiesRegister(Reg, TRI);
-        }
-        for (const MachineBasicBlock *Succ : Block->successors())
-          if ((!Written || Succ->isEHPad()) && Seen.insert(Succ).second)
-            Work.push_back(Succ);
-        if (!Fused || Work.empty())
-          break;
-        Block = Work.pop_back_val();
+                     isOnlySetter(Def, I, SharesSites,
+                                  Use != COFF::FusedUse::Call &&
+                                      Use != COFF::FusedUse::Jump &&
+                                      Use != COFF::FusedUse::Test)
+                 ? Use
+                 : COFF::FusedUse::None;
+    };
+    auto InSection = [&](const MachineInstr &I) {
+      return I.getParent()->getSectionID() == Load->getParent()->getSectionID();
+    };
+    // The instructions that read what the load wrote: each is a site, or the
+    // load stays one. A copy is no reader where accesses alone read what it
+    // wrote, which are then sites: it copies nothing that is read once the
+    // linker has dropped the load.
+    bool IsRead = true;
+    forEachReader(*Load, DebugValues, [&](MachineInstr &I) {
+      COFF::FusedUse Use = GetSiteUse(*Load, I);
+      if (Use == COFF::FusedUse::Copy) {
+        size_t Before = Sites.size();
+        forEachReader(I, DebugValues, [&](MachineInstr &Access) {
+          if (GetSiteUse(I, Access) != COFF::FusedUse::Access ||
+              !InSection(Access))
+            Use = COFF::FusedUse::None;
+          Sites.push_back({&Access, COFF::FusedUse::Access});
+        });
+        if (Use == COFF::FusedUse::None || !InSection(I))
+          Sites.truncate(Before);
+      } else if (Use != COFF::FusedUse::None) {
+        Sites.push_back({&I, Use});
       }
-      // The instruction that last wrote the register is the load, on every
-      // path to each site.
-      for (const MachineInstr *Site : Sites) {
-        if (!Fused)
-          break;
-        Seen.clear();
-        Block = Site->getParent();
-        for (MachineBasicBlock::const_reverse_iterator I =
-                 std::next(Site->getReverseIterator());
-             ; I = Block->rbegin()) {
-          while (I != Block->rend() && !I->modifiesRegister(Reg, TRI))
-            ++I;
-          if (I != Block->rend())
-            Fused = &*I == &Load;
-          else if (Block->pred_empty() || Block->isEHPad())
-            Fused = false;
-          else
-            for (const MachineBasicBlock *Pred : Block->predecessors())
-              if (Seen.insert(Pred).second)
-                Work.push_back(Pred);
-          if (!Fused || Work.empty())
-            break;
-          Block = Work.pop_back_val();
-        }
-      }
-      if (!Fused || Sites.empty())
-        continue;
-      FusedSites[&Load] = &Load;
-      for (const MachineInstr *Site : Sites)
-        FusedSites[Site] = &Load;
-    }
+      IsRead &= Use != COFF::FusedUse::None && InSection(I);
+    });
+    IsRead &= !Sites.empty();
+    // An add is a site only of a load that its sites alone read: it adds to
+    // what the linker gives the register in the load's place. So is an
+    // access where the target says so, and otherwise where it is in the
+    // load's block.
+    if (!IsRead)
+      erase_if(Sites, [&](const std::pair<MachineInstr *, COFF::FusedUse> &S) {
+        return S.second == COFF::FusedUse::Add ||
+               (S.second == COFF::FusedUse::Access &&
+                (AccessNeedsRead || S.first->getParent() != Load->getParent()));
+      });
+    // The linker may dispose of a fused read, so its register holds no
+    // variable's value. A target may place the read, or fold it into its
+    // site, where it says that neither is left.
+    if (IsRead)
+      for (MachineInstr *DebugValue : DebugValues)
+        DebugValue->setDebugValueUndef();
+    if (IsRead && Place && Place(*Load, Sites))
+      continue;
+    if (IsRead)
+      FusedSites[Load] = {Load, COFF::FusedUse::None};
+    for (const auto &[Site, Use] : Sites)
+      FusedSites[Site] = {Load, Use};
+  }
+#ifdef EXPENSIVE_CHECKS
+  MF->verify(nullptr, "After finding fused sites", &errs());
+#endif
 }
 
-// A fused call or jump has no relocation of its own, so one marks it.
-void AsmPrinter::emitFusedSite(const MachineInstr *MI,
-                               const MCSymbol *Pointer) {
+// A fused site has no relocation of its own, so one marks it.
+void AsmPrinter::emitFusedSite(COFF::FusedUse Use, const MCSymbol *Pointer) {
   MCSymbol *Dot = OutContext.createTempSymbol();
   OutStreamer->emitLabel(Dot);
-  OutStreamer->emitRelocDirective(*MCSymbolRefExpr::create(Dot, OutContext),
-                                  MI->isReturn() ? "IMAGE_REL_LLVM_FUSED_JUMP"
-                                                 : "IMAGE_REL_LLVM_FUSED_CALL",
-                                  MCSymbolRefExpr::create(Pointer, OutContext),
-                                  SMLoc());
+  OutStreamer->emitRelocDirective(
+      *MCSymbolRefExpr::create(Dot, OutContext),
+      COFF::findFusedMarker(
+          TM.getTargetTriple().isX86_64() ? COFF::IMAGE_FILE_MACHINE_AMD64
+                                          : COFF::IMAGE_FILE_MACHINE_ARM64,
+          [&](const COFF::FusedMarker &Marker) { return Marker.Use == Use; })
+          ->Name,
+      Pointer ? MCSymbolRefExpr::create(Pointer, OutContext) : nullptr,
+      SMLoc());
 }
 
 std::tuple<const MCSymbol *, uint64_t, const MCSymbol *,

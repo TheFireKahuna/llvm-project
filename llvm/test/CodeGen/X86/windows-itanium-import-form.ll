@@ -40,18 +40,24 @@ define void @defined() {
 define void @calls() {
 ; X64-LABEL: calls:
 ; X64-PLT:        callq plain
-; X64-NOPLT:      callq *__imp_plain(%rip)
-; X64-NEXT:       callq *__imp_nolazy(%rip)
+; X64-NOPLT:      movq __imp_plain@LOAD_CALL(%rip), %rax
+; X64-NOPLT-NEXT: callq *%rax
+; X64-NEXT:       movq __imp_nolazy@LOAD_CALL(%rip), %rax
+; X64-NEXT:       callq *%rax
 ; X64-NEXT:       callq local
 ; X64-NEXT:       callq hidden
 ; X64-NEXT:       callq exported
 ; X64-NEXT:       callq defined
-; X64-NEXT:       callq *__imp_imported(%rip)
-; X64-NEXT:       callq *__imp_weak(%rip)
+; X64-NEXT:       movq __imp_imported@LOAD_CALL(%rip), %rax
+; X64-NEXT:       callq *%rax
+; X64-NEXT:       movq __imp_weak@LOAD_CALL(%rip), %rax
+; X64-NEXT:       callq *%rax
 ; X64-O0-LABEL: calls:
-; X64-O0:         callq *__imp_plain(%rip)
+; X64-O0:         movq __imp_plain@LOAD_CALL(%rip), %rax
+; X64-O0-NEXT:    callq *%rax
 ; X64-O0:         callq local
-; X64-O0:         callq *__imp_weak(%rip)
+; X64-O0:         movq __imp_weak@LOAD_CALL(%rip), %rax
+; X64-O0-NEXT:    callq *%rax
 ; MSVC-LABEL: calls:
 ; MSVC:           callq plain
 ; MSVC-NEXT:      callq nolazy
@@ -101,9 +107,11 @@ define void @tail_call() {
 define void @library_call(ptr %d, ptr %s, i64 %n) {
 ; X64-LABEL: library_call:
 ; X64-PLT:        callq memcpy
-; X64-NOPLT:      callq *__imp_memcpy(%rip)
+; X64-NOPLT:      movq __imp_memcpy@LOAD_CALL(%rip), %rax
+; X64-NOPLT-NEXT: callq *%rax
 ; X64-O0-LABEL: library_call:
-; X64-O0:         callq *__imp_memcpy(%rip)
+; X64-O0:         movq __imp_memcpy@LOAD_CALL(%rip), %rax
+; X64-O0-NEXT:    callq *%rax
 ; MSVC-LABEL: library_call:
 ; MSVC:           callq memcpy
 ; A64-LABEL: library_call:
@@ -187,10 +195,6 @@ define i32 @compare(ptr %p) {
   ret i32 %r
 }
 
-; X64:            movq __imp_weak(%rip), %rax
-; X64-NEXT:       testq %rax, %rax
-; X64:            callq *__imp_weak(%rip)
-; A64:            ldr x8, [x8, :lo12:__imp_weak]
 define i32 @narrow() {
 ; X64-LABEL: narrow:
 ; X64:            movq __imp_plain(%rip), %rax

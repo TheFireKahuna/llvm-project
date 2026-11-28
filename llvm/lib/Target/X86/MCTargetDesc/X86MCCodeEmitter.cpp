@@ -626,6 +626,7 @@ void X86MCCodeEmitter::emitMemModRMByte(
         switch (Opcode) {
         case X86::LEA16r:
         case X86::LEA64_32r:
+          return X86::reloc_riprel_4byte_narrow;
         case X86::LEA64r:
           return X86::reloc_riprel_4byte_lea;
         case X86::MOV64rm:
@@ -647,6 +648,15 @@ void X86MCCodeEmitter::emitMemModRMByte(
                        : X86::reloc_riprel_4byte_jump;
           if (!HasOffset && NumPrefixes == 1)
             return X86::reloc_riprel_4byte_jump_p1;
+          break;
+        // The test of a pointer for zero that states itself as fused.
+        case X86::CMP64mi8:
+          if (!HasOffset &&
+              cast<MCSymbolRefExpr>(Disp.getExpr())->getSpecifier() ==
+                  X86::S_COFF_FUSED &&
+              MI.getOperand(Op + X86::AddrNumOperands).isImm() &&
+              !MI.getOperand(Op + X86::AddrNumOperands).getImm())
+            return X86::reloc_riprel_4byte_test;
           break;
         }
         return X86::reloc_riprel_4byte;
@@ -2048,8 +2058,8 @@ void X86MCCodeEmitter::encodeInstruction(const MCInst &MI,
 
   // On Windows Itanium and NT-POSIX the linker may change the size of a call
   // or jump through a pointer that it binds and of a jump whose width the
-  // assembler chooses, and may delete a jmp that no unwind frame covers. Each
-  // has one fixup.
+  // assembler chooses, and may delete a jmp that no unwind frame covers and
+  // a fused test. Each has one fixup.
   if (!Fixups.empty() && STI.hasFeature(X86::Is64Bit) &&
       STI.getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
     unsigned FixupKind = Fixups.back().getKind();
@@ -2058,6 +2068,7 @@ void X86MCCodeEmitter::encodeInstruction(const MCInst &MI,
         FixupKind == X86::reloc_riprel_4byte_jump ||
         FixupKind == X86::reloc_riprel_4byte_jump_p1 ||
         FixupKind == X86::reloc_riprel_4byte_tail ||
+        FixupKind == X86::reloc_riprel_4byte_test ||
         FixupKind == X86::reloc_tail_4byte_pcrel)
       Fixups.back().setLinkerRelaxable();
   }

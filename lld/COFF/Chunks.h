@@ -400,6 +400,12 @@ public:
   // CodeView.
   bool resizable : 1;
 
+  // Whether the link moves the code of this resizable section: it is no
+  // x86-64 section, or has a relocation that COFF::relocationMovesCode names.
+  // Any other keeps its bytes where they are, but for a jump that ends it,
+  // which the link may delete, and each of its sites keeps its length.
+  bool movable : 1;
+
   // Whether ICF must never fold this section: a program enumerates it through
   // __start_ and __stop_ symbols, or it is a function override's body, whose
   // branches stay sites of its own record.

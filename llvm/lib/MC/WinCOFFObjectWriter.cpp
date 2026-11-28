@@ -1044,6 +1044,21 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
                                     getContext(), Target, Fixup,
                                     Target.getSubSym(), Asm->getBackend());
 
+  // The linker may resize the code at such a type, so the assembler must
+  // have ended a fragment with it; a marker's site is the streamer's to end.
+  // It keeps the length of an AMD64 site in a section whose code it does not
+  // move, where at most the last fragment is its to resize.
+  if (!IsLiteral && !Target.getSubSym() && !F.isLinkerRelaxable() &&
+      (Header.Machine != COFF::IMAGE_FILE_MACHINE_AMD64 ||
+       F.getLayoutOrder() > MCSec->firstLinkerRelaxable()) &&
+      getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment() &&
+      COFF::relocationMayResizeCode(Header.Machine, Reloc.Data.Type,
+                                    A.getName()))
+    getContext().reportError(
+        Fixup.getLoc(),
+        "internal error: the linker may resize code that the assembler did "
+        "not state as resizable");
+
   bool IsArm64SecRel12 = false;
   if (COFF::isAnyArm64(Header.Machine)) {
     switch (Reloc.Data.Type) {
@@ -1123,10 +1138,11 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   Reloc.Data.VirtualAddress += Fixup.getOffset();
 
   // The *_REL32 relocations are relative to the end of the relocation,
-  // not to the start; AMD64's REL32_1 to REL32_5 to 1 to 5 bytes after it. So
-  // are the PC-relative LLVM types, whose field has four bytes or, for JUMP8,
-  // one. An AMD64 fused read's field holds no addend, and what its fixup adds
-  // is written as it is.
+  // not to the start; AMD64's REL32_1 to REL32_5 to 1 to 5 bytes after it, as
+  // is its fused test, to the byte of immediate after it. So are the
+  // PC-relative LLVM types, whose field has four bytes or, for JUMP8, one. An
+  // AMD64 fused read's field holds no addend, and what its fixup adds is
+  // written as it is.
   if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
       Reloc.Data.Type >= COFF::IMAGE_REL_AMD64_REL32 &&
       Reloc.Data.Type <= COFF::IMAGE_REL_AMD64_REL32_5)
@@ -1134,6 +1150,9 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
   else if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
            Reloc.Data.Type == COFF::IMAGE_REL_LLVM_BRANCH_TAIL)
     FixedValue += 4;
+  else if (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
+           Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_TEST)
+    FixedValue += 5;
   else if ((Header.Machine == COFF::IMAGE_FILE_MACHINE_I386 &&
             Reloc.Data.Type == COFF::IMAGE_REL_I386_REL32) ||
            (Header.Machine == COFF::IMAGE_FILE_MACHINE_ARMNT &&
@@ -1142,7 +1161,7 @@ void WinCOFFWriter::recordRelocation(const MCFragment &F, const MCFixup &Fixup,
             Reloc.Data.Type == COFF::IMAGE_REL_ARM64_REL32) ||
            Reloc.Data.Type == COFF::IMAGE_REL_LLVM_REL32_CALL ||
            (Reloc.Data.Type >= COFF::IMAGE_REL_LLVM_BRANCH32 &&
-            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_MEM_JUMP_TAIL) ||
+            Reloc.Data.Type <= COFF::IMAGE_REL_LLVM_MEM_LOAD_CALL) ||
            (Header.Machine == COFF::IMAGE_FILE_MACHINE_AMD64 &&
             (Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ ||
              Reloc.Data.Type == COFF::IMAGE_REL_LLVM_FUSED_READ_REX2)))

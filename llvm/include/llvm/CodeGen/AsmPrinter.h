@@ -37,6 +37,10 @@
 
 namespace llvm {
 
+namespace COFF {
+enum class FusedUse : uint8_t;
+}
+
 class AddrLabelMap;
 class AsmPrinterHandler;
 class BasicBlock;
@@ -255,9 +259,15 @@ protected:
   /// has emitted, each with the index of its table.
   SmallVector<std::pair<int, MCSymbol *>, 0> JumpTableLoads;
 
-  /// The current function's fused reads, calls and jumps, each with its read:
-  /// the load of the pointer it goes through.
-  DenseMap<const MachineInstr *, const MachineInstr *> FusedSites;
+  /// A fused site: the load of the pointer that it goes through, and how it
+  /// reads the load's register. A fused read is its own load and reads
+  /// nothing.
+  struct FusedSite {
+    const MachineInstr *Load = nullptr;
+    COFF::FusedUse Use{};
+  };
+  /// The current function's fused reads and sites.
+  DenseMap<const MachineInstr *, FusedSite> FusedSites;
 
   /// For dso_local functions, the current $local alias for the function.
   MCSymbol *CurrentFnBeginLocal = nullptr;
@@ -912,17 +922,50 @@ public:
   /// Itanium and NT-POSIX.
   void emitJumpTableLoadLabel(int JTI);
 
-  /// Finds the current function's fused sites, where the object states them:
-  /// on Windows Itanium and NT-POSIX. \p IsPointerLoad says whether an
-  /// instruction loads an import pointer into the register of its first
-  /// operand, and \p SiteOpcodes are the calls and tail calls through the
-  /// register of theirs.
-  void findFusedSites(function_ref<bool(const MachineInstr &)> IsPointerLoad,
-                      ArrayRef<unsigned> SiteOpcodes);
+  /// Whether the current function is one whose fused sites are stated and
+  /// that is optimized, so that its instructions may change for them.
+  bool optimizesFusedSites() const;
 
-  /// Emits the relocation that marks the instruction that follows, the fused
-  /// call or tail call \p MI, and names \p Pointer.
-  void emitFusedSite(const MachineInstr *MI, const MCSymbol *Pointer);
+  /// Whether \p Load, which writes the register of its first operand, is that
+  /// register's last writer on every path to \p Use, or with \p OrItsLike an
+  /// instruction identical to it is, with \p InItsSection one of its section.
+  bool isOnlySetter(const MachineInstr &Load, const MachineInstr &Use,
+                    bool OrItsLike = false, bool InItsSection = false) const;
+
+  /// Gives \p Reader each instruction that reads what \p Def wrote to the
+  /// register of its first operand, on every path from it, and collects the
+  /// debug values that name the register there.
+  void forEachReader(MachineInstr &Def,
+                     SmallVectorImpl<MachineInstr *> &DebugValues,
+                     function_ref<void(MachineInstr &)> Reader) const;
+
+  /// Finds the current function's fused sites where the object states them,
+  /// before any instruction is emitted or described. \p IsPointerLoad says
+  /// whether an instruction loads an import pointer into the register of its
+  /// first operand, and \p GetUse how an instruction reads a register that
+  /// holds what such a load wrote, as the target describes its fused sites,
+  /// with the operand that reads it. \p AccessNeedsRead says that an access
+  /// is a site only of a load that its sites alone read, and \p SharesSites
+  /// that several loads of one pointer into one register may reach a site,
+  /// which the linker then binds by the pointer alone. \p Place is given
+  /// each such load, with its sites, and returns whether it removed the load
+  /// and its sites; it may otherwise move the load in its block. A variable
+  /// said to be in such a load's register is set undefined.
+  using FusedSiteList =
+      SmallVector<std::pair<MachineInstr *, COFF::FusedUse>, 4>;
+  void findFusedSites(
+      function_ref<bool(const MachineInstr &)> IsPointerLoad,
+      function_ref<COFF::FusedUse(const MachineInstr &Load,
+                                  const MachineInstr &MI, unsigned &RegOp)>
+          GetUse,
+      bool AccessNeedsRead, bool SharesSites,
+      function_ref<bool(MachineInstr &, const FusedSiteList &)> Place =
+          nullptr);
+
+  /// Emits the relocation that marks the instruction that follows, a fused
+  /// site that reads its register as \p Use says, and names \p Pointer where
+  /// its type names one.
+  void emitFusedSite(COFF::FusedUse Use, const MCSymbol *Pointer);
 
   //===------------------------------------------------------------------===//
   // CodeView Helper Routines

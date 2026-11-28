@@ -9,12 +9,13 @@
 // RUN: cmp %t.o %t.p.o
 // RUN: llvm-mc -triple x86_64-pc-windows-msvc -filetype=obj \
 // RUN:   -x86-align-branch-boundary=32 -x86-align-branch=jcc+fused+jmp \
-// RUN:   -x86-pad-max-prefix-size=5 %s -o %t.m.o
+// RUN:   -x86-pad-max-prefix-size=5 --defsym MSVC=1 %s -o %t.m.o
 // RUN: llvm-readobj -r %t.m.o | FileCheck %s --check-prefix=MSVC
 // RUN: llvm-objdump -d -j .text %t.m.o | FileCheck %s --check-prefix=MSVC-DIS
 
 // Padding that keeps a branch from crossing or ending on a boundary is the
-// linker's to redo in a section it resizes. An ALIGN relocation at the padding,
+// linker's to redo in a section whose code it moves, which a fused read makes
+// each section here. An ALIGN relocation at the padding,
 // also where there is none, adds bit 21 and, from bit 22, the length of the
 // branch, with the instruction fused to it, to the boundary and the longest
 // no-operation: 23069157 is 32 bytes, 15 and 5 bytes, and 10486245 is 2 bytes.
@@ -32,6 +33,7 @@
 // CHECK-NEXT:     0x5C IMAGE_REL_LLVM_ALIGN - (10486245)
 // CHECK-NEXT:     0x5D IMAGE_REL_LLVM_JUMP8 [[T]]
 // CHECK-NEXT:     0x60 IMAGE_REL_LLVM_MEM_CALL __imp_g
+// CHECK-NEXT:     0x68 IMAGE_REL_LLVM_FUSED_READ __imp_g
 // CHECK-NEXT:   }
 
 // What follows the padding in .text$u is longer than 5 bits hold, and in
@@ -39,10 +41,10 @@
 // relocation and neither section is listed. The assembler resolves the
 // jumps in them and their alignment.
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text$u {
-// CHECK-NEXT:     0x2 IMAGE_REL_LLVM_MEM_CALL __imp_g
+// CHECK-NEXT:     0x3 IMAGE_REL_LLVM_FUSED_READ __imp_g
 // CHECK-NEXT:   }
 // CHECK-NEXT:   Section ({{[0-9]+}}) .text$v {
-// CHECK-NEXT:     0x2 IMAGE_REL_LLVM_MEM_CALL __imp_g
+// CHECK-NEXT:     0x3 IMAGE_REL_LLVM_FUSED_READ __imp_g
 // CHECK-NEXT:   }
 // CHECK:          Kind: Sections (0x2)
 // CHECK-NEXT:     ResizableSection: .text ({{[0-9]+}})
@@ -58,6 +60,14 @@
 // MSVC:     0x58 IMAGE_REL_AMD64_REL32 ext
 // MSVC-DIS:      19: 2e 2e 2e 2e 48 89 c1 movq %rax, %rcx
 // MSVC-DIS-NEXT: 20: 48 39 c1             cmpq %rax, %rcx
+
+.macro moves
+.ifdef MSVC
+  movq __imp_g(%rip), %rax
+.else
+  movq __imp_g@FUSED(%rip), %rax
+.endif
+.endm
 
   .text
   .globl f
@@ -79,9 +89,10 @@ f:
   jne .Lt
   callq *__imp_g(%rip)
   retq
+  moves
 
   .section .text$u,"xr"
-  callq *__imp_g(%rip)
+  moves
   cmpq %rax, %rcx
   .fill 30, 1, 0x90
   je .Lu
@@ -89,7 +100,7 @@ f:
   retq
 
   .section .text$v,"xr"
-  callq *__imp_g(%rip)
+  moves
   cmpq %rax, %rcx
   .p2align 4
   je .Lv

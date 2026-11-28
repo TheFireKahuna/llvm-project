@@ -2,16 +2,17 @@
 // RUN: llvm-readobj -r --unwind --coff-link-records %t.o | FileCheck %s --check-prefixes=CHECK,FORK
 // RUN: llvm-mc -triple x86_64-pc-windows-ntposix -filetype=obj %s -o %t.n.o
 // RUN: llvm-readobj -r --unwind --coff-link-records %t.n.o | FileCheck %s --check-prefixes=CHECK,FORK
-// RUN: llvm-mc -triple x86_64-pc-windows-msvc -filetype=obj %s -o %t.m.o
+// RUN: llvm-mc -triple x86_64-pc-windows-msvc --defsym MSVC=1 -filetype=obj %s -o %t.m.o
 // RUN: llvm-readobj -r --unwind %t.m.o | FileCheck %s --check-prefixes=CHECK,MSVC \
 // RUN:   --implicit-check-not=IMAGE_REL_LLVM
-// RUN: llvm-mc -triple x86_64-pc-windows-msvc %s | FileCheck %s --check-prefix=ASM
-// RUN: not llvm-mc -triple x86_64-pc-windows-msvc --defsym ERR=1 %s -o /dev/null 2>&1 \
+// RUN: llvm-mc -triple x86_64-pc-windows-msvc --defsym MSVC=1 %s | FileCheck %s --check-prefix=ASM
+// RUN: not llvm-mc -triple x86_64-pc-windows-msvc --defsym MSVC=1 --defsym ERR=1 %s -o /dev/null 2>&1 \
 // RUN:   | FileCheck %s --check-prefix=ERR
 
 // On Windows Itanium and NT-POSIX each distance of a version 2 epilogue from
 // its function's end is a relocation naming a label at the end and, in its
-// PAIR, one at the epilogue, so the linker may resize the section. The
+// PAIR, one at the epilogue, so the linker may resize the section, whose code
+// it moves after the fused read at its end. The
 // function's last epilogue is listed last there, where a jump the linker
 // deletes after an epilogue of that jump alone leaves the distance zero, which
 // ends the list. `.seh_stackalloc` with `large` states an allocation in the
@@ -22,6 +23,7 @@
 // FORK-NEXT:   0x{{[0-9A-F]+}} IMAGE_REL_LLVM_JUMP8 $L
 // FORK-NEXT:   0x{{[0-9A-F]+}} IMAGE_REL_LLVM_BRANCH_TAIL ext
 // FORK-NEXT:   0x{{[0-9A-F]+}} IMAGE_REL_LLVM_JUMP8 $L
+// FORK-NEXT:   0x{{[0-9A-F]+}} IMAGE_REL_LLVM_FUSED_READ __imp_g
 // FORK-NEXT: }
 // FORK-NEXT: Section ({{[0-9]+}}) .xdata {
 // FORK-NEXT:   0x6 IMAGE_REL_LLVM_SSPAN_EPILOGV2 [[END1:\$L[0-9a-f]+]]
@@ -124,6 +126,9 @@ gone:
   .seh_unwindv2start
   .seh_endepilogue
   .seh_endproc
+.ifndef MSVC
+  movq __imp_g@FUSED(%rip), %rax
+.endif
 
 .ifdef ERR
   .seh_proc bad

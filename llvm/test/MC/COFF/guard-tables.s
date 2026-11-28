@@ -21,8 +21,8 @@
 // An object for Windows Itanium or NT-POSIX lists in .gfids$y each function,
 // and in .giats$y each import pointer, whose address one of its relocations
 // takes, and sets bit 0x800 of @feat.00. A call or a jump, also through an
-// import pointer, a branch, a field through which a function is only called
-// and unwind data take no address. A symbol that has a type other than a
+// import pointer, the test of one for zero, a branch, a field through which a
+// function is only called and unwind data take no address. A symbol that has a type other than a
 // function's is not listed; an undefined one without a type is, as it may be
 // a function.
 
@@ -77,14 +77,11 @@ called:
   movq __imp_taken(%rip), %rax
   callq *__imp_called(%rip)
 .ifndef MSVC
-  movq __imp_called@FUSED(%rip), %rax
-  .reloc ., IMAGE_REL_LLVM_FUSED_CALL, __imp_called
-  cs; cs; cs; cs
+  movq __imp_called@LOAD_CALL(%rip), %rax
   callq *%rax
-  movq __imp_jumped@FUSED(%rip), %rax
-  .reloc ., IMAGE_REL_LLVM_FUSED_JUMP, __imp_jumped
-  rex64 jmpq *%rax
-  int3; int3; int3; int3
+  jmpq *__imp_jumped(%rip)
+  cmpq $0, __imp_tested@FUSED(%rip)
+  je called
 .endif
 .else
   bl called
@@ -104,6 +101,10 @@ called:
   ldr x16, [x16, :fused_lo12:__imp_jumped]
   .reloc ., IMAGE_REL_LLVM_FUSED_JUMP, __imp_jumped
   br x16
+  adrp x9, __imp_tested
+  ldr x9, [x9, :fused_lo12:__imp_tested]
+  .reloc ., IMAGE_REL_LLVM_FUSED_TEST, __imp_tested
+  cbz x9, called
 .endif
 
   .data

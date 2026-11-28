@@ -106,19 +106,18 @@ bool needsAddressSizeOverride(const MCInst &MI, const MCSubtargetInfo &STI,
 MCSubtargetInfo *createX86MCSubtargetInfo(const Triple &TT, StringRef CPU,
                                           StringRef FS);
 
-/// The place of an instruction in a fused call or jump, the marked
-/// instructions that the linker rewrites as one.
+/// The place of an instruction in a site that the linker rewrites as one: a
+/// fused site, or a load and the call through its register.
 enum FusedSitePart : unsigned {
   FSP_None = 0,
-  FSP_Inside = 1,
   FSP_First = 2,
   FSP_Last = 4,
 };
 
-/// Emits \p Inst. A fused site is one unit to padding: what keeps its call or
-/// jmp within a boundary goes before \p Marker, the label that states the
-/// site at its first instruction, which moves past it, and no padding
-/// lengthens an instruction of the site.
+/// Emits \p Inst. A site is one unit to padding: what keeps its branch within
+/// a boundary goes before it and before \p Marker, the label that states it
+/// at its first instruction where it has one, which moves past the padding,
+/// and no padding lengthens an instruction of the site.
 void emitInstruction(MCObjectStreamer &, const MCInst &Inst,
                      const MCSubtargetInfo &STI, unsigned Part = FSP_None,
                      MCSymbol *Marker = nullptr);

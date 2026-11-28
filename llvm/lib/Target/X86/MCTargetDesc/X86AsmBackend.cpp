@@ -406,9 +406,9 @@ void X86_MC::emitInstruction(MCObjectStreamer &S, const MCInst &Inst,
 }
 
 /// Begin an instruction of a fused site. The linker rewrites the site in
-/// place from its marker, so no padding enters it and none lengthens one of
-/// its instructions: a BoundaryAlignFragment for its call or jmp goes before
-/// the whole site, and \p Marker follows it.
+/// place, so no padding enters it and none lengthens one of its
+/// instructions: a BoundaryAlignFragment for its call or jmp goes before the
+/// whole site, and \p Marker, where the site has one, follows it.
 void X86AsmBackend::emitFusedSiteBegin(MCObjectStreamer &OS, const MCInst &Inst,
                                        const MCSubtargetInfo &STI,
                                        unsigned Part, MCSymbol *Marker) {
@@ -416,16 +416,31 @@ void X86AsmBackend::emitFusedSiteBegin(MCObjectStreamer &OS, const MCInst &Inst,
   if (!(Part & X86_MC::FSP_First))
     return;
   PendingBA = nullptr;
-  // A site that begins with a segment override is a call's.
-  bool NeedAlign = Inst.getOpcode() == X86::CS_PREFIX
-                       ? AlignBranchType & X86::AlignBranchCall
-                       : needAlign(Inst);
-  if (!Marker || !NeedAlign || !canPadBranches(OS) || !canPadHere(OS))
+  // A site that begins with the load of its target is a call's. One that
+  // begins with a test ends with a jcc, which fuses with the test of a
+  // register and not with the compare of a pointer in memory.
+  unsigned Type = 0;
+  switch (Inst.getOpcode()) {
+  case X86::MOV64rm:
+    Type = X86::AlignBranchCall;
+    break;
+  case X86::TEST64rr:
+    Type = X86::AlignBranchFused;
+    break;
+  case X86::CMP64mi8:
+  case X86::CMP64mi32:
+    Type = X86::AlignBranchJcc;
+    break;
+  }
+  bool NeedAlign = Type ? AlignBranchType & Type : needAlign(Inst);
+  if (!NeedAlign || !canPadBranches(OS) || !canPadHere(OS))
     return;
   PendingBA =
       OS.newSpecialFragment<MCBoundaryAlignFragment>(AlignBoundary, STI);
-  Marker->setFragment(OS.getCurrentFragment());
-  Marker->setOffset(0);
+  if (Marker) {
+    Marker->setFragment(OS.getCurrentFragment());
+    Marker->setOffset(0);
+  }
 }
 
 /// Open a MCBoundaryAlignFragment for the upcoming instruction so that layout
@@ -636,6 +651,8 @@ MCFixupKindInfo X86AsmBackend::getFixupKindInfo(MCFixupKind Kind) const {
       {"reloc_riprel_4byte_jump_p1", 0, 32, 0},
       {"reloc_riprel_4byte_tail", 0, 32, 0},
       {"reloc_riprel_4byte_lea", 0, 32, 0},
+      {"reloc_riprel_4byte_narrow", 0, 32, 0},
+      {"reloc_riprel_4byte_test", 0, 32, 0},
       {"reloc_jump_4byte_pcrel", 0, 32, 0},
       {"reloc_jump_1byte_pcrel", 0, 8, 0},
       {"reloc_tail_4byte_pcrel", 0, 32, 0},
@@ -679,6 +696,8 @@ static unsigned getFixupKindSize(unsigned Kind) {
   case X86::reloc_riprel_4byte_jump_p1:
   case X86::reloc_riprel_4byte_tail:
   case X86::reloc_riprel_4byte_lea:
+  case X86::reloc_riprel_4byte_narrow:
+  case X86::reloc_riprel_4byte_test:
   case X86::reloc_jump_4byte_pcrel:
   case X86::reloc_tail_4byte_pcrel:
   case X86::reloc_riprel_4byte_relax:
@@ -752,6 +771,17 @@ void X86AsmBackend::applyFixup(const MCFragment &F, const MCFixup &Fixup,
   // - GAS doesn't emit a relocation for call local@plt; local:.
   if (Target.getSpecifier())
     IsResolved = false;
+  // The field of a load of a pointer holds no offset, and its fixup is of the
+  // pointer less the four bytes of the field. What the assembler added to
+  // that states the load to the linker, which reads it only from a
+  // relocation.
+  if (int64_t States = Target.getConstant() + 4;
+      IsResolved && States &&
+      (Fixup.getKind() == X86::reloc_riprel_4byte_movq_load ||
+       Fixup.getKind() == X86::reloc_riprel_4byte_movq_load_rex2))
+    return applyFixup(F, Fixup,
+                      MCValue::get(Target.getAddSym(), Target.getSubSym(), -4),
+                      Data, Value - States, IsResolved);
   // The linker may change a distance the assembler resolved across code that
   // it resizes, so the object states the field. A jump of a width the
   // assembler chose keeps its relocation. An 8-bit field is the span from a
@@ -1371,20 +1401,16 @@ public:
             .Case("IMAGE_REL_AMD64_SREL32", COFF::IMAGE_REL_AMD64_SREL32)
             .Case("IMAGE_REL_LLVM_ALIGN", COFF::IMAGE_REL_LLVM_ALIGN)
             .Default(-1u);
-    // A Windows Itanium or NT-POSIX object marks a call or a jump through a
-    // register that holds an import pointer, the test of one, and the
+    // A Windows Itanium or NT-POSIX object marks its fused sites, and the
     // sequence that forms an image's thread-local base.
-    if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment())
-      Type =
-          StringSwitch<unsigned>(Name)
-              .Case("IMAGE_REL_LLVM_FUSED_CALL",
-                    COFF::IMAGE_REL_LLVM_FUSED_CALL)
-              .Case("IMAGE_REL_LLVM_FUSED_JUMP",
-                    COFF::IMAGE_REL_LLVM_FUSED_JUMP)
-              .Case("IMAGE_REL_LLVM_FUSED_TEST",
-                    COFF::IMAGE_REL_LLVM_FUSED_TEST)
-              .Case("IMAGE_REL_LLVM_TLS_SCALE", COFF::IMAGE_REL_LLVM_TLS_SCALE)
-              .Default(Type);
+    if (getContext().getTargetTriple().isWindowsItaniumOrNTPOSIXEnvironment()) {
+      if (Name == "IMAGE_REL_LLVM_TLS_SCALE")
+        Type = COFF::IMAGE_REL_LLVM_TLS_SCALE;
+      else if (const COFF::FusedMarker *Marker = COFF::findFusedMarker(
+                   COFF::IMAGE_FILE_MACHINE_AMD64,
+                   [&](const COFF::FusedMarker &M) { return M.Name == Name; }))
+        Type = Marker->Type;
+    }
     if (Is64Bit && Type != -1u)
       return getCOFFRelocFixupKind(Type);
     return StringSwitch<std::optional<MCFixupKind>>(Name)

@@ -96,6 +96,7 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   IndCSPrefix = M->getModuleFlag("indirect_branch_cs_prefix");
 
   SetupMachineFunction(MF);
+  fuseImportCalls();
 
   if (Subtarget->isTargetCOFF()) {
     bool Local = MF.getFunction().hasLocalLinkage();
@@ -121,6 +122,229 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   return false;
 }
 
+const MachineOperand *X86AsmPrinter::getImportPointer(const MachineInstr &MI,
+                                                      unsigned Op) {
+  const MachineOperand &Pointer = MI.getOperand(Op + X86::AddrDisp);
+  return MI.getOperand(Op + X86::AddrBaseReg).getReg() == X86::RIP &&
+                 !MI.getOperand(Op + X86::AddrSegmentReg).getReg() &&
+                 (Pointer.isGlobal() || Pointer.isSymbol()) &&
+                 (Pointer.getTargetFlags() == X86II::MO_DLLIMPORT ||
+                  Pointer.getTargetFlags() == X86II::MO_COFFSTUB) &&
+                 !Pointer.getOffset()
+             ? &Pointer
+             : nullptr;
+}
+
+void X86AsmPrinter::fuseImportCalls() {
+  // Import call optimization has its own forms of a call and a tail call
+  // through an import pointer, and a load that is hardened against load value
+  // injection stays.
+  auto IsPointerLoad = [&](const MachineInstr &MI) {
+    return MI.getOpcode() == X86::MOV64rm && !EnableImportCallOptimization &&
+           !Subtarget->useLVILoadHardening() && getImportPointer(MI, 1);
+  };
+  const X86InstrInfo *TII = Subtarget->getInstrInfo();
+  const TargetRegisterInfo *TRI = Subtarget->getRegisterInfo();
+  // Where the function is not optimized the instructions stay but for the
+  // load of a call, which is the call's.
+  bool Edits = optimizesFusedSites();
+
+  // The constant that an add or a sub with dead flags gives the register
+  // that the load of a pointer directly before it wrote is a lea's, which
+  // changes no flag: the linker folds it into the load where it binds the
+  // pointer, and nothing has to state or prove what that does to the flags.
+  if (Edits)
+    for (MachineBasicBlock &MBB : *MF)
+      for (MachineInstr &Load : MBB) {
+        MachineBasicBlock::iterator MI =
+            next_nodbg(MachineBasicBlock::iterator(Load), MBB.end());
+        if (!IsPointerLoad(Load) || MI == MBB.end())
+          continue;
+        Register Reg = Load.getOperand(0).getReg();
+        // A lea that alone reads the load's register and gives the sum to
+        // another has the load write that one.
+        if (MI->getOpcode() == X86::LEA64r &&
+            MI->getOperand(1 + X86::AddrBaseReg).getReg() == Reg &&
+            !MI->getOperand(1 + X86::AddrIndexReg).getReg() &&
+            MI->getOperand(1 + X86::AddrDisp).isImm() &&
+            MI->getOperand(0).getReg() != Reg) {
+          SmallVector<MachineInstr *, 2> DebugValues;
+          bool Alone = true;
+          forEachReader(Load, DebugValues,
+                        [&](MachineInstr &I) { Alone &= &I == &*MI; });
+          if (Alone) {
+            Load.getOperand(0).setReg(MI->getOperand(0).getReg());
+            MI->getOperand(1 + X86::AddrBaseReg)
+                .setReg(MI->getOperand(0).getReg());
+            for (MachineInstr *DebugValue : DebugValues)
+              DebugValue->setDebugValueUndef();
+          }
+          continue;
+        }
+        bool IsSub = MI->getOpcode() == X86::SUB64ri32;
+        if ((!IsSub && MI->getOpcode() != X86::ADD64ri32) ||
+            MI->getOperand(0).getReg() != Reg || !MI->getOperand(2).isImm() ||
+            MBB.computeRegisterLiveness(TRI, X86::EFLAGS, std::next(MI)) !=
+                MachineBasicBlock::LQR_Dead)
+          continue;
+        int64_t Imm =
+            IsSub ? -MI->getOperand(2).getImm() : MI->getOperand(2).getImm();
+        if (!isInt<28>(Imm))
+          continue;
+        BuildMI(MBB, MI, MI->getDebugLoc(), TII->get(X86::LEA64r), Reg)
+            .addReg(Reg, RegState::Kill)
+            .addImm(1)
+            .addReg(0)
+            .addImm(Imm)
+            .addReg(0);
+        MI->eraseFromParent();
+      }
+
+  findFusedSites(
+      IsPointerLoad,
+      [&](const MachineInstr &Load, const MachineInstr &MI, unsigned &Op) {
+        COFF::FusedUse Use = X86::getFusedUse(MI, MI.getDesc(), Op);
+        // Only an optimized function states more than its calls. The lea of
+        // a constant is stated directly after its load, and an access where
+        // the instruction that the assembler is given is one as well.
+        bool IsCall =
+            Use == COFF::FusedUse::Call || Use == COFF::FusedUse::Jump;
+        if (!IsCall && !Edits)
+          return COFF::FusedUse::None;
+        if (Use == COFF::FusedUse::Add &&
+            next_nodbg(MachineBasicBlock::const_iterator(Load),
+                       Load.getParent()->end()) !=
+                MachineBasicBlock::const_iterator(MI))
+          return COFF::FusedUse::None;
+        // A test is one whose result the je or jne after it alone reads; a
+        // hint that the branch is taken would be a prefix between the two.
+        if (Use == COFF::FusedUse::Test) {
+          const MachineBasicBlock &MBB = *MI.getParent();
+          MachineBasicBlock::const_iterator Jcc =
+              next_nodbg(MachineBasicBlock::const_iterator(MI), MBB.end());
+          if (Jcc == MBB.end() || Jcc->getOpcode() != X86::JCC_1 ||
+              (Jcc->getOperand(1).getImm() != X86::COND_E &&
+               Jcc->getOperand(1).getImm() != X86::COND_NE) ||
+              MBB.computeRegisterLiveness(TRI, X86::EFLAGS, std::next(Jcc)) !=
+                  MachineBasicBlock::LQR_Dead ||
+              (Subtarget->hasBranchHint() &&
+               Subtarget->getCLOpts().enable_branch_hint))
+            return COFF::FusedUse::None;
+        }
+        if (unsigned InstOp;
+            Use == COFF::FusedUse::Access &&
+            (getLoweredFusedUse(MI, InstOp) != Use || InstOp != Op))
+          return COFF::FusedUse::None;
+        return Use;
+      },
+      /*AccessNeedsRead=*/false, /*SharesSites=*/false,
+      [&](MachineInstr &Read, const AsmPrinter::FusedSiteList &Sites) {
+        // The load of a fused add stays, and takes the sum where the linker
+        // binds its pointer.
+        if (Sites[0].second == COFF::FusedUse::Add) {
+          FusedSites[Sites[0].first] = {&Read, COFF::FusedUse::Add};
+          return true;
+        }
+        MachineBasicBlock &MBB = *Read.getParent();
+        MachineInstr *Site = Sites[0].first;
+        // A test that alone reads the load, in its block, is the compare of
+        // the pointer in memory with zero, which takes no register and which
+        // the linker deletes where it binds the pointer.
+        if (Sites.size() == 1 && Site->getParent() == &MBB &&
+            Sites[0].second == COFF::FusedUse::Test) {
+          MachineInstrBuilder New = BuildMI(MBB, *Site, Site->getDebugLoc(),
+                                            TII->get(X86::CMP64mi32));
+          for (unsigned I = 1; I <= X86::AddrNumOperands; ++I)
+            New.add(Read.getOperand(I));
+          New.addImm(0)->setMemRefs(*MF, Read.memoperands());
+          FusedSites[New] = {New, COFF::FusedUse::Test};
+          Site->eraseFromParent();
+          Read.eraseFromParent();
+          return true;
+        }
+        // A load that serves one call, in its own block, is the call's
+        // operand: a call loads its target for itself where it is emitted,
+        // and a tail call jumps through the pointer in memory.
+        MachineInstr *CopyMI = nullptr;
+        if (Sites.size() == 1 && Site->getParent() == &MBB &&
+            (Sites[0].second == COFF::FusedUse::Call ||
+             Sites[0].second == COFF::FusedUse::Jump))
+          if (MachineInstr *New = TII->foldMemoryOperandImpl(
+                  *MF, *Site, 0,
+                  ArrayRef(&Read.getOperand(1), X86::AddrNumOperands),
+                  Site->getIterator(), /*Size=*/0, Align(8),
+                  /*AllowCommute=*/false, CopyMI)) {
+            New->setMemRefs(*MF, Read.memoperands());
+            // The unwinder takes a jmp through RIP without REX.W.
+            if (New->getOpcode() == X86::TAILJMPm64_REX)
+              New->setDesc(TII->get(X86::TAILJMPm64));
+            if (Site->shouldUpdateAdditionalCallInfo())
+              MF->moveAdditionalCallInfo(Site, New);
+            Site->eraseFromParent();
+            Read.eraseFromParent();
+            return true;
+          }
+        if (!Edits)
+          return false;
+        // In code that the linker does not resize it gives the bytes of a
+        // read it drops to the instruction after it, as CS overrides, where
+        // the two are at most 15 bytes and no padding or other read lies
+        // between them. A read that no such instruction follows moves back
+        // over one that does not touch its register and can take its bytes.
+        Register Reg = Read.getOperand(0).getReg();
+        unsigned Room = 15 - getCarriedLength(Read);
+        auto Carries = [&](const MachineInstr *MI) {
+          unsigned Length =
+              MI && !IsPointerLoad(*MI) ? getCarriedLength(*MI) : 0;
+          return Length && Length <= Room;
+        };
+        const MachineInstr *Next = nullptr;
+        MachineBasicBlock::iterator I = std::next(Read.getIterator());
+        for (MachineBasicBlock *Block = &MBB;;) {
+          while (I != Block->end() && I->isMetaInstruction())
+            ++I;
+          if (I != Block->end()) {
+            Next = &*I;
+            break;
+          }
+          MachineFunction::iterator Following = std::next(Block->getIterator());
+          if (Following == MF->end() || Following->getAlignment() != Align(1) ||
+              Following->getSectionID() != MBB.getSectionID() ||
+              Following->isEHFuncletEntry())
+            break;
+          Block = &*Following;
+          I = Block->begin();
+        }
+        auto Before = [&](MachineBasicBlock::iterator It) {
+          while (It != MBB.begin())
+            if (!(--It)->isDebugInstr())
+              return It;
+          return MBB.end();
+        };
+        MachineBasicBlock::iterator Prev = Before(Read.getIterator());
+        if (Carries(Next) || Prev == MBB.end())
+          return false;
+        MachineBasicBlock::iterator Earlier = Before(Prev);
+        if (!Carries(&*Prev) || Prev->readsRegister(Reg, TRI) ||
+            Prev->modifiesRegister(Reg, TRI) ||
+            Prev->getFlag(MachineInstr::FrameSetup) ||
+            Prev->getFlag(MachineInstr::FrameDestroy) ||
+            (Earlier != MBB.end() && IsPointerLoad(*Earlier)))
+          return false;
+        MBB.splice(Prev, &MBB, Read.getIterator());
+        return false;
+      });
+  // A call or a tail call that did not take its load as its operand reads
+  // the register as any other instruction does, which no fused type of
+  // x86-64 states, so nothing is stated of that load.
+  SmallPtrSet<const MachineInstr *, 4> Plain;
+  for (const auto &[MI, Site] : FusedSites)
+    if (Site.Use == COFF::FusedUse::Call || Site.Use == COFF::FusedUse::Jump)
+      Plain.insert(Site.Load);
+  FusedSites.remove_if(
+      [&](const auto &Site) { return Plain.contains(Site.second.Load); });
+}
+
 void X86AsmPrinter::emitFunctionBodyStart() {
   if (EmitFPOData) {
     auto *XTS =
@@ -129,25 +353,6 @@ void X86AsmPrinter::emitFunctionBodyStart() {
         CurrentFnSym,
         MF->getInfo<X86MachineFunctionInfo>()->getArgumentStackSize());
   }
-
-  // A call or a tail call through an import pointer is a call or a jmp of the
-  // register that a mov of the pointer wrote. Import call optimization has
-  // its own forms of both, and a load that is hardened against load value
-  // injection stays.
-  findFusedSites(
-      [&](const MachineInstr &Load) {
-        if (Load.getOpcode() != X86::MOV64rm || EnableImportCallOptimization ||
-            Subtarget->useLVILoadHardening())
-          return false;
-        const MachineOperand &Pointer = Load.getOperand(1 + X86::AddrDisp);
-        return Load.getOperand(1 + X86::AddrBaseReg).getReg() == X86::RIP &&
-               !Load.getOperand(1 + X86::AddrSegmentReg).getReg() &&
-               (Pointer.isGlobal() || Pointer.isSymbol()) &&
-               (Pointer.getTargetFlags() == X86II::MO_DLLIMPORT ||
-                Pointer.getTargetFlags() == X86II::MO_COFFSTUB) &&
-               !Pointer.getOffset();
-      },
-      {X86::CALL64r, X86::TAILJMPr64_REX});
 
   // An exception table that covers every instruction has each call site a
   // byte early, for a search by the address before the frame's own. A site

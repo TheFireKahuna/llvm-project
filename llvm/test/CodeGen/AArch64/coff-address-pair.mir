@@ -1,0 +1,323 @@
+# RUN: llc -mtriple=aarch64-unknown-windows-itanium \
+# RUN:   -start-after=unpack-mi-bundles %s -o - | FileCheck %s --check-prefixes=CHECK,PAIR
+# RUN: llc -mtriple=aarch64-pc-windows-ntposix \
+# RUN:   -start-after=unpack-mi-bundles %s -o - | FileCheck %s --check-prefixes=CHECK,PAIR
+# RUN: llc -mtriple=aarch64-pc-windows-msvc \
+# RUN:   -start-after=unpack-mi-bundles %s -o - | FileCheck %s --check-prefixes=CHECK,APART
+
+# On Windows Itanium and NT-POSIX an optimized function puts the adrp that only
+# a load of an import pointer, or the add of the address of a function that may
+# be another image's, reads directly before it on its register, for the linker
+# to pair, and the pair before the add or access that alone reads a fused read.
+
+--- |
+  declare dllimport void @f()
+  declare hidden void @g()
+  define linkonce_odr void @h() { ret void }
+  @v = external hidden global i32
+  @d = external dllimport global i32
+  define void @apart() { ret void }
+  define void @plain() { ret void }
+  define void @merged() { ret void }
+  define void @entered() { ret void }
+  define void @sunk() { ret void }
+  define void @take() { ret void }
+  define void @vague() { ret void }
+  define void @narrow() { ret void }
+  define void @passed() { ret void }
+  define void @shared() { ret void }
+  define void @blocks() { ret void }
+  define void @unoptimized() noinline optnone { ret void }
+...
+
+# The adrp moves to its read and takes the read's register.
+# CHECK-LABEL: apart:
+# APART:         adrp x8, __imp_f
+# APART-NEXT:    mov w19, w0
+# APART-NEXT:    ldr x9, [x8, :lo12:__imp_f]
+# PAIR:          mov w19, w0
+# PAIR-NEXT:     adrp x9, __imp_f
+# PAIR-NEXT:     ldr x9, [x9, :fused_lo12:__imp_f]
+---
+name:            apart
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $w0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $w19 = ORRWrs $wzr, killed renamable $w0, 0
+    renamable $x9 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    BLR killed renamable $x9, implicit-def dead $lr, implicit $sp
+    RET undef $lr
+...
+
+# So does the adrp of a load that is no fused read.
+# CHECK-LABEL: plain:
+# PAIR:          mov w19, w0
+# PAIR-NEXT:     adrp x9, __imp_f
+# PAIR-NEXT:     ldr x9, [x9, :lo12:__imp_f]
+---
+name:            plain
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $w0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $w19 = ORRWrs $wzr, killed renamable $w0, 0
+    renamable $x9 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    RET undef $lr, implicit $x9
+...
+
+# The adrps of the two blocks that enter the load's are one before the load.
+# CHECK-LABEL: merged:
+# PAIR-NOT:      adrp
+# PAIR:          add x0, x0, #2
+# PAIR-NEXT:   .LBB{{.*}}:
+# PAIR-NEXT:     adrp x8, __imp_f
+# PAIR-NEXT:     ldr x8, [x8, :fused_lo12:__imp_f]
+---
+name:            merged
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $x0, $lr
+    CBZX renamable $x0, %bb.2
+  bb.1:
+    successors: %bb.3
+    liveins: $x0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $x0 = ADDXri killed renamable $x0, 1, 0
+    B %bb.3
+  bb.2:
+    liveins: $x0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $x0 = ADDXri killed renamable $x0, 2, 0
+  bb.3:
+    liveins: $x0, $x8, $lr
+    renamable $x8 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    BLR killed renamable $x8, implicit-def dead $lr, implicit $sp, implicit $x0
+    RET undef $lr
+...
+
+# A block that enters the load's with no adrp of its own keeps the others'.
+# CHECK-LABEL: entered:
+# CHECK:         adrp x8, __imp_f
+# CHECK-NEXT:    add x0, x0, #1
+# CHECK:       .LBB{{.*}}:
+# CHECK-NEXT:    ldr x8, [x8, :{{(fused_)?}}lo12:__imp_f]
+---
+name:            entered
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    successors: %bb.1, %bb.2
+    liveins: $x0, $x8, $lr
+    CBZX renamable $x0, %bb.2
+  bb.1:
+    liveins: $x0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $x0 = ADDXri killed renamable $x0, 1, 0
+  bb.2:
+    liveins: $x0, $x8, $lr
+    renamable $x8 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    BLR killed renamable $x8, implicit-def dead $lr, implicit $sp, implicit $x0
+    RET undef $lr
+...
+
+# The adrp and the fused read move to the add that alone reads the read.
+# CHECK-LABEL: sunk:
+# PAIR:          strb wzr, [x0]
+# PAIR-NEXT:     adrp x8, __imp_d
+# PAIR-NEXT:     ldr x8, [x8, :fused_lo12:__imp_d]
+# PAIR-NEXT:   [[SITE:.Ltmp[0-9]+]]:
+# PAIR-NEXT:     .reloc [[SITE]], IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL, __imp_d
+# PAIR-NEXT:     add x8, x8, #16
+# APART:         ldr x8, [x8, :lo12:__imp_d]
+# APART-NEXT:    strb wzr, [x0]
+---
+name:            sunk
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $x0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @d
+    renamable $x8 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @d
+    STRBBui $wzr, renamable $x0, 0
+    renamable $x8 = ADDXri killed renamable $x8, 16, 0
+    STRXui killed renamable $x8, killed renamable $x0, 1
+    RET undef $lr
+...
+
+# So does the adrp of a declared function's address, which may become a load
+# of its pointer; the address of data stays as it is.
+# CHECK-LABEL: take:
+# PAIR:          mov x1, x0
+# PAIR-NEXT:     adrp x0, g
+# PAIR-NEXT:     add x0, x0, :lo12:g
+# CHECK:         adrp x8, v
+# CHECK-NEXT:    mov x2, x1
+# CHECK-NEXT:    add x3, x8, :lo12:v
+---
+name:            take
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $x0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page) @g
+    renamable $x1 = ORRXrs $xzr, killed renamable $x0, 0
+    renamable $x0 = ADDXri killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g, 0
+    renamable $x8 = ADRP target-flags(aarch64-page) @v
+    renamable $x2 = ORRXrs $xzr, renamable $x1, 0
+    renamable $x3 = ADDXri killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @v, 0
+    RET undef $lr, implicit $x0, implicit $x1, implicit $x2, implicit $x3
+...
+
+# So does that of a function the module defines weakly, which another image's
+# copy may replace; the address of one it defines for good stays as it is.
+# CHECK-LABEL: vague:
+# PAIR:          adrp x9, h
+# PAIR-NEXT:     add x9, x9, :lo12:h
+# APART:         adrp x8, h
+# APART-NEXT:    add x9, x8, :lo12:h
+# CHECK:         adrp x8, take
+# CHECK-NEXT:    add x10, x8, :lo12:take
+---
+name:            vague
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $lr
+    renamable $x8 = ADRP target-flags(aarch64-page) @h
+    renamable $x9 = ADDXri killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @h, 0
+    renamable $x8 = ADRP target-flags(aarch64-page) @take
+    renamable $x10 = ADDXri killed renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @take, 0
+    RET undef $lr, implicit $x9, implicit $x10
+...
+
+# A write of the adrp's W register after the add, a move, a load or any
+# other, ends what the adrp wrote as a write of the X register does; a read of
+# the W register keeps it.
+# CHECK-LABEL: narrow:
+# PAIR:          adrp x0, g
+# PAIR-NEXT:     add x0, x0, :lo12:g
+# PAIR-NEXT:     mov w8, #1794
+# PAIR:          adrp x1, g
+# PAIR-NEXT:     add x1, x1, :lo12:g
+# PAIR-NEXT:     ldr w8, [x2]
+# PAIR:          adrp x3, g
+# PAIR-NEXT:     add x3, x3, :lo12:g
+# PAIR-NEXT:     add w8, w2, #1
+# APART:         adrp x8, g
+# APART-NEXT:    add x0, x8, :lo12:g
+# PAIR:          adrp x8, g
+# CHECK:         add x4, x8, :lo12:g
+# CHECK-NEXT:    add w5, w8, #1
+---
+name:            narrow
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $x2, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page) @g
+    renamable $x0 = ADDXri renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g, 0
+    renamable $w8 = MOVZWi 1794, 0
+    STRWui renamable $w8, renamable $x2, 1
+    renamable $x8 = ADRP target-flags(aarch64-page) @g
+    renamable $x1 = ADDXri renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g, 0
+    renamable $w8 = LDRWui renamable $x2, 0
+    STRWui renamable $w8, renamable $x2, 2
+    renamable $x8 = ADRP target-flags(aarch64-page) @g
+    renamable $x3 = ADDXri renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g, 0
+    renamable $w8 = ADDWri renamable $w2, 1, 0
+    STRWui renamable $w8, renamable $x2, 3
+    renamable $x8 = ADRP target-flags(aarch64-page) @g
+    renamable $x4 = ADDXri renamable $x8, target-flags(aarch64-pageoff, aarch64-nc) @g, 0
+    renamable $w5 = ADDWri renamable $w8, 1, 0
+    RET undef $lr, implicit $x0, implicit $x1, implicit $x3, implicit $x4, implicit $w5
+...
+
+# A pair that moves down to its site passes over an adrp that still pairs.
+# CHECK-LABEL: passed:
+# PAIR:          adrp x10, g
+# PAIR-NEXT:     add x10, x10, :lo12:g
+# PAIR-NEXT:     adrp x8, __imp_d
+# PAIR-NEXT:     ldr x8, [x8, :fused_lo12:__imp_d]
+# PAIR-NEXT:   [[SITE:.Ltmp[0-9]+]]:
+# PAIR-NEXT:     .reloc [[SITE]], IMAGE_REL_LLVM_PAGEOFFSET_12A_IF_LOCAL, __imp_d
+# PAIR-NEXT:     add x8, x8, #16
+---
+name:            passed
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @d
+    renamable $x8 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @d
+    renamable $x9 = ADRP target-flags(aarch64-page) @g
+    renamable $x10 = ADDXri killed renamable $x9, target-flags(aarch64-pageoff, aarch64-nc) @g, 0
+    renamable $x8 = ADDXri killed renamable $x8, 16, 0
+    RET undef $lr, implicit $x8, implicit $x10
+...
+
+---
+name:            h
+body:             |
+  bb.0:
+    RET undef $lr
+...
+
+# An adrp that something else reads keeps its register and its place.
+# CHECK-LABEL: shared:
+# CHECK:         adrp x8, __imp_f
+# CHECK-NEXT:    mov w19, w0
+# CHECK-NEXT:    ldr x9, [x8, :{{(fused_)?}}lo12:__imp_f]
+---
+name:            shared
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $w0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $w19 = ORRWrs $wzr, killed renamable $w0, 0
+    renamable $x9 = LDRXui renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    BLR killed renamable $x9, implicit-def dead $lr, implicit $sp
+    RET undef $lr, implicit $x8
+...
+
+# The adrp that ends the only block entering its load's moves to the load.
+# CHECK-LABEL: blocks:
+# APART:         adrp x8, __imp_f
+# CHECK:       // %bb.1:
+# PAIR-NEXT:     adrp x8, __imp_f
+# CHECK-NEXT:    ldr x8, [x8, :{{(fused_)?}}lo12:__imp_f]
+---
+name:            blocks
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+  bb.1:
+    liveins: $x8, $lr
+    renamable $x8 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    BLR killed renamable $x8, implicit-def dead $lr, implicit $sp
+    RET undef $lr
+...
+
+# CHECK-LABEL: unoptimized:
+# CHECK:         adrp x8, __imp_f
+# CHECK-NEXT:    mov w19, w0
+# CHECK-NEXT:    ldr x9, [x8, :{{(fused_)?}}lo12:__imp_f]
+---
+name:            unoptimized
+tracksRegLiveness: true
+body:             |
+  bb.0:
+    liveins: $w0, $lr
+    renamable $x8 = ADRP target-flags(aarch64-page, aarch64-got, aarch64-dllimport) @f
+    renamable $w19 = ORRWrs $wzr, killed renamable $w0, 0
+    renamable $x9 = LDRXui killed renamable $x8, target-flags(aarch64-pageoff, aarch64-got, aarch64-nc, aarch64-dllimport) @f
+    BLR killed renamable $x9, implicit-def dead $lr, implicit $sp
+    RET undef $lr
+...

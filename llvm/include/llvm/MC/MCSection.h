@@ -204,7 +204,7 @@ public:
   }
 
   bool isLinkerRelaxable() const { return LinkerRelaxable; }
-  void setLinkerRelaxable() { LinkerRelaxable = true; }
+  void setLinkerRelaxable(bool V = true) { LinkerRelaxable = V; }
 
   bool getAllowAutoPadding() const { return AllowAutoPadding; }
   void setAllowAutoPadding(bool V) { AllowAutoPadding = V; }

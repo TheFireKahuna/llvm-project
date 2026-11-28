@@ -444,85 +444,200 @@ void MCWinCOFFStreamer::finalizeCGProfileEntry(const MCSymbolRefExpr *&SRE) {
     static_cast<const MCSymbolCOFF *>(S)->setExternal(true);
 }
 
+static uint16_t getMachine(const MCContext &Context) {
+  return Context.getTargetTriple().isX86_64() ? COFF::IMAGE_FILE_MACHINE_AMD64
+                                              : COFF::IMAGE_FILE_MACHINE_ARM64;
+}
+
+// What a fused site is called, by how it reads its register.
+static const char *const FusedKinds[] = {"",    "",       "call", "jump",
+                                         "add", "access", "test"};
+
 void MCWinCOFFStreamer::reportMisplacedFusedSite() {
-  getContext().reportError(
-      FusedSite.Loc, Twine("fused ") + (FusedSite.IsJump ? "jump" : "call") +
-                         " does not name a pointer at a " +
-                         FusedForms[FusedSite.IsJump]);
+  getContext().reportError(FusedSite.Loc,
+                           Twine("fused ") + FusedKinds[size_t(FusedSite.Use)] +
+                               (COFF::relocationNamesNoSymbol(FusedSite.Type)
+                                    ? " is not at a "
+                                    : " does not name a pointer at a ") +
+                               FusedForms[size_t(FusedSite.Use)]);
+}
+
+void MCWinCOFFStreamer::endResizableCode(MCFragment *From) {
+  MCFragment *Last = getCurrentFragment();
+  if (!From)
+    From = Last;
+  MCSection *Sec = From->getParent();
+  if (!Sec->isLinkerRelaxable())
+    Sec->setFirstLinkerRelaxable(From->getLayoutOrder());
+  for (MCFragment *F = From; F != Last; F = F->getNext())
+    F->setLinkerRelaxable();
+  Last->setLinkerRelaxable();
+  newFragment();
+}
+
+void MCWinCOFFStreamer::finishInstruction(bool Resizable, MCFragment *From) {
+  if (SiteInsts && !--SiteInsts)
+    Resizable = true;
+  if (Resizable)
+    endResizableCode(From);
 }
 
 void MCWinCOFFStreamer::emitRelocDirective(const MCExpr &Offset, StringRef Name,
                                            const MCExpr *Expr, SMLoc Loc) {
-  MCObjectStreamer::emitRelocDirective(Offset, Name, Expr, Loc);
-  bool IsJump = Name == "IMAGE_REL_LLVM_FUSED_JUMP";
-  if (!MCII || (!IsJump && Name != "IMAGE_REL_LLVM_FUSED_CALL"))
+  std::optional<MCFixupKind> Kind =
+      getAssembler().getBackend().getFixupKind(Name);
+  uint16_t Machine = getMachine(getContext());
+  uint16_t Type =
+      Kind && mc::isRelocRelocation(*Kind) ? getCOFFRelocType(*Kind) : 0;
+  COFF::FusedUse Use =
+      MCII ? COFF::getFusedMarkerUse(Machine, Type) : COFF::FusedUse::None;
+  // The type of a fused jump is that of its site, which records it, as it
+  // does a marker whose index it gives.
+  if (Use != COFF::FusedUse::Jump &&
+      (Use == COFF::FusedUse::None || !COFF::relocationNamesNoSymbol(Type)))
+    MCObjectStreamer::emitRelocDirective(Offset, Name, Expr, Loc);
+  if (COFF::relocationMovesCode(Type))
+    MovingSections.insert(getCurrentSectionOnly());
+  // A marker of code that the linker may resize is at its site: padding ends
+  // where its marker is, and any other site with the instructions after the
+  // marker. A target finds the end of a fused site, which the check of its
+  // form places.
+  if (MCII && Use == COFF::FusedUse::None &&
+      COFF::relocationMayResizeCode(Machine, Type)) {
+    MCValue Site;
+    if (!Offset.evaluateAsRelocatable(Site, nullptr) || !Site.getAddSym() ||
+        Site.getSubSym() ||
+        Site.getAddSym()->getFragment() != getCurrentFragment() ||
+        Site.getAddSym()->getOffset() + Site.getConstant() != getCurFragSize())
+      getContext().reportError(Loc, Name + " marks code that the linker may "
+                                           "resize and is not at that code");
+    else if (Type == COFF::IMAGE_REL_LLVM_ALIGN)
+      endResizableCode();
+    else
+      SiteInsts = Type == COFF::IMAGE_REL_LLVM_TLS_SCALE ? TlsScaleInsts : 1;
+  }
+  if (Use == COFF::FusedUse::None)
     return;
   if (FusedSite.Offset)
     reportMisplacedFusedSite();
   auto *Pointer = dyn_cast_or_null<MCSymbolRefExpr>(Expr);
-  FusedSite = {&Offset, Pointer ? &Pointer->getSymbol() : nullptr, Loc, IsJump,
-               false};
+  FusedSite = {
+      &Offset, Pointer ? &Pointer->getSymbol() : nullptr, Loc, Type, Use, Expr};
+}
+
+bool MCWinCOFFStreamer::readsFusedRegisterOnce(const MCInst &Inst,
+                                               const MCInstrDesc &Desc,
+                                               const MCRegisterInfo &MRI,
+                                               COFF::FusedUse Use,
+                                               unsigned RegOp) {
+  MCRegister Reg = Inst.getOperand(RegOp).getReg();
+  if (any_of(Desc.implicit_uses(), [&](MCPhysReg Implicit) {
+        return MRI.regsOverlap(Implicit, Reg);
+      }))
+    return false;
+  for (unsigned I = Desc.getNumDefs(), E = Inst.getNumOperands(); I != E; ++I)
+    if (I != RegOp && (Use != COFF::FusedUse::Test || I != RegOp + 1) &&
+        Inst.getOperand(I).isReg() && Inst.getOperand(I).getReg() &&
+        MRI.regsOverlap(Inst.getOperand(I).getReg(), Reg))
+      return false;
+  return true;
 }
 
 // The linker rewrites a fused site as its type says, so each is checked
 // against the instructions the run shows; what wrote a register before the
 // run began rests on whoever states the type.
-MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst,
-                                        const MCSymbol *Read, bool IsSite,
-                                        bool IsPad) {
+MCSymbol *MCWinCOFFStreamer::checkFused(const MCInst &Inst, COFF::FusedUse Use,
+                                        unsigned RegOp, const MCSymbol *Load,
+                                        bool IsRead, bool Tail) {
   const MCRegisterInfo &MRI = *getContext().getRegisterInfo();
   MCSymbol *Marker = nullptr;
   if (RunSection != getCurrentSection())
     RunWrites.clear();
   RunSection = getCurrentSection();
-  // A fused call or jump begins at its marker and goes through a register
-  // that a fused read of the marker's pointer last wrote.
+  const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
+  // A fused site begins at its marker, reads its register as the marker's
+  // type says, in one operand only, but a test against itself, and reads
+  // there what a load of the marker's pointer last wrote, which only an
+  // access may read through a copy.
   if (FusedSite.Offset) {
+    MCRegister Reg = Use != COFF::FusedUse::None
+                         ? Inst.getOperand(RegOp).getReg()
+                         : MCRegister();
+    bool IsSite = Use == FusedSite.Use &&
+                  readsFusedRegisterOnce(Inst, Desc, MRI, Use, RegOp);
+    const char *Kind = FusedKinds[size_t(FusedSite.Use)];
     MCValue Site;
-    bool Here = FusedSite.Placed ||
-                (FusedSite.Pointer &&
-                 FusedSite.Offset->evaluateAsRelocatable(Site, nullptr) &&
-                 Site.getAddSym() && !Site.getSubSym() &&
-                 Site.getAddSym()->getFragment() == getCurrentFragment() &&
-                 Site.getAddSym()->getOffset() + Site.getConstant() ==
-                     getCurFragSize());
-    if (Here && !FusedSite.Placed && !Site.getConstant())
+    bool Here =
+        (FusedSite.Pointer || COFF::relocationNamesNoSymbol(FusedSite.Type)) &&
+        FusedSite.Offset->evaluateAsRelocatable(Site, nullptr) &&
+        Site.getAddSym() && !Site.getSubSym() &&
+        Site.getAddSym()->getFragment() == getCurrentFragment() &&
+        Site.getAddSym()->getOffset() + Site.getConstant() == getCurFragSize();
+    if (Here && !Site.getConstant())
       Marker = const_cast<MCSymbol *>(Site.getAddSym());
-    if (Here && IsPad) {
-      FusedSite.Placed = true;
-    } else {
-      if (!Here || !IsSite)
-        reportMisplacedFusedSite();
-      else if (MCRegister Reg = Inst.getOperand(0).getReg();
-               any_of(MRI.regunits(Reg), [&](MCRegUnit Unit) {
-                 auto Write = RunWrites.find(static_cast<unsigned>(Unit));
-                 return Write != RunWrites.end() &&
-                        Write->second != FusedSite.Pointer;
-               }))
-        getContext().reportError(
-            FusedSite.Loc,
-            Twine("fused ") + (FusedSite.IsJump ? "jump" : "call") + " reads " +
-                MRI.getName(Reg) + ", which no fused read of '" +
-                FusedSite.Pointer->getName() + "' last wrote");
-      FusedSite.Offset = nullptr;
-      getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
+    if (FusedSite.Use == COFF::FusedUse::Jump)
+      MCObjectStreamer::emitRelocDirective(
+          *FusedSite.Offset,
+          IsSite && Tail ? "IMAGE_REL_LLVM_FUSED_JUMP_TAIL"
+                         : "IMAGE_REL_LLVM_FUSED_JUMP",
+          FusedSite.Expr, FusedSite.Loc);
+    if (!Here || !IsSite)
+      reportMisplacedFusedSite();
+    else if (FusedSite.Pointer &&
+             any_of(MRI.regunits(Reg), [&](MCRegUnit Unit) {
+               auto Write = RunWrites.find(static_cast<unsigned>(Unit));
+               if (Write == RunWrites.end())
+                 return false;
+               const MCSymbol *Pointer = Write->second.getPointer();
+               return Write->second.getInt()
+                          ? Use != COFF::FusedUse::Access ||
+                                (Pointer && Pointer != FusedSite.Pointer)
+                          : Pointer != FusedSite.Pointer;
+             }))
+      getContext().reportError(
+          FusedSite.Loc, Twine("fused ") + Kind + " reads " + MRI.getName(Reg) +
+                             ", which no load of '" +
+                             FusedSite.Pointer->getName() + "' last wrote");
+    // The linker may resize a site of one instruction with it.
+    if (Here && IsSite && Use != COFF::FusedUse::Call &&
+        Use != COFF::FusedUse::Jump &&
+        COFF::relocationMayResizeCode(getMachine(getContext()), FusedSite.Type))
+      SiteInsts = 1;
+    FusedSite.Offset = nullptr;
+    getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
+  }
+  if (IsRead)
+    getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
+  // A copy holds what every unit of its source does.
+  PointerIntPair<const MCSymbol *, 1, bool> Held(Load, false);
+  if (Use == COFF::FusedUse::Copy) {
+    Held.setInt(true);
+    bool First = true;
+    for (MCRegUnit Unit : MRI.regunits(Inst.getOperand(RegOp).getReg())) {
+      auto Write = RunWrites.find(static_cast<unsigned>(Unit));
+      const MCSymbol *Pointer =
+          Write == RunWrites.end() ? nullptr : Write->second.getPointer();
+      if ((Write != RunWrites.end() && !Pointer) ||
+          (!First && Pointer != Held.getPointer()))
+        Held = {nullptr, false};
+      else if (First)
+        Held.setPointer(Pointer);
+      First = false;
     }
   }
-  if (Read)
-    getWriter().LinkRecordsFlags |= COFF::LinkRecordsFusedChecked;
-  const MCInstrDesc &Desc = MCII->get(Inst.getOpcode());
-  auto Write = [&](MCRegister Reg, const MCSymbol *Pointer) {
+  auto Write = [&](MCRegister Reg,
+                   PointerIntPair<const MCSymbol *, 1, bool> Held) {
     for (MCRegUnit Unit : MRI.regunits(Reg))
-      RunWrites[static_cast<unsigned>(Unit)] = Pointer;
+      RunWrites[static_cast<unsigned>(Unit)] = Held;
   };
   if (Desc.isCall() || Desc.isBarrier() || Desc.isTrap())
     RunWrites.clear();
   else {
     for (unsigned I = 0, E = Desc.getNumDefs(); I != E; ++I)
       if (Inst.getOperand(I).isReg() && Inst.getOperand(I).getReg())
-        Write(Inst.getOperand(I).getReg(), Read);
+        Write(Inst.getOperand(I).getReg(), Held);
     for (MCPhysReg Reg : Desc.implicit_defs())
-      Write(Reg, nullptr);
+      Write(Reg, {});
   }
   return Marker;
 }

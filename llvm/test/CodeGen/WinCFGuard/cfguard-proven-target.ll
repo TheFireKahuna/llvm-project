@@ -9,7 +9,7 @@
 ;; to come from a constant table of functions of the call's KCFI type, and
 ;; guards the call as any other. After register allocation, a call whose target
 ;; stayed in its register from the load loses the guard and the KCFI check;
-;; x86-64 makes it through the table where the load is next to it.
+;; x86-64 loads it from the table directly before it.
 
 @table = internal constant [4 x ptr] [ptr @f, ptr @g, ptr @f, ptr @g]
 @handlers = internal constant [256 x ptr] zeroinitializer
@@ -19,7 +19,8 @@ declare !kcfi_type !2 void @g()
 
 ; X64-LABEL: proven:
 ; X64:         leaq table(%rip), %rax
-; X64-NEXT:    callq *(%rax,%r{{cx|di}},8)
+; X64-NEXT:    movq (%rax,%r{{cx|di}},8), %rax
+; X64-NEXT:    callq *%rax
 ; A64-LABEL: proven:
 ; A64:         ldr x15, [x8, x9, lsl #3]
 ; A64-NEXT:    blr x15
@@ -104,7 +105,8 @@ exit:
 ; X64:         movq %r{{cx|di}}, %rax
 ; X64-NEXT:    movl $4294967284, %r10d
 ; X64-NEXT:    addl -4(%rax), %r10d
-; X64:         callq *__guard_dispatch_icall_fptr(%rip)
+; X64:         movq __guard_dispatch_icall_fptr(%rip), %rcx
+; X64-NEXT:    callq *%rcx
 ; A64-LABEL: unproven:
 ; A64:         adrp x8, __guard_check_icall_fptr
 ; A64-NEXT:    mov x15, x0
@@ -136,7 +138,8 @@ define void @unproven_tail(ptr %x) {
 
 ; X64-LABEL: unproven_invoke:
 ; X64:         addl -4(%rax), %r10d
-; X64:         callq *__guard_dispatch_icall_fptr(%rip)
+; X64:         movq __guard_dispatch_icall_fptr(%rip), %rcx
+; X64-NEXT:    callq *%rcx
 ; A64-LABEL: unproven_invoke:
 ; A64:         adrp x8, __guard_check_icall_fptr
 ; A64:         ldr x8, [x8, :lo12:__guard_check_icall_fptr]
